@@ -18,12 +18,19 @@ use crate::mesh::Mesh;
 pub struct Nedelec2Basis {
     /// Total number of DOFs in the system: 2*n_edges + 2*n_tris
     pub n_field: usize,
+    pub n_tets: usize,
+    pub n_tris: usize,
+    pub n_edges: usize,
     /// Per-tet DOF indices (20 per tet)
     pub tet_to_field: Vec<[usize; 20]>,
     /// Per-surface-tri DOF indices (8 per tri)
     pub tri_to_field: Vec<[usize; 8]>,
     /// Per-edge DOF indices (2 per edge): [mode1, mode2]
     pub edge_to_field: Vec<[usize; 2]>,
+    /// Precomputed row indices for tri sparse matrix (port of femdata.py:empty_tri_rowcol)
+    pub tri_rows: Vec<usize>,
+    /// Precomputed col indices for tri sparse matrix
+    pub tri_cols: Vec<usize>,
 }
 
 impl Nedelec2Basis {
@@ -83,12 +90,58 @@ impl Nedelec2Basis {
             edge_to_field[ei][1] = ei + n_tris + n_edges;    // mode 2
         }
 
+        // Port of femdata.py:empty_tri_rowcol()
+        // Precompute row/col arrays for n_tris * 64 entries
+        let n_tri_dofs = 8usize;
+        let n2 = n_tri_dofs * n_tri_dofs; // 64
+        let nnz_tri = n_tris * n2;
+        let mut tri_rows_arr = vec![0usize; nnz_tri];
+        let mut tri_cols_arr = vec![0usize; nnz_tri];
+
+        for itri in 0..n_tris {
+            let p = itri * n2;
+            let indices = &tri_to_field[itri];
+            for ii in 0..n_tri_dofs {
+                // rows[p+N*ii:p+N*(ii+1)] = indices[ii]
+                for k in 0..n_tri_dofs {
+                    tri_rows_arr[p + n_tri_dofs * ii + k] = indices[ii];
+                }
+                // cols[p+ii:p+N2:N] = indices[ii]
+                for k in 0..n_tri_dofs {
+                    tri_cols_arr[p + ii + n_tri_dofs * k] = indices[ii];
+                }
+            }
+        }
+
         Nedelec2Basis {
             n_field,
+            n_tets,
+            n_tris,
+            n_edges,
             tet_to_field,
             tri_to_field,
             edge_to_field,
+            tri_rows: tri_rows_arr,
+            tri_cols: tri_cols_arr,
         }
+    }
+
+    /// Port of femdata.py:empty_tri_matrix() — returns flat zero array of size n_tris*64
+    pub fn empty_tri_matrix(&self) -> Vec<num_complex::Complex64> {
+        vec![num_complex::Complex64::new(0.0, 0.0); self.n_tris * 64]
+    }
+
+    /// Port of femdata.py:generate_csr(data)
+    /// Converts flat tri data array to CSR matrix, filtering out zero entries.
+    pub fn generate_csr(&self, data: &[num_complex::Complex64]) -> sprs::CsMat<num_complex::Complex64> {
+        use sprs::TriMat;
+        let mut tri_mat = TriMat::new((self.n_field, self.n_field));
+        for (idx, &val) in data.iter().enumerate() {
+            if val.norm() > 0.0 {
+                tri_mat.add_triplet(self.tri_rows[idx], self.tri_cols[idx], val);
+            }
+        }
+        tri_mat.to_csr()
     }
 }
 
