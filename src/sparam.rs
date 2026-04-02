@@ -149,3 +149,50 @@ pub fn sparam_mode_power(
         (C64::from(mx)*ex2 + C64::from(my)*ey2 + C64::from(mz)*ez2) / C64::from(2.0 * z_mode)
     }, gq_order)
 }
+
+/// Exact port of microwave_3d.py lines 1563-1598: voltage integration S-param extraction.
+///
+/// For lumped ports, S-parameters are computed from voltage:
+///   V = ∫ E·dl along integration line
+///   active port: b = V - V_inc, a = V_inc
+///   passive port: b = V, a = V_inc
+///   S = b_sig / a_sig where sig = * sqrt(1/(2*Z0))
+pub fn sparam_voltage(
+    port: &crate::waveguide::LumpedPort,
+    active: bool,
+    fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
+    line_points: &[[f64; 3]],
+) -> C64 {
+    // Port of Line.line_integral_precalc:
+    // Compute ∫ E·dl using trapezoidal rule along the line
+    let n_pts = line_points.len();
+    if n_pts < 2 { return C64::new(0.0, 0.0); }
+
+    let mut v_total = C64::new(0.0, 0.0);
+    for i in 0..(n_pts - 1) {
+        let p0 = line_points[i];
+        let p1 = line_points[i + 1];
+        let mid = [(p0[0]+p1[0])/2.0, (p0[1]+p1[1])/2.0, (p0[2]+p1[2])/2.0];
+        let dl = [p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]];
+
+        let (ex, ey, ez) = fieldf(mid[0], mid[1], mid[2]);
+        v_total += ex * C64::from(dl[0]) + ey * C64::from(dl[1]) + ez * C64::from(dl[2]);
+    }
+
+    let v_inc = C64::from(port.voltage());
+
+    let (a, b) = if active {
+        (v_inc, v_total - v_inc)
+    } else {
+        (v_inc, v_total)
+    };
+
+    let norm = C64::from((1.0 / (2.0 * port.z0)).sqrt());
+    let b_sig = b * norm;
+    let a_sig = a * norm;
+
+    if a_sig.norm() < 1e-30 {
+        return C64::new(0.0, 0.0);
+    }
+    b_sig / a_sig
+}

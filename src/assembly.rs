@@ -33,20 +33,25 @@ pub fn assemble_and_solve(
     port_tri_indices: &[&[usize]],
     pec_tri_indices: &[usize],
     freq: f64,
+    materials: Option<&[crate::materials::Material]>,
 ) -> SolveResult {
     let c0 = crate::constants::C0;
     let k0 = 2.0 * PI * freq / c0;
     let n_field = basis.n_field;
     let n_tets = mesh.n_tets();
 
-    // Step 1: E, B = tet_mass_stiffness_matrices(field, er, ur)
-    let identity: [[C64; 3]; 3] = [
-        [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
-        [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
-        [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
-    ];
-    let er = vec![identity; n_tets];
-    let ur = vec![identity; n_tets];
+    // Step 1: Build material tensors (exact port of assembler.py lines 280-303)
+    let (er, ur) = if let Some(mats) = materials {
+        crate::materials::build_material_tensors(n_tets, mats, freq)
+    } else {
+        // Default: air (identity tensors)
+        let identity: [[C64; 3]; 3] = [
+            [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
+            [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
+            [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
+        ];
+        (vec![identity; n_tets], vec![identity; n_tets])
+    };
 
     let t0 = std::time::Instant::now();
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);

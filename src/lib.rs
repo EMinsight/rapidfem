@@ -9,4 +9,5 @@ pub mod tri_assembly;
 pub mod waveguide;
 pub mod sparam;
 pub mod interp;
+pub mod materials;
 pub mod assembly;

@@ -142,3 +142,89 @@ impl RectWaveguide {
         [factor * C64::from(ex), factor * C64::from(ey), factor * C64::from(ez)]
     }
 }
+
+/// Exact port of microwave_bc.py: AbsorbingBoundary
+///
+/// Order-1 ABC: γ = j·k₀·neff (neff=1 for air)
+/// Order-2 ABC: γ = j·k₀·c₁·neff, plus a correction matrix (handled in assembly)
+pub struct AbsorbingBoundary {
+    pub order: usize,
+    pub neff: f64,
+    pub abctype: char,
+}
+
+/// Order-2 ABC coefficients (c₁, c₂) from microwave_bc.py lines 177-182
+pub const ABC_O2_COEFFS: [(char, f64, f64); 5] = [
+    ('A', 1.0, -0.5),
+    ('B', 1.00023, -0.51555),
+    ('C', 1.03084, -0.73631),
+    ('D', 1.06103, -0.84883),
+    ('E', 1.12500, -1.00000),
+];
+
+impl AbsorbingBoundary {
+    pub fn new(order: usize, abctype: char) -> Self {
+        AbsorbingBoundary { order, neff: 1.0, abctype }
+    }
+
+    /// Port of get_gamma(k0) from microwave_bc.py lines 409-422
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        if self.order == 1 {
+            C64::new(0.0, k0 * self.neff)
+        } else {
+            let c1 = ABC_O2_COEFFS.iter()
+                .find(|(c, _, _)| *c == self.abctype)
+                .map(|(_, c1, _)| *c1)
+                .unwrap_or(1.00023);
+            C64::new(0.0, k0 * c1 * self.neff)
+        }
+    }
+
+    /// Get the c₂ coefficient for order-2 correction matrix
+    pub fn get_c2(&self) -> f64 {
+        ABC_O2_COEFFS.iter()
+            .find(|(c, _, _)| *c == self.abctype)
+            .map(|(_, _, c2)| *c2)
+            .unwrap_or(-0.51555)
+    }
+}
+
+/// Exact port of microwave_bc.py: LumpedPort (lines 1294-1441)
+pub struct LumpedPort {
+    pub port_number: usize,
+    pub power: f64,
+    pub z0: f64,
+    pub width: f64,
+    pub height: f64,
+    /// E-field direction unit vector in global coordinates
+    pub direction: [f64; 3],
+}
+
+impl LumpedPort {
+    /// Port of surfZ property: Z0 * width / height
+    pub fn surf_z(&self) -> f64 {
+        self.z0 * self.width / self.height
+    }
+
+    /// Port of voltage property: sqrt(2 * power * Z0)
+    pub fn voltage(&self) -> f64 {
+        (2.0 * self.power * self.z0).sqrt()
+    }
+
+    /// Port of get_gamma(k0): j * k0 * Z0 / surfZ
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, k0 * Z0 / self.surf_z())
+    }
+
+    /// Port of port_mode_3d_global: returns uniform field in direction
+    pub fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> (f64, f64, f64) {
+        (self.direction[0], self.direction[1], self.direction[2])
+    }
+
+    /// Port of get_Uinc: -j*2*k0 * voltage/height * (Z0/surfZ) * mode_field
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let emag = C64::new(0.0, -2.0 * k0) * C64::from(self.voltage() / self.height * (Z0 / self.surf_z()));
+        let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, k0);
+        [emag * C64::from(ex), emag * C64::from(ey), emag * C64::from(ez)]
+    }
+}
