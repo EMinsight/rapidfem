@@ -71,16 +71,18 @@ fn tri_local_cs(glob_vertices: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3], [f64
     let xhat = normalize(e1);
     let yhat = normalize(cross3(zhat, xhat));
 
-    let basis = [xhat, yhat, zhat]; // basis[0,:] = xhat, etc.
+    let basis = [xhat, yhat, zhat];
 
-    // lcs_vertices = basis @ (glob_vertices - orig)
-    let shifted: Vec<[f64; 3]> = glob_vertices.iter().map(|v| {
-        [v[0]-orig[0], v[1]-orig[1], v[2]-orig[2]]
-    }).collect();
-    let lcs = matmul_3x3_cols(&basis, &shifted);
-
-    let xs = [lcs[0][0], lcs[1][0], lcs[2][0]];
-    let ys = [lcs[0][1], lcs[1][1], lcs[2][1]];
+    // Project vertices to local 2D — inline, no Vec allocation
+    let mut xs = [0.0; 3];
+    let mut ys = [0.0; 3];
+    for k in 0..3 {
+        let dx = glob_vertices[k][0] - orig[0];
+        let dy = glob_vertices[k][1] - orig[1];
+        let dz = glob_vertices[k][2] - orig[2];
+        xs[k] = basis[0][0]*dx + basis[0][1]*dy + basis[0][2]*dz;
+        ys[k] = basis[1][0]*dx + basis[1][1]*dy + basis[1][2]*dz;
+    }
 
     (basis, xs, ys)
 }

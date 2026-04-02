@@ -137,7 +137,7 @@ impl Nedelec2Basis {
         use sprs::TriMat;
         let mut tri_mat = TriMat::new((self.n_field, self.n_field));
         for (idx, &val) in data.iter().enumerate() {
-            if val.norm() > 0.0 {
+            if val.re != 0.0 || val.im != 0.0 {
                 tri_mat.add_triplet(self.tri_rows[idx], self.tri_cols[idx], val);
             }
         }

@@ -140,9 +140,10 @@ fn main() {
         let k0 = 2.0 * PI * frequencies[fi] / C0;
         let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
 
+        let grid = interp::TetGrid::new(&mesh);
         for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
             let fieldf = |x: f64, y: f64, z: f64| -> (C64, C64, C64) {
-                match interp::find_containing_tet(&mesh, x, y, z) {
+                match grid.find_containing_tet(&mesh, x, y, z) {
                     Some(tet) => interp::eval_field_in_tet(&mesh, &basis, sol, tet, x, y, z),
                     None => (C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)),
                 }

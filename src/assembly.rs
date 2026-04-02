@@ -185,14 +185,16 @@ pub fn assemble_and_solve(
         coo_cols.push(dof_to_free[c]);
         coo_vals.push(data_e[i] - k0_sq * data_b[i]);
     }
-    for (idx, &val) in bempty.iter().enumerate() {
-        if val.norm() == 0.0 { continue; }
-        let r = basis.tri_rows[idx];
-        let c = basis.tri_cols[idx];
-        if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
-        coo_rows.push(dof_to_free[r]);
-        coo_cols.push(dof_to_free[c]);
-        coo_vals.push(val);
+    // Precompute non-zero Robin indices (avoids iterating all n_tris*64 entries)
+    let robin_nonzero: Vec<usize> = (0..bempty.len())
+        .filter(|&i| (bempty[i].re != 0.0 || bempty[i].im != 0.0)
+            && !pec_ids.contains(&basis.tri_rows[i])
+            && !pec_ids.contains(&basis.tri_cols[i]))
+        .collect();
+    for &idx in &robin_nonzero {
+        coo_rows.push(dof_to_free[basis.tri_rows[idx]]);
+        coo_cols.push(dof_to_free[basis.tri_cols[idx]]);
+        coo_vals.push(bempty[idx]);
     }
     eprintln!("  COO: {} entries, built in {:.1}ms", coo_rows.len(), t2.elapsed().as_secs_f64()*1e3);
 
@@ -332,14 +334,17 @@ pub fn frequency_sweep(
     // Symbolic factorization: compute once at first frequency, reuse for all
     let mut symbolic_lu: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>> = None;
 
+    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
+    let mut bempty = basis.empty_tri_matrix();
+
     for (fi, &freq) in frequencies.iter().enumerate() {
         let t_freq = std::time::Instant::now();
         let k0 = 2.0 * PI * freq / crate::constants::C0;
         let k0_sq = C64::from(k0 * k0);
         let n_field = basis.n_field;
 
-        // Robin BC (γ frequency-dependent)
-        let mut bempty = basis.empty_tri_matrix();
+        // Robin BC (γ frequency-dependent) — reuse bempty buffer
+        bempty.fill(C64::new(0.0, 0.0));
         for (_, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
             let gamma = port.get_gamma(k0);
             for &ti in *tri_ids {
@@ -382,9 +387,8 @@ pub fn frequency_sweep(
             port_bvecs.push(bvec);
         }
 
-        // Build faer triplets: K = (E - k0²*B) + Robin
-        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-        triplets.reserve(k_free_indices.len() + robin_free_indices.len());
+        // Build faer triplets: K = (E - k0²*B) + Robin — reuse allocation
+        triplets.clear();
 
         for (ti, &orig_i) in k_free_indices.iter().enumerate() {
             let val = data_e[orig_i] - k0_sq * data_b[orig_i];
@@ -395,7 +399,7 @@ pub fn frequency_sweep(
         }
         for &idx in &robin_free_indices {
             let val = bempty[idx];
-            if val.norm() == 0.0 { continue; }
+            if val.re == 0.0 && val.im == 0.0 { continue; }
             triplets.push(faer::sparse::Triplet {
                 row: dof_to_free[basis.tri_rows[idx]],
                 col: dof_to_free[basis.tri_cols[idx]],

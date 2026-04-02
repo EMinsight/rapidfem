@@ -156,47 +156,101 @@ pub fn eval_field_in_tet(
     (ex, ey, ez)
 }
 
-/// Find the tet containing a point, or return None.
-/// Uses barycentric coordinate test (matches interp.py).
-pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
+/// Spatial hash grid for fast point-in-tet lookup.
+pub struct TetGrid {
+    cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>>,
+    cell_size: f64,
+}
+
+impl TetGrid {
+    /// Build a spatial grid from the mesh. Each tet is assigned to the cell containing its centroid.
+    pub fn new(mesh: &Mesh) -> Self {
+        // Compute bounding box
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for node in &mesh.nodes {
+            for k in 0..3 { min[k] = min[k].min(node[k]); max[k] = max[k].max(node[k]); }
+        }
+        let diag = ((max[0]-min[0]).powi(2) + (max[1]-min[1]).powi(2) + (max[2]-min[2]).powi(2)).sqrt();
+        let cell_size = diag / (mesh.n_tets() as f64).cbrt().max(2.0);
+
+        let mut cells: hashbrown::HashMap<(i32, i32, i32), Vec<usize>> = hashbrown::HashMap::new();
+        for itet in 0..mesh.n_tets() {
+            let tet = &mesh.tets[itet];
+            let cx = (mesh.nodes[tet[0]][0] + mesh.nodes[tet[1]][0] + mesh.nodes[tet[2]][0] + mesh.nodes[tet[3]][0]) / 4.0;
+            let cy = (mesh.nodes[tet[0]][1] + mesh.nodes[tet[1]][1] + mesh.nodes[tet[2]][1] + mesh.nodes[tet[3]][1]) / 4.0;
+            let cz = (mesh.nodes[tet[0]][2] + mesh.nodes[tet[1]][2] + mesh.nodes[tet[2]][2] + mesh.nodes[tet[3]][2]) / 4.0;
+            let key = ((cx / cell_size).floor() as i32, (cy / cell_size).floor() as i32, (cz / cell_size).floor() as i32);
+            cells.entry(key).or_default().push(itet);
+        }
+
+        TetGrid { cells, cell_size }
+    }
+
+    /// Find the tet containing a point using the spatial grid. Falls back to brute force if not found.
+    pub fn find_containing_tet(&self, mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
+        let cs = self.cell_size;
+        let cx = (x / cs).floor() as i32;
+        let cy = (y / cs).floor() as i32;
+        let cz = (z / cs).floor() as i32;
+
+        // Search 3x3x3 neighborhood
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(tets) = self.cells.get(&(cx+dx, cy+dy, cz+dz)) {
+                        for &itet in tets {
+                            if point_in_tet(mesh, itet, x, y, z) {
+                                return Some(itet);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: brute force (handles edge cases)
+        find_containing_tet_brute(mesh, x, y, z)
+    }
+}
+
+fn point_in_tet(mesh: &Mesh, itet: usize, x: f64, y: f64, z: f64) -> bool {
     let eps = 1e-8;
+    let tet = &mesh.tets[itet];
+    let v1 = mesh.nodes[tet[0]];
+    let v2 = mesh.nodes[tet[1]];
+    let v3 = mesh.nodes[tet[2]];
+    let v4 = mesh.nodes[tet[3]];
+
+    let m00 = v2[0]-v1[0]; let m01 = v3[0]-v1[0]; let m02 = v4[0]-v1[0];
+    let m10 = v2[1]-v1[1]; let m11 = v3[1]-v1[1]; let m12 = v4[1]-v1[1];
+    let m20 = v2[2]-v1[2]; let m21 = v3[2]-v1[2]; let m22 = v4[2]-v1[2];
+
+    let det = m00*(m11*m22 - m12*m21) - m01*(m10*m22 - m12*m20) + m02*(m10*m21 - m11*m20);
+    if det.abs() < 1e-30 { return false; }
+    let inv_det = 1.0 / det;
+
+    let dx = x - v1[0];
+    let dy = y - v1[1];
+    let dz = z - v1[2];
+
+    let u = ((m11*m22-m12*m21)*dx + (m02*m21-m01*m22)*dy + (m01*m12-m02*m11)*dz) * inv_det;
+    let v = ((m12*m20-m10*m22)*dx + (m00*m22-m02*m20)*dy + (m02*m10-m00*m12)*dz) * inv_det;
+    let w = ((m10*m21-m11*m20)*dx + (m01*m20-m00*m21)*dy + (m00*m11-m01*m10)*dz) * inv_det;
+
+    u >= -eps && v >= -eps && w >= -eps && u + v + w <= 1.0 + eps
+}
+
+/// Brute-force fallback for find_containing_tet.
+fn find_containing_tet_brute(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
     for itet in 0..mesh.n_tets() {
-        let tet = &mesh.tets[itet];
-        let v1 = mesh.nodes[tet[0]];
-        let v2 = mesh.nodes[tet[1]];
-        let v3 = mesh.nodes[tet[2]];
-        let v4 = mesh.nodes[tet[3]];
-
-        // Build transformation matrix M = [v2-v1, v3-v1, v4-v1]
-        let m00 = v2[0]-v1[0]; let m01 = v3[0]-v1[0]; let m02 = v4[0]-v1[0];
-        let m10 = v2[1]-v1[1]; let m11 = v3[1]-v1[1]; let m12 = v4[1]-v1[1];
-        let m20 = v2[2]-v1[2]; let m21 = v3[2]-v1[2]; let m22 = v4[2]-v1[2];
-
-        let det = m00*(m11*m22 - m12*m21) - m01*(m10*m22 - m12*m20) + m02*(m10*m21 - m11*m20);
-        if det.abs() < 1e-30 { continue; }
-        let inv_det = 1.0 / det;
-
-        let b00 = (m11*m22 - m12*m21) * inv_det;
-        let b01 = (m02*m21 - m01*m22) * inv_det;
-        let b02 = (m01*m12 - m02*m11) * inv_det;
-        let b10 = (m12*m20 - m10*m22) * inv_det;
-        let b11 = (m00*m22 - m02*m20) * inv_det;
-        let b12 = (m02*m10 - m00*m12) * inv_det;
-        let b20 = (m10*m21 - m11*m20) * inv_det;
-        let b21 = (m01*m20 - m00*m21) * inv_det;
-        let b22 = (m00*m11 - m01*m10) * inv_det;
-
-        let dx = x - v1[0];
-        let dy = y - v1[1];
-        let dz = z - v1[2];
-
-        let u = b00*dx + b01*dy + b02*dz;
-        let v = b10*dx + b11*dy + b12*dz;
-        let w = b20*dx + b21*dy + b22*dz;
-
-        if u >= -eps && v >= -eps && w >= -eps && u + v + w <= 1.0 + eps {
+        if point_in_tet(mesh, itet, x, y, z) {
             return Some(itet);
         }
     }
     None
+}
+
+/// Find the tet containing a point (brute force — for backward compatibility).
+pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
+    find_containing_tet_brute(mesh, x, y, z)
 }

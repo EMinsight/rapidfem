@@ -254,30 +254,33 @@ pub fn build_upper_csr(
     triplet_cols: &[usize],
     triplet_vals: &[C64],
 ) -> (Vec<i32>, Vec<i32>, Vec<C64>) {
-    use std::collections::BTreeMap;
-
-    // Collect upper triangle entries, summing duplicates.
-    // For symmetric matrices, each (r,c) with r!=c appears twice in the full COO
-    // (as (r,c) and (c,r)). We keep only the upper triangle entry (r<=c).
-    // Entries where r==c (diagonal) appear once and are kept as-is.
-    // Entries where r<c appear as both (r,c) and (c,r) — we keep only (r,c).
-    let mut entries: BTreeMap<(usize, usize), C64> = BTreeMap::new();
+    // Filter upper triangle (r <= c), sort by (row, col), merge duplicates.
+    let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(triplet_rows.len());
     for i in 0..triplet_rows.len() {
         let (r, c) = (triplet_rows[i], triplet_cols[i]);
         if r <= c {
-            // Upper triangle entry: keep it
-            *entries.entry((r, c)).or_insert(C64::new(0.0, 0.0)) += triplet_vals[i];
+            entries.push((r, c, triplet_vals[i]));
         }
-        // Lower triangle entries (r > c) are SKIPPED — they're duplicates
     }
+    entries.sort_unstable_by_key(|&(r, c, _)| (r, c));
 
-    // Build CSR
+    // Merge duplicates and build CSR in one pass
     let mut ia = vec![0i32; n + 1];
-    let mut ja = Vec::with_capacity(entries.len());
-    let mut a = Vec::with_capacity(entries.len());
+    let mut ja: Vec<i32> = Vec::with_capacity(entries.len());
+    let mut a: Vec<C64> = Vec::with_capacity(entries.len());
 
-    let mut prev_row = 0;
-    for (&(r, c), &v) in &entries {
+    let mut prev_row = 0usize;
+
+    let mut i = 0;
+    while i < entries.len() {
+        let (r, c, mut v) = entries[i];
+        i += 1;
+        // Sum duplicates at same (r, c)
+        while i < entries.len() && entries[i].0 == r && entries[i].1 == c {
+            v += entries[i].2;
+            i += 1;
+        }
+        // Fill row pointers up to row r
         while prev_row <= r {
             ia[prev_row] = ja.len() as i32;
             prev_row += 1;
