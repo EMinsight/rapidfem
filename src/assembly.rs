@@ -9,7 +9,6 @@
 //! 6. Eliminate PEC DOFs, solve K*x = b
 
 use num_complex::Complex64 as C64;
-use sprs::CsMat;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 use crate::port::Port;
@@ -58,20 +57,9 @@ pub fn assemble_and_solve(
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Assembled E,B in {:.1}ms ({} entries)", t0.elapsed().as_secs_f64()*1e3, rows.len());
 
-    // Step 2: K = (E - B * k0²).tocsr()
+    // Step 2: K = E - k0² * B (defer CSR construction — build faer triplets directly later)
+    let t1 = std::time::Instant::now();
     let k0_sq = C64::from(k0 * k0);
-    let data_k: Vec<C64> = data_e.iter().zip(data_b.iter())
-        .map(|(e, b)| e - k0_sq * b)
-        .collect();
-
-    // Build CSR from COO
-    let mut k_csr: CsMat<C64> = {
-        let mut tri_mat = sprs::TriMat::new((n_field, n_field));
-        for i in 0..rows.len() {
-            tri_mat.add_triplet(rows[i], cols[i], data_k[i]);
-        }
-        tri_mat.to_csr()
-    };
 
     // Step 3: PEC DOFs — exact port of assembler.py lines 356-373
     let mut pec_ids: HashSet<usize> = HashSet::new();
@@ -133,9 +121,7 @@ pub fn assemble_and_solve(
         eprintln!("  Port {} Robin: gamma={:.4e}, {} tris, driven={}", pi, gamma, tri_ids.len(), port.is_driven());
     }
 
-    // K += field.generate_csr(Bempty)
-    let robin_csr = basis.generate_csr(&bempty);
-    k_csr = &k_csr + &robin_csr;
+    eprintln!("  Robin BC assembled in {:.1}ms", t1.elapsed().as_secs_f64()*1e3);
 
     // Step 5: Port excitation vectors — only for driven ports
     let mut port_vectors: Vec<Vec<C64>> = Vec::new();
@@ -185,23 +171,37 @@ pub fn assemble_and_solve(
         dof_to_free[d] = fi;
     }
 
-    // Build reduced sparse matrix as faer triplets
+    // Build faer triplets directly: K = (E - k0²*B) + Robin, filtering PEC DOFs
+    let t2 = std::time::Instant::now();
     let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-    for (row_idx, row_vec) in k_csr.outer_iterator().enumerate() {
-        if pec_ids.contains(&row_idx) { continue; }
-        let fi = dof_to_free[row_idx];
-        for (col_idx, &val) in row_vec.iter() {
-            if pec_ids.contains(&col_idx) { continue; }
-            let fj = dof_to_free[col_idx];
-            triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
-        }
+
+    // Add K = E - k0²*B entries (from tet assembly COO)
+    for i in 0..rows.len() {
+        let r = rows[i];
+        let c = cols[i];
+        if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
+        let fi = dof_to_free[r];
+        let fj = dof_to_free[c];
+        let val = data_e[i] - k0_sq * data_b[i];
+        triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
+    }
+
+    // Add Robin BC entries (from flat bempty array via precomputed row/col)
+    for (idx, &val) in bempty.iter().enumerate() {
+        if val.norm() == 0.0 { continue; }
+        let r = basis.tri_rows[idx];
+        let c = basis.tri_cols[idx];
+        if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
+        let fi = dof_to_free[r];
+        let fj = dof_to_free[c];
+        triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
     }
 
     let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
         n_free, n_free, &triplets,
     ).expect("Failed to build faer sparse matrix");
 
-    eprintln!("  Sparse LU: {} nnz in reduced system", triplets.len());
+    eprintln!("  Reduced system: {} nnz, built in {:.1}ms", triplets.len(), t2.elapsed().as_secs_f64()*1e3);
 
     // Factorize
     let t_solve = std::time::Instant::now();
@@ -306,15 +306,6 @@ pub fn frequency_sweep(
             }
         }
 
-        // K = (E - k0²*B) + Robin
-        let data_k: Vec<C64> = data_e.iter().zip(data_b.iter()).map(|(e, b)| e - k0_sq * b).collect();
-        let mut k_csr: CsMat<C64> = {
-            let mut tri_mat = sprs::TriMat::new((n_field, n_field));
-            for i in 0..rows.len() { tri_mat.add_triplet(rows[i], cols[i], data_k[i]); }
-            tri_mat.to_csr()
-        };
-        k_csr = &k_csr + &basis.generate_csr(&bempty);
-
         // Port excitation vectors
         let mut port_bvecs: Vec<Vec<C64>> = Vec::new();
         for (port, tri_ids) in ports.iter().zip(port_tri_indices.iter()) {
@@ -340,16 +331,19 @@ pub fn frequency_sweep(
             port_bvecs.push(bvec);
         }
 
-        // Solve with faer sparse LU
+        // Build faer triplets directly: K = (E - k0²*B) + Robin, filtering PEC
         let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-        for (row_idx, row_vec) in k_csr.outer_iterator().enumerate() {
-            if pec_ids.contains(&row_idx) { continue; }
-            let fi = dof_to_free[row_idx];
-            for (col_idx, &val) in row_vec.iter() {
-                if pec_ids.contains(&col_idx) { continue; }
-                let fj = dof_to_free[col_idx];
-                triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
-            }
+        for i in 0..rows.len() {
+            let r = rows[i]; let c = cols[i];
+            if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
+            let val = data_e[i] - k0_sq * data_b[i];
+            triplets.push(faer::sparse::Triplet { row: dof_to_free[r], col: dof_to_free[c], val: faer::c64 { re: val.re, im: val.im } });
+        }
+        for (idx, &val) in bempty.iter().enumerate() {
+            if val.norm() == 0.0 { continue; }
+            let r = basis.tri_rows[idx]; let c = basis.tri_cols[idx];
+            if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
+            triplets.push(faer::sparse::Triplet { row: dof_to_free[r], col: dof_to_free[c], val: faer::c64 { re: val.re, im: val.im } });
         }
         let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(n_free, n_free, &triplets)
             .expect("faer matrix");
