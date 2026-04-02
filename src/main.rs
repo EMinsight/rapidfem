@@ -2,7 +2,7 @@ use num_complex::Complex64 as C64;
 use rapidfem::config::{self, PortConfig};
 use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, detect_rect_port};
+use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, detect_rect_port};
 use rapidfem::port::Port;
 use rapidfem::assembly::frequency_sweep;
 use rapidfem::sparam::sparam_waveport;
@@ -25,45 +25,73 @@ fn main() {
         mesh.n_tets(), basis.n_field, frequencies.len());
 
     // Build ports from config
-    let mut rect_ports: Vec<RectWaveguide> = Vec::new();
-    let mut abc_ports: Vec<AbsorbingBoundary> = Vec::new();
     let mut port_tri_indices_owned: Vec<Vec<usize>> = Vec::new();
     let mut port_refs: Vec<Box<dyn Port>> = Vec::new();
 
     for pc in &config.ports {
         match pc {
-            PortConfig::Rectangular { tag, width, height } => {
+            PortConfig::Rectangular { tag, width, height, mode, er, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping port", tag);
+                    continue;
+                }
                 let (cs, det_w, det_h) = detect_rect_port(&mesh, &tri_ids);
                 let w = if *width > 0.0 { *width } else { det_w };
                 let h = if *height > 0.0 { *height } else { det_h };
+                let port_num = port_refs.len() + 1;
                 let port = RectWaveguide {
-                    port_number: rect_ports.len() + 1,
-                    power: 1.0, mode: (1, 0), er: 1.0,
-                    polarization: 1.0, dims: (w, h), cs,
+                    port_number: port_num,
+                    power: *power,
+                    mode: (mode[0], mode[1]),
+                    er: *er,
+                    polarization: 1.0,
+                    dims: (w, h),
+                    cs,
                 };
-                eprintln!("  Port {}: rectangular, tag={}, dims=({:.2}mm, {:.2}mm)",
-                    port.port_number, tag, w*1e3, h*1e3);
+                eprintln!("  Port {}: rectangular, tag={}, TE{}{}, dims=({:.2}mm, {:.2}mm), er={:.1}",
+                    port_num, tag, mode[0], mode[1], w*1e3, h*1e3, er);
                 port_tri_indices_owned.push(tri_ids);
-                rect_ports.push(port);
+                port_refs.push(Box::new(port));
             }
-            PortConfig::Abc { tag, order } => {
+            PortConfig::Lumped { tag, z0, direction, width, height, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
-                let abc = AbsorbingBoundary::new(*order, 'B');
-                eprintln!("  ABC: tag={}, order={}", tag, order);
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping port", tag);
+                    continue;
+                }
+                let port_num = port_refs.len() + 1;
+                // Detect width/height from mesh if not provided
+                let (_, det_w, det_h) = detect_rect_port(&mesh, &tri_ids);
+                let w = if *width > 0.0 { *width } else { det_w };
+                let h = if *height > 0.0 { *height } else { det_h };
+                let port = LumpedPort {
+                    port_number: port_num,
+                    power: *power,
+                    z0: *z0,
+                    width: w,
+                    height: h,
+                    direction: *direction,
+                };
+                eprintln!("  Port {}: lumped, tag={}, Z0={:.0}Ω, dir=({:.1},{:.1},{:.1})",
+                    port_num, tag, z0, direction[0], direction[1], direction[2]);
                 port_tri_indices_owned.push(tri_ids);
-                abc_ports.push(abc);
+                port_refs.push(Box::new(port));
+            }
+            PortConfig::Abc { tag, order, abctype } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping ABC", tag);
+                    continue;
+                }
+                let abc_char = abctype.chars().next().unwrap_or('B');
+                let abc = AbsorbingBoundary::new(*order, abc_char);
+                eprintln!("  ABC: tag={}, order={}, type={}", tag, order, abctype);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(abc));
             }
         }
     }
-
-    // Build trait object references
-    for p in &rect_ports { port_refs.push(Box::new(RectWaveguide {
-        port_number: p.port_number, power: p.power, mode: p.mode, er: p.er,
-        polarization: p.polarization, dims: p.dims,
-        cs: rapidfem::waveguide::CoordinateSystem::new(p.cs.origin, p.cs.xax, p.cs.yax, p.cs.zax),
-    })); }
-    for a in &abc_ports { port_refs.push(Box::new(AbsorbingBoundary::new(a.order, a.abctype))); }
 
     let port_dyn_refs: Vec<&dyn Port> = port_refs.iter().map(|b| b.as_ref()).collect();
     let port_tri_refs: Vec<&[usize]> = port_tri_indices_owned.iter().map(|v| v.as_slice()).collect();
@@ -74,11 +102,33 @@ fn main() {
         pec_tris.extend_from_slice(mesh.tris_for_tag(tag));
     }
 
+    // Materials
+    let materials: Vec<rapidfem::materials::Material> = config.materials.iter().map(|mc| {
+        let tet_indices = mesh.vtag_to_tet.get(&mc.volume_tag)
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        if tet_indices.is_empty() {
+            eprintln!("  WARNING: volume tag {} has no tets", mc.volume_tag);
+        } else {
+            eprintln!("  Material: tag={}, er={:.2}, ur={:.2}, tand={:.4}, cond={:.2e}, {} tets",
+                mc.volume_tag, mc.er, mc.ur, mc.tand, mc.conductivity, tet_indices.len());
+        }
+        rapidfem::materials::Material {
+            er: mc.er,
+            ur: mc.ur,
+            tand: mc.tand,
+            cond: mc.conductivity,
+            tet_indices,
+        }
+    }).collect();
+
+    let materials_opt = if materials.is_empty() { None } else { Some(materials.as_slice()) };
+
     // Solve
     let t0 = std::time::Instant::now();
     let results = frequency_sweep(
         &mesh, &basis, &port_dyn_refs, &port_tri_refs, &pec_tris,
-        &frequencies, None,
+        &frequencies, materials_opt,
     );
 
     // Extract S-parameters
@@ -124,7 +174,7 @@ fn main() {
 
     // Touchstone export
     if let Some(ref path) = config.output.touchstone {
-        rapidfem::touchstone::write_touchstone(path, &frequencies, &all_sparams, n_driven, 50.0)
+        rapidfem::touchstone::write_touchstone(path, &frequencies, &all_sparams, n_driven, config.output.z0)
             .expect("Failed to write Touchstone file");
         eprintln!("Wrote {}", path);
     }
