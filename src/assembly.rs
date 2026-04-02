@@ -12,7 +12,7 @@ use num_complex::Complex64 as C64;
 use sprs::{CsMat, CsMatView};
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
-use crate::waveguide::RectWaveguide;
+use crate::port::Port;
 use crate::tet_assembly::assemble_global_matrices;
 use crate::tri_assembly::{ned2_tri_stiff, ned2_tri_force};
 use crate::coefficients::AreaCoeffCache;
@@ -25,11 +25,12 @@ pub struct SolveResult {
     pub n_field: usize,
 }
 
-/// Exact port of assembler.py:assemble_freq_matrix + solve
+/// Exact port of assembler.py:assemble_freq_matrix + solve.
+/// Now accepts any Port type via trait objects.
 pub fn assemble_and_solve(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
-    ports: &[&RectWaveguide],
+    ports: &[&dyn Port],
     port_tri_indices: &[&[usize]],
     pec_tri_indices: &[usize],
     freq: f64,
@@ -104,13 +105,11 @@ pub fn assemble_and_solve(
     for (pi, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
         let gamma = port.get_gamma(k0);
 
-        // Port of compute_bc_entries: for each port tri, compute 8x8 and write into flat array
+        // Robin BC stiffness: for each port tri, compute 8x8 and write into flat array
         for &ti in *tri_ids {
             let tri = &mesh.tris[ti];
             let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
             let bsub = ned2_tri_stiff(&verts, gamma, &ac_base);
-
-            // Bmat[itri*N : (itri+1)*N] += Bsub.ravel()
             let p = ti * 64;
             for ii in 0..8 {
                 for jj in 0..8 {
@@ -118,30 +117,43 @@ pub fn assemble_and_solve(
                 }
             }
         }
-        eprintln!("  Port {} Robin: gamma={:.4e}, {} tris", pi, gamma, tri_ids.len());
+
+        // ABC order-2 correction: Bempty += abc_order_2_matrix(...)
+        if port.is_abc_order2() {
+            if let Some(coeff) = port.abc_o2_coeff(k0) {
+                let abc_correction = crate::abc_order2::abc_order_2_matrix(
+                    mesh, basis, tri_ids, coeff,
+                );
+                for (i, &v) in abc_correction.iter().enumerate() {
+                    bempty[i] += v;
+                }
+            }
+        }
+
+        eprintln!("  Port {} Robin: gamma={:.4e}, {} tris, driven={}", pi, gamma, tri_ids.len(), port.is_driven());
     }
 
     // K += field.generate_csr(Bempty)
     let robin_csr = basis.generate_csr(&bempty);
-    // Add Robin CSR to K CSR
     k_csr = &k_csr + &robin_csr;
 
-    // Step 5: Port excitation vectors — exact port of assemble_robin_bc_bvec
-    // EMerge: generate_points_3d → Ufunc → compute_force_entries
+    // Step 5: Port excitation vectors — only for driven ports
     let mut port_vectors: Vec<Vec<C64>> = Vec::new();
+    let mut driven_port_indices: Vec<usize> = Vec::new();
 
     for (pi, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
-        // Bvec = np.zeros((field.n_field,))
+        if !port.is_driven() {
+            continue; // ABC: no excitation vector
+        }
+        driven_port_indices.push(pi);
+
         let mut bvec = vec![C64::new(0.0, 0.0); n_field];
 
-        // Port of generate_points_3d + Ufunc + compute_force_entries
         for &ti in *tri_ids {
             let tri = &mesh.tris[ti];
             let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
 
-            // Generate quad points on this triangle (matches generate_points_3d)
-            // Then evaluate Ufunc at those points (matches U_global = Ufunc(xflat, yflat, zflat))
-            let u_inc_at_qp: Vec<[C64; 3]> = gauss_points.iter().map(|qp| {
+            let u_inc_at_qp: Vec<[C64; 3]> = gauss_points.iter().filter_map(|qp| {
                 let (l1, l2, l3) = (qp[1], qp[2], qp[3]);
                 let x = verts[0][0]*l1 + verts[1][0]*l2 + verts[2][0]*l3;
                 let y = verts[0][1]*l1 + verts[1][1]*l2 + verts[2][1]*l3;
@@ -149,13 +161,12 @@ pub fn assemble_and_solve(
                 port.get_uinc(x, y, z, k0)
             }).collect();
 
-            // compute_force_entries: ned2_tri_force + scatter
-            let b_tri = ned2_tri_force(&verts, &u_inc_at_qp, &gauss_points);
-
-            // Bvec[indices] += bvec (matches compute_force_entries)
-            let dofs = &basis.tri_to_field[ti];
-            for i in 0..8 {
-                bvec[dofs[i]] += b_tri[i];
+            if u_inc_at_qp.len() == gauss_points.len() {
+                let b_tri = ned2_tri_force(&verts, &u_inc_at_qp, &gauss_points);
+                let dofs = &basis.tri_to_field[ti];
+                for i in 0..8 {
+                    bvec[dofs[i]] += b_tri[i];
+                }
             }
         }
 

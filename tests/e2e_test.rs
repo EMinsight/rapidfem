@@ -39,7 +39,7 @@ fn test_straight_waveguide_sparams() {
         polarization: 1.0, dims: (22.86e-3, 10.16e-3), cs: cs2,
     };
 
-    let ports: Vec<&RectWaveguide> = vec![&port1, &port2];
+    let ports: Vec<&dyn rapidfem::port::Port> = vec![&port1, &port2];
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None);
