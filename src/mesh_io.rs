@@ -70,8 +70,7 @@ pub fn load_mesh(path: &str) -> Result<Mesh, String> {
                     let n: Vec<usize> = el.nodes.iter()
                         .map(|&t| *tag_to_idx.get(&t).expect("Unknown node tag in tet"))
                         .collect();
-                    let mut tet = [n[0], n[1], n[2], n[3]];
-                    tet.sort();
+                    let tet = [n[0], n[1], n[2], n[3]];
                     tets.push(tet);
                     tet_entity_tags.push(entity_tag);
                 }
