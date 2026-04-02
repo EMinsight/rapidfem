@@ -1,0 +1,144 @@
+//! Exact port of microwave_bc.py: RectangularWaveguide class and CoordinateSystem.
+//!
+//! All method names and formulas match EMerge exactly.
+
+use num_complex::Complex64 as C64;
+use crate::constants::*;
+
+/// Port of cs.py: CoordinateSystem
+///
+/// Stores origin, xax (xhat), yax (yhat), zax (zhat), _basis, _basis_inv.
+pub struct CoordinateSystem {
+    pub origin: [f64; 3],
+    pub xax: [f64; 3],
+    pub yax: [f64; 3],
+    pub zax: [f64; 3],
+    /// _basis: rows are xax, yax, zax
+    pub basis: [[f64; 3]; 3],
+    /// _basis_inv: inverse of basis (for global→local transform)
+    pub basis_inv: [[f64; 3]; 3],
+}
+
+impl CoordinateSystem {
+    /// Build CS from origin and 3 orthonormal axes.
+    pub fn new(origin: [f64; 3], xax: [f64; 3], yax: [f64; 3], zax: [f64; 3]) -> Self {
+        let basis = [xax, yax, zax];
+        // For orthonormal basis, inverse = transpose
+        let basis_inv = [
+            [xax[0], yax[0], zax[0]],
+            [xax[1], yax[1], zax[1]],
+            [xax[2], yax[2], zax[2]],
+        ];
+        CoordinateSystem { origin, xax, yax, zax, basis, basis_inv }
+    }
+
+    /// Port of cs.py: in_local_cs(x, y, z)
+    pub fn in_local_cs(&self, x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+        let b = &self.basis_inv;
+        let xg = x - self.origin[0];
+        let yg = y - self.origin[1];
+        let zg = z - self.origin[2];
+        (
+            b[0][0]*xg + b[0][1]*yg + b[0][2]*zg,
+            b[1][0]*xg + b[1][1]*yg + b[1][2]*zg,
+            b[2][0]*xg + b[2][1]*yg + b[2][2]*zg,
+        )
+    }
+
+    /// Port of cs.py: in_global_basis(x, y, z) — transforms vector components
+    pub fn in_global_basis(&self, x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+        (
+            self.xax[0]*x + self.yax[0]*y + self.zax[0]*z,
+            self.xax[1]*x + self.yax[1]*y + self.zax[1]*z,
+            self.xax[2]*x + self.yax[2]*y + self.zax[2]*z,
+        )
+    }
+}
+
+/// Port of microwave_bc.py: RectangularWaveguide
+pub struct RectWaveguide {
+    pub port_number: usize,
+    pub power: f64,
+    pub mode: (usize, usize),
+    pub er: f64,
+    pub polarization: f64,
+    pub dims: (f64, f64),  // (width, height)
+    pub cs: CoordinateSystem,
+}
+
+impl RectWaveguide {
+    /// Port of get_amplitude(k0)
+    /// amplitude = sqrt(power * 4 * Z0 / (width * height))
+    pub fn get_amplitude(&self, _k0: f64) -> f64 {
+        let zte = Z0;
+        (self.power * 4.0 * zte / (self.dims.0 * self.dims.1)).sqrt()
+    }
+
+    /// Port of get_beta(k0)
+    /// beta = sqrt(er*k0^2 - (pi*m/width)^2 - (pi*n/height)^2)
+    pub fn get_beta(&self, k0: f64) -> f64 {
+        let (width, height) = self.dims;
+        let (m, n) = self.mode;
+        (self.er * k0 * k0
+            - (PI * m as f64 / width).powi(2)
+            - (PI * n as f64 / height).powi(2)).sqrt()
+    }
+
+    /// Port of get_gamma(k0)
+    /// gamma = 1j * beta
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, self.get_beta(k0))
+    }
+
+    /// Port of Zmode(k0) — for TE modes
+    /// Zmode = k0 * C0 * MU0 / beta
+    pub fn z_mode(&self, k0: f64) -> f64 {
+        k0 * C0 * MU0 / self.get_beta(k0)
+    }
+
+    /// Port of _qmode(k0)
+    /// qmode = sqrt(Zmode / Z0)
+    pub fn qmode(&self, k0: f64) -> f64 {
+        (self.z_mode(k0) / Z0).sqrt()
+    }
+
+    /// Port of port_mode_3d(x_local, y_local, k0)
+    /// Returns (Ex, Ey, Ez) in LOCAL coordinates.
+    ///
+    /// Ev = polarization * amplitude * cos(pi*m*x/width) * cos(pi*n*y/height)
+    /// Eh = polarization * amplitude * sin(pi*m*x/width) * sin(pi*n*y/height)
+    /// Ex = Eh, Ey = Ev, Ez = 0
+    /// Result scaled by qmode.
+    pub fn port_mode_3d(&self, x_local: f64, y_local: f64, k0: f64) -> (f64, f64, f64) {
+        let (width, height) = self.dims;
+        let (m, n) = self.mode;
+        let a = self.get_amplitude(k0);
+        let ev = self.polarization * a
+            * (PI * m as f64 * x_local / width).cos()
+            * (PI * n as f64 * y_local / height).cos();
+        let eh = self.polarization * a
+            * (PI * m as f64 * x_local / width).sin()
+            * (PI * n as f64 * y_local / height).sin();
+        let ex = eh;
+        let ey = ev;
+        let ez = 0.0;
+        let q = self.qmode(k0);
+        (q * ex, q * ey, q * ez)
+    }
+
+    /// Port of port_mode_3d_global(x_global, y_global, z_global, k0)
+    /// Returns (Ex, Ey, Ez) in GLOBAL coordinates.
+    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
+        let (xl, yl, _zl) = self.cs.in_local_cs(x, y, z);
+        let (ex, ey, ez) = self.port_mode_3d(xl, yl, k0);
+        self.cs.in_global_basis(ex, ey, ez)
+    }
+
+    /// Port of get_Uinc(x_global, y_global, z_global, k0)
+    /// Returns -2j * beta * port_mode_3d_global(...) as complex [3] vector.
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, k0);
+        let factor = C64::new(0.0, -2.0 * self.get_beta(k0));
+        [factor * C64::from(ex), factor * C64::from(ey), factor * C64::from(ez)]
+    }
+}
