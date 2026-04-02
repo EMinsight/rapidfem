@@ -9,7 +9,7 @@
 //! 6. Eliminate PEC DOFs, solve K*x = b
 
 use num_complex::Complex64 as C64;
-use sprs::{CsMat, CsMatView};
+use sprs::CsMat;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 use crate::port::Port;
@@ -175,41 +175,53 @@ pub fn assemble_and_solve(
         port_vectors.push(bvec);
     }
 
-    // Step 6: Eliminate PEC DOFs, solve
+    // Step 6: Eliminate PEC DOFs, build reduced sparse system, solve with faer sparse LU
     let free_dofs: Vec<usize> = (0..n_field).filter(|d| !pec_ids.contains(d)).collect();
     let n_free = free_dofs.len();
     eprintln!("  Free DOFs: {}", n_free);
 
-    // Build reduced dense K from CSR
     let mut dof_to_free = vec![usize::MAX; n_field];
     for (fi, &d) in free_dofs.iter().enumerate() {
         dof_to_free[d] = fi;
     }
 
-    let mut k_dense = vec![C64::new(0.0, 0.0); n_free * n_free];
+    // Build reduced sparse matrix as faer triplets
+    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
     for (row_idx, row_vec) in k_csr.outer_iterator().enumerate() {
         if pec_ids.contains(&row_idx) { continue; }
         let fi = dof_to_free[row_idx];
         for (col_idx, &val) in row_vec.iter() {
             if pec_ids.contains(&col_idx) { continue; }
             let fj = dof_to_free[col_idx];
-            k_dense[fi * n_free + fj] += val;
+            triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
         }
     }
 
-    // LU factorize
+    let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
+        n_free, n_free, &triplets,
+    ).expect("Failed to build faer sparse matrix");
+
+    eprintln!("  Sparse LU: {} nnz in reduced system", triplets.len());
+
+    // Factorize
     let t_solve = std::time::Instant::now();
-    let lu = dense_lu_factor(&mut k_dense, n_free);
+    let lu = k_faer.sp_lu().expect("Sparse LU factorization failed");
+    eprintln!("  LU factorized in {:.1}ms", t_solve.elapsed().as_secs_f64()*1e3);
 
     // Solve for each port
     let mut solutions = Vec::new();
     for (pi, bvec) in port_vectors.iter().enumerate() {
-        let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
-        let x_free = dense_lu_solve(&lu, &b_free, n_free);
+        let b_free: Vec<faer::c64> = free_dofs.iter()
+            .map(|&d| faer::c64 { re: bvec[d].re, im: bvec[d].im })
+            .collect();
+
+        let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| b_free[i]);
+        faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
 
         let mut x_full = vec![C64::new(0.0, 0.0); n_field];
         for (fi, &d) in free_dofs.iter().enumerate() {
-            x_full[d] = x_free[fi];
+            let v = x_mat[(fi, 0)];
+            x_full[d] = C64::new(v.re, v.im);
         }
         let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
         eprintln!("  Port {} solved in {:.1}ms, ||x|| = {:.6e}",
@@ -218,53 +230,4 @@ pub fn assemble_and_solve(
     }
 
     SolveResult { solutions, n_field }
-}
-
-// Dense LU with partial pivoting
-fn dense_lu_factor(a: &mut [C64], n: usize) -> (Vec<C64>, Vec<usize>) {
-    let mut piv: Vec<usize> = (0..n).collect();
-    for k in 0..n {
-        let mut max_val = a[k * n + k].norm();
-        let mut max_row = k;
-        for i in (k+1)..n {
-            let v = a[i * n + k].norm();
-            if v > max_val { max_val = v; max_row = i; }
-        }
-        if max_row != k {
-            piv.swap(k, max_row);
-            for j in 0..n { a.swap(k * n + j, max_row * n + j); }
-        }
-        let akk = a[k * n + k];
-        if akk.norm() < 1e-30 { continue; }
-        for i in (k+1)..n {
-            let factor = a[i * n + k] / akk;
-            a[i * n + k] = factor;
-            for j in (k+1)..n {
-                let akj = a[k * n + j];
-                a[i * n + j] -= factor * akj;
-            }
-        }
-    }
-    (a.to_vec(), piv)
-}
-
-fn dense_lu_solve(lu: &(Vec<C64>, Vec<usize>), b: &[C64], n: usize) -> Vec<C64> {
-    let (a, piv) = lu;
-    let mut x: Vec<C64> = piv.iter().map(|&i| b[i]).collect();
-    for i in 0..n {
-        for j in 0..i {
-            let lij = a[i * n + j];
-            let xj = x[j];
-            x[i] -= lij * xj;
-        }
-    }
-    for i in (0..n).rev() {
-        for j in (i+1)..n {
-            let uij = a[i * n + j];
-            let xj = x[j];
-            x[i] -= uij * xj;
-        }
-        x[i] /= a[i * n + i];
-    }
-    x
 }
