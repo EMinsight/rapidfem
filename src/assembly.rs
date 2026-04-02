@@ -281,7 +281,26 @@ pub fn frequency_sweep(
 
     let mut results = Vec::with_capacity(frequencies.len());
 
-    for &freq in frequencies {
+    // Precompute non-PEC COO indices for K entries (reused every frequency)
+    let k_free_indices: Vec<usize> = (0..rows.len())
+        .filter(|&i| !pec_ids.contains(&rows[i]) && !pec_ids.contains(&cols[i]))
+        .collect();
+    let k_free_rows: Vec<usize> = k_free_indices.iter().map(|&i| dof_to_free[rows[i]]).collect();
+    let k_free_cols: Vec<usize> = k_free_indices.iter().map(|&i| dof_to_free[cols[i]]).collect();
+
+    // Precompute non-PEC Robin indices (reused every frequency)
+    let robin_free_indices: Vec<usize> = (0..basis.n_tris * 64)
+        .filter(|&idx| {
+            let r = basis.tri_rows[idx];
+            let c = basis.tri_cols[idx];
+            !pec_ids.contains(&r) && !pec_ids.contains(&c)
+        })
+        .collect();
+
+    // Symbolic factorization: compute once at first frequency, reuse for all
+    let mut symbolic_lu: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>> = None;
+
+    for (fi, &freq) in frequencies.iter().enumerate() {
         let t_freq = std::time::Instant::now();
         let k0 = 2.0 * PI * freq / crate::constants::C0;
         let k0_sq = C64::from(k0 * k0);
@@ -331,23 +350,46 @@ pub fn frequency_sweep(
             port_bvecs.push(bvec);
         }
 
-        // Build faer triplets directly: K = (E - k0²*B) + Robin, filtering PEC
+        // Build faer triplets: K = (E - k0²*B) + Robin
         let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-        for i in 0..rows.len() {
-            let r = rows[i]; let c = cols[i];
-            if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
-            let val = data_e[i] - k0_sq * data_b[i];
-            triplets.push(faer::sparse::Triplet { row: dof_to_free[r], col: dof_to_free[c], val: faer::c64 { re: val.re, im: val.im } });
+        triplets.reserve(k_free_indices.len() + robin_free_indices.len());
+
+        for (ti, &orig_i) in k_free_indices.iter().enumerate() {
+            let val = data_e[orig_i] - k0_sq * data_b[orig_i];
+            triplets.push(faer::sparse::Triplet {
+                row: k_free_rows[ti], col: k_free_cols[ti],
+                val: faer::c64 { re: val.re, im: val.im },
+            });
         }
-        for (idx, &val) in bempty.iter().enumerate() {
+        for &idx in &robin_free_indices {
+            let val = bempty[idx];
             if val.norm() == 0.0 { continue; }
-            let r = basis.tri_rows[idx]; let c = basis.tri_cols[idx];
-            if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
-            triplets.push(faer::sparse::Triplet { row: dof_to_free[r], col: dof_to_free[c], val: faer::c64 { re: val.re, im: val.im } });
+            triplets.push(faer::sparse::Triplet {
+                row: dof_to_free[basis.tri_rows[idx]],
+                col: dof_to_free[basis.tri_cols[idx]],
+                val: faer::c64 { re: val.re, im: val.im },
+            });
         }
-        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(n_free, n_free, &triplets)
-            .expect("faer matrix");
-        let lu = k_faer.sp_lu().expect("LU");
+
+        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
+            n_free, n_free, &triplets,
+        ).expect("faer matrix");
+
+        // Symbolic reuse: compute symbolic once, reuse for subsequent frequencies
+        let lu = if symbolic_lu.is_none() {
+            let t_sym = std::time::Instant::now();
+            let sym = faer::sparse::linalg::solvers::SymbolicLu::try_new(k_faer.as_ref().symbolic())
+                .expect("symbolic LU");
+            eprintln!("  Symbolic LU in {:.1}ms (computed once)", t_sym.elapsed().as_secs_f64()*1e3);
+            let lu = faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(sym.clone(), k_faer.as_ref())
+                .expect("numeric LU");
+            symbolic_lu = Some(sym);
+            lu
+        } else {
+            faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(
+                symbolic_lu.as_ref().unwrap().clone(), k_faer.as_ref(),
+            ).expect("numeric LU (reused symbolic)")
+        };
 
         let mut solutions = Vec::new();
         for bvec in &port_bvecs {
@@ -357,14 +399,14 @@ pub fn frequency_sweep(
             });
             faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-            for (fi, &d) in free_dofs.iter().enumerate() {
-                let v = x_mat[(fi, 0)];
+            for (fi_d, &d) in free_dofs.iter().enumerate() {
+                let v = x_mat[(fi_d, 0)];
                 x_full[d] = C64::new(v.re, v.im);
             }
             solutions.push(x_full);
         }
 
-        eprintln!("  f={:.4e} Hz: {:.1}ms", freq, t_freq.elapsed().as_secs_f64()*1e3);
+        eprintln!("  f={:.4e} Hz: {:.1}ms (freq {}/{})", freq, t_freq.elapsed().as_secs_f64()*1e3, fi+1, frequencies.len());
         results.push(SolveResult { solutions, n_field });
     }
 
