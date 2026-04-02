@@ -5,3 +5,7 @@ pub mod mesh;
 pub mod mesh_io;
 pub mod basis;
 pub mod tet_assembly;
+pub mod tri_assembly;
+pub mod waveguide;
+pub mod sparam;
+pub mod assembly;
