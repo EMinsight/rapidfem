@@ -161,7 +161,7 @@ pub fn assemble_and_solve(
         port_vectors.push(bvec);
     }
 
-    // Step 6: Eliminate PEC DOFs, build reduced sparse system, solve with faer sparse LU
+    // Step 6: Eliminate PEC DOFs, build reduced system, solve
     let free_dofs: Vec<usize> = (0..n_field).filter(|d| !pec_ids.contains(d)).collect();
     let n_free = free_dofs.len();
     eprintln!("  Free DOFs: {}", n_free);
@@ -171,63 +171,95 @@ pub fn assemble_and_solve(
         dof_to_free[d] = fi;
     }
 
-    // Build faer triplets directly: K = (E - k0²*B) + Robin, filtering PEC DOFs
+    // Build COO triplets for reduced system: K = (E - k0²*B) + Robin
     let t2 = std::time::Instant::now();
-    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
+    let mut coo_rows: Vec<usize> = Vec::new();
+    let mut coo_cols: Vec<usize> = Vec::new();
+    let mut coo_vals: Vec<C64> = Vec::new();
 
-    // Add K = E - k0²*B entries (from tet assembly COO)
     for i in 0..rows.len() {
         let r = rows[i];
         let c = cols[i];
         if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
-        let fi = dof_to_free[r];
-        let fj = dof_to_free[c];
-        let val = data_e[i] - k0_sq * data_b[i];
-        triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
+        coo_rows.push(dof_to_free[r]);
+        coo_cols.push(dof_to_free[c]);
+        coo_vals.push(data_e[i] - k0_sq * data_b[i]);
     }
-
-    // Add Robin BC entries (from flat bempty array via precomputed row/col)
     for (idx, &val) in bempty.iter().enumerate() {
         if val.norm() == 0.0 { continue; }
         let r = basis.tri_rows[idx];
         let c = basis.tri_cols[idx];
         if pec_ids.contains(&r) || pec_ids.contains(&c) { continue; }
-        let fi = dof_to_free[r];
-        let fj = dof_to_free[c];
-        triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
+        coo_rows.push(dof_to_free[r]);
+        coo_cols.push(dof_to_free[c]);
+        coo_vals.push(val);
     }
+    eprintln!("  COO: {} entries, built in {:.1}ms", coo_rows.len(), t2.elapsed().as_secs_f64()*1e3);
 
-    let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
-        n_free, n_free, &triplets,
-    ).expect("Failed to build faer sparse matrix");
+    // Try PARDISO first, fall back to faer
+    let solutions = if let Some(ref mut pardiso) = crate::pardiso::PardisoSolver::try_new() {
+        // Build upper-triangle CSR for PARDISO (mtype=6: complex symmetric)
+        let t_par = std::time::Instant::now();
+        let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
+        eprintln!("  PARDISO: upper CSR {} nnz, built in {:.1}ms", a.len(), t_par.elapsed().as_secs_f64()*1e3);
 
-    eprintln!("  Reduced system: {} nnz, built in {:.1}ms", triplets.len(), t2.elapsed().as_secs_f64()*1e3);
+        pardiso.analyze_and_factorize(n_free as i32, &ia, &ja, &a)
+            .expect("PARDISO analyze+factorize failed");
+        eprintln!("  PARDISO: factorized in {:.1}ms", t_par.elapsed().as_secs_f64()*1e3);
 
-    // Factorize
-    let t_solve = std::time::Instant::now();
-    let lu = k_faer.sp_lu().expect("Sparse LU factorization failed");
-    eprintln!("  LU factorized in {:.1}ms", t_solve.elapsed().as_secs_f64()*1e3);
+        let mut solutions = Vec::new();
+        for (pi, bvec) in port_vectors.iter().enumerate() {
+            let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+            let x_free = pardiso.solve(n_free as i32, &ia, &ja, &a, &b_free)
+                .expect("PARDISO solve failed");
 
-    // Solve for each port
-    let mut solutions = Vec::new();
-    for (pi, bvec) in port_vectors.iter().enumerate() {
-        let b_free: Vec<faer::c64> = free_dofs.iter()
-            .map(|&d| faer::c64 { re: bvec[d].re, im: bvec[d].im })
-            .collect();
-
-        let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| b_free[i]);
-        faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
-
-        let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-        for (fi, &d) in free_dofs.iter().enumerate() {
-            let v = x_mat[(fi, 0)];
-            x_full[d] = C64::new(v.re, v.im);
+            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+            for (fi, &d) in free_dofs.iter().enumerate() {
+                x_full[d] = x_free[fi];
+            }
+            let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
+            eprintln!("  Port {} solved (PARDISO) in {:.1}ms, ||x|| = {:.6e}",
+                pi, t_par.elapsed().as_secs_f64()*1e3, xnorm);
+            solutions.push(x_full);
         }
-        let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
-        eprintln!("  Port {} solved in {:.1}ms, ||x|| = {:.6e}",
-            pi, t_solve.elapsed().as_secs_f64()*1e3, xnorm);
-        solutions.push(x_full);
-    }
+        solutions
+    } else {
+        // Fallback: faer sparse LU
+        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
+        for i in 0..coo_rows.len() {
+            triplets.push(faer::sparse::Triplet {
+                row: coo_rows[i], col: coo_cols[i],
+                val: faer::c64 { re: coo_vals[i].re, im: coo_vals[i].im },
+            });
+        }
+        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
+            n_free, n_free, &triplets,
+        ).expect("faer matrix");
+
+        let t_solve = std::time::Instant::now();
+        let lu = k_faer.sp_lu().expect("Sparse LU factorization failed");
+        eprintln!("  faer LU factorized in {:.1}ms", t_solve.elapsed().as_secs_f64()*1e3);
+
+        let mut solutions = Vec::new();
+        for (pi, bvec) in port_vectors.iter().enumerate() {
+            let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
+                let d = free_dofs[i];
+                faer::c64 { re: bvec[d].re, im: bvec[d].im }
+            });
+            faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
+
+            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+            for (fi, &d) in free_dofs.iter().enumerate() {
+                let v = x_mat[(fi, 0)];
+                x_full[d] = C64::new(v.re, v.im);
+            }
+            let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
+            eprintln!("  Port {} solved (faer) in {:.1}ms, ||x|| = {:.6e}",
+                pi, t_solve.elapsed().as_secs_f64()*1e3, xnorm);
+            solutions.push(x_full);
+        }
+        solutions
+    };
 
     SolveResult { solutions, n_field }
 }
