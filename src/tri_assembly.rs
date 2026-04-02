@@ -82,9 +82,9 @@ pub fn ned2_tri_stiff(
         ac_base.get(a, b, c, d) * area
     };
 
-    // Local edge map: must match tri_to_edge ordering.
-    // tri_to_edge[0] = edge(v0,v1), tri_to_edge[1] = edge(v0,v2), tri_to_edge[2] = edge(v1,v2)
-    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [0, 2], [1, 2]];
+    // Local edge map: must match tri_to_edge ordering (EMerge convention).
+    // tri_to_edge[0] = edge(v0,v1), tri_to_edge[1] = edge(v1,v2), tri_to_edge[2] = edge(v0,v2)
+    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [1, 2], [0, 2]];
 
     // Edge-Edge block
     for ei in 0..3 {
@@ -159,11 +159,11 @@ pub fn ned2_tri_stiff(
 /// Mirrors robinbc.py:ned2_tri_force(glob_vertices, glob_Uinc, DPTs).
 ///
 /// `glob_vertices`: 3 vertices as [[x,y,z]; 3]
-/// `glob_uinc`: incident field at 3 vertices as [[Ex,Ey,Ez]; 3]
+/// `glob_uinc_at_qp`: incident field evaluated at each quadrature point, shape [n_qp][3] (Ex,Ey,Ez)
 /// `quad_pts`: quadrature points [weight, L1, L2, L3] for each point
 pub fn ned2_tri_force(
     glob_vertices: &[[f64; 3]; 3],
-    glob_uinc: &[[C64; 3]; 3],
+    glob_uinc_at_qp: &[[C64; 3]],
     quad_pts: &[[f64; 4]],
 ) -> [C64; 8] {
     let zero = C64::new(0.0, 0.0);
@@ -191,12 +191,14 @@ pub fn ned2_tri_force(
         ys[i] = yhat[0]*dx + yhat[1]*dy + yhat[2]*dz;
     }
 
-    // Project incident field to local 2D (take x,y components in local frame)
-    let mut lcs_ux = [zero; 3];
-    let mut lcs_uy = [zero; 3];
-    for i in 0..3 {
-        lcs_ux[i] = glob_uinc[i][0]*C64::from(xhat[0]) + glob_uinc[i][1]*C64::from(xhat[1]) + glob_uinc[i][2]*C64::from(xhat[2]);
-        lcs_uy[i] = glob_uinc[i][0]*C64::from(yhat[0]) + glob_uinc[i][1]*C64::from(yhat[1]) + glob_uinc[i][2]*C64::from(yhat[2]);
+    // Project incident field at each quad point to local 2D
+    let n_qp = quad_pts.len();
+    let mut lcs_ux_qp: Vec<C64> = Vec::with_capacity(n_qp);
+    let mut lcs_uy_qp: Vec<C64> = Vec::with_capacity(n_qp);
+    for qpi in 0..n_qp {
+        let u = &glob_uinc_at_qp[qpi];
+        lcs_ux_qp.push(u[0]*C64::from(xhat[0]) + u[1]*C64::from(xhat[1]) + u[2]*C64::from(xhat[2]));
+        lcs_uy_qp.push(u[0]*C64::from(yhat[0]) + u[1]*C64::from(yhat[1]) + u[2]*C64::from(yhat[2]));
     }
 
     let (x1, x2, x3) = (xs[0], xs[1], xs[2]);
@@ -216,15 +218,15 @@ pub fn ned2_tri_force(
     let local_edge_map: [[usize; 2]; 3] = [[0, 1], [0, 2], [1, 2]];
 
     // Quadrature integration
-    for qp in quad_pts {
+    for (qpi, qp) in quad_pts.iter().enumerate() {
         let w = qp[0];
         let (l1, l2, l3) = (qp[1], qp[2], qp[3]);
         let x = x1*l1 + x2*l2 + x3*l3;
         let y = y1*l1 + y2*l2 + y3*l3;
 
-        // Interpolate incident field at quadrature point
-        let ux = lcs_ux[0]*C64::from(l1) + lcs_ux[1]*C64::from(l2) + lcs_ux[2]*C64::from(l3);
-        let uy = lcs_uy[0]*C64::from(l1) + lcs_uy[1]*C64::from(l2) + lcs_uy[2]*C64::from(l3);
+        // Use pre-evaluated incident field at this quadrature point
+        let ux = lcs_ux_qp[qpi];
+        let uy = lcs_uy_qp[qpi];
 
         // Edge basis functions
         for ei in 0..3 {

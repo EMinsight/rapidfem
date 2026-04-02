@@ -62,6 +62,20 @@ fn test_straight_waveguide_s_params() {
         &mesh, &basis, &ports, &port_tris, &pec_tris, freq, None,
     );
 
+    // Check field at port 1 center using interpolation
+    {
+        let sol = &result.solutions[0]; // port 1 excited
+        let field_at_center = rapidfem::interp::eval_field_in_tet(
+            &mesh, &basis, sol,
+            mesh.tri_to_tet[port1_tris[0]][0], // tet adjacent to first port1 tri
+            a/2.0, 1e-6, b/2.0, // center of port 1 face (slightly inside)
+        );
+        eprintln!("\nField at port1 center (port1 excited):");
+        eprintln!("  E = ({:.4e}, {:.4e}, {:.4e})", field_at_center[0], field_at_center[1], field_at_center[2]);
+        let e_mode = ports[0].mode_field_global(a/2.0, 0.0, b/2.0, k0);
+        eprintln!("  E_mode = ({:.4}, {:.4}, {:.4})", e_mode[0], e_mode[1], e_mode[2]);
+    }
+
     // Extract S-parameters using field interpolation
     eprintln!("\nS-parameter extraction (quad order 4):");
 

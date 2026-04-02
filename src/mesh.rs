@@ -96,15 +96,17 @@ impl Mesh {
             }
         }
 
-        // Build tri_to_edge
+        // Build tri_to_edge — must match EMerge's ordering:
+        // tri_to_edge[0] = edge(sorted[0], sorted[1])
+        // tri_to_edge[1] = edge(sorted[1], sorted[2])
+        // tri_to_edge[2] = edge(sorted[0], sorted[2])
         let n_tris = tris.len();
         let mut tri_to_edge = vec![[0usize; 3]; n_tris];
         for (ti, tri) in tris.iter().enumerate() {
-            // 3 edges of a triangle: (0,1), (0,2), (1,2) — sorted pairs
             let edge_pairs = [
-                (tri[0].min(tri[1]), tri[0].max(tri[1])),
-                (tri[0].min(tri[2]), tri[0].max(tri[2])),
-                (tri[1].min(tri[2]), tri[1].max(tri[2])),
+                (tri[0].min(tri[1]), tri[0].max(tri[1])), // edge(0,1)
+                (tri[1].min(tri[2]), tri[1].max(tri[2])), // edge(1,2) — EMerge order!
+                (tri[0].min(tri[2]), tri[0].max(tri[2])), // edge(0,2)
             ];
             for (ei, &key) in edge_pairs.iter().enumerate() {
                 tri_to_edge[ti][ei] = inv_edges[&key];

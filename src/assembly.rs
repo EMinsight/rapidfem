@@ -60,11 +60,19 @@ pub fn assemble_and_solve(
     eprintln!("  Assembled E,B in {:.1}ms ({} nnz)", t0.elapsed().as_secs_f64()*1e3, rows.len());
 
     // Step 2: K = E - k0² * B
+    let e_norm: f64 = data_e.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
+    let b_norm: f64 = data_b.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
+    eprintln!("  ||E||_F = {:.6e}, ||B||_F = {:.6e}", e_norm, b_norm);
+
     let k0_sq = C64::from(k0 * k0);
     let mut tri_k = TriMat::new((n_field, n_field));
     for i in 0..rows.len() {
         tri_k.add_triplet(rows[i], cols[i], data_e[i] - k0_sq * data_b[i]);
     }
+
+    let k_pre_robin: f64 = data_e.iter().zip(data_b.iter())
+        .map(|(e, b)| (e - k0_sq * b).norm_sqr()).sum::<f64>().sqrt();
+    eprintln!("  ||K before Robin||_F = {:.6e}", k_pre_robin);
 
     // Step 3: Add Robin BC for each port
     let ac_base = AreaCoeffCache::new();
@@ -88,18 +96,22 @@ pub fn assemble_and_solve(
             }
         }
 
-        // Port excitation vector
+        // Port excitation vector — evaluate U_inc at quadrature points (not vertices!)
         let mut bvec = vec![C64::new(0.0, 0.0); n_field];
         for &ti in tri_ids {
             let tri = &mesh.tris[ti];
             let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
 
-            // Evaluate U_inc at triangle vertices
-            let u_inc: [[C64; 3]; 3] = std::array::from_fn(|i| {
-                port.u_inc_global(verts[i][0], verts[i][1], verts[i][2], k0)
-            });
+            // Evaluate U_inc at each quadrature point
+            let u_inc_at_qp: Vec<[C64; 3]> = quad_pts.iter().map(|qp| {
+                let (l1, l2, l3) = (qp[1], qp[2], qp[3]);
+                let x = verts[0][0]*l1 + verts[1][0]*l2 + verts[2][0]*l3;
+                let y = verts[0][1]*l1 + verts[1][1]*l2 + verts[2][1]*l3;
+                let z = verts[0][2]*l1 + verts[1][2]*l2 + verts[2][2]*l3;
+                port.u_inc_global(x, y, z, k0)
+            }).collect();
 
-            let force = ned2_tri_force(&verts, &u_inc, &quad_pts);
+            let force = ned2_tri_force(&verts, &u_inc_at_qp, &quad_pts);
             let dofs = &basis.tri_to_field[ti];
             for i in 0..8 {
                 bvec[dofs[i]] += force[i];
