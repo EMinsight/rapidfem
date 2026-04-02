@@ -5,6 +5,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct Config {
     pub mesh: MeshConfig,
+    #[serde(default)]
     pub frequency: FrequencyConfig,
     #[serde(default)]
     pub ports: Vec<PortConfig>,
@@ -14,15 +15,26 @@ pub struct Config {
     #[serde(default)]
     pub solver: SolverConfig,
     #[serde(default)]
+    pub eigenmode: Option<EigenmodeConfig>,
+    #[serde(default)]
     pub output: OutputConfig,
 }
+
+#[derive(Deserialize)]
+pub struct EigenmodeConfig {
+    pub target_frequency: f64,
+    #[serde(default = "default_n_modes")]
+    pub n_modes: usize,
+}
+
+fn default_n_modes() -> usize { 6 }
 
 #[derive(Deserialize)]
 pub struct MeshConfig {
     pub file: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct FrequencyConfig {
     #[serde(default)]
     pub values: Vec<f64>,
@@ -114,6 +126,8 @@ pub struct OutputConfig {
     pub touchstone: Option<String>,
     #[serde(default = "default_z0")]
     pub z0: f64,
+    #[serde(default)]
+    pub vtk: Option<String>,
 }
 
 fn default_mode() -> [usize; 2] { [1, 0] }

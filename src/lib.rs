@@ -15,5 +15,7 @@ pub mod port;
 pub mod touchstone;
 pub mod csym_ldlt;
 pub mod pardiso;
+pub mod vtk_export;
+pub mod eigenmode;
 pub mod config;
 pub mod assembly;

@@ -124,6 +124,38 @@ fn main() {
 
     let materials_opt = if materials.is_empty() { None } else { Some(materials.as_slice()) };
 
+    // Eigenmode analysis (if configured)
+    if let Some(ref eig_config) = config.eigenmode {
+        eprintln!("\n--- Eigenmode Analysis ---");
+        let modes = rapidfem::eigenmode::solve_eigenmode(
+            &mesh, &basis, &pec_tris, materials_opt,
+            eig_config.target_frequency, eig_config.n_modes,
+        );
+
+        eprintln!("\n  {} modes found:", modes.len());
+        for (i, mode) in modes.iter().enumerate() {
+            let f_ghz = mode.frequency.re / 1e9;
+            let q_str = if mode.q_factor.is_finite() { format!("{:.1}", mode.q_factor) } else { "∞".to_string() };
+            eprintln!("    Mode {}: f = {:.6} GHz, Q = {}", i+1, f_ghz, q_str);
+        }
+
+        // Export eigenmode fields to VTK
+        if let Some(ref vtk_path) = config.output.vtk {
+            for (i, mode) in modes.iter().enumerate() {
+                let mode_path = vtk_path.replace(".vtk", &format!("_mode{}.vtk", i+1))
+                    .replace(".vtu", &format!("_mode{}.vtu", i+1));
+                let label = format!("Mode {} f={:.4}GHz", i+1, mode.frequency.re/1e9);
+                rapidfem::vtk_export::write_vtk(&mode_path, &mesh, &basis, &mode.field, &label)
+                    .expect("Failed to write eigenmode VTK");
+                eprintln!("    Wrote {}", mode_path);
+            }
+        }
+
+        if config.frequency.values.is_empty() && config.frequency.range.is_empty() {
+            return; // eigenmode-only run
+        }
+    }
+
     // Solve
     let t0 = std::time::Instant::now();
     let results = frequency_sweep(
@@ -171,6 +203,18 @@ fn main() {
             }
         }
         eprintln!();
+    }
+
+    // VTK field export (first frequency, first port excitation)
+    if let Some(ref path) = config.output.vtk {
+        if let Some(first_result) = results.first() {
+            if let Some(first_sol) = first_result.solutions.first() {
+                let label = format!("f={:.4e}Hz", frequencies[0]);
+                rapidfem::vtk_export::write_vtk(path, &mesh, &basis, first_sol, &label)
+                    .expect("Failed to write VTK file");
+                eprintln!("Wrote VTK: {}", path);
+            }
+        }
     }
 
     // Touchstone export
