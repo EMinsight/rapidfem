@@ -7,3 +7,4 @@ pub mod basis;
 pub mod tet_assembly;
 pub mod tri_assembly;
 pub mod waveguide;
+pub mod sparam;
