@@ -82,8 +82,9 @@ pub fn ned2_tri_stiff(
         ac_base.get(a, b, c, d) * area
     };
 
-    // Local edge map: edge 0 = (0,1), edge 1 = (1,2), edge 2 = (0,2)
-    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [1, 2], [0, 2]];
+    // Local edge map: must match tri_to_edge ordering.
+    // tri_to_edge[0] = edge(v0,v1), tri_to_edge[1] = edge(v0,v2), tri_to_edge[2] = edge(v1,v2)
+    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [0, 2], [1, 2]];
 
     // Edge-Edge block
     for ei in 0..3 {
@@ -211,7 +212,8 @@ pub fn ned2_tri_force(
     let lt1 = dist2(&xs, &ys, 2, 0);
     let lt2 = dist2(&xs, &ys, 1, 0);
 
-    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [1, 2], [0, 2]];
+    // Must match tri_to_edge ordering: edge(v0,v1), edge(v0,v2), edge(v1,v2)
+    let local_edge_map: [[usize; 2]; 3] = [[0, 1], [0, 2], [1, 2]];
 
     // Quadrature integration
     for qp in quad_pts {

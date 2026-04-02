@@ -105,8 +105,10 @@ pub fn assemble_and_solve(
                 bvec[dofs[i]] += force[i];
             }
         }
+        let bvec_norm: f64 = bvec.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
         port_excitations.push(bvec);
-        eprintln!("  Port {}: gamma={:.4e}, {} triangles", pi, gamma, tri_ids.len());
+        eprintln!("  Port {}: gamma={:.4e}, {} tris, ||b||={:.4e}",
+            pi, gamma, tri_ids.len(), bvec_norm);
     }
 
     // Step 5: Identify PEC DOFs
@@ -128,6 +130,12 @@ pub fn assemble_and_solve(
         }
     }
     eprintln!("  PEC DOFs: {} of {}", pec_dofs.len(), n_field);
+    for (pi, bvec) in port_excitations.iter().enumerate() {
+        let b_free_norm: f64 = bvec.iter().enumerate()
+            .filter(|(i, _)| !pec_dofs.contains(i))
+            .map(|(_, x)| x.norm_sqr()).sum::<f64>().sqrt();
+        eprintln!("  Port {} ||b_free|| = {:.4e}", pi, b_free_norm);
+    }
 
     // Apply PEC: zero rows/cols, set diagonal to 1
     // First build CSR, then modify

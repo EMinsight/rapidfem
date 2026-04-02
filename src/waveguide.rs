@@ -130,15 +130,16 @@ impl RectWaveguide {
     }
 }
 
-/// Detect port face coordinate system from mesh triangles.
-/// Computes the center, normal, and broad-wall direction from the port face geometry.
+/// Detect port face coordinate system from mesh data.
+/// Mirrors EMerge's rect_basis(): xhat = broad wall, yhat = zhat×xhat, zhat = outward normal.
+/// Uses adjacent tet centroid to orient the normal outward (away from mesh interior).
 pub fn detect_port_cs(
-    nodes: &[[f64; 3]],
+    mesh: &crate::mesh::Mesh,
     tri_indices: &[usize],
-    tris: &[[usize; 3]],
-    width: f64,
-    height: f64,
 ) -> CoordinateSystem {
+    let nodes = &mesh.nodes;
+    let tris = &mesh.tris;
+
     // Compute center of port face
     let mut center = [0.0f64; 3];
     let mut count = 0.0;
@@ -160,9 +161,24 @@ pub fn detect_port_cs(
     let v2 = nodes[first_tri[2]];
     let e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
     let e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
-    let normal = normalize(&cross(&e1, &e2));
+    let mut normal = normalize(&cross(&e1, &e2));
 
-    // Find broad-wall direction: axis with largest extent
+    // Orient outward: normal should point AWAY from the adjacent tet's centroid.
+    // Mirrors EMerge's outward_normal() which uses a reference origin.
+    let adj_tet = mesh.tri_to_tet[tri_indices[0]][0];
+    let tet = &mesh.tets[adj_tet];
+    let tet_center = [
+        (nodes[tet[0]][0] + nodes[tet[1]][0] + nodes[tet[2]][0] + nodes[tet[3]][0]) / 4.0,
+        (nodes[tet[0]][1] + nodes[tet[1]][1] + nodes[tet[2]][1] + nodes[tet[3]][1]) / 4.0,
+        (nodes[tet[0]][2] + nodes[tet[1]][2] + nodes[tet[2]][2] + nodes[tet[3]][2]) / 4.0,
+    ];
+    // If normal points toward tet center, flip it
+    let to_tet = [tet_center[0]-center[0], tet_center[1]-center[1], tet_center[2]-center[2]];
+    if normal[0]*to_tet[0] + normal[1]*to_tet[1] + normal[2]*to_tet[2] > 0.0 {
+        normal = [-normal[0], -normal[1], -normal[2]];
+    }
+
+    // Find extents along each axis on the port face
     let mut min_coords = [f64::INFINITY; 3];
     let mut max_coords = [f64::NEG_INFINITY; 3];
     for &vi in &all_verts {
@@ -173,20 +189,22 @@ pub fn detect_port_cs(
     }
     let extents = [max_coords[0]-min_coords[0], max_coords[1]-min_coords[1], max_coords[2]-min_coords[2]];
 
-    // The broad wall is along the axis with extent ≈ width
-    // Find the axis most different from the normal that has the largest extent
-    let mut best_axis = 0;
-    let mut best_extent = 0.0;
-    for k in 0..3 {
-        if normal[k].abs() < 0.9 && extents[k] > best_extent {
-            best_extent = extents[k];
-            best_axis = k;
-        }
-    }
-    let mut broad = [0.0; 3];
-    broad[best_axis] = 1.0;
+    // Dominant normal axis
+    let normal_axis = if normal[0].abs() > normal[1].abs() && normal[0].abs() > normal[2].abs() { 0 }
+        else if normal[1].abs() > normal[2].abs() { 1 } else { 2 };
 
-    CoordinateSystem::from_port_face(center, normal, broad)
+    // xhat = along the axis with largest extent (broad wall)
+    let mut face_axes: Vec<(usize, f64)> = (0..3)
+        .filter(|&k| k != normal_axis)
+        .map(|k| (k, extents[k]))
+        .collect();
+    face_axes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let broad_axis = face_axes[0].0;
+    let mut xhat = [0.0; 3];
+    xhat[broad_axis] = 1.0;
+
+    CoordinateSystem::from_port_face(center, normal, xhat)
 }
 
 fn normalize(v: &[f64; 3]) -> [f64; 3] {
