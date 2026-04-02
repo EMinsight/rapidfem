@@ -228,3 +228,95 @@ impl LumpedPort {
         [emag * C64::from(ex), emag * C64::from(ey), emag * C64::from(ez)]
     }
 }
+
+/// Auto-detect port coordinate system and dimensions from mesh face triangles.
+/// Port of EMerge's rect_basis() for axis-aligned rectangular ports.
+///
+/// Returns (CoordinateSystem, width, height) where width ≥ height.
+pub fn detect_rect_port(
+    mesh: &crate::mesh::Mesh,
+    tri_ids: &[usize],
+) -> (CoordinateSystem, f64, f64) {
+    let nodes = &mesh.nodes;
+    let tris = &mesh.tris;
+
+    // 1. Compute centroid (origin)
+    let mut center = [0.0f64; 3];
+    let mut count = 0.0;
+    let mut all_verts = std::collections::HashSet::new();
+    for &ti in tri_ids {
+        for &vi in &tris[ti] {
+            if all_verts.insert(vi) {
+                for k in 0..3 { center[k] += nodes[vi][k]; }
+                count += 1.0;
+            }
+        }
+    }
+    for k in 0..3 { center[k] /= count; }
+
+    // 2. Compute face normal from first triangle
+    let first_tri = tris[tri_ids[0]];
+    let v0 = nodes[first_tri[0]];
+    let v1 = nodes[first_tri[1]];
+    let v2 = nodes[first_tri[2]];
+    let e1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+    let e2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+    let cr = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
+    let nn = (cr[0]*cr[0]+cr[1]*cr[1]+cr[2]*cr[2]).sqrt();
+    let mut normal = [cr[0]/nn, cr[1]/nn, cr[2]/nn];
+
+    // 3. Orient outward using adjacent tet centroid
+    let adj_tet = mesh.tri_to_tet[tri_ids[0]][0];
+    let tet = &mesh.tets[adj_tet];
+    let tc = [
+        (nodes[tet[0]][0]+nodes[tet[1]][0]+nodes[tet[2]][0]+nodes[tet[3]][0])/4.0,
+        (nodes[tet[0]][1]+nodes[tet[1]][1]+nodes[tet[2]][1]+nodes[tet[3]][1])/4.0,
+        (nodes[tet[0]][2]+nodes[tet[1]][2]+nodes[tet[2]][2]+nodes[tet[3]][2])/4.0,
+    ];
+    let to_tet = [tc[0]-center[0], tc[1]-center[1], tc[2]-center[2]];
+    if normal[0]*to_tet[0]+normal[1]*to_tet[1]+normal[2]*to_tet[2] > 0.0 {
+        normal = [-normal[0], -normal[1], -normal[2]];
+    }
+
+    // 4. Find face extents along each axis
+    let mut min_c = [f64::INFINITY; 3];
+    let mut max_c = [f64::NEG_INFINITY; 3];
+    for &vi in &all_verts {
+        for k in 0..3 {
+            min_c[k] = min_c[k].min(nodes[vi][k]);
+            max_c[k] = max_c[k].max(nodes[vi][k]);
+        }
+    }
+    let ext = [max_c[0]-min_c[0], max_c[1]-min_c[1], max_c[2]-min_c[2]];
+
+    // 5. Determine axes: normal axis has smallest extent, xhat = largest extent, yhat = remaining
+    let normal_axis = if normal[0].abs() > normal[1].abs() && normal[0].abs() > normal[2].abs() { 0 }
+        else if normal[1].abs() > normal[2].abs() { 1 } else { 2 };
+
+    let mut face_axes: Vec<(usize, f64)> = (0..3)
+        .filter(|&k| k != normal_axis)
+        .map(|k| (k, ext[k]))
+        .collect();
+    face_axes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let broad_axis = face_axes[0].0;
+    let narrow_axis = face_axes[1].0;
+    let width = face_axes[0].1;
+    let height = face_axes[1].1;
+
+    // 6. Build orthonormal CS
+    let zhat = normal;
+    let mut xhat = [0.0; 3];
+    xhat[broad_axis] = 1.0;
+    // Orthogonalize xhat against zhat (Gram-Schmidt)
+    let dot_xz = xhat[0]*zhat[0]+xhat[1]*zhat[1]+xhat[2]*zhat[2];
+    let xraw = [xhat[0]-dot_xz*zhat[0], xhat[1]-dot_xz*zhat[1], xhat[2]-dot_xz*zhat[2]];
+    let xn = (xraw[0]*xraw[0]+xraw[1]*xraw[1]+xraw[2]*xraw[2]).sqrt();
+    let xhat_f = [xraw[0]/xn, xraw[1]/xn, xraw[2]/xn];
+    let yhat = [zhat[1]*xhat_f[2]-zhat[2]*xhat_f[1],
+                zhat[2]*xhat_f[0]-zhat[0]*xhat_f[2],
+                zhat[0]*xhat_f[1]-zhat[1]*xhat_f[0]];
+
+    let _ = narrow_axis;
+    (CoordinateSystem::new(center, xhat_f, yhat, zhat), width, height)
+}

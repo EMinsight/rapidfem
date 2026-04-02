@@ -47,8 +47,10 @@ fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
     };
     let p1v: Vec<[usize; 3]> = port1_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let p2v: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
-    let s11 = sparam_waveport(&mesh.nodes, &p1v, &port1, k0, true, &fieldf, 4);
-    let s21 = sparam_waveport(&mesh.nodes, &p2v, &port2, k0, false, &fieldf, 4);
+    let p1_ref: &dyn rapidfem::port::Port = &port1;
+    let p2_ref: &dyn rapidfem::port::Port = &port2;
+    let s11 = sparam_waveport(&mesh.nodes, &p1v, p1_ref, k0, true, &fieldf, 4);
+    let s21 = sparam_waveport(&mesh.nodes, &p2v, p2_ref, k0, false, &fieldf, 4);
     let total = t0.elapsed().as_secs_f64();
 
     eprintln!("  {label}: {tets} tets, {dofs} DOFs, solve={solve:.3}s, total={total:.3}s, |S11|={s11:.4}, |S21|={s21:.4}",

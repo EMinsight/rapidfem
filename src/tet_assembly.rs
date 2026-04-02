@@ -365,6 +365,7 @@ pub fn ned2_tet_stiff_mass(
 
 /// Assemble global stiffness (E) and mass (B) matrices from all tetrahedra.
 /// Returns COO triplets: (rows, cols, data_e, data_b).
+/// Parallelized with rayon — each tet writes to its own 400-entry slice.
 pub fn assemble_global_matrices(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
@@ -372,6 +373,8 @@ pub fn assemble_global_matrices(
     ur: &[[[C64; 3]; 3]],  // per-tet permeability tensors
 ) -> (Vec<usize>, Vec<usize>, Vec<C64>, Vec<C64>)
 {
+    use rayon::prelude::*;
+
     let n_tets = mesh.n_tets();
     let nnz = n_tets * 400; // 20×20 per tet
     let mut rows = vec![0usize; nnz];
@@ -381,30 +384,34 @@ pub fn assemble_global_matrices(
 
     let vc_base = VolumeCoeffCache::new();
 
-    for itet in 0..n_tets {
-        let p = itet * 400;
+    // Split into per-tet slices for parallel write
+    let chunks: Vec<(usize, &mut [usize], &mut [usize], &mut [C64], &mut [C64])> = {
+        let rows_chunks: Vec<&mut [usize]> = rows.chunks_mut(400).collect();
+        let cols_chunks: Vec<&mut [usize]> = cols.chunks_mut(400).collect();
+        let de_chunks: Vec<&mut [C64]> = data_e.chunks_mut(400).collect();
+        let db_chunks: Vec<&mut [C64]> = data_b.chunks_mut(400).collect();
+        (0..n_tets).zip(rows_chunks).zip(cols_chunks).zip(de_chunks).zip(db_chunks)
+            .map(|((((i, r), c), de), db)| (i, r, c, de, db))
+            .collect()
+    };
 
-        // Get tet vertices
+    chunks.into_par_iter().for_each(|(itet, row_slice, col_slice, de_slice, db_slice)| {
         let tet = &mesh.tets[itet];
         let xs = [mesh.nodes[tet[0]][0], mesh.nodes[tet[1]][0], mesh.nodes[tet[2]][0], mesh.nodes[tet[3]][0]];
         let ys = [mesh.nodes[tet[0]][1], mesh.nodes[tet[1]][1], mesh.nodes[tet[2]][1], mesh.nodes[tet[3]][1]];
         let zs = [mesh.nodes[tet[0]][2], mesh.nodes[tet[1]][2], mesh.nodes[tet[2]][2], mesh.nodes[tet[3]][2]];
 
-        // Edge lengths for this tet
         let tet_edges = &mesh.tet_to_edge[itet];
         let edge_lengths: [f64; 6] = std::array::from_fn(|i| mesh.edge_lengths[tet_edges[i]]);
 
-        // Local edge mapping: convert global edge node IDs to local tet node indices (0-3)
         let global_edge_nodes: [[usize; 2]; 6] = std::array::from_fn(|i| mesh.edges[tet_edges[i]]);
         let local_edge_map = crate::basis::local_mapping(tet, &global_edge_nodes);
 
-        // Local tri mapping: convert global tri node IDs to local tet node indices (0-3)
         let tet_tris = &mesh.tet_to_tri[itet];
         let global_tri_nodes: [[usize; 3]; 4] = std::array::from_fn(|i| mesh.tris[tet_tris[i]]);
         let local_tri_map = crate::basis::local_mapping_tri(tet, &global_tri_nodes);
 
-        // Material tensors
-        let ms = matinv3(&ur[itet]); // μr⁻¹
+        let ms = matinv3(&ur[itet]);
         let mm = &er[itet];
 
         let (esub, bsub) = ned2_tet_stiff_mass(
@@ -413,18 +420,17 @@ pub fn assemble_global_matrices(
             &ms, mm, &vc_base,
         );
 
-        // Scatter into COO arrays
         let indices = &basis.tet_to_field[itet];
         for ii in 0..20 {
             for jj in 0..20 {
-                let idx = p + ii * 20 + jj;
-                rows[idx] = indices[ii];
-                cols[idx] = indices[jj];
-                data_e[idx] = esub[ii][jj];
-                data_b[idx] = bsub[ii][jj];
+                let idx = ii * 20 + jj;
+                row_slice[idx] = indices[ii];
+                col_slice[idx] = indices[jj];
+                de_slice[idx] = esub[ii][jj];
+                db_slice[idx] = bsub[ii][jj];
             }
         }
-    }
+    });
 
     (rows, cols, data_e, data_b)
 }

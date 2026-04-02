@@ -1,21 +1,15 @@
 //! Exact port of sparam.py: S-parameter extraction via surface integrals.
 //!
-//! Functions: sparam_waveport, sparam_field_power, sparam_mode_power
+//! Functions: sparam_waveport, sparam_field_power, sparam_mode_power, sparam_voltage
 //! Also includes surface_integral from integrals.py.
+//!
+//! All functions accept &dyn Port via the port trait.
 
 use num_complex::Complex64 as C64;
 use crate::quadrature::gaus_quad_tri;
-use crate::waveguide::RectWaveguide;
+use crate::port::Port;
 
 /// Port of integrals.py: surface_integral
-///
-/// Computes I = Σ_triangles ∫∫ f(x,y,z) dA
-/// using Gauss quadrature on each triangle.
-///
-/// `nodes`: all mesh nodes [n_nodes][3]
-/// `triangles`: triangle vertex indices [n_tris][3]
-/// `function`: scalar function f(x,y,z) → Complex64
-/// `gq_order`: quadrature order (default 4)
 pub fn surface_integral(
     nodes: &[[f64; 3]],
     triangles: &[[usize; 3]],
@@ -30,13 +24,11 @@ pub fn surface_integral(
         let v2 = nodes[tri[1]];
         let v3 = nodes[tri[2]];
 
-        // calc_area
         let e1 = [v2[0]-v1[0], v2[1]-v1[1], v2[2]-v1[2]];
         let e2 = [v3[0]-v1[0], v3[1]-v1[1], v3[2]-v1[2]];
         let cr = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
         let area = 0.5 * (cr[0]*cr[0] + cr[1]*cr[1] + cr[2]*cr[2]).sqrt();
 
-        // Evaluate f at quadrature points and sum
         let mut tri_sum = C64::new(0.0, 0.0);
         for qp in &dpts {
             let (w, l1, l2, l3) = (qp[0], qp[1], qp[2], qp[3]);
@@ -54,13 +46,10 @@ pub fn surface_integral(
 /// Port of sparam.py: sparam_waveport
 ///
 /// S = ∫ (E_field - Q·E_mode) · conj(E_mode) dS / ∫ |E_mode|² dS
-///
-/// `active`: if true, Q=1 (excited port); if false, Q=0 (observation port)
-/// `fieldf`: function that returns (Ex, Ey, Ez) at (x, y, z)
 pub fn sparam_waveport(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
-    port: &RectWaveguide,
+    port: &dyn Port,
     k0: f64,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
@@ -68,9 +57,8 @@ pub fn sparam_waveport(
 ) -> C64 {
     let q = if active { 1.0 } else { 0.0 };
 
-    // ∫ (E_field - Q·E_mode) · conj(E_mode) dS
     let mode_dot_field = surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0);
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
         let (fx, fy, fz) = fieldf(x, y, z);
 
         let ex1 = fx - C64::from(q * mx);
@@ -84,9 +72,8 @@ pub fn sparam_waveport(
         ex1*ex2 + ey1*ey2 + ez1*ez2
     }, gq_order);
 
-    // ∫ |E_mode|² dS
     let norm = surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0);
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
         C64::from(mx*mx + my*my + mz*mz)
     }, gq_order);
 
@@ -103,7 +90,7 @@ pub fn sparam_waveport(
 pub fn sparam_field_power(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
-    port: &RectWaveguide,
+    port: &dyn Port,
     k0: f64,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
@@ -113,7 +100,7 @@ pub fn sparam_field_power(
     let z_mode = port.z_mode(k0);
 
     surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0);
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
         let (fx, fy, fz) = fieldf(x, y, z);
 
         let ex1 = fx - C64::from(q * mx);
@@ -134,14 +121,14 @@ pub fn sparam_field_power(
 pub fn sparam_mode_power(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
-    port: &RectWaveguide,
+    port: &dyn Port,
     k0: f64,
     gq_order: usize,
 ) -> C64 {
     let z_mode = port.z_mode(k0);
 
     surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0);
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
         let ex2 = C64::from(mx).conj();
         let ey2 = C64::from(my).conj();
         let ez2 = C64::from(mz).conj();
@@ -150,21 +137,13 @@ pub fn sparam_mode_power(
     }, gq_order)
 }
 
-/// Exact port of microwave_3d.py lines 1563-1598: voltage integration S-param extraction.
-///
-/// For lumped ports, S-parameters are computed from voltage:
-///   V = ∫ E·dl along integration line
-///   active port: b = V - V_inc, a = V_inc
-///   passive port: b = V, a = V_inc
-///   S = b_sig / a_sig where sig = * sqrt(1/(2*Z0))
+/// Port of microwave_3d.py: voltage integration S-param extraction for lumped ports.
 pub fn sparam_voltage(
     port: &crate::waveguide::LumpedPort,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
     line_points: &[[f64; 3]],
 ) -> C64 {
-    // Port of Line.line_integral_precalc:
-    // Compute ∫ E·dl using trapezoidal rule along the line
     let n_pts = line_points.len();
     if n_pts < 2 { return C64::new(0.0, 0.0); }
 

@@ -107,8 +107,10 @@ fn test_straight_waveguide_sparams() {
     let port1_tri_verts: Vec<[usize; 3]> = port1_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let port2_tri_verts: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
 
-    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, &port1, k0, true, &fieldf, 4);
-    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, &port2, k0, false, &fieldf, 4);
+    let p1_ref: &dyn rapidfem::port::Port = &port1;
+    let p2_ref: &dyn rapidfem::port::Port = &port2;
+    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, k0, true, &fieldf, 4);
+    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, k0, false, &fieldf, 4);
 
     eprintln!("\n=== S-parameters ===");
     eprintln!("  |S11| = {:.6} ({:.1} dB)", s11.norm(), 20.0 * s11.norm().max(1e-10).log10());

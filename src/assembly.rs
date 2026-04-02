@@ -231,3 +231,148 @@ pub fn assemble_and_solve(
 
     SolveResult { solutions, n_field }
 }
+
+/// Frequency sweep: solve at multiple frequencies.
+///
+/// For frequency-independent materials, caches E and B matrices.
+/// Returns solutions per frequency: Vec<SolveResult>.
+pub fn frequency_sweep(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    ports: &[&dyn Port],
+    port_tri_indices: &[&[usize]],
+    pec_tri_indices: &[usize],
+    frequencies: &[f64],
+    materials: Option<&[crate::materials::Material]>,
+) -> Vec<SolveResult> {
+    // Cache E, B for frequency-independent materials
+    let n_tets = mesh.n_tets();
+    let (er, ur) = if let Some(mats) = materials {
+        crate::materials::build_material_tensors(n_tets, mats, frequencies[0])
+    } else {
+        let identity: [[C64; 3]; 3] = [
+            [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
+            [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
+            [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
+        ];
+        (vec![identity; n_tets], vec![identity; n_tets])
+    };
+
+    let t0 = std::time::Instant::now();
+    let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
+    eprintln!("  Assembled E,B in {:.1}ms (cached for sweep)", t0.elapsed().as_secs_f64()*1e3);
+
+    // PEC DOFs (frequency-independent)
+    let mut pec_ids: HashSet<usize> = HashSet::new();
+    for &ti in pec_tri_indices {
+        for &ei in &mesh.tri_to_edge[ti] {
+            for &d in &basis.edge_to_field[ei] { pec_ids.insert(d); }
+        }
+        for &d in &basis.tri_to_field[ti] { pec_ids.insert(d); }
+    }
+
+    let free_dofs: Vec<usize> = (0..basis.n_field).filter(|d| !pec_ids.contains(d)).collect();
+    let n_free = free_dofs.len();
+    let mut dof_to_free = vec![usize::MAX; basis.n_field];
+    for (fi, &d) in free_dofs.iter().enumerate() { dof_to_free[d] = fi; }
+
+    let ac_base = crate::coefficients::AreaCoeffCache::new();
+    let gauss_points = crate::quadrature::gaus_quad_tri(4);
+
+    let mut results = Vec::with_capacity(frequencies.len());
+
+    for &freq in frequencies {
+        let t_freq = std::time::Instant::now();
+        let k0 = 2.0 * PI * freq / crate::constants::C0;
+        let k0_sq = C64::from(k0 * k0);
+        let n_field = basis.n_field;
+
+        // Robin BC (γ frequency-dependent)
+        let mut bempty = basis.empty_tri_matrix();
+        for (_, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
+            let gamma = port.get_gamma(k0);
+            for &ti in *tri_ids {
+                let tri = &mesh.tris[ti];
+                let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
+                let bsub = ned2_tri_stiff(&verts, gamma, &ac_base);
+                let p = ti * 64;
+                for ii in 0..8 { for jj in 0..8 { bempty[p + ii*8 + jj] += bsub[ii][jj]; } }
+            }
+            if port.is_abc_order2() {
+                if let Some(coeff) = port.abc_o2_coeff(k0) {
+                    let abc_corr = crate::abc_order2::abc_order_2_matrix(mesh, basis, tri_ids, coeff);
+                    for (i, &v) in abc_corr.iter().enumerate() { bempty[i] += v; }
+                }
+            }
+        }
+
+        // K = (E - k0²*B) + Robin
+        let data_k: Vec<C64> = data_e.iter().zip(data_b.iter()).map(|(e, b)| e - k0_sq * b).collect();
+        let mut k_csr: CsMat<C64> = {
+            let mut tri_mat = sprs::TriMat::new((n_field, n_field));
+            for i in 0..rows.len() { tri_mat.add_triplet(rows[i], cols[i], data_k[i]); }
+            tri_mat.to_csr()
+        };
+        k_csr = &k_csr + &basis.generate_csr(&bempty);
+
+        // Port excitation vectors
+        let mut port_bvecs: Vec<Vec<C64>> = Vec::new();
+        for (port, tri_ids) in ports.iter().zip(port_tri_indices.iter()) {
+            if !port.is_driven() { continue; }
+            let mut bvec = vec![C64::new(0.0, 0.0); n_field];
+            for &ti in *tri_ids {
+                let tri = &mesh.tris[ti];
+                let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
+                let u_at_qp: Vec<[C64; 3]> = gauss_points.iter()
+                    .filter_map(|qp| {
+                        let (l1,l2,l3) = (qp[1],qp[2],qp[3]);
+                        port.get_uinc(
+                            verts[0][0]*l1+verts[1][0]*l2+verts[2][0]*l3,
+                            verts[0][1]*l1+verts[1][1]*l2+verts[2][1]*l3,
+                            verts[0][2]*l1+verts[1][2]*l2+verts[2][2]*l3, k0)
+                    }).collect();
+                if u_at_qp.len() == gauss_points.len() {
+                    let b_tri = ned2_tri_force(&verts, &u_at_qp, &gauss_points);
+                    let dofs = &basis.tri_to_field[ti];
+                    for i in 0..8 { bvec[dofs[i]] += b_tri[i]; }
+                }
+            }
+            port_bvecs.push(bvec);
+        }
+
+        // Solve with faer sparse LU
+        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
+        for (row_idx, row_vec) in k_csr.outer_iterator().enumerate() {
+            if pec_ids.contains(&row_idx) { continue; }
+            let fi = dof_to_free[row_idx];
+            for (col_idx, &val) in row_vec.iter() {
+                if pec_ids.contains(&col_idx) { continue; }
+                let fj = dof_to_free[col_idx];
+                triplets.push(faer::sparse::Triplet { row: fi, col: fj, val: faer::c64 { re: val.re, im: val.im } });
+            }
+        }
+        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(n_free, n_free, &triplets)
+            .expect("faer matrix");
+        let lu = k_faer.sp_lu().expect("LU");
+
+        let mut solutions = Vec::new();
+        for bvec in &port_bvecs {
+            let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
+                let d = free_dofs[i];
+                faer::c64 { re: bvec[d].re, im: bvec[d].im }
+            });
+            faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
+            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+            for (fi, &d) in free_dofs.iter().enumerate() {
+                let v = x_mat[(fi, 0)];
+                x_full[d] = C64::new(v.re, v.im);
+            }
+            solutions.push(x_full);
+        }
+
+        eprintln!("  f={:.4e} Hz: {:.1}ms", freq, t_freq.elapsed().as_secs_f64()*1e3);
+        results.push(SolveResult { solutions, n_field });
+    }
+
+    results
+}
