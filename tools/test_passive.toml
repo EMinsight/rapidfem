@@ -37,16 +37,12 @@ type = "lumped"
 tag = 14
 z0 = 50
 direction = [0, 0, 1]
-width = 2.000000e-06
-height = 3.300000e-06
 
 [[ports]]
 type = "lumped"
 tag = 15
 z0 = 50
 direction = [0, 0, 1]
-width = 2.000000e-06
-height = 3.300000e-06
 
 [pec]
 tags = [1]
