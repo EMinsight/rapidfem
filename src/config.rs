@@ -15,10 +15,20 @@ pub struct Config {
     #[serde(default)]
     pub solver: SolverConfig,
     #[serde(default)]
+    pub adaptive: Option<AdaptiveConfig>,
+    #[serde(default)]
     pub eigenmode: Option<EigenmodeConfig>,
     #[serde(default)]
     pub output: OutputConfig,
 }
+
+#[derive(Deserialize)]
+pub struct AdaptiveConfig {
+    #[serde(default = "default_theta")]
+    pub theta: f64,
+}
+
+fn default_theta() -> f64 { 0.5 }
 
 #[derive(Deserialize)]
 pub struct EigenmodeConfig {

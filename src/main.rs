@@ -205,6 +205,39 @@ fn main() {
         eprintln!();
     }
 
+    // Error estimation (if adaptive config present)
+    if let Some(ref adaptive) = config.adaptive {
+        if let Some(first_result) = results.first() {
+            if let Some(first_sol) = first_result.solutions.first() {
+                let k0 = 2.0 * PI * frequencies[0] / C0;
+                // Build material tensors for error estimator
+                let n_tets = mesh.n_tets();
+                let (er_tensors, _) = if let Some(mats) = materials_opt {
+                    rapidfem::materials::build_material_tensors(n_tets, mats, frequencies[0])
+                } else {
+                    let id: [[num_complex::Complex64; 3]; 3] = [
+                        [num_complex::Complex64::new(1.0,0.0), num_complex::Complex64::new(0.0,0.0), num_complex::Complex64::new(0.0,0.0)],
+                        [num_complex::Complex64::new(0.0,0.0), num_complex::Complex64::new(1.0,0.0), num_complex::Complex64::new(0.0,0.0)],
+                        [num_complex::Complex64::new(0.0,0.0), num_complex::Complex64::new(0.0,0.0), num_complex::Complex64::new(1.0,0.0)],
+                    ];
+                    (vec![id; n_tets], vec![id; n_tets])
+                };
+
+                let estimate = rapidfem::error_estimator::estimate_error(
+                    &mesh, &basis, first_sol, k0, &er_tensors, adaptive.theta,
+                );
+
+                // Write error VTK
+                let error_path = config.output.vtk.as_deref()
+                    .unwrap_or("error.vtk")
+                    .replace(".vtk", "_error.vtk");
+                rapidfem::vtk_export::write_vtk_error(&error_path, &mesh, &estimate)
+                    .expect("Failed to write error VTK");
+                eprintln!("Wrote error VTK: {}", error_path);
+            }
+        }
+    }
+
     // VTK field export (first frequency, first port excitation)
     if let Some(ref path) = config.output.vtk {
         if let Some(first_result) = results.first() {

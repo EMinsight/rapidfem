@@ -101,3 +101,58 @@ pub fn write_vtk(
 
     Ok(())
 }
+
+/// Export error estimate as VTK with cell data.
+pub fn write_vtk_error(
+    path: &str,
+    mesh: &Mesh,
+    estimate: &crate::error_estimator::ErrorEstimate,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+
+    let n_nodes = mesh.n_nodes();
+    let n_tets = mesh.n_tets();
+
+    writeln!(file, "# vtk DataFile Version 3.0")?;
+    writeln!(file, "RapidFEM Error Estimate")?;
+    writeln!(file, "ASCII")?;
+    writeln!(file, "DATASET UNSTRUCTURED_GRID")?;
+
+    writeln!(file, "POINTS {} double", n_nodes)?;
+    for ni in 0..n_nodes {
+        let p = mesh.nodes[ni];
+        writeln!(file, "{:.10e} {:.10e} {:.10e}", p[0], p[1], p[2])?;
+    }
+
+    writeln!(file, "CELLS {} {}", n_tets, n_tets * 5)?;
+    for tet in &mesh.tets {
+        writeln!(file, "4 {} {} {} {}", tet[0], tet[1], tet[2], tet[3])?;
+    }
+
+    writeln!(file, "CELL_TYPES {}", n_tets)?;
+    for _ in 0..n_tets { writeln!(file, "10")?; }
+
+    writeln!(file, "CELL_DATA {}", n_tets)?;
+
+    writeln!(file, "SCALARS error_indicator double 1")?;
+    writeln!(file, "LOOKUP_TABLE default")?;
+    for i in 0..n_tets { writeln!(file, "{:.10e}", estimate.element_errors[i])?; }
+
+    writeln!(file, "SCALARS volume_residual double 1")?;
+    writeln!(file, "LOOKUP_TABLE default")?;
+    for i in 0..n_tets { writeln!(file, "{:.10e}", estimate.volume_residuals[i])?; }
+
+    writeln!(file, "SCALARS face_jump double 1")?;
+    writeln!(file, "LOOKUP_TABLE default")?;
+    for i in 0..n_tets { writeln!(file, "{:.10e}", estimate.face_jumps[i])?; }
+
+    // Marked elements: 1 if marked, 0 otherwise
+    let mut marked_set = std::collections::HashSet::new();
+    for &idx in &estimate.marked_elements { marked_set.insert(idx); }
+    writeln!(file, "SCALARS marked int 1")?;
+    writeln!(file, "LOOKUP_TABLE default")?;
+    for i in 0..n_tets { writeln!(file, "{}", if marked_set.contains(&i) { 1 } else { 0 })?; }
+
+    Ok(())
+}
