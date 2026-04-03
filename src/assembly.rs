@@ -331,7 +331,9 @@ pub fn frequency_sweep(
         })
         .collect();
 
-    // Symbolic factorization: compute once at first frequency, reuse for all
+    // Try PARDISO first, faer as fallback
+    let mut pardiso_solver = crate::pardiso::PardisoSolver::try_new();
+    let mut pardiso_analyzed = false;
     let mut symbolic_lu: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>> = None;
 
     let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
@@ -407,40 +409,70 @@ pub fn frequency_sweep(
             });
         }
 
-        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
-            n_free, n_free, &triplets,
-        ).expect("faer matrix");
+        // Solve with PARDISO (if available) or faer fallback
+        let solutions = if let Some(ref mut pardiso) = pardiso_solver {
+            // Build upper-triangle CSR for PARDISO
+            let coo_rows: Vec<usize> = triplets.iter().map(|t| t.row).collect();
+            let coo_cols: Vec<usize> = triplets.iter().map(|t| t.col).collect();
+            let coo_vals: Vec<C64> = triplets.iter().map(|t| C64::new(t.val.re, t.val.im)).collect();
+            let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
 
-        // Symbolic reuse: compute symbolic once, reuse for subsequent frequencies
-        let lu = if symbolic_lu.is_none() {
-            let t_sym = std::time::Instant::now();
-            let sym = faer::sparse::linalg::solvers::SymbolicLu::try_new(k_faer.as_ref().symbolic())
-                .expect("symbolic LU");
-            eprintln!("  Symbolic LU in {:.1}ms (computed once)", t_sym.elapsed().as_secs_f64()*1e3);
-            let lu = faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(sym.clone(), k_faer.as_ref())
-                .expect("numeric LU");
-            symbolic_lu = Some(sym);
-            lu
-        } else {
-            faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(
-                symbolic_lu.as_ref().unwrap().clone(), k_faer.as_ref(),
-            ).expect("numeric LU (reused symbolic)")
-        };
-
-        let mut solutions = Vec::new();
-        for bvec in &port_bvecs {
-            let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
-                let d = free_dofs[i];
-                faer::c64 { re: bvec[d].re, im: bvec[d].im }
-            });
-            faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
-            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-            for (fi_d, &d) in free_dofs.iter().enumerate() {
-                let v = x_mat[(fi_d, 0)];
-                x_full[d] = C64::new(v.re, v.im);
+            if !pardiso_analyzed {
+                pardiso.analyze_and_factorize(n_free as i32, &ia, &ja, &a)
+                    .expect("PARDISO analyze+factorize");
+                pardiso_analyzed = true;
+            } else {
+                pardiso.factorize(n_free as i32, &ia, &ja, &a)
+                    .expect("PARDISO factorize");
             }
-            solutions.push(x_full);
-        }
+
+            let mut solutions = Vec::new();
+            for bvec in &port_bvecs {
+                let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+                let x_free = pardiso.solve(n_free as i32, &ia, &ja, &a, &b_free)
+                    .expect("PARDISO solve");
+                let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+                for (fi_d, &d) in free_dofs.iter().enumerate() {
+                    x_full[d] = x_free[fi_d];
+                }
+                solutions.push(x_full);
+            }
+            solutions
+        } else {
+            // faer fallback
+            let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
+                n_free, n_free, &triplets,
+            ).expect("faer matrix");
+
+            let lu = if symbolic_lu.is_none() {
+                let sym = faer::sparse::linalg::solvers::SymbolicLu::try_new(k_faer.as_ref().symbolic())
+                    .expect("symbolic LU");
+                let lu = faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(sym.clone(), k_faer.as_ref())
+                    .expect("numeric LU");
+                symbolic_lu = Some(sym);
+                lu
+            } else {
+                faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(
+                    symbolic_lu.as_ref().unwrap().clone(), k_faer.as_ref(),
+                ).expect("numeric LU")
+            };
+
+            let mut solutions = Vec::new();
+            for bvec in &port_bvecs {
+                let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
+                    let d = free_dofs[i];
+                    faer::c64 { re: bvec[d].re, im: bvec[d].im }
+                });
+                faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
+                let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+                for (fi_d, &d) in free_dofs.iter().enumerate() {
+                    let v = x_mat[(fi_d, 0)];
+                    x_full[d] = C64::new(v.re, v.im);
+                }
+                solutions.push(x_full);
+            }
+            solutions
+        };
 
         eprintln!("  f={:.4e} Hz: {:.1}ms (freq {}/{})", freq, t_freq.elapsed().as_secs_f64()*1e3, fi+1, frequencies.len());
         results.push(SolveResult { solutions, n_field });
