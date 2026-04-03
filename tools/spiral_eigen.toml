@@ -1,0 +1,47 @@
+[mesh]
+file = "tools/spiral.msh"
+
+[eigenmode]
+target_frequency = 5e9
+n_modes = 4
+
+[[materials]]
+volume_tag = 10
+er = 11.7
+ur = 1.0
+tand = 0.0
+conductivity = 1.000000e+01
+
+[[materials]]
+volume_tag = 11
+er = 1.0
+ur = 1.0
+tand = 0.0
+conductivity = 8.333333e+07
+
+[[materials]]
+volume_tag = 12
+er = 1.0
+ur = 1.0
+tand = 0.0
+conductivity = 6.666667e+07
+
+[[materials]]
+volume_tag = 13
+er = 1.0
+ur = 1.0
+tand = 0.0
+conductivity = 3.333333e+07
+
+[[materials]]
+volume_tag = 14
+er = 4.0
+ur = 1.0
+tand = 0.0
+conductivity = 0.000000e+00
+
+[pec]
+tags = [1]
+
+[output]
+vtk = "tools/spiral_fields.vtk"
