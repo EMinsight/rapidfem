@@ -27,6 +27,13 @@ conductivity = 6.666667e+07
 
 [[materials]]
 volume_tag = 13
+er = 1.0
+ur = 1.0
+tand = 0.0
+conductivity = 3.333333e+07
+
+[[materials]]
+volume_tag = 14
 er = 4.0
 ur = 1.0
 tand = 0.0
@@ -34,13 +41,13 @@ conductivity = 0.000000e+00
 
 [[ports]]
 type = "lumped"
-tag = 14
+tag = 15
 z0 = 50
 direction = [0, 0, 1]
 
 [[ports]]
 type = "lumped"
-tag = 15
+tag = 16
 z0 = 50
 direction = [0, 0, 1]
 

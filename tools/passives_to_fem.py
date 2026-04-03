@@ -113,48 +113,39 @@ def main():
     for vols in metal_vol_tags.values():
         all_vols.extend(vols)
 
+    # Track which original volume each input maps to
+    # all_vols[0] = box, [1] = substrate, [2:] = metals per layer
+    original_labels = ["box", "substrate"]
+    for layer in layers:
+        mid = layer["metal"]
+        if mid not in metal_defs: continue
+        for _ in layer["polygons"]:
+            if len(_) >= 3:
+                original_labels.append(mid)
+
     print(f"Fragmenting {len(all_vols)} volumes...")
     result, result_map = gmsh.model.occ.fragment([all_vols[0]], all_vols[1:])
     gmsh.model.occ.synchronize()
 
-    # Step 3: Classify resulting volumes by centroid position
+    # result_map[i] = list of (dim, tag) that original all_vols[i] was split into
+    # Use this to classify fragments by their ORIGINAL identity
     final_vols = gmsh.model.getEntities(3)
     print(f"After fragment: {len(final_vols)} volumes")
 
     vol_classification = {}  # tag → category string
 
+    # First pass: mark volumes that came from metal/substrate originals
+    for orig_idx, fragments in enumerate(result_map):
+        label = original_labels[orig_idx] if orig_idx < len(original_labels) else "box"
+        for dim, tag in fragments:
+            if dim != 3: continue
+            if label not in ("box",):
+                vol_classification[tag] = label
+
+    # Second pass: anything not yet classified is dielectric (leftover from box)
     for dim, tag in final_vols:
-        try:
-            xm, ym, zm = gmsh.model.occ.getCenterOfMass(dim, tag)
-        except:
-            bb = gmsh.model.getBoundingBox(dim, tag)
-            xm = (bb[0]+bb[3])/2; ym = (bb[1]+bb[4])/2; zm = (bb[2]+bb[5])/2
-
-        zm_um = zm / scale
-
-        # Check metals first (most specific)
-        found_metal = False
-        for mid, m in metal_defs.items():
-            z_lo = m["z_um"] - m["thickness_um"]/2
-            z_hi = m["z_um"] + m["thickness_um"]/2
-            if z_lo - 0.5 < zm_um < z_hi + 0.5:
-                # Could be metal or surrounding oxide — check x/y extent
-                bb = gmsh.model.getBoundingBox(dim, tag)
-                vol_dx = (bb[3]-bb[0])/scale
-                vol_dy = (bb[4]-bb[1])/scale
-                domain_dx = (bx1-bx0)/scale
-                domain_dy = (by1-by0)/scale
-                # Metal volumes are smaller than the full domain
-                if vol_dx < domain_dx * 0.8 and vol_dy < domain_dy * 0.8:
-                    vol_classification[tag] = mid
-                    found_metal = True
-                    break
-
-        if not found_metal:
-            if zm_um < (z_metal_min - 1 + 0.5):
-                vol_classification[tag] = "substrate"
-            else:
-                vol_classification[tag] = "dielectric"
+        if tag not in vol_classification:
+            vol_classification[tag] = "dielectric"
 
     # Step 4: Assign physical groups
     tag_pec = 1
