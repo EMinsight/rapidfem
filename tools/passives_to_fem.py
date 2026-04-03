@@ -188,54 +188,55 @@ def main():
     if outer_surfs:
         gmsh.model.addPhysicalGroup(2, outer_surfs, tag_pec, "boundary")
 
-    # Port surfaces: find mesh surfaces closest to port locations
-    # After meshing, find triangles on metal surfaces near port (x,y) coordinates
+    # Port: single lumped port between the two terminals (P1 and P2)
+    # Find the end-face surfaces of each terminal's metal near the port coordinates
     toml_ports = []
-    for port in ports:
-        pname = port["name"]
-        mid = port["metal"]
-        if mid not in metal_defs: continue
-        m = metal_defs[mid]
-        px = port["x_um"] * scale
-        py = port["y_um"] * scale
-        pz = m["z_um"] * scale  # metal center z
+    if len(ports) >= 2:
+        p1 = ports[0]
+        p2 = ports[1]
 
-        # Find the metal volume's boundary surfaces near the port location
-        metal_phys_tag = None
-        for cat, tags in groups.items():
-            if cat == mid:
-                metal_phys_tag = tags
-                break
-
-        if not metal_phys_tag:
-            print(f"  WARNING: port {pname} - metal {mid} not found")
-            continue
-
-        # Get all boundary surfaces of the metal volumes
+        # Collect end-face surfaces near both port locations
         port_surfs = []
-        search_radius = lc * 2
-        for vol_tag in metal_phys_tag:
-            bnd = gmsh.model.getBoundary([(3, vol_tag)], oriented=False)
-            for dim, stag in bnd:
-                if dim != 2: continue
-                if stag in outer_surfs: continue
-                try:
-                    cx, cy, cz = gmsh.model.occ.getCenterOfMass(dim, stag)
-                except:
-                    bb = gmsh.model.getBoundingBox(dim, stag)
-                    cx, cy, cz = (bb[0]+bb[3])/2, (bb[1]+bb[4])/2, (bb[2]+bb[5])/2
-                dist = ((cx - px)**2 + (cy - py)**2)**0.5
-                if dist < search_radius:
-                    port_surfs.append(stag)
+        outer_set = set(outer_surfs)
+        for port_def in [p1, p2]:
+            mid = port_def["metal"]
+            px = port_def["x_um"] * scale
+            py = port_def["y_um"] * scale
+            search_r = lc * 1.5
+
+            for cat, tags in groups.items():
+                if cat != mid: continue
+                for vol_tag in tags:
+                    bnd = gmsh.model.getBoundary([(3, vol_tag)], oriented=False)
+                    for dim, stag in bnd:
+                        if dim != 2 or stag in outer_set: continue
+                        try:
+                            cx, cy, cz = gmsh.model.occ.getCenterOfMass(dim, stag)
+                        except:
+                            bb = gmsh.model.getBoundingBox(dim, stag)
+                            cx, cy, cz = (bb[0]+bb[3])/2, (bb[1]+bb[4])/2, (bb[2]+bb[5])/2
+                        dist = ((cx - px)**2 + (cy - py)**2)**0.5
+                        if dist < search_r:
+                            port_surfs.append(stag)
 
         if port_surfs:
             port_tag = tag_counter; tag_counter += 1
-            gmsh.model.addPhysicalGroup(2, port_surfs, port_tag, pname)
-            print(f"  Port {pname}: {len(port_surfs)} surfaces, tag={port_tag}")
+            gmsh.model.addPhysicalGroup(2, port_surfs, port_tag, "Port")
+            print(f"  Port: {len(port_surfs)} surfaces between {p1['name']} and {p2['name']}, tag={port_tag}")
+
+            # Direction: from P2 to P1
+            dx = p1["x_um"] - p2["x_um"]
+            dy = p1["y_um"] - p2["y_um"]
+            dn = (dx**2 + dy**2)**0.5
+            if dn > 0:
+                direction = [dx/dn, dy/dn, 0]
+            else:
+                direction = [0, 0, 1]
+
             toml_ports.append(dict(type="lumped", tag=port_tag, z0=sim["z0"],
-                                   direction=[0, 0, 1], power=1.0))
+                                   direction=direction, power=1.0))
         else:
-            print(f"  WARNING: port {pname} - no surfaces found near ({port['x_um']:.1f}, {port['y_um']:.1f})")
+            print(f"  WARNING: no port surfaces found")
 
     # Step 5: Mesh with refinement near metals
     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", lc)

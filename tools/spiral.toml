@@ -43,13 +43,7 @@ conductivity = 0.000000e+00
 type = "lumped"
 tag = 15
 z0 = 50
-direction = [0, 0, 1]
-
-[[ports]]
-type = "lumped"
-tag = 16
-z0 = 50
-direction = [0, 0, 1]
+direction = [0.9325680982740896, 0.3609941025577122, 0]
 
 [pec]
 tags = [1]
