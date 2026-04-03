@@ -242,19 +242,8 @@ fn main() {
                 ).expect("Failed to write size field");
                 eprintln!("Wrote size field: {}", size_path);
 
-                // Optionally re-mesh with gmsh
-                if adaptive.remesh {
-                    let refined_path = config.mesh.file.replace(".msh", "_refined.msh");
-                    match rapidfem::error_estimator::remesh_with_gmsh(
-                        &config.mesh.file, &size_path, &refined_path,
-                    ) {
-                        Ok(()) => eprintln!("Re-meshed: {}", refined_path),
-                        Err(e) => eprintln!("Re-mesh failed: {}", e),
-                    }
-                } else {
-                    eprintln!("To re-mesh: gmsh {} -bgm {} -3 -o {}_refined.msh",
-                        config.mesh.file, size_path, config.mesh.file.replace(".msh", ""));
-                }
+                eprintln!("To refine, load the size field in your gmsh script:");
+                eprintln!("  gmsh.merge(\"{}\")  // then set as background field", size_path);
             }
         }
     }
