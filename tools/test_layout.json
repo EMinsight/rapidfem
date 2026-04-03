@@ -1,0 +1,35 @@
+{
+  "stack": {
+    "substrate_eps_r": 11.7,
+    "substrate_rho": 10,
+    "oxide_eps_r": 4.0,
+    "metals": [
+      {"name": "m2", "z_um": 302.25, "thickness_um": 0.5, "rsh": 0.03},
+      {"name": "m3", "z_um": 303.7, "thickness_um": 1.2, "rsh": 0.01}
+    ]
+  },
+  "layers": [
+    {
+      "metal": "m3",
+      "polygons": [
+        [[-30, -5], [30, -5], [30, 5], [-30, 5]]
+      ]
+    },
+    {
+      "metal": "m2",
+      "polygons": [
+        [[-20, -3], [20, -3], [20, 3], [-20, 3]]
+      ]
+    }
+  ],
+  "ports": [
+    {"name": "P1", "metal": "m3", "x_um": -30, "y_um": 0},
+    {"name": "P2", "metal": "m3", "x_um": 30, "y_um": 0}
+  ],
+  "sim": {
+    "f_min": 1e9,
+    "f_max": 20e9,
+    "n_points": 11,
+    "z0": 50
+  }
+}
