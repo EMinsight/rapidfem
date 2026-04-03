@@ -18,6 +18,125 @@ pub struct ErrorEstimate {
     pub marked_elements: Vec<usize>,
 }
 
+/// Write a gmsh background mesh size field (.pos file).
+///
+/// For each element, computes a target size based on the error indicator:
+/// - Marked elements: current_h * refinement_ratio
+/// - Unmarked elements: keep current size
+///
+/// Usage: `gmsh model.geo -bgm size_field.pos -3 -o refined.msh`
+pub fn write_size_field(
+    path: &str,
+    mesh: &Mesh,
+    estimate: &ErrorEstimate,
+    refinement_ratio: f64,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+
+    let n_tets = mesh.n_tets();
+    let marked_set: std::collections::HashSet<usize> = estimate.marked_elements.iter().copied().collect();
+
+    // Compute current element size (max edge length) per tet
+    let h_k: Vec<f64> = (0..n_tets).map(|itet| {
+        let edges = &mesh.tet_to_edge[itet];
+        edges.iter().map(|&ei| mesh.edge_lengths[ei]).fold(0.0f64, f64::max)
+    }).collect();
+
+    // Compute target size per node (minimum of adjacent elements)
+    let n_nodes = mesh.n_nodes();
+    let mut node_size = vec![f64::INFINITY; n_nodes];
+
+    for itet in 0..n_tets {
+        let target = if marked_set.contains(&itet) {
+            h_k[itet] * refinement_ratio
+        } else {
+            h_k[itet]
+        };
+        for &ni in &mesh.tets[itet] {
+            node_size[ni] = node_size[ni].min(target);
+        }
+    }
+
+    // Write gmsh .pos format (View "size" with SP = scalar point)
+    writeln!(file, "View \"size\" {{")?;
+    for ni in 0..n_nodes {
+        let p = mesh.nodes[ni];
+        let s = node_size[ni];
+        if s < f64::INFINITY {
+            writeln!(file, "SP({:.10e},{:.10e},{:.10e}){{{:.10e}}};", p[0], p[1], p[2], s)?;
+        }
+    }
+    writeln!(file, "}};")?;
+
+    Ok(())
+}
+
+/// Re-mesh using gmsh with the background size field.
+///
+/// Tries gmsh CLI first, then Python gmsh API as fallback.
+pub fn remesh_with_gmsh(
+    original_msh: &str,
+    size_field_path: &str,
+    output_msh: &str,
+) -> Result<(), String> {
+    use std::process::Command;
+
+    // Python script: load mesh, refine marked elements, save
+    // Uses gmsh's mesh.refine() which splits all tets,
+    // then we filter by the size field to only keep refinement where needed.
+    // Simpler approach: just refine globally and let the size field guide the next iteration.
+    let script = format!(r#"
+import gmsh
+gmsh.initialize()
+gmsh.option.setNumber("General.Terminal", 1)
+gmsh.open("{msh}")
+gmsh.merge("{pos}")
+
+# Set background field from the size view
+bg = gmsh.model.mesh.field.add("PostView")
+gmsh.model.mesh.field.setNumber(bg, "ViewIndex", 0)
+gmsh.model.mesh.field.setAsBackgroundMesh(bg)
+
+# Re-create geometry from mesh for re-meshing
+gmsh.model.mesh.createGeometry()
+gmsh.model.occ.synchronize()
+
+# Disable default sizing
+gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+# Re-mesh
+gmsh.model.mesh.generate(3)
+gmsh.write("{out}")
+gmsh.finalize()
+"#,
+        msh = original_msh.replace('\\', "/"),
+        pos = size_field_path.replace('\\', "/"),
+        out = output_msh.replace('\\', "/"),
+    );
+
+    let script_path = output_msh.replace(".msh", "_remesh.py");
+    std::fs::write(&script_path, &script)
+        .map_err(|e| format!("Cannot write remesh script: {}", e))?;
+
+    // Try python with gmsh module
+    let result = Command::new("python")
+        .args([&script_path])
+        .output()
+        .or_else(|_| Command::new("python3").args([&script_path]).output())
+        .map_err(|e| format!("Cannot run python: {}", e))?;
+
+    let _ = std::fs::remove_file(&script_path);
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("gmsh remesh failed: {}", stderr));
+    }
+
+    Ok(())
+}
+
 /// Evaluate curl(E) at a point inside a known tetrahedron.
 ///
 /// For Nedelec-2: edge mode curls are constant per tet,

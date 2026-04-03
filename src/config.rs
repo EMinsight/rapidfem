@@ -26,9 +26,14 @@ pub struct Config {
 pub struct AdaptiveConfig {
     #[serde(default = "default_theta")]
     pub theta: f64,
+    #[serde(default = "default_refinement_ratio")]
+    pub refinement_ratio: f64,
+    #[serde(default)]
+    pub remesh: bool,
 }
 
 fn default_theta() -> f64 { 0.5 }
+fn default_refinement_ratio() -> f64 { 0.5 }
 
 #[derive(Deserialize)]
 pub struct EigenmodeConfig {

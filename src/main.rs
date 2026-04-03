@@ -234,6 +234,27 @@ fn main() {
                 rapidfem::vtk_export::write_vtk_error(&error_path, &mesh, &estimate)
                     .expect("Failed to write error VTK");
                 eprintln!("Wrote error VTK: {}", error_path);
+
+                // Write gmsh size field
+                let size_path = config.mesh.file.replace(".msh", "_size.pos");
+                rapidfem::error_estimator::write_size_field(
+                    &size_path, &mesh, &estimate, adaptive.refinement_ratio,
+                ).expect("Failed to write size field");
+                eprintln!("Wrote size field: {}", size_path);
+
+                // Optionally re-mesh with gmsh
+                if adaptive.remesh {
+                    let refined_path = config.mesh.file.replace(".msh", "_refined.msh");
+                    match rapidfem::error_estimator::remesh_with_gmsh(
+                        &config.mesh.file, &size_path, &refined_path,
+                    ) {
+                        Ok(()) => eprintln!("Re-meshed: {}", refined_path),
+                        Err(e) => eprintln!("Re-mesh failed: {}", e),
+                    }
+                } else {
+                    eprintln!("To re-mesh: gmsh {} -bgm {} -3 -o {}_refined.msh",
+                        config.mesh.file, size_path, config.mesh.file.replace(".msh", ""));
+                }
             }
         }
     }
