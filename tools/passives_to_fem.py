@@ -108,13 +108,13 @@ def main():
             vol = [e for e in ext if e[0] == 3][0]
             metal_vol_tags[mid].append(vol)
 
-    # Step 2: Fragment ALL volumes for conformal mesh
+    # Step 2: Fragment ALL volumes for conformal mesh (ports handled post-mesh)
     all_vols = [(3, box_tag), (3, sub_tag)]
     for vols in metal_vol_tags.values():
         all_vols.extend(vols)
 
     # Track which original volume each input maps to
-    # all_vols[0] = box, [1] = substrate, [2:] = metals per layer
+    # all_vols[0] = box, [1] = substrate, [2:] = metals per layer, then ports
     original_labels = ["box", "substrate"]
     for layer in layers:
         mid = layer["metal"]
@@ -123,7 +123,7 @@ def main():
             if len(_) >= 3:
                 original_labels.append(mid)
 
-    print(f"Fragmenting {len(all_vols)} volumes...")
+    print(f"Fragmenting {len(all_vols)} volumes ({len(original_labels)} labels)...")
     result, result_map = gmsh.model.occ.fragment([all_vols[0]], all_vols[1:])
     gmsh.model.occ.synchronize()
 
@@ -188,6 +188,55 @@ def main():
     if outer_surfs:
         gmsh.model.addPhysicalGroup(2, outer_surfs, tag_pec, "boundary")
 
+    # Port surfaces: find mesh surfaces closest to port locations
+    # After meshing, find triangles on metal surfaces near port (x,y) coordinates
+    toml_ports = []
+    for port in ports:
+        pname = port["name"]
+        mid = port["metal"]
+        if mid not in metal_defs: continue
+        m = metal_defs[mid]
+        px = port["x_um"] * scale
+        py = port["y_um"] * scale
+        pz = m["z_um"] * scale  # metal center z
+
+        # Find the metal volume's boundary surfaces near the port location
+        metal_phys_tag = None
+        for cat, tags in groups.items():
+            if cat == mid:
+                metal_phys_tag = tags
+                break
+
+        if not metal_phys_tag:
+            print(f"  WARNING: port {pname} - metal {mid} not found")
+            continue
+
+        # Get all boundary surfaces of the metal volumes
+        port_surfs = []
+        search_radius = lc * 2
+        for vol_tag in metal_phys_tag:
+            bnd = gmsh.model.getBoundary([(3, vol_tag)], oriented=False)
+            for dim, stag in bnd:
+                if dim != 2: continue
+                if stag in outer_surfs: continue
+                try:
+                    cx, cy, cz = gmsh.model.occ.getCenterOfMass(dim, stag)
+                except:
+                    bb = gmsh.model.getBoundingBox(dim, stag)
+                    cx, cy, cz = (bb[0]+bb[3])/2, (bb[1]+bb[4])/2, (bb[2]+bb[5])/2
+                dist = ((cx - px)**2 + (cy - py)**2)**0.5
+                if dist < search_radius:
+                    port_surfs.append(stag)
+
+        if port_surfs:
+            port_tag = tag_counter; tag_counter += 1
+            gmsh.model.addPhysicalGroup(2, port_surfs, port_tag, pname)
+            print(f"  Port {pname}: {len(port_surfs)} surfaces, tag={port_tag}")
+            toml_ports.append(dict(type="lumped", tag=port_tag, z0=sim["z0"],
+                                   direction=[0, 0, 1], power=1.0))
+        else:
+            print(f"  WARNING: port {pname} - no surfaces found near ({port['x_um']:.1f}, {port['y_um']:.1f})")
+
     # Step 5: Mesh with refinement near metals
     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", lc)
     gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc_metal * 0.5)
@@ -208,14 +257,6 @@ def main():
 
     # Step 6: Write TOML config
     toml_path = f"{args.output}.toml"
-    toml_ports = []
-    for port in ports:
-        mid = port["metal"]
-        if mid not in metal_defs: continue
-        port_tag = tag_counter; tag_counter += 1
-        toml_ports.append(dict(type="lumped", tag=port_tag, z0=sim["z0"],
-                               direction=[0,0,1], width=0, height=0, power=1.0))
-
     with open(toml_path, "w") as f:
         f.write(f'[mesh]\nfile = "{msh_path}"\n\n')
 
