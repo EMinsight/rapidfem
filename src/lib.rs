@@ -15,6 +15,7 @@ pub mod port;
 pub mod touchstone;
 pub mod csym_ldlt;
 pub mod pardiso;
+#[cfg(feature = "vtk")]
 pub mod vtk_export;
 pub mod error_estimator;
 pub mod eigenmode;

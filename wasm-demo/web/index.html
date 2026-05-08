@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>rapidfem — WR-90 Browser Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1 { font-size: 1.4em; margin-bottom: 0.2em; }
+    .sub { color: #666; margin-bottom: 1.2em; }
+    button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
+    button:disabled { cursor: progress; opacity: 0.6; }
+    canvas { display: block; border: 1px solid #ccc; margin-top: 1em; background: #fafafa; }
+    pre { background: #f3f3f3; padding: 0.6em 0.9em; font-size: 0.85em; overflow-x: auto; }
+    .ok { color: #060; }
+    .err { color: #a00; }
+  </style>
+</head>
+<body>
+  <h1>rapidfem — WR-90 straight waveguide</h1>
+  <div class="sub">FEM-solved S-parameters across 9–11 GHz, computed in your browser via WebAssembly.</div>
+
+  <button id="run">Run sweep</button>
+  <span id="status" style="margin-left: 1em;"></span>
+
+  <canvas id="plot" width="720" height="320"></canvas>
+
+  <pre id="log"></pre>
+
+  <script type="module">
+    import init, { run_sweep } from "../pkg/rapidfem_wasm.js";
+
+    const log = (msg, cls = "") => {
+      const el = document.getElementById("log");
+      el.textContent += (cls ? `[${cls}] ` : "") + msg + "\n";
+    };
+
+    const plotS = (freqs_hz, s11, s21) => {
+      const c = document.getElementById("plot");
+      const ctx = c.getContext("2d");
+      ctx.clearRect(0, 0, c.width, c.height);
+
+      const xMin = Math.min(...freqs_hz), xMax = Math.max(...freqs_hz);
+      const yMin = 0, yMax = 1.05;
+      const padL = 50, padR = 14, padT = 14, padB = 28;
+      const W = c.width - padL - padR, H = c.height - padT - padB;
+      const xT = f => padL + ((f - xMin) / (xMax - xMin)) * W;
+      const yT = v => padT + (1 - (v - yMin) / (yMax - yMin)) * H;
+
+      // axes + gridlines
+      ctx.strokeStyle = "#ddd";
+      ctx.lineWidth = 1;
+      for (let v = 0; v <= 1.0; v += 0.2) {
+        ctx.beginPath(); ctx.moveTo(padL, yT(v)); ctx.lineTo(padL + W, yT(v)); ctx.stroke();
+        ctx.fillStyle = "#666"; ctx.font = "11px sans-serif";
+        ctx.fillText(v.toFixed(1), 14, yT(v) + 4);
+      }
+      ctx.fillStyle = "#666";
+      for (let i = 0; i <= 4; i++) {
+        const f = xMin + ((xMax - xMin) * i) / 4;
+        ctx.fillText((f / 1e9).toFixed(2) + " GHz", xT(f) - 22, padT + H + 18);
+      }
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
+      ctx.strokeRect(padL, padT, W, H);
+
+      const drawTrace = (vals, color, label, labelX) => {
+        ctx.strokeStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < freqs_hz.length; i++) {
+          const x = xT(freqs_hz[i]), y = yT(vals[i]);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.fillStyle = color; ctx.font = "13px sans-serif";
+        ctx.fillText(label, labelX, padT + 16);
+      };
+
+      drawTrace(s21, "#1565c0", "|S21|", padL + W - 56);
+      drawTrace(s11, "#c62828", "|S11|", padL + W - 120);
+    };
+
+    document.getElementById("run").addEventListener("click", async () => {
+      const btn = document.getElementById("run");
+      const status = document.getElementById("status");
+      btn.disabled = true; status.textContent = "loading WASM…";
+      try {
+        await init();
+        status.textContent = "fetching mesh…";
+        const meshBytes = new Uint8Array(await (await fetch("./wr90_straight.msh")).arrayBuffer());
+        const configToml = await (await fetch("./wr90.toml")).text();
+
+        status.textContent = "solving…";
+        const t0 = performance.now();
+        const result = run_sweep(meshBytes, configToml);
+        const dt = ((performance.now() - t0) / 1000).toFixed(2);
+
+        const n_freq = result.frequencies_hz.length;
+        const n_driven = result.n_driven;
+        const stride = n_driven * n_driven * 2;
+        const s11 = new Array(n_freq);
+        const s21 = new Array(n_freq);
+        for (let k = 0; k < n_freq; k++) {
+          const re11 = result.sparams_flat[k * stride + 0];
+          const im11 = result.sparams_flat[k * stride + 1];
+          // Index of (obs=1, exc=0) in row-major [obs][exc]: 1*n_driven + 0 = n_driven
+          const re21 = result.sparams_flat[k * stride + 2 * n_driven];
+          const im21 = result.sparams_flat[k * stride + 2 * n_driven + 1];
+          s11[k] = Math.hypot(re11, im11);
+          s21[k] = Math.hypot(re21, im21);
+        }
+
+        plotS(result.frequencies_hz, s11, s21);
+        log(`solved ${n_freq} frequencies in ${dt}s (FEM-side ${result.solve_time_s.toFixed(3)}s)`, "OK");
+        log(`max |S11| = ${Math.max(...s11).toExponential(3)}, min |S21| = ${Math.min(...s21).toFixed(4)}`);
+        status.innerHTML = '<span class="ok">done</span>';
+      } catch (e) {
+        log("ERROR: " + e, "err");
+        status.innerHTML = '<span class="err">failed</span>';
+        console.error(e);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

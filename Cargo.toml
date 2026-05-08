@@ -4,15 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["pardiso", "parallel"]
+default = ["pardiso", "parallel", "vtk"]
 # PARDISO via dynamically loaded MKL — disabled for WASM (no libloading) or non-x86 hosts.
 pardiso = ["dep:libloading"]
 # rayon-based parallel assembly — disabled for WASM single-thread builds.
 parallel = ["dep:rayon"]
+# VTK field/error export — pulls in xz2/lzma-sys (C dep), disable for WASM.
+vtk = ["dep:vtkio"]
 
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
-faer = "0.24.0"
+faer = { version = "0.24.0", default-features = false, features = ["std", "sparse-linalg"] }
 hashbrown = "0.16.1"
 libloading = { version = "0.9.0", optional = true }
 mshio = "0.4.2"
@@ -21,4 +23,4 @@ rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 sprs = "0.11.4"
 toml = "1.1.2"
-vtkio = "0.6.3"
+vtkio = { version = "0.6.3", optional = true }

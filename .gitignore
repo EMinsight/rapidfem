@@ -25,3 +25,7 @@ python/python_src/rapidfem/rapidfem.*
 python/dist/
 python/*.egg-info/
 .maturin/
+
+# WASM
+wasm-demo/target/
+wasm-demo/pkg/
