@@ -89,6 +89,32 @@ pub fn compute_farfield_with_input(
     gq_order: usize,
     radiation_efficiency: Option<f64>,
 ) -> RadiationPattern {
+    compute_farfield_full(mesh, basis, solution, nfft_tri_ids, &[], frequency,
+                          n_theta, n_phi, gq_order, radiation_efficiency)
+}
+
+/// Full-fidelity far-field with separate ABC (radiation) and PEC (image-closing) surfaces.
+///
+/// On the ABC surface, both J_s = n̂×H and M_s = -n̂×E contribute (radiating equivalence).
+/// On PEC surfaces, tangential E = 0 by construction so M_s = 0 — only J_s = n̂×H from the
+/// air-side is included. Adding the PEC surface CLOSES the integration boundary around the
+/// antenna, eliminating the phantom back lobe that an open-surface NFFT produces over a
+/// half-space antenna with a finite ground plane.
+///
+/// `nfft_tri_ids`: open radiating surface (typically ABC tri tags).
+/// `pec_tri_ids`: PEC closing surfaces (ground, side walls); empty = no closure.
+pub fn compute_farfield_full(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    solution: &[C64],
+    nfft_tri_ids: &[usize],
+    pec_tri_ids: &[usize],
+    frequency: f64,
+    n_theta: usize,
+    n_phi: usize,
+    gq_order: usize,
+    radiation_efficiency: Option<f64>,
+) -> RadiationPattern {
     let k0 = 2.0 * PI * frequency / C0;
     let omega = 2.0 * PI * frequency;
     let j = C64::new(0.0, 1.0);
@@ -109,18 +135,22 @@ pub fn compute_farfield_with_input(
     let mut e_phi = vec![vec![C64::new(0.0, 0.0); n_theta]; n_phi];
 
     // Precompute surface data: for each triangle, store quadrature point data
-    // (position, E-field, H-field, normal, area*weight)
+    // (position, E-field, H-field, normal, area*weight, is_pec)
     struct SurfPoint {
         pos: [f64; 3],
         e: [C64; 3],
         h: [C64; 3],
         normal: [f64; 3],
-        aw: f64, // area * quadrature weight
+        aw: f64,    // area * quadrature weight
+        is_pec: bool, // true → M_s = 0 (tangential E = 0 on PEC by construction)
     }
 
     let mut surf_data: Vec<SurfPoint> = Vec::new();
+    let all_tris: Vec<(usize, bool)> = nfft_tri_ids.iter().map(|&t| (t, false))
+        .chain(pec_tri_ids.iter().map(|&t| (t, true)))
+        .collect();
 
-    for &tri_idx in nfft_tri_ids {
+    for &(tri_idx, is_pec) in &all_tris {
         let tri = mesh.tris[tri_idx];
         let v0 = mesh.nodes[tri[0]];
         let v1 = mesh.nodes[tri[1]];
@@ -190,13 +220,14 @@ pub fn compute_farfield_with_input(
                     h: [hx, hy, hz],
                     normal,
                     aw: area * w,
+                    is_pec,
                 });
             }
         }
     }
 
-    eprintln!("  Far-field: {} surface integration points on {} triangles",
-        surf_data.len(), nfft_tri_ids.len());
+    eprintln!("  Far-field: {} surface integration points ({} ABC tris + {} PEC tris)",
+        surf_data.len(), nfft_tri_ids.len(), pec_tri_ids.len());
 
     // Compute far-field for each (theta, phi) direction
     let mut total_power = 0.0;
@@ -230,10 +261,18 @@ pub fn compute_farfield_with_input(
                 let jy = C64::from(sp.normal[2])*sp.h[0] - C64::from(sp.normal[0])*sp.h[2];
                 let jz = C64::from(sp.normal[0])*sp.h[1] - C64::from(sp.normal[1])*sp.h[0];
 
-                // M_s = -n̂ × E
-                let mx = -(C64::from(sp.normal[1])*sp.e[2] - C64::from(sp.normal[2])*sp.e[1]);
-                let my = -(C64::from(sp.normal[2])*sp.e[0] - C64::from(sp.normal[0])*sp.e[2]);
-                let mz = -(C64::from(sp.normal[0])*sp.e[1] - C64::from(sp.normal[1])*sp.e[0]);
+                // M_s = -n̂ × E. On PEC, tangential E = 0 by definition, so M_s ≡ 0.
+                // Skipping the FEM-interpolated value avoids spurious contributions from
+                // small numerical residue near the boundary.
+                let (mx, my, mz) = if sp.is_pec {
+                    (C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0))
+                } else {
+                    (
+                        -(C64::from(sp.normal[1])*sp.e[2] - C64::from(sp.normal[2])*sp.e[1]),
+                        -(C64::from(sp.normal[2])*sp.e[0] - C64::from(sp.normal[0])*sp.e[2]),
+                        -(C64::from(sp.normal[0])*sp.e[1] - C64::from(sp.normal[1])*sp.e[0]),
+                    )
+                };
 
                 // Project onto θ̂ and φ̂
                 let j_t = jx*C64::from(theta_hat[0]) + jy*C64::from(theta_hat[1]) + jz*C64::from(theta_hat[2]);

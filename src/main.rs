@@ -563,8 +563,14 @@ fn main() {
                         (1.0 - s11_sq).clamp(0.0, 1.0)
                     });
 
-                    let pattern = rapidfem::farfield::compute_farfield_with_input(
-                        &mesh, &basis, first_sol, &nfft_tris,
+                    // Include PEC surfaces in NFFT to close the integration boundary.
+                    // On PEC, tangential E = 0 → M_s = 0; only J_s = n̂×H contributes.
+                    let pec_nfft_tris: Vec<usize> = config.pec.tags.iter()
+                        .flat_map(|&t| mesh.tris_for_tag(t).to_vec())
+                        .collect();
+
+                    let pattern = rapidfem::farfield::compute_farfield_full(
+                        &mesh, &basis, first_sol, &nfft_tris, &pec_nfft_tris,
                         frequencies[0], 91, 72, 4, efficiency,
                     );
 
