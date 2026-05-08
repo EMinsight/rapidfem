@@ -74,3 +74,98 @@ pub fn build_material_tensors(
 
     (er, ur)
 }
+
+/// PML (Perfectly Matched Layer) region — port of geo/pmlbox.py.
+///
+/// Absorbing layer using anisotropic complex coordinate-stretched material tensors:
+///   sₐ(coord) = 1 - j · u(coord)^n · δmax,  u = (coord - inner_face)·sign / thickness
+///   ε_aa = εr · (s_b · s_c) / s_a   (and cyclic for the orthogonal pair)
+///
+/// Stretch is applied along `direction` (one of ±x̂, ±ŷ, ±ẑ). `inner_face` is the coordinate
+/// of the PML's inner boundary along that direction; `thickness` extends outward from there.
+/// Stretch factors in the orthogonal directions remain 1 (uniaxial PML).
+pub struct PmlRegion {
+    /// Tets that belong to this PML region
+    pub tet_indices: Vec<usize>,
+    /// Base relative permittivity (real)
+    pub er_base: f64,
+    /// Base relative permeability (real)
+    pub ur_base: f64,
+    /// Direction the layer absorbs: e.g. (1,0,0) for +x face PML, (0,0,-1) for -z
+    pub direction: [f64; 3],
+    /// Coordinate of the inner face along the absorption direction (m)
+    pub inner_face: f64,
+    /// PML layer thickness (m)
+    pub thickness: f64,
+    /// Stretch profile exponent (typical 1.5 - 3.0)
+    pub exponent: f64,
+    /// Maximum stretch magnitude δmax (typical 5 - 12)
+    pub delta_max: f64,
+}
+
+impl PmlRegion {
+    /// Stretch factors (s_x, s_y, s_z) at a point (x,y,z).
+    pub fn stretch(&self, x: f64, y: f64, z: f64) -> [C64; 3] {
+        let d = self.direction;
+        let (axis, sign) = if d[0].abs() > d[1].abs() && d[0].abs() > d[2].abs() {
+            (0, d[0].signum())
+        } else if d[1].abs() > d[2].abs() {
+            (1, d[1].signum())
+        } else {
+            (2, d[2].signum())
+        };
+        let coord = [x, y, z][axis];
+        let u_raw = sign * (coord - self.inner_face) / self.thickness;
+        let u = u_raw.max(0.0);  // clamp inside the PML
+        let s_d = C64::new(1.0, 0.0) - C64::new(0.0, 1.0) * C64::from(u.powf(self.exponent) * self.delta_max);
+        let mut s = [C64::new(1.0, 0.0); 3];
+        s[axis] = s_d;
+        s
+    }
+
+    /// Anisotropic εr / μr tensors at a tet centroid.
+    pub fn material_tensors_at(&self, x: f64, y: f64, z: f64) -> ([[C64; 3]; 3], [[C64; 3]; 3]) {
+        let s = self.stretch(x, y, z);
+        // Diagonal: ε_aa = εr · (s_b · s_c) / s_a
+        let mut er_t = [[C64::new(0.0, 0.0); 3]; 3];
+        let mut ur_t = [[C64::new(0.0, 0.0); 3]; 3];
+        for a in 0..3 {
+            let b = (a + 1) % 3;
+            let c = (a + 2) % 3;
+            let factor = (s[b] * s[c]) / s[a];
+            er_t[a][a] = C64::from(self.er_base) * factor;
+            ur_t[a][a] = C64::from(self.ur_base) * factor;
+        }
+        (er_t, ur_t)
+    }
+}
+
+/// Build per-tet εr and μr tensors with PML overrides.
+///
+/// First runs `build_material_tensors` on regular materials, then for every tet in any PML
+/// region OVERWRITES the tensor with the coordinate-stretched anisotropic value evaluated at
+/// the tet centroid. (PML regions take precedence over isotropic materials.)
+pub fn build_material_tensors_with_pml(
+    n_tets: usize,
+    materials: &[Material],
+    pml_regions: &[PmlRegion],
+    mesh: &crate::mesh::Mesh,
+    frequency: f64,
+) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
+    let (mut er, mut ur) = build_material_tensors(n_tets, materials, frequency);
+    for region in pml_regions {
+        for &ti in &region.tet_indices {
+            let tet = &mesh.tets[ti];
+            let cx = (mesh.nodes[tet[0]][0] + mesh.nodes[tet[1]][0]
+                + mesh.nodes[tet[2]][0] + mesh.nodes[tet[3]][0]) * 0.25;
+            let cy = (mesh.nodes[tet[0]][1] + mesh.nodes[tet[1]][1]
+                + mesh.nodes[tet[2]][1] + mesh.nodes[tet[3]][1]) * 0.25;
+            let cz = (mesh.nodes[tet[0]][2] + mesh.nodes[tet[1]][2]
+                + mesh.nodes[tet[2]][2] + mesh.nodes[tet[3]][2]) * 0.25;
+            let (er_t, ur_t) = region.material_tensors_at(cx, cy, cz);
+            er[ti] = er_t;
+            ur[ti] = ur_t;
+        }
+    }
+    (er, ur)
+}

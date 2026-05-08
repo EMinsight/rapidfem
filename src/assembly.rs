@@ -35,13 +35,30 @@ pub fn assemble_and_solve(
     freq: f64,
     materials: Option<&[crate::materials::Material]>,
 ) -> SolveResult {
+    assemble_and_solve_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, freq, materials, None)
+}
+
+pub fn assemble_and_solve_with_pml(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    ports: &[&dyn Port],
+    port_tri_indices: &[&[usize]],
+    pec_tri_indices: &[usize],
+    freq: f64,
+    materials: Option<&[crate::materials::Material]>,
+    pml_regions: Option<&[crate::materials::PmlRegion]>,
+) -> SolveResult {
     let c0 = crate::constants::C0;
     let k0 = 2.0 * PI * freq / c0;
     let n_field = basis.n_field;
     let n_tets = mesh.n_tets();
 
     // Step 1: Build material tensors (exact port of assembler.py lines 280-303)
-    let (er, ur) = if let Some(mats) = materials {
+    let (er, ur) = if let Some(pml) = pml_regions {
+        crate::materials::build_material_tensors_with_pml(
+            n_tets, materials.unwrap_or(&[]), pml, mesh, freq,
+        )
+    } else if let Some(mats) = materials {
         crate::materials::build_material_tensors(n_tets, mats, freq)
     } else {
         // Default: air (identity tensors)
@@ -198,8 +215,11 @@ pub fn assemble_and_solve(
     }
     eprintln!("  COO: {} entries, built in {:.1}ms", coo_rows.len(), t2.elapsed().as_secs_f64()*1e3);
 
-    // Try PARDISO first, fall back to faer
-    let solutions = if let Some(ref mut pardiso) = crate::pardiso::PardisoSolver::try_new() {
+    // Try PARDISO first, fall back to faer. RAPIDFEM_SOLVER=faer forces faer (useful for
+    // anisotropic-complex problems like PML where PARDISO has occasionally crashed on Windows).
+    let force_faer = std::env::var("RAPIDFEM_SOLVER").map(|v| v == "faer").unwrap_or(false);
+    let pardiso_opt = if force_faer { None } else { crate::pardiso::PardisoSolver::try_new() };
+    let solutions = if let Some(mut pardiso) = pardiso_opt {
         // Build upper-triangle CSR for PARDISO (mtype=6: complex symmetric)
         let t_par = std::time::Instant::now();
         let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
@@ -279,9 +299,26 @@ pub fn frequency_sweep(
     frequencies: &[f64],
     materials: Option<&[crate::materials::Material]>,
 ) -> Vec<SolveResult> {
+    frequency_sweep_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, frequencies, materials, None)
+}
+
+pub fn frequency_sweep_with_pml(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    ports: &[&dyn Port],
+    port_tri_indices: &[&[usize]],
+    pec_tri_indices: &[usize],
+    frequencies: &[f64],
+    materials: Option<&[crate::materials::Material]>,
+    pml_regions: Option<&[crate::materials::PmlRegion]>,
+) -> Vec<SolveResult> {
     // Cache E, B for frequency-independent materials
     let n_tets = mesh.n_tets();
-    let (er, ur) = if let Some(mats) = materials {
+    let (er, ur) = if let Some(pml) = pml_regions {
+        crate::materials::build_material_tensors_with_pml(
+            n_tets, materials.unwrap_or(&[]), pml, mesh, frequencies[0],
+        )
+    } else if let Some(mats) = materials {
         crate::materials::build_material_tensors(n_tets, mats, frequencies[0])
     } else {
         let identity: [[C64; 3]; 3] = [
@@ -331,8 +368,9 @@ pub fn frequency_sweep(
         })
         .collect();
 
-    // Try PARDISO first, faer as fallback
-    let mut pardiso_solver = crate::pardiso::PardisoSolver::try_new();
+    // Try PARDISO first, faer as fallback. RAPIDFEM_SOLVER=faer forces faer.
+    let force_faer_sweep = std::env::var("RAPIDFEM_SOLVER").map(|v| v == "faer").unwrap_or(false);
+    let mut pardiso_solver = if force_faer_sweep { None } else { crate::pardiso::PardisoSolver::try_new() };
     let mut pardiso_analyzed = false;
     let mut symbolic_lu: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>> = None;
 

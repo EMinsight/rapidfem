@@ -19,6 +19,8 @@ pub struct Config {
     #[serde(default)]
     pub eigenmode: Option<EigenmodeConfig>,
     #[serde(default)]
+    pub pml: Vec<PmlConfig>,
+    #[serde(default)]
     pub output: OutputConfig,
 }
 
@@ -201,6 +203,30 @@ pub enum PortConfig {
         zs: Option<[f64; 2]>,
     },
 }
+
+/// Perfectly Matched Layer region. Tets in `volume_tag` get coordinate-stretched
+/// anisotropic ε/μ tensors evaluated at each tet centroid. `direction` selects which
+/// face the layer absorbs (e.g. [1,0,0] for the +x boundary, [0,0,-1] for -z).
+/// `inner_face` is the coordinate of the PML's inner boundary along that axis;
+/// `thickness` extends outward from there.
+#[derive(Deserialize)]
+pub struct PmlConfig {
+    pub volume_tag: i32,
+    pub direction: [f64; 3],
+    pub inner_face: f64,
+    pub thickness: f64,
+    #[serde(default = "default_one")]
+    pub er_base: f64,
+    #[serde(default = "default_one")]
+    pub ur_base: f64,
+    #[serde(default = "default_pml_exponent")]
+    pub exponent: f64,
+    #[serde(default = "default_pml_delta_max")]
+    pub delta_max: f64,
+}
+
+fn default_pml_exponent() -> f64 { 1.5 }
+fn default_pml_delta_max() -> f64 { 8.0 }
 
 #[derive(Deserialize)]
 pub struct MaterialConfig {

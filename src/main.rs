@@ -4,7 +4,7 @@ use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
 use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, CoaxPort, UserDefinedPort, FloquetPort, detect_rect_port, lumped_port_dims, cs_from_origin_zaxis};
 use rapidfem::port::Port;
-use rapidfem::assembly::frequency_sweep;
+use rapidfem::assembly::frequency_sweep_with_pml;
 use rapidfem::sparam::{sparam_waveport, sparam_voltage_line};
 use rapidfem::interp;
 use rapidfem::constants::*;
@@ -260,11 +260,36 @@ fn main() {
         }
     }
 
+    // PML regions
+    let pml_regions: Vec<rapidfem::materials::PmlRegion> = config.pml.iter().map(|pc| {
+        let tet_indices = mesh.vtag_to_tet.get(&pc.volume_tag)
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        if tet_indices.is_empty() {
+            eprintln!("  WARNING: PML volume tag {} has no tets", pc.volume_tag);
+        } else {
+            eprintln!("  PML: tag={}, dir=({:.0},{:.0},{:.0}), inner={:.3}m, t={:.3}m, n={:.1}, δmax={:.1}, {} tets",
+                pc.volume_tag, pc.direction[0], pc.direction[1], pc.direction[2],
+                pc.inner_face, pc.thickness, pc.exponent, pc.delta_max, tet_indices.len());
+        }
+        rapidfem::materials::PmlRegion {
+            tet_indices,
+            er_base: pc.er_base,
+            ur_base: pc.ur_base,
+            direction: pc.direction,
+            inner_face: pc.inner_face,
+            thickness: pc.thickness,
+            exponent: pc.exponent,
+            delta_max: pc.delta_max,
+        }
+    }).collect();
+    let pml_opt = if pml_regions.is_empty() { None } else { Some(pml_regions.as_slice()) };
+
     // Solve
     let t0 = std::time::Instant::now();
-    let results = frequency_sweep(
+    let results = frequency_sweep_with_pml(
         &mesh, &basis, &port_dyn_refs, &port_tri_refs, &pec_tris,
-        &frequencies, materials_opt,
+        &frequencies, materials_opt, pml_opt,
     );
 
     // EMerge-compatible lumped port integration lines: one line per min-projection node,
