@@ -550,53 +550,97 @@ class Geometry:
     # ── Boolean ops ─────────────────────────────────────────────────────────
 
     def fragment(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean fragment: makes geometry conformal at interfaces. Survives names."""
+        """Boolean fragment: makes geometry conformal at interfaces. Names survive.
+
+        Strategy: gmsh's `fragment` returns ``(out, out_map)`` where ``out_map[i]``
+        lists the new (dim, tag) pairs that input i was split into. We use that
+        directly to update each input GeoObject's tag — no fragile COG matching
+        needed for the top-level objects. For their child faces/edges, we still
+        fall back to COG+bbox re-resolution.
+        """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
-        gmsh.model.occ.fragment(target_dt, tools_dt)
+        _, out_map = gmsh.model.occ.fragment(target_dt, tools_dt)
         gmsh.model.occ.synchronize()
-        self._reresolve()
+        inputs = [target] + list(tools)
+        self._apply_out_map(inputs, out_map)
+        self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
 
     def cut(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean subtract."""
+        """Boolean subtract. Like `fragment`, uses gmsh's `out_map` for tag tracking."""
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
-        gmsh.model.occ.cut(target_dt, tools_dt)
+        _, out_map = gmsh.model.occ.cut(target_dt, tools_dt)
         gmsh.model.occ.synchronize()
-        self._reresolve()
+        # Tools are consumed by `cut`; only the target survives (with possibly
+        # multiple pieces). out_map[0] = target's new pieces.
+        self._apply_out_map([target], out_map[:1] if out_map else [[]])
+        self._reresolve_children(top_level={id(target._entity)})
 
-    def fuse(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean union. WARNING: face names are NOT preserved (faces merge,
-        COGs shift). Use only when names on faces don't matter."""
-        warnings.warn(
-            "fuse() merges faces and shifts their COGs; named faces on the "
-            "operands will not be reliably re-resolvable. Set names AFTER fuse, "
-            "or use fragment() if you need names preserved.",
-            stacklevel=2,
-        )
-        target_dt = [(target.dim, target._entity.tag)]
-        tools_dt = [(t.dim, t._entity.tag) for t in tools]
-        gmsh.model.occ.fuse(target_dt, tools_dt)
-        gmsh.model.occ.synchronize()
-        self._reresolve()
+    def _apply_out_map(self, inputs: list[GeoObject], out_map: list) -> None:
+        """For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.
+        If an input was split into multiple pieces, the first piece keeps the
+        original GeoObject; the others are registered as additional `_Entity`s
+        carrying the same name/material/maxh.
+        """
+        for input_obj, new_dimtags in zip(inputs, out_map):
+            if not new_dimtags:
+                warnings.warn(
+                    f"GeoObject (dim={input_obj.dim}, name={input_obj._entity.name!r}) "
+                    f"vanished during boolean op",
+                    stacklevel=3,
+                )
+                continue
+            d0, t0 = new_dimtags[0]
+            input_obj._entity.tag = t0
+            input_obj._entity.cog = tuple(gmsh.model.occ.getCenterOfMass(d0, t0))
+            input_obj._entity.bbox = tuple(gmsh.model.getBoundingBox(d0, t0))
+            for d, t in new_dimtags[1:]:
+                extra = _Entity.from_dimtag(d, t)
+                extra.name = input_obj._entity.name
+                extra.material = input_obj._entity.material
+                extra.maxh = input_obj._entity.maxh
+                self._entities.append(extra)
 
-    def _reresolve(self) -> None:
-        """Re-find every tracked entity by (cog, bbox) after a boolean op."""
+    def _reresolve_children(self, top_level: set[int]) -> None:
+        """Re-resolve child entities (faces, edges) by COG+bbox. Top-level
+        entities (already updated via out_map) are skipped via `top_level` set
+        of `_Entity` ids."""
         survived = []
         for ent in self._entities:
+            if id(ent) in top_level:
+                survived.append(ent)
+                continue
             new_tag = _resolve_entity(ent)
             if new_tag is not None:
                 ent.tag = new_tag
                 survived.append(ent)
             elif ent.name or ent.material or ent.maxh:
-                # Lost an entity that had user attributes — warn
                 warnings.warn(
                     f"Tracked entity (dim={ent.dim}, name={ent.name!r}, "
-                    f"cog={ent.cog}) lost during boolean op; attributes will be dropped.",
+                    f"cog={ent.cog}) lost during boolean op; attributes dropped.",
                     stacklevel=3,
                 )
-            # else: silently drop untracked entities (boundary helpers etc.)
         self._entities = survived
+
+    def fuse(self, target: GeoObject, *tools: GeoObject) -> None:
+        """Boolean union. WARNING: face names on the operands are NOT preserved
+        (faces merge, COGs shift). Top-level volume names survive via gmsh's
+        out_map; set FACE names AFTER fuse, or use fragment() instead.
+        """
+        warnings.warn(
+            "fuse() merges faces and shifts their COGs; named faces on the "
+            "operands will not be reliably re-resolvable. Set face names AFTER "
+            "fuse, or use fragment() if you need them preserved.",
+            stacklevel=2,
+        )
+        target_dt = [(target.dim, target._entity.tag)]
+        tools_dt = [(t.dim, t._entity.tag) for t in tools]
+        _, out_map = gmsh.model.occ.fuse(target_dt, tools_dt)
+        gmsh.model.occ.synchronize()
+        inputs = [target] + list(tools)
+        self._apply_out_map(inputs, out_map)
+        self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
 
     # ── Mesh emit ───────────────────────────────────────────────────────────
 
