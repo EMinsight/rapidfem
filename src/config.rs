@@ -107,6 +107,48 @@ pub enum PortConfig {
         #[serde(default = "default_abc_type")]
         abctype: String,
     },
+    /// Perfect magnetic conductor — natural BC (n × H = 0). No-op during assembly.
+    /// Useful when users want to mark a surface explicitly as PMC for documentation.
+    #[serde(rename = "pmc")]
+    Pmc { tag: i32 },
+    /// Lumped element (R, L, C in series) load on a surface. width/height define the
+    /// surface-impedance scaling: surfZ = (R + jωL + 1/(jωC)) * width/height.
+    #[serde(rename = "lumped_element")]
+    LumpedElement {
+        tag: i32,
+        #[serde(default)]
+        r: f64,
+        #[serde(default)]
+        l: f64,
+        #[serde(default)]
+        c: Option<f64>,
+        /// Width (orthogonal to field direction); auto-detected if 0
+        #[serde(default)]
+        width: f64,
+        /// Height (along field direction); auto-detected if 0
+        #[serde(default)]
+        height: f64,
+        /// Field direction unit vector — used for auto width/height detection
+        #[serde(default = "default_z_dir")]
+        direction: [f64; 3],
+    },
+    /// Surface impedance (lossy conductor wall). Either supply σ (S/m) for skin-depth-based
+    /// impedance, or `zs` (real+imag Ω/sq) for a frequency-independent constant.
+    #[serde(rename = "surface_impedance")]
+    SurfaceImpedance {
+        tag: i32,
+        #[serde(default)]
+        conductivity: f64,
+        #[serde(default = "default_one")]
+        mur: f64,
+        #[serde(default = "default_one")]
+        er: f64,
+        #[serde(default)]
+        thickness: Option<f64>,
+        /// Explicit surface impedance [re, im] in Ω/sq (overrides conductivity if present).
+        #[serde(default)]
+        zs: Option<[f64; 2]>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -120,6 +162,12 @@ pub struct MaterialConfig {
     pub tand: f64,
     #[serde(default)]
     pub conductivity: f64,
+    /// Optional diagonal εr anisotropy [εxx, εyy, εzz]; overrides scalar `er`.
+    #[serde(default)]
+    pub er_diag: Option<[f64; 3]>,
+    /// Optional diagonal μr anisotropy [μxx, μyy, μzz]; overrides scalar `ur`.
+    #[serde(default)]
+    pub ur_diag: Option<[f64; 3]>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +194,9 @@ pub struct OutputConfig {
     /// Physical tag of the NFFT surface (defaults to ABC tag)
     #[serde(default)]
     pub nfft_tag: Option<i32>,
+    /// Optional CSV path for group delay τ_g = -dφ/dω of S-parameters.
+    #[serde(default)]
+    pub group_delay: Option<String>,
 }
 
 fn default_mode() -> [usize; 2] { [1, 0] }
@@ -154,6 +205,7 @@ fn default_z0() -> f64 { 50.0 }
 fn default_abc_order() -> usize { 1 }
 fn default_abc_type() -> String { "B".to_string() }
 fn default_solver_prefer() -> String { "auto".to_string() }
+fn default_z_dir() -> [f64; 3] { [0.0, 0.0, 1.0] }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
     let content = std::fs::read_to_string(path)

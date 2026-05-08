@@ -55,6 +55,26 @@ impl Port for crate::waveguide::RectWaveguide {
     fn port_number(&self) -> usize { self.port_number }
 }
 
+// Implement Port for LumpedElement
+impl Port for crate::waveguide::LumpedElement {
+    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
+    fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
+    fn is_driven(&self) -> bool { false }
+    fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
+    fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
+    fn port_number(&self) -> usize { 0 }
+}
+
+// Implement Port for SurfaceImpedance
+impl Port for crate::waveguide::SurfaceImpedance {
+    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
+    fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
+    fn is_driven(&self) -> bool { false }
+    fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
+    fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
+    fn port_number(&self) -> usize { 0 }
+}
+
 // Implement Port for AbsorbingBoundary
 impl Port for crate::waveguide::AbsorbingBoundary {
     fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }

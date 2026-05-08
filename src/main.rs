@@ -2,7 +2,7 @@ use num_complex::Complex64 as C64;
 use rapidfem::config::{self, PortConfig};
 use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, detect_rect_port, lumped_port_dims};
+use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, detect_rect_port, lumped_port_dims};
 use rapidfem::port::Port;
 use rapidfem::assembly::frequency_sweep;
 use rapidfem::sparam::{sparam_waveport, sparam_voltage_line};
@@ -79,6 +79,45 @@ fn main() {
                 port_tri_indices_owned.push(tri_ids);
                 port_refs.push(Box::new(port));
             }
+            PortConfig::Pmc { tag } => {
+                let tri_ids = mesh.tris_for_tag(*tag);
+                eprintln!("  PMC: tag={}, {} triangles (natural BC)", tag, tri_ids.len());
+            }
+            PortConfig::LumpedElement { tag, r, l, c, width, height, direction } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping LumpedElement", tag);
+                    continue;
+                }
+                let (det_w, det_h) = lumped_port_dims(&mesh, &tri_ids, direction);
+                let w = if *width > 0.0 { *width } else { det_w };
+                let h = if *height > 0.0 { *height } else { det_h };
+                let bc = LumpedElement { r: *r, l: *l, c: *c, width: w, height: h };
+                eprintln!("  LumpedElement: tag={}, R={:.2}Ω, L={:.2e}H, C={:?}F, w={:.2}mm, h={:.2}mm",
+                    tag, r, l, c, w*1e3, h*1e3);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(bc));
+            }
+            PortConfig::SurfaceImpedance { tag, conductivity, mur, er, thickness, zs } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping SurfaceImpedance", tag);
+                    continue;
+                }
+                let bc = if let Some(zs_arr) = zs {
+                    let mut s = SurfaceImpedance::from_zs(C64::new(zs_arr[0], zs_arr[1]));
+                    s.mur = *mur; s.er = *er; s.thickness = *thickness;
+                    s
+                } else {
+                    let mut s = SurfaceImpedance::from_conductivity(*conductivity);
+                    s.mur = *mur; s.er = *er; s.thickness = *thickness;
+                    s
+                };
+                eprintln!("  SurfaceImpedance: tag={}, σ={:.2e}S/m, μr={:.2}, εr={:.2}, t={:?}",
+                    tag, conductivity, mur, er, thickness);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(bc));
+            }
             PortConfig::Abc { tag, order, abctype } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
@@ -120,6 +159,8 @@ fn main() {
             tand: mc.tand,
             cond: mc.conductivity,
             tet_indices,
+            er_diag: mc.er_diag,
+            ur_diag: mc.ur_diag,
         }
     }).collect();
 
@@ -331,6 +372,60 @@ fn main() {
         rapidfem::touchstone::write_touchstone(path, &frequencies, &all_sparams, n_driven, config.output.z0)
             .expect("Failed to write Touchstone file");
         eprintln!("Wrote {}", path);
+    }
+
+    // Group delay export τ_g = -dφ/dω with phase unwrapping per S-pair
+    if let Some(ref path) = config.output.group_delay {
+        if frequencies.len() >= 2 && n_driven >= 1 {
+            let nf = frequencies.len();
+            let mut file = std::fs::File::create(path).expect("Cannot create group delay CSV");
+            use std::io::Write;
+            write!(file, "freq_hz").unwrap();
+            for i in 0..n_driven {
+                for j in 0..n_driven {
+                    write!(file, ",tau_g_{}{}_s", i + 1, j + 1).unwrap();
+                }
+            }
+            writeln!(file).unwrap();
+
+            // Per S-pair, unwrap phase across frequency
+            let mut phase: Vec<Vec<f64>> = vec![vec![0.0; nf]; n_driven * n_driven];
+            for i in 0..n_driven {
+                for j in 0..n_driven {
+                    let idx = i * n_driven + j;
+                    let mut prev = all_sparams[0][i][j].arg();
+                    phase[idx][0] = prev;
+                    for fi in 1..nf {
+                        let mut cur = all_sparams[fi][i][j].arg();
+                        let diff = cur - prev;
+                        if diff > PI { cur -= 2.0 * PI; }
+                        else if diff < -PI { cur += 2.0 * PI; }
+                        phase[idx][fi] = cur;
+                        prev = cur;
+                    }
+                }
+            }
+
+            for fi in 0..nf {
+                write!(file, "{:.6e}", frequencies[fi]).unwrap();
+                for i in 0..n_driven {
+                    for j in 0..n_driven {
+                        let idx = i * n_driven + j;
+                        // Central diff for interior, one-sided at ends
+                        let tau = if fi == 0 {
+                            -(phase[idx][1] - phase[idx][0]) / (2.0 * PI * (frequencies[1] - frequencies[0]))
+                        } else if fi == nf - 1 {
+                            -(phase[idx][nf-1] - phase[idx][nf-2]) / (2.0 * PI * (frequencies[nf-1] - frequencies[nf-2]))
+                        } else {
+                            -(phase[idx][fi+1] - phase[idx][fi-1]) / (2.0 * PI * (frequencies[fi+1] - frequencies[fi-1]))
+                        };
+                        write!(file, ",{:.6e}", tau).unwrap();
+                    }
+                }
+                writeln!(file).unwrap();
+            }
+            eprintln!("Wrote group delay: {}", path);
+        }
     }
 
     // Far-field radiation pattern (first frequency, first excitation)

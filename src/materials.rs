@@ -7,11 +7,12 @@ use num_complex::Complex64 as C64;
 use crate::constants::EPS0;
 
 /// Material definition for a region of the mesh.
-/// Mirrors EMerge's Material class interface.
+/// Mirrors EMerge's Material class interface. Supports diagonal anisotropy:
+/// `er_diag` and `ur_diag` override the scalar values when present.
 pub struct Material {
-    /// Relative permittivity (scalar, isotropic)
+    /// Relative permittivity (scalar, isotropic baseline)
     pub er: f64,
-    /// Relative permeability (scalar, isotropic)
+    /// Relative permeability (scalar, isotropic baseline)
     pub ur: f64,
     /// Loss tangent tan(δ)
     pub tand: f64,
@@ -19,6 +20,10 @@ pub struct Material {
     pub cond: f64,
     /// Which tets this material applies to (indices into mesh.tets)
     pub tet_indices: Vec<usize>,
+    /// Optional diagonal εr tensor [εxx, εyy, εzz]; if Some, overrides the scalar `er`.
+    pub er_diag: Option<[f64; 3]>,
+    /// Optional diagonal μr tensor [μxx, μyy, μzz]; if Some, overrides the scalar `ur`.
+    pub ur_diag: Option<[f64; 3]>,
 }
 
 /// Build per-tet εr and μr tensors from material definitions.
@@ -41,11 +46,12 @@ pub fn build_material_tensors(
 
     // Accumulate material properties per tet (matches EMerge's mat.er(frequency, er) pattern)
     for mat in materials {
+        let er_diag = mat.er_diag.unwrap_or([mat.er; 3]);
+        let ur_diag = mat.ur_diag.unwrap_or([mat.ur; 3]);
         for &ti in &mat.tet_indices {
-            // Isotropic: set diagonal elements
             for k in 0..3 {
-                er[ti][k][k] += C64::from(mat.er);
-                ur[ti][k][k] += C64::from(mat.ur);
+                er[ti][k][k] += C64::from(er_diag[k]);
+                ur[ti][k][k] += C64::from(ur_diag[k]);
                 tand[ti][k][k] += C64::from(mat.tand);
                 cond[ti][k][k] += C64::from(mat.cond);
             }

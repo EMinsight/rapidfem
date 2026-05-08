@@ -189,6 +189,103 @@ impl AbsorbingBoundary {
     }
 }
 
+/// Surface impedance boundary condition (lossy conductor wall).
+/// Port of microwave_bc.py:SurfaceImpedance (lines 1521-1626).
+///
+/// Robin BC with γ = j·k₀·Z₀/R, where R = surface resistivity.
+/// Supports either user-supplied surface impedance or computation from σ via skin depth.
+pub struct SurfaceImpedance {
+    /// Surface conductivity in S/m (used to compute skin-depth R)
+    pub sigma: f64,
+    /// Relative permeability of the conductor
+    pub mur: f64,
+    /// Relative permittivity of the conductor (usually 1)
+    pub er: f64,
+    /// Optional finite layer thickness (m); if None, treated as semi-infinite
+    pub thickness: Option<f64>,
+    /// Optional explicit surface impedance Zs (Ω/sq); overrides σ-based calc when Some
+    pub zs: Option<C64>,
+}
+
+impl SurfaceImpedance {
+    pub fn from_conductivity(sigma: f64) -> Self {
+        SurfaceImpedance { sigma, mur: 1.0, er: 1.0, thickness: None, zs: None }
+    }
+
+    pub fn from_zs(zs: C64) -> Self {
+        SurfaceImpedance { sigma: 0.0, mur: 1.0, er: 1.0, thickness: None, zs: Some(zs) }
+    }
+
+    /// Computes the Robin γ-coefficient. Mirrors EMerge SurfaceImpedance.get_gamma(k0).
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        let r = self.surface_impedance(k0);
+        // γ = j*k0*Z0 / R
+        C64::new(0.0, k0 * Z0) / r
+    }
+
+    fn surface_impedance(&self, k0: f64) -> C64 {
+        if let Some(zs) = self.zs {
+            return zs;
+        }
+        let w0 = k0 * crate::constants::C0;
+        let eps = crate::constants::EPS0 * self.er;
+        let mu = crate::constants::MU0 * self.mur;
+        let rho = 1.0 / self.sigma;
+        // Skin depth: δ = sqrt( 2ρ/(ωμ) * (sqrt(1 + (ωερ)²) + ρωε) )
+        let we = w0 * eps;
+        let inner = (1.0 + (we * rho).powi(2)).sqrt() + rho * we;
+        let d_skin = (2.0 * rho / (w0 * mu) * inner).sqrt();
+        // R = (1 + j) ρ / δ
+        let mut r = C64::new(1.0, 1.0) * C64::from(rho / d_skin);
+        if let Some(t) = self.thickness {
+            // Finite thickness scaler: R / tanh(γ_m * t), γ_m = j ω √(με_c)
+            let eps_c = C64::new(eps, -self.sigma / w0);
+            let mu_c = C64::new(mu, 0.0);
+            let gamma_m = C64::new(0.0, w0) * (mu_c * eps_c).sqrt();
+            r = r / (gamma_m * C64::from(t)).tanh();
+        }
+        r
+    }
+}
+
+/// Lumped element (R, L, C in series) on a surface — port of microwave_bc.py:LumpedElement.
+///
+/// Robin BC with γ = j·k₀·Z₀/(Z(ω)·width/height) where Z(ω) = R + jωL + 1/(jωC).
+/// Distinct from LumpedPort: there's no excitation, just a passive impedance load.
+pub struct LumpedElement {
+    /// Series resistance (Ω)
+    pub r: f64,
+    /// Series inductance (H)
+    pub l: f64,
+    /// Series capacitance (F); None means no capacitor (open replaced with infinite impedance)
+    pub c: Option<f64>,
+    /// Width (orthogonal to the field direction across the element gap)
+    pub width: f64,
+    /// Height (along the field direction across the element gap)
+    pub height: f64,
+}
+
+impl LumpedElement {
+    pub fn impedance(&self, k0: f64) -> C64 {
+        let omega = k0 * crate::constants::C0;
+        let mut z = C64::new(self.r, omega * self.l);
+        if let Some(c) = self.c {
+            if c > 0.0 {
+                z += C64::new(0.0, -1.0 / (omega * c));
+            }
+        }
+        z
+    }
+
+    pub fn surf_z(&self, k0: f64) -> C64 {
+        self.impedance(k0) * C64::from(self.width / self.height)
+    }
+
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, k0 * Z0) / self.surf_z(k0)
+    }
+}
+
 /// Exact port of microwave_bc.py: LumpedPort (lines 1294-1441)
 pub struct LumpedPort {
     pub port_number: usize,
