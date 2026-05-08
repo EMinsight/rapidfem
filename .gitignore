@@ -11,3 +11,7 @@ tests/output_*
 
 # Adaptive refinement size fields
 tests/meshes/*_size.pos
+
+# Python
+__pycache__/
+*.pyc
