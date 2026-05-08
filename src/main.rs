@@ -554,9 +554,18 @@ fn main() {
                 } else {
                     eprintln!("  NFFT surface: tag={}, {} triangles", nfft_tag, nfft_tris.len());
 
-                    let pattern = rapidfem::farfield::compute_farfield(
+                    // Radiation efficiency η = 1 - Σ|S_i1|² (assumes single driven port, lossless dielectric).
+                    let efficiency = all_sparams.first().map(|first_freq_s| {
+                        let s11_sq: f64 = first_freq_s.iter()
+                            .filter_map(|row| row.first())
+                            .map(|s| s.norm_sqr())
+                            .sum();
+                        (1.0 - s11_sq).clamp(0.0, 1.0)
+                    });
+
+                    let pattern = rapidfem::farfield::compute_farfield_with_input(
                         &mesh, &basis, first_sol, &nfft_tris,
-                        frequencies[0], 91, 72, 4,
+                        frequencies[0], 91, 72, 4, efficiency,
                     );
 
                     // Write full pattern CSV

@@ -20,19 +20,31 @@ use crate::quadrature::gaus_quad_tri;
 use crate::constants::*;
 
 /// Far-field radiation pattern result.
+///
+/// All angle-indexed arrays are `[phi_idx][theta_idx]`.
 pub struct RadiationPattern {
-    /// Theta angles in radians
+    /// Theta angles in radians (0 to π)
     pub theta: Vec<f64>,
-    /// Phi angles in radians
+    /// Phi angles in radians (0 to 2π)
     pub phi: Vec<f64>,
-    /// Directivity in dBi, indexed as [phi_idx][theta_idx]
+    /// Complex E_θ component (V/m at unit reference distance)
+    pub e_theta: Vec<Vec<C64>>,
+    /// Complex E_φ component
+    pub e_phi: Vec<Vec<C64>>,
+    /// Directivity in dBi
     pub directivity_dbi: Vec<Vec<f64>>,
-    /// E_theta component magnitude, indexed as [phi_idx][theta_idx]
-    pub e_theta: Vec<Vec<f64>>,
-    /// E_phi component magnitude, indexed as [phi_idx][theta_idx]
-    pub e_phi: Vec<Vec<f64>>,
+    /// Gain in dBi — accounts for input mismatch (= directivity × (1-|S11|²) when input_power is provided)
+    pub gain_dbi: Vec<Vec<f64>>,
+    /// Axial ratio in dB. AR=0dB → circular polarization, AR=∞ → linear.
+    pub axial_ratio_db: Vec<Vec<f64>>,
+    /// Left-hand circular polarization (LCP) component, in dBi (relative to isotropic)
+    pub lcp_dbi: Vec<Vec<f64>>,
+    /// Right-hand circular polarization (RCP) component, in dBi
+    pub rcp_dbi: Vec<Vec<f64>>,
     /// Peak directivity in dBi
     pub peak_directivity_dbi: f64,
+    /// Peak gain in dBi
+    pub peak_gain_dbi: f64,
     /// Total radiated power (W)
     pub radiated_power: f64,
 }
@@ -55,6 +67,28 @@ pub fn compute_farfield(
     n_phi: usize,
     gq_order: usize,
 ) -> RadiationPattern {
+    compute_farfield_with_input(mesh, basis, solution, nfft_tri_ids, frequency, n_theta, n_phi, gq_order, None)
+}
+
+/// Same as `compute_farfield`, but lets the caller pass a radiation efficiency η = P_rad/P_in
+/// for accurate gain calculation. The caller computes η from the S-parameters of the port
+/// (typically η = 1 - Σ|S_i1|² for a single-driven port). When `radiation_efficiency = None`,
+/// gain == directivity (lossless, matched assumption).
+///
+/// Note: we do NOT use the FEM-integrated radiated power for the gain offset, because the
+/// FEM E-field scale is an internal-to-the-solver convention (see LumpedPort `get_uinc`).
+/// Directivity is unit-invariant; gain requires an externally known efficiency.
+pub fn compute_farfield_with_input(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    solution: &[C64],
+    nfft_tri_ids: &[usize],
+    frequency: f64,
+    n_theta: usize,
+    n_phi: usize,
+    gq_order: usize,
+    radiation_efficiency: Option<f64>,
+) -> RadiationPattern {
     let k0 = 2.0 * PI * frequency / C0;
     let omega = 2.0 * PI * frequency;
     let j = C64::new(0.0, 1.0);
@@ -71,8 +105,8 @@ pub fn compute_farfield(
 
     // For each observation direction (theta, phi), compute N and L integrals
     let mut directivity = vec![vec![0.0f64; n_theta]; n_phi];
-    let mut e_theta_mag = vec![vec![0.0f64; n_theta]; n_phi];
-    let mut e_phi_mag = vec![vec![0.0f64; n_theta]; n_phi];
+    let mut e_theta = vec![vec![C64::new(0.0, 0.0); n_theta]; n_phi];
+    let mut e_phi = vec![vec![C64::new(0.0, 0.0); n_theta]; n_phi];
 
     // Precompute surface data: for each triangle, store quadrature point data
     // (position, E-field, H-field, normal, area*weight)
@@ -219,8 +253,8 @@ pub fn compute_farfield(
             let e_t = factor * (lp + C64::from(Z0) * nt);
             let e_p = factor * (-lt + C64::from(Z0) * np);
 
-            e_theta_mag[ip][it] = e_t.norm();
-            e_phi_mag[ip][it] = e_p.norm();
+            e_theta[ip][it] = e_t;
+            e_phi[ip][it] = e_p;
 
             // Radiation intensity: U = (|E_θ|² + |E_φ|²) / (2η₀)
             let u = (e_t.norm().powi(2) + e_p.norm().powi(2)) / (2.0 * Z0);
@@ -250,15 +284,84 @@ pub fn compute_farfield(
         }
     }
 
-    eprintln!("  Peak directivity: {:.2} dBi, P_rad: {:.4e} W", peak_d, total_power);
+    // Gain: directivity scaled by user-supplied radiation efficiency.
+    let efficiency = radiation_efficiency.unwrap_or(1.0).clamp(0.0, 1.0);
+    let efficiency_db_offset = if efficiency > 1e-30 { 10.0 * efficiency.log10() } else { -100.0 };
+
+    let mut gain = vec![vec![0.0f64; n_theta]; n_phi];
+    let mut ar = vec![vec![0.0f64; n_theta]; n_phi];
+    let mut lcp = vec![vec![0.0f64; n_theta]; n_phi];
+    let mut rcp = vec![vec![0.0f64; n_theta]; n_phi];
+
+    let mut peak_g = f64::NEG_INFINITY;
+    for ip in 0..n_phi {
+        for it in 0..n_theta {
+            // Gain in dBi
+            let g_dbi = directivity[ip][it] + efficiency_db_offset;
+            gain[ip][it] = g_dbi;
+            peak_g = peak_g.max(g_dbi);
+
+            // Axial ratio from polarization ellipse: needs |E_θ|, |E_φ|, phase difference δ.
+            //   AR² = (a/b)² where a,b are major/minor semi-axes.
+            //   a²+b² = |E_θ|² + |E_φ|²
+            //   a²-b² = sqrt((|E_θ|² - |E_φ|²)² + 4|E_θ|²|E_φ|² cos²(δ))
+            //   ab    = |E_θ|·|E_φ|·|sin(δ)|
+            let et = e_theta[ip][it];
+            let ep = e_phi[ip][it];
+            let etn = et.norm();
+            let epn = ep.norm();
+            let mag_sq_sum = etn * etn + epn * epn;
+            if mag_sq_sum > 1e-30 {
+                let delta = ep.arg() - et.arg();
+                let cos_d = delta.cos();
+                let diff_sq = (etn * etn - epn * epn).powi(2) + 4.0 * etn * etn * epn * epn * cos_d * cos_d;
+                let a_sq_minus_b_sq = diff_sq.sqrt();
+                let a_sq = 0.5 * (mag_sq_sum + a_sq_minus_b_sq);
+                let b_sq = 0.5 * (mag_sq_sum - a_sq_minus_b_sq).max(0.0);
+                ar[ip][it] = if b_sq > 1e-30 {
+                    10.0 * (a_sq / b_sq).log10()
+                } else {
+                    99.0  // effectively linear polarization
+                };
+            } else {
+                ar[ip][it] = 99.0;
+            }
+
+            // LCP/RCP decomposition. Using the IEEE convention (E_LCP = (E_θ - jE_φ)/√2,
+            // E_RCP = (E_θ + jE_φ)/√2). |E_LCP|² and |E_RCP|² convert to a directivity-style
+            // dBi via the same 4π·U/P_rad scaling, but only the ratio of LCP:RCP magnitudes
+            // is conventionally meaningful here, so we report each as a directivity-equivalent.
+            let inv_sqrt2 = 1.0 / std::f64::consts::SQRT_2;
+            let e_lcp = (et - C64::new(0.0, 1.0) * ep) * C64::from(inv_sqrt2);
+            let e_rcp = (et + C64::new(0.0, 1.0) * ep) * C64::from(inv_sqrt2);
+            // |E|² → directivity scaling. Each pol contains half the power (in pure linear case)
+            // or all of one and none of the other (in pure circular). Convert |E|² to a dBi value
+            // via the same 4π·U/P normalization used for directivity.
+            let u_lcp = e_lcp.norm_sqr() / (2.0 * Z0);
+            let u_rcp = e_rcp.norm_sqr() / (2.0 * Z0);
+            let denom = total_power.max(1e-30);
+            let d_lcp = 4.0 * PI * u_lcp / denom;
+            let d_rcp = 4.0 * PI * u_rcp / denom;
+            lcp[ip][it] = if d_lcp > 1e-30 { 10.0 * d_lcp.log10() } else { -100.0 };
+            rcp[ip][it] = if d_rcp > 1e-30 { 10.0 * d_rcp.log10() } else { -100.0 };
+        }
+    }
+
+    eprintln!("  Peak directivity: {:.2} dBi, peak gain: {:.2} dBi, radiation efficiency: {:.1}%",
+        peak_d, peak_g, efficiency * 100.0);
 
     RadiationPattern {
         theta: thetas,
         phi: phis,
+        e_theta,
+        e_phi,
         directivity_dbi: directivity,
-        e_theta: e_theta_mag,
-        e_phi: e_phi_mag,
+        gain_dbi: gain,
+        axial_ratio_db: ar,
+        lcp_dbi: lcp,
+        rcp_dbi: rcp,
         peak_directivity_dbi: peak_d,
+        peak_gain_dbi: peak_g,
         radiated_power: total_power,
     }
 }
@@ -272,17 +375,23 @@ pub fn write_pattern_csv(
     let mut file = std::fs::File::create(path)
         .map_err(|e| format!("Cannot create {}: {}", path, e))?;
 
-    writeln!(file, "phi_deg,theta_deg,directivity_dBi,E_theta,E_phi")
+    writeln!(file, "phi_deg,theta_deg,directivity_dBi,gain_dBi,AR_dB,LCP_dBi,RCP_dBi,E_theta_re,E_theta_im,E_phi_re,E_phi_im")
         .map_err(|e| e.to_string())?;
 
     for (ip, &phi) in pattern.phi.iter().enumerate() {
         for (it, &theta) in pattern.theta.iter().enumerate() {
-            writeln!(file, "{:.1},{:.1},{:.4},{:.6e},{:.6e}",
+            let et = pattern.e_theta[ip][it];
+            let ep = pattern.e_phi[ip][it];
+            writeln!(file,
+                "{:.1},{:.1},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6e},{:.6e},{:.6e},{:.6e}",
                 phi.to_degrees(),
                 theta.to_degrees(),
                 pattern.directivity_dbi[ip][it],
-                pattern.e_theta[ip][it],
-                pattern.e_phi[ip][it],
+                pattern.gain_dbi[ip][it],
+                pattern.axial_ratio_db[ip][it],
+                pattern.lcp_dbi[ip][it],
+                pattern.rcp_dbi[ip][it],
+                et.re, et.im, ep.re, ep.im,
             ).map_err(|e| e.to_string())?;
         }
     }
@@ -299,27 +408,31 @@ pub fn write_plane_cuts_csv(
     let mut file = std::fs::File::create(path)
         .map_err(|e| format!("Cannot create {}: {}", path, e))?;
 
-    writeln!(file, "plane,theta_deg,directivity_dBi")
+    writeln!(file, "plane,theta_deg,directivity_dBi,gain_dBi,AR_dB,LCP_dBi,RCP_dBi")
         .map_err(|e| e.to_string())?;
 
+    let mut write_cut = |ip: usize, label: &str| -> Result<(), String> {
+        for (it, &theta) in pattern.theta.iter().enumerate() {
+            writeln!(file, "{},{:.1},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                label,
+                theta.to_degrees(),
+                pattern.directivity_dbi[ip][it],
+                pattern.gain_dbi[ip][it],
+                pattern.axial_ratio_db[ip][it],
+                pattern.lcp_dbi[ip][it],
+                pattern.rcp_dbi[ip][it],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+
     // E-plane: φ=0° (xz-plane)
-    let ip_e = 0;
-    for (it, &theta) in pattern.theta.iter().enumerate() {
-        writeln!(file, "E,{:.1},{:.4}",
-            theta.to_degrees(),
-            pattern.directivity_dbi[ip_e][it],
-        ).map_err(|e| e.to_string())?;
-    }
+    write_cut(0, "E")?;
 
     // H-plane: φ=90°
     let ip_h = pattern.phi.iter().position(|&p| (p - PI/2.0).abs() < 0.01)
         .unwrap_or(pattern.phi.len() / 4);
-    for (it, &theta) in pattern.theta.iter().enumerate() {
-        writeln!(file, "H,{:.1},{:.4}",
-            theta.to_degrees(),
-            pattern.directivity_dbi[ip_h][it],
-        ).map_err(|e| e.to_string())?;
-    }
+    write_cut(ip_h, "H")?;
 
     Ok(())
 }
