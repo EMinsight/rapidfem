@@ -189,6 +189,126 @@ impl AbsorbingBoundary {
     }
 }
 
+/// User-defined port — port of microwave_bc.py:UserDefinedPort (lines 1172-1292).
+///
+/// The user supplies the port's E-field mode as a closure. A common case (constant E
+/// uniform across the face, e.g. parallel-plate TEM) is exposed via `from_constant`.
+/// gamma = j·β, get_uinc = -2j·β·mode_field. β defaults to k₀ but can be overridden.
+pub struct UserDefinedPort {
+    pub port_number: usize,
+    pub power: f64,
+    /// Mode field function: (k0, x, y, z) -> (Ex, Ey, Ez). Stored as a boxed closure.
+    pub mode_fn: Box<dyn Fn(f64, f64, f64, f64) -> (f64, f64, f64) + Send + Sync>,
+    /// Optional kz(k0) override; defaults to k0 (TEM-like)
+    pub beta_fn: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>>,
+}
+
+impl UserDefinedPort {
+    /// Construct a port with a uniform constant E vector across the face.
+    pub fn from_constant(port_number: usize, power: f64, e_vec: [f64; 3]) -> Self {
+        let mode_fn: Box<dyn Fn(f64, f64, f64, f64) -> (f64, f64, f64) + Send + Sync> =
+            Box::new(move |_k0, _x, _y, _z| (e_vec[0], e_vec[1], e_vec[2]));
+        UserDefinedPort { port_number, power, mode_fn, beta_fn: None }
+    }
+
+    pub fn beta(&self, k0: f64) -> f64 {
+        match &self.beta_fn {
+            Some(f) => f(k0),
+            None => k0,
+        }
+    }
+
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, self.beta(k0))
+    }
+
+    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
+        (self.mode_fn)(k0, x, y, z)
+    }
+
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let (mx, my, mz) = self.port_mode_3d_global(x, y, z, k0);
+        let factor = C64::new(0.0, -2.0 * self.beta(k0));
+        [factor * C64::from(mx), factor * C64::from(my), factor * C64::from(mz)]
+    }
+}
+
+/// Coaxial port (TEM mode) — port of microwave_bc.py:CoaxPort (lines 1031-1166).
+///
+/// Mode field is the analytic TEM coaxial wave: E_ρ = V₀ / (ρ · ln(Ro/Ri)).
+/// V₀ = √(2·pZ₀·P), pZ₀ = (η/2π)·ln(Ro/Ri), η = Z₀/√εr, β = k₀√εr.
+pub struct CoaxPort {
+    pub port_number: usize,
+    pub power: f64,
+    pub er: f64,
+    /// Inner conductor radius (m)
+    pub ri: f64,
+    /// Outer conductor radius (m)
+    pub ro: f64,
+    /// Local coordinate system. Origin = coax center on the port face,
+    /// z-axis = propagation direction (out of plane).
+    pub cs: CoordinateSystem,
+}
+
+impl CoaxPort {
+    pub fn beta(&self, k0: f64) -> f64 { k0 * self.er.sqrt() }
+
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, self.beta(k0))
+    }
+
+    /// Characteristic impedance of the coaxial line (Ω).
+    pub fn port_z(&self) -> f64 {
+        let eta = Z0 / self.er.sqrt();
+        (eta / (2.0 * std::f64::consts::PI)) * (self.ro / self.ri).ln()
+    }
+
+    /// V₀ for the requested power: P = |V₀|²/(2·Z₀_port).
+    pub fn v0(&self) -> f64 {
+        (2.0 * self.port_z() * self.power).sqrt()
+    }
+
+    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, _k0: f64) -> (f64, f64, f64) {
+        // Local cylindrical: rho = sqrt(xl² + yl²), phi = atan2(yl, xl)
+        let (xl, yl, _) = self.cs.in_local_cs(x, y, z);
+        let rho = (xl * xl + yl * yl).sqrt();
+        if rho < self.ri || rho > self.ro || rho < 1e-30 {
+            return (0.0, 0.0, 0.0);
+        }
+        let phi = yl.atan2(xl);
+        let e_rho = self.v0() / (rho * (self.ro / self.ri).ln());
+        let ex_l = e_rho * phi.cos();
+        let ey_l = e_rho * phi.sin();
+        // Convert local vector components back to global basis
+        self.cs.in_global_basis(ex_l, ey_l, 0.0)
+    }
+
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let (mx, my, mz) = self.port_mode_3d_global(x, y, z, k0);
+        let factor = C64::new(0.0, -2.0 * self.beta(k0));
+        [factor * C64::from(mx), factor * C64::from(my), factor * C64::from(mz)]
+    }
+}
+
+/// Construct an orthonormal coordinate system from origin + z-axis. The x and y axes
+/// are chosen via Gram-Schmidt against an arbitrary reference (avoiding parallel cases).
+pub fn cs_from_origin_zaxis(origin: [f64; 3], z_axis: [f64; 3]) -> CoordinateSystem {
+    let zn = (z_axis[0].powi(2) + z_axis[1].powi(2) + z_axis[2].powi(2)).sqrt();
+    let zhat = [z_axis[0] / zn, z_axis[1] / zn, z_axis[2] / zn];
+    // Choose an x-axis reference that's not parallel to z
+    let xref = if zhat[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let dot = xref[0] * zhat[0] + xref[1] * zhat[1] + xref[2] * zhat[2];
+    let xraw = [xref[0] - dot * zhat[0], xref[1] - dot * zhat[1], xref[2] - dot * zhat[2]];
+    let xn = (xraw[0].powi(2) + xraw[1].powi(2) + xraw[2].powi(2)).sqrt();
+    let xhat = [xraw[0] / xn, xraw[1] / xn, xraw[2] / xn];
+    let yhat = [
+        zhat[1] * xhat[2] - zhat[2] * xhat[1],
+        zhat[2] * xhat[0] - zhat[0] * xhat[2],
+        zhat[0] * xhat[1] - zhat[1] * xhat[0],
+    ];
+    CoordinateSystem::new(origin, xhat, yhat, zhat)
+}
+
 /// Surface impedance boundary condition (lossy conductor wall).
 /// Port of microwave_bc.py:SurfaceImpedance (lines 1521-1626).
 ///

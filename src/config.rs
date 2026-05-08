@@ -86,6 +86,36 @@ pub enum PortConfig {
         #[serde(default = "default_one")]
         power: f64,
     },
+    /// User-defined port with a uniform constant E vector mode (covers the parallel-plate
+    /// TEM case directly). For more elaborate spatial modes, instantiate `UserDefinedPort`
+    /// programmatically via the Rust API rather than TOML.
+    #[serde(rename = "user_defined")]
+    UserDefined {
+        tag: i32,
+        /// Constant E-field vector across the port face (V/m, but normalized — magnitude is set by `power`)
+        e_field: [f64; 3],
+        #[serde(default = "default_one")]
+        power: f64,
+    },
+    #[serde(rename = "coax")]
+    Coax {
+        tag: i32,
+        /// Inner conductor radius (m)
+        ri: f64,
+        /// Outer conductor radius (m)
+        ro: f64,
+        /// Coax center on the port face (m). If omitted, auto-detected from the face centroid.
+        #[serde(default)]
+        origin: Option<[f64; 3]>,
+        /// Axial direction (propagation direction, normal to port face). Auto-detected if omitted.
+        #[serde(default)]
+        z_axis: Option<[f64; 3]>,
+        /// Dielectric inside the coax (default 1.0 = air)
+        #[serde(default = "default_one")]
+        er: f64,
+        #[serde(default = "default_one")]
+        power: f64,
+    },
     #[serde(rename = "lumped")]
     Lumped {
         tag: i32,

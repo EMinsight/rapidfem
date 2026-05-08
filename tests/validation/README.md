@@ -20,9 +20,10 @@ problems. Foundation for any "parity" claim.
 ## Status
 
 - [x] `compare.py` — Touchstone + CSV loaders, freq-interpolated comparison.
-- [x] `wr90_straight` — Both tools agree on |S| to <0.005 absolute across 9–11 GHz, 11 freq points × 4 S-params = 44 measurements, all pass. Run via `python compare_wr90.py`.
+- [x] `wr90_straight` — Both tools agree on |S| to <0.005 absolute across 9–11 GHz. Tests rect waveguide ports + general FEM pipeline. `python compare_wr90.py`.
+- [x] `parallel_plate` — UserDefinedPort case (demo0 layout). Both tools agree on |S| with rel diff <2% across 8–12 GHz. Tests UserDefinedPort + PMC. `python compare_parallel_plate.py`.
 - [ ] `patch_antenna` — EMerge geometry fails gmsh PLC intersection (port plate touches patch edge); needs inset feed or geometry rework.
-- [ ] `parallel_plate` — Blocked on UserDefinedPort in rapidfem.
+- [ ] `coax` — EMerge's own CoaxPort gives unphysical |S11|=1.0 (no EMerge demos use it). rapidfem CoaxPort matches EMerge's math but cross-validation blocked.
 
 ## Adding a new case
 

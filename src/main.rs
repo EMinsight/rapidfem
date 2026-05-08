@@ -2,7 +2,7 @@ use num_complex::Complex64 as C64;
 use rapidfem::config::{self, PortConfig};
 use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, detect_rect_port, lumped_port_dims};
+use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, CoaxPort, UserDefinedPort, detect_rect_port, lumped_port_dims, cs_from_origin_zaxis};
 use rapidfem::port::Port;
 use rapidfem::assembly::frequency_sweep;
 use rapidfem::sparam::{sparam_waveport, sparam_voltage_line};
@@ -51,6 +51,40 @@ fn main() {
                 };
                 eprintln!("  Port {}: rectangular, tag={}, TE{}{}, dims=({:.2}mm, {:.2}mm), er={:.1}",
                     port_num, tag, mode[0], mode[1], w*1e3, h*1e3, er);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(port));
+            }
+            PortConfig::UserDefined { tag, e_field, power } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping UserDefined", tag);
+                    continue;
+                }
+                let port_num = port_refs.len() + 1;
+                let port = UserDefinedPort::from_constant(port_num, *power, *e_field);
+                eprintln!("  Port {}: user_defined, tag={}, E=({:.3},{:.3},{:.3}), P={:.2}W",
+                    port_num, tag, e_field[0], e_field[1], e_field[2], power);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(port));
+            }
+            PortConfig::Coax { tag, ri, ro, origin, z_axis, er, power } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping CoaxPort", tag);
+                    continue;
+                }
+                // Auto-detect origin (face centroid) and z_axis (face normal) if not given
+                let (cs_detected, _, _) = detect_rect_port(&mesh, &tri_ids);
+                let org = origin.unwrap_or(cs_detected.origin);
+                let zax = z_axis.unwrap_or(cs_detected.zax);
+                let cs = cs_from_origin_zaxis(org, zax);
+                let port_num = port_refs.len() + 1;
+                let port = CoaxPort {
+                    port_number: port_num,
+                    power: *power, er: *er, ri: *ri, ro: *ro, cs,
+                };
+                eprintln!("  Port {}: coax, tag={}, Ri={:.3}mm, Ro={:.3}mm, εr={:.2}, Z₀={:.2}Ω",
+                    port_num, tag, ri*1e3, ro*1e3, er, port.port_z());
                 port_tri_indices_owned.push(tri_ids);
                 port_refs.push(Box::new(port));
             }
