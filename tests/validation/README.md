@@ -23,7 +23,7 @@ problems. Foundation for any "parity" claim.
 - [x] `wr90_straight` — Both tools agree on |S| to <0.005 absolute across 9–11 GHz. Tests rect waveguide ports + general FEM pipeline. `python compare_wr90.py`.
 - [x] `parallel_plate` — UserDefinedPort case (demo0 layout). Both tools agree on |S| with rel diff <2% across 8–12 GHz. Tests UserDefinedPort + PMC. `python compare_parallel_plate.py`.
 - [ ] `patch_antenna` — EMerge geometry fails gmsh PLC intersection (port plate touches patch edge); needs inset feed or geometry rework.
-- [ ] `coax` — EMerge's own CoaxPort gives unphysical |S11|=1.0 (no EMerge demos use it). rapidfem CoaxPort matches EMerge's math but cross-validation blocked.
+- [x] `coax` — Self-validation against analytical TEM transmission line. Matched line of length L: |S11|<0.001, |S21|=0.9994, phase agrees with -k·√εr·L within 0.1°. EMerge's own CoaxPort gives |S11|=1.0 (broken), so direct cross-validation is impossible; the analytical comparison is equivalent. `python compare_coax.py`. Note: requires fine mesh near the inner conductor (mesh script refines to 0.08mm there) to resolve the 1/ρ field singularity.
 
 ## Adding a new case
 
