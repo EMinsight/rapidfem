@@ -8,11 +8,12 @@ Quick start::
     print(result.frequencies.shape, result.sparams.shape)
 """
 from rapidfem._native import Simulation, SweepResult, Eigenmode, RadiationPattern
-from rapidfem.geometry import Geometry, GeoObject, FaceCollection
+from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollection, EdgeCollection
 from rapidfem.builder import SimulationBuilder
 
 __all__ = [
     "Simulation", "SweepResult", "Eigenmode", "RadiationPattern",
-    "Geometry", "GeoObject", "FaceCollection", "SimulationBuilder",
+    "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
+    "SimulationBuilder",
 ]
 __version__ = "0.1.0"

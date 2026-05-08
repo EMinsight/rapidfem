@@ -114,16 +114,18 @@ def _resolve_entity(target: _Entity) -> int | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Face collection with selectors and attribute writes
+# Entity collection with selectors and attribute writes
 # ─────────────────────────────────────────────────────────────────────────────
 
-class FaceCollection:
-    """Collection of faces with selectors and bulk attribute writes.
+class EntityCollection:
+    """A collection of sub-entities (faces or edges) with selectors and bulk
+    attribute writes.
 
-    Setting `.name = "..."` or `.maxh = ...` applies to all faces in the
-    collection. Selectors return *new* FaceCollections, so chaining composes:
+    Setting `.name = "..."` or `.maxh = ...` applies to all members. Selectors
+    return *new* collections, so chaining composes:
 
         box.faces.where(lambda c, b: c[2] < 0.5).min(axis="x").name = "port"
+        box.edges.where(lambda c, _: c[2] == 0).maxh = 1e-3
     """
 
     def __init__(self, geometry: "Geometry", entities: list[_Entity]):
@@ -137,25 +139,25 @@ class FaceCollection:
         return len(self._entities)
 
     # Selectors
-    def min(self, axis: str = "z") -> "FaceCollection":
+    def min(self, axis: str = "z") -> "EntityCollection":
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
-            return FaceCollection(self._geometry, [])
+            return EntityCollection(self._geometry, [])
         m = min(e.cog[ax] for e in self._entities)
         kept = [e for e in self._entities if abs(e.cog[ax] - m) < _COG_TOL]
-        return FaceCollection(self._geometry, kept)
+        return EntityCollection(self._geometry, kept)
 
-    def max(self, axis: str = "z") -> "FaceCollection":
+    def max(self, axis: str = "z") -> "EntityCollection":
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
-            return FaceCollection(self._geometry, [])
+            return EntityCollection(self._geometry, [])
         m = max(e.cog[ax] for e in self._entities)
         kept = [e for e in self._entities if abs(e.cog[ax] - m) < _COG_TOL]
-        return FaceCollection(self._geometry, kept)
+        return EntityCollection(self._geometry, kept)
 
-    def where(self, predicate: Callable[[tuple, tuple], bool]) -> "FaceCollection":
+    def where(self, predicate: Callable[[tuple, tuple], bool]) -> "EntityCollection":
         kept = [e for e in self._entities if predicate(e.cog, e.bbox)]
-        return FaceCollection(self._geometry, kept)
+        return EntityCollection(self._geometry, kept)
 
     # Bulk attribute setters (NGSolve idiom: `coll.name = "..."` writes to all)
     @property
@@ -183,6 +185,11 @@ class FaceCollection:
             e.maxh = value
 
 
+# Back-compat aliases (and clearer naming for users)
+FaceCollection = EntityCollection
+EdgeCollection = EntityCollection
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Top-level geometric object
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,22 +211,32 @@ class GeoObject:
     def __init__(self, geometry: "Geometry", entity: _Entity):
         self._geometry = geometry
         self._entity = entity
-        # Build face collection from the entity's boundary
+
+        # Discover faces (dim=2) and edges (dim=1) of the parent entity.
+        # gmsh's getBoundary recursive=True returns vertices (lowest dim), not edges.
+        # We walk faces ourselves to find edges, deduping shared edges.
+        face_ents: list[_Entity] = []
+        edge_ents: list[_Entity] = []
+        seen_edge_tags: set[int] = set()
         if entity.dim == 3:
-            self.faces = FaceCollection(
-                geometry,
-                [
-                    _Entity.from_dimtag(d, t)
-                    for d, t in gmsh.model.getBoundary([(3, entity.tag)], oriented=False)
-                    if d == 2
-                ],
-            )
-            # register all faces too
-            for fe in self.faces._entities:
-                geometry._entities.append(fe)
-        else:
-            # 2D plate has no faces collection; itself IS the surface
-            self.faces = FaceCollection(geometry, [])
+            for d, t in gmsh.model.getBoundary([(3, entity.tag)], oriented=False):
+                if d != 2:
+                    continue
+                face_ents.append(_Entity.from_dimtag(d, t))
+                for d_e, t_e in gmsh.model.getBoundary([(2, t)], oriented=False):
+                    if d_e == 1 and t_e not in seen_edge_tags:
+                        seen_edge_tags.add(t_e)
+                        edge_ents.append(_Entity.from_dimtag(d_e, t_e))
+        elif entity.dim == 2:
+            for d, t in gmsh.model.getBoundary([(2, entity.tag)], oriented=False):
+                if d == 1 and t not in seen_edge_tags:
+                    seen_edge_tags.add(t)
+                    edge_ents.append(_Entity.from_dimtag(d, t))
+
+        self.faces = EntityCollection(geometry, face_ents)
+        self.edges = EntityCollection(geometry, edge_ents)
+        for e in face_ents + edge_ents:
+            geometry._entities.append(e)
 
     @property
     def name(self) -> str | None:
@@ -297,7 +314,9 @@ class Geometry:
 
     def box(self, width: float, depth: float, height: float,
             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Axis-aligned box. `position` = lower-corner."""
+        """Axis-aligned box. `position` = lower (xmin, ymin, zmin) corner; the
+        box extends `width`, `depth`, `height` along x, y, z respectively.
+        Returns a `GeoObject` with 6 `.faces`, 12 `.edges`."""
         x, y, z = position
         tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)
         return self._wrap_volume(tag)
@@ -317,12 +336,52 @@ class Geometry:
         tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)
         return self._wrap_volume(tag)
 
+    def cone(self, r1: float, r2: float, height: float,
+             position: tuple[float, float, float] = (0, 0, 0),
+             axis: tuple[float, float, float] = (0, 0, 1),
+             angle: float = 2 * math.pi) -> GeoObject:
+        """Truncated cone (or cylinder if r1==r2). `position` = base center."""
+        x, y, z = position
+        ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
+        tag = gmsh.model.occ.addCone(x, y, z, ax, ay, az, r1, r2, angle=angle)
+        return self._wrap_volume(tag)
+
+    def wedge(self, dx: float, dy: float, dz: float,
+              top_x: float = 0.0,
+              position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Rectangular-base prism. The base is dx×dy at z=0; the top edge runs
+        from x=0 to x=top_x at height dz (parallel to y). top_x=0 ⇒ triangular
+        wedge; top_x=dx ⇒ ordinary box.
+        """
+        x, y, z = position
+        tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)
+        return self._wrap_volume(tag)
+
+    def torus(self, major_radius: float, minor_radius: float,
+              center: tuple[float, float, float] = (0, 0, 0),
+              angle: float = 2 * math.pi) -> GeoObject:
+        """Torus with major (donut) and minor (tube) radii, centered on `center`,
+        with axis along z. `angle` < 2π gives a partial torus."""
+        cx, cy, cz = center
+        tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)
+        return self._wrap_volume(tag)
+
     def xy_plate(self, width: float, height: float,
                  position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Rectangle in the xy-plane (constant z)."""
+        """Rectangle in the xy-plane (constant z). `width` along x, `height` along y."""
         x, y, z = position
         tag = gmsh.model.occ.addRectangle(x, y, z, width, height)
         return self._wrap_face(tag)
+
+    def xz_plate(self, width: float, height: float,
+                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Rectangle in the xz-plane (constant y). `width` along x, `height` along z."""
+        return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height))
+
+    def yz_plate(self, width: float, height: float,
+                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Rectangle in the yz-plane (constant x). `width` along y, `height` along z."""
+        return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height))
 
     def plate(self, p0: tuple[float, float, float],
               width: tuple[float, float, float],
@@ -399,29 +458,61 @@ class Geometry:
 
     # ── Mesh emit ───────────────────────────────────────────────────────────
 
-    def mesh(self, maxh: float = 1.0) -> tuple[bytes, dict[str, int]]:
+    def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
         """Generate the 3D mesh and return (msh_bytes, name_to_tag).
 
-        `name_to_tag` maps each user-supplied name to its assigned integer
-        physical-group tag. Pass `msh_bytes` to `Simulation.from_bytes` and
-        the mapping to `SimulationBuilder` to wire ports/materials by name.
+        Per-entity `obj.maxh = h` is honored via gmsh `Distance` + `Threshold`
+        background fields, so refinement transitions are smooth instead of abrupt.
+        Each refined entity contributes a Threshold field that grows from `h`
+        right at the entity to the global `maxh` at `transition_distance`
+        (default: 5*h). The combined background is the per-cell minimum of all
+        Threshold fields, so the smallest size wins where regions overlap.
+
+        `name_to_tag` maps each user-supplied name to its physical-group tag.
         """
         gmsh.model.occ.synchronize()
 
-        # Apply per-entity mesh size hints by setting size at boundary points
+        # ── Per-entity mesh size: gmsh Distance + Threshold background fields ──
+        threshold_field_ids: list[int] = []
         for ent in self._entities:
             if ent.maxh is None:
                 continue
-            try:
-                # set size at all points adjacent to this entity
-                pts = gmsh.model.getBoundary(
-                    [(ent.dim, ent.tag)], oriented=False, recursive=True,
-                )
-                pt_dt = [(d, t) for d, t in pts if d == 0]
-                if pt_dt:
-                    gmsh.model.mesh.setSize(pt_dt, ent.maxh)
-            except Exception:
-                pass
+            dist_id = gmsh.model.mesh.field.add("Distance")
+            if ent.dim == 0:
+                gmsh.model.mesh.field.setNumbers(dist_id, "PointsList", [ent.tag])
+            elif ent.dim == 1:
+                gmsh.model.mesh.field.setNumbers(dist_id, "CurvesList", [ent.tag])
+            elif ent.dim == 2:
+                gmsh.model.mesh.field.setNumbers(dist_id, "SurfacesList", [ent.tag])
+            elif ent.dim == 3:
+                # Volumes: refine across their boundary surfaces
+                boundary = gmsh.model.getBoundary([(3, ent.tag)], oriented=False)
+                surf_tags = [t for d, t in boundary if d == 2]
+                if not surf_tags:
+                    continue
+                gmsh.model.mesh.field.setNumbers(dist_id, "SurfacesList", surf_tags)
+            else:
+                continue
+
+            thr_id = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thr_id, "InField", dist_id)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", ent.maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(
+                thr_id, "DistMax",
+                transition_distance if transition_distance is not None else 5 * ent.maxh,
+            )
+            threshold_field_ids.append(thr_id)
+
+        if threshold_field_ids:
+            min_id = gmsh.model.mesh.field.add("Min")
+            gmsh.model.mesh.field.setNumbers(min_id, "FieldsList", threshold_field_ids)
+            gmsh.model.mesh.field.setAsBackgroundMesh(min_id)
+            # Disable competing default size sources so Field is authoritative
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
         # Assign physical groups by name. Group entities of the same name+dim.
         by_dim_name: dict[tuple[int, str], list[int]] = {}
