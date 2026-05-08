@@ -215,6 +215,20 @@ fn main() {
             eprintln!("  Material: tag={}, er={:.2}, ur={:.2}, tand={:.4}, cond={:.2e}, {} tets",
                 mc.volume_tag, mc.er, mc.ur, mc.tand, mc.conductivity, tet_indices.len());
         }
+        let dispersion = if let Some(d) = &mc.debye {
+            rapidfem::materials::Dispersion::Debye {
+                er_inf: d.er_inf, er_static: d.er_static, tau_s: d.tau_s,
+            }
+        } else if let Some(d) = &mc.drude {
+            rapidfem::materials::Dispersion::Drude {
+                er_inf: d.er_inf, plasma_freq_hz: d.plasma_freq_hz, damping_freq_hz: d.damping_freq_hz,
+            }
+        } else {
+            rapidfem::materials::Dispersion::None
+        };
+        if dispersion.is_dispersive() {
+            eprintln!("    (dispersive: εr(f) recomputed per frequency)");
+        }
         rapidfem::materials::Material {
             er: mc.er,
             ur: mc.ur,
@@ -223,6 +237,7 @@ fn main() {
             tet_indices,
             er_diag: mc.er_diag,
             ur_diag: mc.ur_diag,
+            dispersion,
         }
     }).collect();
 

@@ -312,6 +312,14 @@ pub fn frequency_sweep_with_pml(
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
 ) -> Vec<SolveResult> {
+    // Detect if any material is frequency-dependent — if so, K must be rebuilt every frequency
+    let materials_dispersive = materials
+        .map(|m| m.iter().any(|x| x.dispersion.is_dispersive()))
+        .unwrap_or(false);
+    if materials_dispersive {
+        eprintln!("  Frequency-dependent materials detected — rebuilding K every frequency");
+    }
+
     // Cache E, B for frequency-independent materials
     let n_tets = mesh.n_tets();
     let (er, ur) = if let Some(pml) = pml_regions {
@@ -330,8 +338,9 @@ pub fn frequency_sweep_with_pml(
     };
 
     let t0 = std::time::Instant::now();
-    let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
-    eprintln!("  Assembled E,B in {:.1}ms (cached for sweep)", t0.elapsed().as_secs_f64()*1e3);
+    let (rows, cols, mut data_e, mut data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
+    eprintln!("  Assembled E,B in {:.1}ms{}", t0.elapsed().as_secs_f64()*1e3,
+        if materials_dispersive { "" } else { " (cached for sweep)" });
 
     // PEC DOFs (frequency-independent)
     let mut pec_ids: HashSet<usize> = HashSet::new();
@@ -382,6 +391,20 @@ pub fn frequency_sweep_with_pml(
         let k0 = 2.0 * PI * freq / crate::constants::C0;
         let k0_sq = C64::from(k0 * k0);
         let n_field = basis.n_field;
+
+        // Rebuild element matrices when materials are frequency-dependent
+        if materials_dispersive && fi > 0 {
+            let (er_f, ur_f) = if let Some(pml) = pml_regions {
+                crate::materials::build_material_tensors_with_pml(
+                    n_tets, materials.unwrap_or(&[]), pml, mesh, freq,
+                )
+            } else {
+                crate::materials::build_material_tensors(n_tets, materials.unwrap_or(&[]), freq)
+            };
+            let (_, _, de, db) = assemble_global_matrices(mesh, basis, &er_f, &ur_f);
+            data_e = de;
+            data_b = db;
+        }
 
         // Robin BC (γ frequency-dependent) — reuse bempty buffer
         bempty.fill(C64::new(0.0, 0.0));

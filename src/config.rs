@@ -245,6 +245,33 @@ pub struct MaterialConfig {
     /// Optional diagonal μr anisotropy [μxx, μyy, μzz]; overrides scalar `ur`.
     #[serde(default)]
     pub ur_diag: Option<[f64; 3]>,
+    /// Debye dispersion: ε(ω) = ε∞ + (εs - ε∞)/(1 + jωτ).
+    #[serde(default)]
+    pub debye: Option<DebyeConfig>,
+    /// Drude dispersion: ε(ω) = ε∞ - ωp²/(ω² + jγω).
+    #[serde(default)]
+    pub drude: Option<DrudeConfig>,
+}
+
+#[derive(Deserialize)]
+pub struct DebyeConfig {
+    /// ε∞ (high-frequency permittivity)
+    pub er_inf: f64,
+    /// εs (static / low-frequency permittivity)
+    pub er_static: f64,
+    /// Relaxation time τ in seconds
+    pub tau_s: f64,
+}
+
+#[derive(Deserialize)]
+pub struct DrudeConfig {
+    /// ε∞ (background permittivity, often 1)
+    #[serde(default = "default_one")]
+    pub er_inf: f64,
+    /// Plasma frequency in Hz (NOT angular)
+    pub plasma_freq_hz: f64,
+    /// Collision/damping frequency in Hz (NOT angular)
+    pub damping_freq_hz: f64,
 }
 
 #[derive(Deserialize)]

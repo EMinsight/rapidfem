@@ -6,6 +6,41 @@
 use num_complex::Complex64 as C64;
 use crate::constants::EPS0;
 
+/// Frequency dispersion model for εr.
+///
+/// Debye: ε(ω) = ε∞ + (εs - ε∞) / (1 + jωτ)
+/// Drude: ε(ω) = ε∞ - ωp² / (ω² + jγω)   where ωp = 2π·plasma_freq, γ = 2π·damping_freq
+pub enum Dispersion {
+    None,
+    Debye { er_inf: f64, er_static: f64, tau_s: f64 },
+    Drude { er_inf: f64, plasma_freq_hz: f64, damping_freq_hz: f64 },
+}
+
+impl Dispersion {
+    /// Returns the effective complex εr at the given frequency. The base `er` value (passed
+    /// in) is used when this is `None`; otherwise the dispersion model overrides it.
+    pub fn evaluate(&self, base_er: f64, frequency: f64) -> C64 {
+        let omega = 2.0 * std::f64::consts::PI * frequency;
+        match self {
+            Dispersion::None => C64::from(base_er),
+            Dispersion::Debye { er_inf, er_static, tau_s } => {
+                C64::from(*er_inf) + (C64::from(*er_static - *er_inf)) / (C64::new(1.0, 0.0) + C64::new(0.0, omega * *tau_s))
+            }
+            Dispersion::Drude { er_inf, plasma_freq_hz, damping_freq_hz } => {
+                let wp = 2.0 * std::f64::consts::PI * plasma_freq_hz;
+                let gamma = 2.0 * std::f64::consts::PI * damping_freq_hz;
+                // ε(ω) = ε∞ - ωp² / (ω² + jγω) = ε∞ - ωp² / (ω(ω + jγ))
+                let denom = C64::from(omega) * C64::new(omega, gamma);
+                C64::from(*er_inf) - C64::from(wp * wp) / denom
+            }
+        }
+    }
+
+    pub fn is_dispersive(&self) -> bool {
+        !matches!(self, Dispersion::None)
+    }
+}
+
 /// Material definition for a region of the mesh.
 /// Mirrors EMerge's Material class interface. Supports diagonal anisotropy:
 /// `er_diag` and `ur_diag` override the scalar values when present.
@@ -24,6 +59,8 @@ pub struct Material {
     pub er_diag: Option<[f64; 3]>,
     /// Optional diagonal μr tensor [μxx, μyy, μzz]; if Some, overrides the scalar `ur`.
     pub ur_diag: Option<[f64; 3]>,
+    /// Optional frequency dispersion model. When set, εr is evaluated at each frequency.
+    pub dispersion: Dispersion,
 }
 
 /// Build per-tet εr and μr tensors from material definitions.
@@ -44,13 +81,21 @@ pub fn build_material_tensors(
     let mut tand = vec![zero3x3; n_tets];
     let mut cond = vec![zero3x3; n_tets];
 
-    // Accumulate material properties per tet (matches EMerge's mat.er(frequency, er) pattern)
+    // Accumulate material properties per tet (matches EMerge's mat.er(frequency, er) pattern).
+    // For dispersive materials, εr is replaced by Dispersion::evaluate(εr_base, frequency).
     for mat in materials {
         let er_diag = mat.er_diag.unwrap_or([mat.er; 3]);
         let ur_diag = mat.ur_diag.unwrap_or([mat.ur; 3]);
+        let er_eff: [C64; 3] = if mat.dispersion.is_dispersive() {
+            // Dispersion currently isotropic: same complex εr on all diagonal elements.
+            let e = mat.dispersion.evaluate(mat.er, frequency);
+            [e, e, e]
+        } else {
+            [C64::from(er_diag[0]), C64::from(er_diag[1]), C64::from(er_diag[2])]
+        };
         for &ti in &mat.tet_indices {
             for k in 0..3 {
-                er[ti][k][k] += C64::from(er_diag[k]);
+                er[ti][k][k] += er_eff[k];
                 ur[ti][k][k] += C64::from(ur_diag[k]);
                 tand[ti][k][k] += C64::from(mat.tand);
                 cond[ti][k][k] += C64::from(mat.cond);
