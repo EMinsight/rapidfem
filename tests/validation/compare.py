@@ -36,10 +36,8 @@ def load_touchstone(path: str) -> tuple[np.ndarray, np.ndarray]:
             continue
         data_lines.append(s)
 
-    nport = int(np.sqrt(re.match(r".*\.s(\d+)p$", path, re.I).group(1)) ** 2) if re.match(r".*\.s(\d+)p$", path, re.I) else 1
     m = re.match(r".*\.s(\d+)p$", path, re.I)
-    if m:
-        nport = int(m.group(1))
+    nport = int(m.group(1)) if m else 1
 
     rows = [list(map(float, ln.split())) for ln in data_lines]
     freqs = np.array([r[0] * freq_unit for r in rows])

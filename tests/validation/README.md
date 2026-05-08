@@ -20,10 +20,9 @@ problems. Foundation for any "parity" claim.
 ## Status
 
 - [x] `compare.py` — Touchstone + CSV loaders, freq-interpolated comparison.
-- [ ] `patch_antenna` — EMerge geometry currently fails gmsh (PLC intersection).
-      Needs demo4-style inset feed topology to be mesh-stable.
-- [ ] `wr90_straight` — Pending.
-- [ ] `parallel_plate` — Pending. Blocked on UserDefinedPort in rapidfem.
+- [x] `wr90_straight` — Both tools agree on |S| to <0.005 absolute across 9–11 GHz, 11 freq points × 4 S-params = 44 measurements, all pass. Run via `python compare_wr90.py`.
+- [ ] `patch_antenna` — EMerge geometry fails gmsh PLC intersection (port plate touches patch edge); needs inset feed or geometry rework.
+- [ ] `parallel_plate` — Blocked on UserDefinedPort in rapidfem.
 
 ## Adding a new case
 

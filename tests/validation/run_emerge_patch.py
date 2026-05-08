@@ -38,27 +38,23 @@ f1, f2, nf = 1.5e9, 3.5e9, 21
 model = em.Simulation("PatchValidation")
 model.check_version("2.4.3")
 
-# Demo4-style layout: substrate below z=0, ground at z=-sub_h, patch at z=0, sphere airbox
-substrate = em.geo.Box(sub_w, sub_l, sub_h, position=(-sub_w / 2, -sub_l / 2, -sub_h))
+# Substrate at z=0 to z=sub_h, sphere airbox covers everything.
+# Ground = substrate.bottom face selection (no separate plate, avoids coplanar PLC issues).
+substrate = em.geo.Box(sub_w, sub_l, sub_h, position=(-sub_w / 2, -sub_l / 2, 0))
 substrate.set_material(em.Material(er_sub))
 
-# Sphere airbox (background) — radius covers substrate + clearance
 R_air = max(sub_w, sub_l) / 2 + air_pad_top
 air = em.geo.Sphere(R_air).background()
 
-# Ground plane PEC covers substrate footprint at z=-sub_h
-ground = em.geo.XYPlate(sub_w, sub_l, position=(-sub_w / 2, -sub_l / 2, -sub_h))
-ground.set_material(em.lib.PEC)
-
-# Patch at z=0
-patch = em.geo.XYPlate(patch_w, patch_l, position=(-patch_w / 2, -patch_l / 2, 0))
+# Patch at z=sub_h
+patch = em.geo.XYPlate(patch_w, patch_l, position=(-patch_w / 2, -patch_l / 2, sub_h))
 patch.set_material(em.lib.PEC)
 
-# Lumped port: vertical plate at y=feed_y from z=-sub_h to z=0
+# Lumped port: vertical plate at y=feed_y from z=0 to z=sub_h
 port_plate = em.geo.Plate(
-    np.array([feed_x - feed_width / 2, feed_y, -sub_h]),
-    np.array([feed_width, 0, 0]),   # width along x
-    np.array([0, 0, sub_h]),        # height along z
+    np.array([feed_x - feed_width / 2, feed_y, 0]),
+    np.array([feed_width, 0, 0]),
+    np.array([0, 0, sub_h]),
 )
 
 model.mw.set_resolution(0.2)
@@ -72,6 +68,7 @@ model.mesher.set_boundary_size(patch, 2 * mm)
 model.generate_mesh()
 
 # Boundary conditions
+model.mw.bc.PEC(substrate.bottom)  # Ground plane
 port_bc = model.mw.bc.LumpedPort(port_plate, 1, width=feed_width, height=sub_h,
                                  direction=em.ZAX, Z0=50)
 abc = model.mw.bc.AbsorbingBoundary(air.boundary())
