@@ -285,12 +285,13 @@ class Stack:
             ox.material = "oxide"
 
         # Fragment with all pre-existing 3D primitives so interfaces are conformal.
+        # Critical: do this in ONE call. Two sequential fragment ops carve the
+        # second target against the same tools but leave the first one in a
+        # half-resolved state — re-resolution by (cog, bbox) then misattributes
+        # the first volume's name to the wrong sub-piece (#64).
         if fragment_existing and existing_3d:
-            tools = existing_3d
-            # Substrate first, then oxide if present
-            g.fragment(sub, *tools)
-            if ox is not None:
-                g.fragment(ox, *tools)
+            others = existing_3d + ([ox] if ox is not None else [])
+            g.fragment(sub, *others)
 
         return {"substrate": sub} | ({"oxide": ox} if ox is not None else {})
 

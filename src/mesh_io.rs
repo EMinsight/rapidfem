@@ -104,36 +104,62 @@ pub fn parse_mesh_bytes(bytes: &[u8]) -> Result<Mesh, String> {
     // Build mesh with connectivity
     let mut mesh = Mesh::from_tets(nodes, tets);
 
-    // Map entity tags to physical tags using the entities section
-    let mut entity_to_physical_2d: HashMap<i32, i32> = HashMap::new();
-    let mut entity_to_physical_3d: HashMap<i32, i32> = HashMap::new();
+    // Map entity tags to ALL associated physical group tags. A single gmsh
+    // entity may belong to multiple physical groups (e.g., a substrate volume
+    // can be both `substrate` and `_mat_substrate`). Each physical group must
+    // see the entity's tets / tris, so we duplicate per group.
+    let mut entity_to_physical_2d: HashMap<i32, Vec<i32>> = HashMap::new();
+    let mut entity_to_physical_3d: HashMap<i32, Vec<i32>> = HashMap::new();
 
     if let Some(ref entities) = msh.data.entities {
         for surf in &entities.surfaces {
             if !surf.physical_tags.is_empty() {
-                entity_to_physical_2d.insert(surf.tag, surf.physical_tags[0] as i32);
+                entity_to_physical_2d.insert(
+                    surf.tag,
+                    surf.physical_tags.iter().map(|&t| t as i32).collect(),
+                );
             }
         }
         for vol in &entities.volumes {
             if !vol.physical_tags.is_empty() {
-                entity_to_physical_3d.insert(vol.tag, vol.physical_tags[0] as i32);
+                entity_to_physical_3d.insert(
+                    vol.tag,
+                    vol.physical_tags.iter().map(|&t| t as i32).collect(),
+                );
             }
         }
     }
 
-    // Build ftag_to_tri: physical tag → mesh triangle indices
+    // Build ftag_to_tri: physical tag → mesh triangle indices.
+    // If entity has no physical group, fall back to its entity tag.
     for (entity_tag, tri_nodes) in &surface_tris {
-        let physical_tag = entity_to_physical_2d.get(entity_tag).copied().unwrap_or(*entity_tag);
         let key = (tri_nodes[0], tri_nodes[1], tri_nodes[2]);
         if let Some(&tri_idx) = mesh.inv_tris.get(&key) {
-            mesh.ftag_to_tri.entry(physical_tag).or_default().push(tri_idx);
+            match entity_to_physical_2d.get(entity_tag) {
+                Some(tags) => {
+                    for &phys in tags {
+                        mesh.ftag_to_tri.entry(phys).or_default().push(tri_idx);
+                    }
+                }
+                None => {
+                    mesh.ftag_to_tri.entry(*entity_tag).or_default().push(tri_idx);
+                }
+            }
         }
     }
 
-    // Build vtag_to_tet
+    // Build vtag_to_tet (same multi-group handling).
     for (ti, &entity_tag) in tet_entity_tags.iter().enumerate() {
-        let physical_tag = entity_to_physical_3d.get(&entity_tag).copied().unwrap_or(entity_tag);
-        mesh.vtag_to_tet.entry(physical_tag).or_default().push(ti);
+        match entity_to_physical_3d.get(&entity_tag) {
+            Some(tags) => {
+                for &phys in tags {
+                    mesh.vtag_to_tet.entry(phys).or_default().push(ti);
+                }
+            }
+            None => {
+                mesh.vtag_to_tet.entry(entity_tag).or_default().push(ti);
+            }
+        }
     }
 
     eprintln!("Mesh: {} nodes, {} edges, {} tris, {} tets",
