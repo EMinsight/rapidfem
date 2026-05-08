@@ -35,18 +35,6 @@ fn compute_distances_3(xs: [f64; 3], ys: [f64; 3], zs: [f64; 3]) -> [[f64; 3]; 3
     ds
 }
 
-// optim_matmul: B (3x3) @ data (3xN), returns (3xN)
-// In our case N=3 for vertices, N=n_qp for Uinc
-fn matmul_3x3_cols(b: &[[f64; 3]; 3], data: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    data.iter().map(|col| {
-        [
-            b[0][0]*col[0] + b[0][1]*col[1] + b[0][2]*col[2],
-            b[1][0]*col[0] + b[1][1]*col[1] + b[1][2]*col[2],
-            b[2][0]*col[0] + b[2][1]*col[1] + b[2][2]*col[2],
-        ]
-    }).collect()
-}
-
 fn matmul_3x3_cols_c(b: &[[f64; 3]; 3], data: &[[C64; 3]]) -> Vec<[C64; 3]> {
     data.iter().map(|col| {
         [
