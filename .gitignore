@@ -1,12 +1,12 @@
 /target
 
 # Solver outputs
-tests/*.vtk
-tests/*.csv
-tests/*.png
-tests/*.s1p
-tests/*.s2p
-tests/*.snp
+tests/**/*.vtk
+tests/**/*.csv
+tests/**/*.png
+tests/**/*.s1p
+tests/**/*.s2p
+tests/**/*.snp
 tests/output_*
 
 # Adaptive refinement size fields
