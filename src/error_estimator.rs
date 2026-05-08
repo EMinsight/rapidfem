@@ -77,7 +77,7 @@ pub fn write_size_field(
 ///
 /// For Nedelec-2: edge mode curls are constant per tet,
 /// face mode curls are linear per tet.
-fn eval_curl_in_tet(
+pub fn eval_curl_in_tet(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
     solution: &[C64],

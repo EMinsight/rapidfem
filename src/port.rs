@@ -30,6 +30,15 @@ pub trait Port {
 
     /// Port number (for S-matrix indexing)
     fn port_number(&self) -> usize;
+
+    /// Whether this port is a lumped port (uses voltage extraction)
+    fn is_lumped(&self) -> bool { false }
+
+    /// For lumped ports: return (direction, z0, voltage) for voltage integration
+    fn lumped_voltage_params(&self) -> Option<([f64; 3], f64, f64)> { None }
+
+    /// For lumped ports: extent along the field direction (height parameter)
+    fn port_height(&self) -> Option<f64> { None }
 }
 
 // Implement Port for RectWaveguide
@@ -76,4 +85,9 @@ impl Port for crate::waveguide::LumpedPort {
     }
     fn z_mode(&self, _k0: f64) -> f64 { self.z0 }
     fn port_number(&self) -> usize { self.port_number }
+    fn is_lumped(&self) -> bool { true }
+    fn lumped_voltage_params(&self) -> Option<([f64; 3], f64, f64)> {
+        Some((self.direction, self.z0, self.voltage()))
+    }
+    fn port_height(&self) -> Option<f64> { Some(self.height) }
 }

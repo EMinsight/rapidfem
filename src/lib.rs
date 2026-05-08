@@ -20,3 +20,4 @@ pub mod error_estimator;
 pub mod eigenmode;
 pub mod config;
 pub mod assembly;
+pub mod farfield;

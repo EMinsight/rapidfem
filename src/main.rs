@@ -2,10 +2,10 @@ use num_complex::Complex64 as C64;
 use rapidfem::config::{self, PortConfig};
 use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, detect_rect_port};
+use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, detect_rect_port, lumped_port_dims};
 use rapidfem::port::Port;
 use rapidfem::assembly::frequency_sweep;
-use rapidfem::sparam::sparam_waveport;
+use rapidfem::sparam::{sparam_waveport, sparam_voltage_line};
 use rapidfem::interp;
 use rapidfem::constants::*;
 
@@ -61,8 +61,9 @@ fn main() {
                     continue;
                 }
                 let port_num = port_refs.len() + 1;
-                // Detect width/height from mesh if not provided
-                let (_, det_w, det_h) = detect_rect_port(&mesh, &tri_ids);
+                // EMerge convention: height = extent along `direction`, width = extent orthogonal
+                // (NOT the geometric broad/narrow ordering). See microwave_bc.py:1314-1317.
+                let (det_w, det_h) = lumped_port_dims(&mesh, &tri_ids, direction);
                 let w = if *width > 0.0 { *width } else { det_w };
                 let h = if *height > 0.0 { *height } else { det_h };
                 let port = LumpedPort {
@@ -163,6 +164,54 @@ fn main() {
         &frequencies, materials_opt,
     );
 
+    // EMerge-compatible lumped port integration lines: one line per min-projection node,
+    // line goes from node to (node + direction * height). S-param averages over lines.
+    // See microwave_3d.py:_define_lumped_port_integration_points (lines 524-562).
+    let mut lumped_lines: std::collections::HashMap<usize, Vec<Vec<[f64; 3]>>> = std::collections::HashMap::new();
+    for (pi, port) in port_dyn_refs.iter().enumerate() {
+        if port.is_lumped() {
+            let tri_ids = port_tri_refs[pi];
+            let (dir, _z0, _v_inc) = port.lumped_voltage_params().unwrap();
+            let height = port.port_height().expect("lumped port must have height");
+
+            // Collect unique vertices on the port face
+            let mut verts: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for &ti in tri_ids {
+                for &vi in &mesh.tris[ti] { verts.insert(vi); }
+            }
+
+            // Find vertices with minimum projection onto direction (within tolerance)
+            let mut min_proj = f64::INFINITY;
+            for &vi in &verts {
+                let p = mesh.nodes[vi];
+                let proj = p[0]*dir[0] + p[1]*dir[1] + p[2]*dir[2];
+                if proj < min_proj { min_proj = proj; }
+            }
+            let proj_tol = 1e-9 * height.max(1.0);
+            let start_verts: Vec<usize> = verts.iter().copied().filter(|&vi| {
+                let p = mesh.nodes[vi];
+                let proj = p[0]*dir[0] + p[1]*dir[1] + p[2]*dir[2];
+                (proj - min_proj).abs() < proj_tol
+            }).collect();
+
+            // Build one 21-point line per start vertex, end = start + direction * height
+            let n_pts = 21;
+            let mut lines: Vec<Vec<[f64; 3]>> = Vec::with_capacity(start_verts.len());
+            for &vi in &start_verts {
+                let s = mesh.nodes[vi];
+                let mut pts = Vec::with_capacity(n_pts);
+                for i in 0..n_pts {
+                    let t = i as f64 / (n_pts - 1) as f64;
+                    pts.push([s[0] + t*dir[0]*height, s[1] + t*dir[1]*height, s[2] + t*dir[2]*height]);
+                }
+                lines.push(pts);
+            }
+            eprintln!("  Lumped port {}: {} integration lines × {} pts, height={:.4}mm",
+                port.port_number(), lines.len(), n_pts, height*1e3);
+            lumped_lines.insert(pi, lines);
+        }
+    }
+
     // Extract S-parameters
     let n_driven = port_dyn_refs.iter().filter(|p| p.is_driven()).count();
     let driven_indices: Vec<usize> = (0..port_dyn_refs.len()).filter(|&i| port_dyn_refs[i].is_driven()).collect();
@@ -181,9 +230,26 @@ fn main() {
                 }
             };
             for (obs_idx, &obs_pi) in driven_indices.iter().enumerate() {
-                let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi].iter().map(|&ti| mesh.tris[ti]).collect();
                 let active = obs_idx == exc_idx;
-                let s = sparam_waveport(&mesh.nodes, &obs_tris, port_dyn_refs[obs_pi], k0, active, &fieldf, 4);
+
+                let s = if let (true, Some(lines), Some((_, z0, v_inc))) = (
+                    port_dyn_refs[obs_pi].is_lumped(),
+                    lumped_lines.get(&obs_pi),
+                    port_dyn_refs[obs_pi].lumped_voltage_params(),
+                ) {
+                    // Lumped port: average S-param across multiple integration lines (EMerge convention)
+                    let _ = z0;
+                    let n_lines = lines.len() as f64;
+                    let mut s_sum = C64::new(0.0, 0.0);
+                    for line_pts in lines {
+                        s_sum += sparam_voltage_line(v_inc, z0, active, &fieldf, line_pts);
+                    }
+                    s_sum / C64::from(n_lines)
+                } else {
+                    // Waveport: mode matching
+                    let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi].iter().map(|&ti| mesh.tris[ti]).collect();
+                    sparam_waveport(&mesh.nodes, &obs_tris, port_dyn_refs[obs_pi], k0, active, &fieldf, 4)
+                };
                 freq_s[obs_idx][exc_idx] = s;
             }
         }
@@ -265,5 +331,49 @@ fn main() {
         rapidfem::touchstone::write_touchstone(path, &frequencies, &all_sparams, n_driven, config.output.z0)
             .expect("Failed to write Touchstone file");
         eprintln!("Wrote {}", path);
+    }
+
+    // Far-field radiation pattern (first frequency, first excitation)
+    if let Some(ref ff_path) = config.output.farfield {
+        if let Some(first_result) = results.first() {
+            if let Some(first_sol) = first_result.solutions.first() {
+                eprintln!("\n--- Far-field computation ---");
+
+                // Find NFFT surface: use configured tag, or auto-detect ABC tag
+                let nfft_tag = config.output.nfft_tag.unwrap_or_else(|| {
+                    // Find the ABC port tag
+                    for pc in &config.ports {
+                        if let PortConfig::Abc { tag, .. } = pc {
+                            return *tag;
+                        }
+                    }
+                    eprintln!("  WARNING: no ABC tag found for NFFT, using tag 2");
+                    2
+                });
+
+                let nfft_tris = mesh.tris_for_tag(nfft_tag).to_vec();
+                if nfft_tris.is_empty() {
+                    eprintln!("  ERROR: NFFT tag {} has no triangles", nfft_tag);
+                } else {
+                    eprintln!("  NFFT surface: tag={}, {} triangles", nfft_tag, nfft_tris.len());
+
+                    let pattern = rapidfem::farfield::compute_farfield(
+                        &mesh, &basis, first_sol, &nfft_tris,
+                        frequencies[0], 91, 72, 4,
+                    );
+
+                    // Write full pattern CSV
+                    rapidfem::farfield::write_pattern_csv(ff_path, &pattern)
+                        .expect("Failed to write far-field CSV");
+                    eprintln!("  Wrote far-field: {}", ff_path);
+
+                    // Write plane cuts
+                    let cuts_path = ff_path.replace(".csv", "_cuts.csv");
+                    rapidfem::farfield::write_plane_cuts_csv(&cuts_path, &pattern)
+                        .expect("Failed to write plane cuts CSV");
+                    eprintln!("  Wrote plane cuts: {}", cuts_path);
+                }
+            }
+        }
     }
 }

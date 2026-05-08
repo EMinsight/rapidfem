@@ -141,6 +141,11 @@ pub struct OutputConfig {
     pub z0: f64,
     #[serde(default)]
     pub vtk: Option<String>,
+    #[serde(default)]
+    pub farfield: Option<String>,
+    /// Physical tag of the NFFT surface (defaults to ABC tag)
+    #[serde(default)]
+    pub nfft_tag: Option<i32>,
 }
 
 fn default_mode() -> [usize; 2] { [1, 0] }

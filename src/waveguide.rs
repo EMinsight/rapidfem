@@ -320,3 +320,53 @@ pub fn detect_rect_port(
     let _ = narrow_axis;
     (CoordinateSystem::new(center, xhat_f, yhat, zhat), width, height)
 }
+
+/// Return (width, height) for a lumped port using EMerge's convention:
+/// height = extent along `direction`, width = extent orthogonal (in the port plane).
+///
+/// EMerge microwave_bc.py:1314-1317 — height is the size in the direction axis along which
+/// the potential is imposed; width is orthogonal to that. surfZ = Z0 * width / height.
+pub fn lumped_port_dims(
+    mesh: &crate::mesh::Mesh,
+    tri_ids: &[usize],
+    direction: &[f64; 3],
+) -> (f64, f64) {
+    let mut verts = std::collections::HashSet::new();
+    let mut min_c = [f64::INFINITY; 3];
+    let mut max_c = [f64::NEG_INFINITY; 3];
+    for &ti in tri_ids {
+        for &vi in &mesh.tris[ti] {
+            if verts.insert(vi) {
+                for k in 0..3 {
+                    min_c[k] = min_c[k].min(mesh.nodes[vi][k]);
+                    max_c[k] = max_c[k].max(mesh.nodes[vi][k]);
+                }
+            }
+        }
+    }
+
+    // Height: extent along direction
+    let mut min_proj = f64::INFINITY;
+    let mut max_proj = f64::NEG_INFINITY;
+    for &vi in &verts {
+        let p = mesh.nodes[vi];
+        let proj = p[0]*direction[0] + p[1]*direction[1] + p[2]*direction[2];
+        min_proj = min_proj.min(proj);
+        max_proj = max_proj.max(proj);
+    }
+    let height = max_proj - min_proj;
+
+    // Width: largest in-plane extent orthogonal to direction.
+    // For axis-aligned ports we use AABB extents minus the height axis and the normal axis
+    // (= zero-extent axis). The remaining axis with non-zero extent gives width.
+    let ext = [max_c[0]-min_c[0], max_c[1]-min_c[1], max_c[2]-min_c[2]];
+    let dir_axis = if direction[0].abs() > direction[1].abs() && direction[0].abs() > direction[2].abs() { 0 }
+        else if direction[1].abs() > direction[2].abs() { 1 } else { 2 };
+    let mut width = 0.0f64;
+    for k in 0..3 {
+        if k != dir_axis && ext[k] > width {
+            width = ext[k];
+        }
+    }
+    (width, height)
+}

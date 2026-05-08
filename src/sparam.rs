@@ -137,9 +137,19 @@ pub fn sparam_mode_power(
     }, gq_order)
 }
 
-/// Port of microwave_3d.py: voltage integration S-param extraction for lumped ports.
-pub fn sparam_voltage(
-    port: &crate::waveguide::LumpedPort,
+/// Voltage-based S-parameter extraction for lumped ports.
+///
+/// Integrates E·dl along a line through the port to get the port voltage,
+/// then computes S-parameter from incident/reflected wave decomposition.
+///
+/// v_inc = sqrt(2 * P * Z0), the incident voltage
+/// V_total = ∫ E · dl across the port gap
+///
+/// For active port (self-excitation):  S = (V_total - V_inc) / V_inc
+/// For passive port (observation only): S = V_total / V_inc
+pub fn sparam_voltage_line(
+    v_inc: f64,
+    z0: f64,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
     line_points: &[[f64; 3]],
@@ -147,6 +157,7 @@ pub fn sparam_voltage(
     let n_pts = line_points.len();
     if n_pts < 2 { return C64::new(0.0, 0.0); }
 
+    // Integrate E·dl along the line (trapezoidal-like: evaluate at midpoints)
     let mut v_total = C64::new(0.0, 0.0);
     for i in 0..(n_pts - 1) {
         let p0 = line_points[i];
@@ -158,20 +169,16 @@ pub fn sparam_voltage(
         v_total += ex * C64::from(dl[0]) + ey * C64::from(dl[1]) + ez * C64::from(dl[2]);
     }
 
-    let v_inc = C64::from(port.voltage());
+    let v_inc_c = C64::from(v_inc);
 
-    let (a, b) = if active {
-        (v_inc, v_total - v_inc)
+    // S-parameter: ratio of reflected to incident wave amplitudes
+    // a = V_inc / (2*sqrt(Z0)), b = (V_total - V_inc) / (2*sqrt(Z0)) for active
+    // The sqrt(Z0) normalization cancels in the ratio
+    if active {
+        // S_ii = (V_total - V_inc) / V_inc
+        (v_total - v_inc_c) / v_inc_c
     } else {
-        (v_inc, v_total)
-    };
-
-    let norm = C64::from((1.0 / (2.0 * port.z0)).sqrt());
-    let b_sig = b * norm;
-    let a_sig = a * norm;
-
-    if a_sig.norm() < 1e-30 {
-        return C64::new(0.0, 0.0);
+        // S_ij = V_total / V_inc
+        v_total / v_inc_c
     }
-    b_sig / a_sig
 }
