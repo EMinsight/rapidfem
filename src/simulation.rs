@@ -51,6 +51,14 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    /// Build a `Simulation` from in-memory mesh bytes and a TOML config string.
+    /// Boundary-friendly entry point (no std::fs use), suitable for Python / WASM bindings.
+    pub fn from_bytes(mesh_bytes: &[u8], config_toml: &str) -> Result<Self, String> {
+        let mesh = crate::mesh_io::parse_mesh_bytes(mesh_bytes)?;
+        let config = crate::config::parse_config(config_toml)?;
+        Ok(Self::new(mesh, config))
+    }
+
     /// Build a `Simulation` from an owned mesh and a parsed config. All BC objects
     /// (ports, PEC, materials, PML, lumped integration lines) are constructed up-front.
     pub fn new(mesh: Mesh, config: Config) -> Self {

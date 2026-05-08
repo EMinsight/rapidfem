@@ -315,6 +315,10 @@ fn default_floquet_mode() -> u32 { 1 }
 pub fn load_config(path: &str) -> Result<Config, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path, e))?;
-    toml::from_str(&content)
-        .map_err(|e| format!("Cannot parse {}: {}", path, e))
+    parse_config(&content).map_err(|e| format!("{}: {}", path, e))
+}
+
+/// Parse a config from a TOML string. Used by Python and WASM bindings to avoid file I/O.
+pub fn parse_config(toml_str: &str) -> Result<Config, String> {
+    toml::from_str(toml_str).map_err(|e| format!("Cannot parse TOML: {}", e))
 }

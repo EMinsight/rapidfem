@@ -5,7 +5,34 @@
 //!
 //! Uses mtype=6 (complex symmetric indefinite) with 0-based CSR indexing.
 //! Upper triangle only — exploits A = Aᵀ for 2× memory/speed savings.
+//!
+//! When the `pardiso` feature is disabled (e.g., WASM builds), this module exposes
+//! API-compatible stubs: `try_new` returns None and the caller path that uses
+//! PARDISO is statically dead.
 
+#[cfg(not(feature = "pardiso"))]
+pub use stub::*;
+#[cfg(feature = "pardiso")]
+pub use inner::*;
+
+#[cfg(not(feature = "pardiso"))]
+mod stub {
+    use num_complex::Complex64 as C64;
+    pub struct PardisoSolver;
+    impl PardisoSolver {
+        pub fn try_new() -> Option<Self> { None }
+        pub fn analyze_and_factorize(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64]) -> Result<(), String> { unreachable!() }
+        pub fn factorize(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64]) -> Result<(), String> { unreachable!() }
+        pub fn solve(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64], _b: &[C64]) -> Result<Vec<C64>, String> { unreachable!() }
+        pub fn analyze(&mut self, _n: i32, _ia: &[i32], _ja: &[i32]) -> Result<(), String> { unreachable!() }
+    }
+    pub fn build_upper_csr(
+        _n: usize, _r: &[usize], _c: &[usize], _v: &[C64],
+    ) -> (Vec<i32>, Vec<i32>, Vec<C64>) { unreachable!() }
+}
+
+#[cfg(feature = "pardiso")]
+mod inner {
 use std::ffi::c_void;
 use num_complex::Complex64 as C64;
 
@@ -300,3 +327,6 @@ pub fn build_upper_csr(
 
     (ia, ja, a)
 }
+
+}  // end mod inner
+

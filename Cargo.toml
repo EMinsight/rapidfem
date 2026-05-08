@@ -3,14 +3,21 @@ name = "rapidfem"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["pardiso", "parallel"]
+# PARDISO via dynamically loaded MKL — disabled for WASM (no libloading) or non-x86 hosts.
+pardiso = ["dep:libloading"]
+# rayon-based parallel assembly — disabled for WASM single-thread builds.
+parallel = ["dep:rayon"]
+
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
 faer = "0.24.0"
 hashbrown = "0.16.1"
-libloading = "0.9.0"
+libloading = { version = "0.9.0", optional = true }
 mshio = "0.4.2"
 num-complex = "0.4.6"
-rayon = "1.11.0"
+rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 sprs = "0.11.4"
 toml = "1.1.2"

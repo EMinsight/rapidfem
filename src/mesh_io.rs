@@ -5,11 +5,19 @@ use crate::mesh::Mesh;
 use mshio::mshfile::ElementType;
 use std::collections::HashMap;
 
-/// Load a gmsh .msh file and build a Mesh with full connectivity.
+/// Load a gmsh .msh file from disk and build a Mesh.
+/// Convenience wrapper around `parse_mesh_bytes`.
 pub fn load_mesh(path: &str) -> Result<Mesh, String> {
-    let file = std::fs::read(path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
-    let msh = mshio::parse_msh_bytes(file.as_slice())
-        .map_err(|e| format!("Cannot parse {}: {:?}", path, e))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
+    parse_mesh_bytes(&bytes).map_err(|e| format!("{}: {}", path, e))
+}
+
+/// Parse a gmsh .msh file from in-memory bytes and build a Mesh with full connectivity.
+/// This is the core loader; `load_mesh` is a thin file-system wrapper around it.
+/// Used by Python (numpy bytes) and WASM (Uint8Array) bindings.
+pub fn parse_mesh_bytes(bytes: &[u8]) -> Result<Mesh, String> {
+    let msh = mshio::parse_msh_bytes(bytes)
+        .map_err(|e| format!("Cannot parse mesh bytes: {:?}", e))?;
 
     // Extract nodes — build a global node list and tag-to-index map
     let msh_nodes = msh.data.nodes

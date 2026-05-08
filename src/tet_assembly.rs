@@ -365,7 +365,8 @@ pub fn ned2_tet_stiff_mass(
 
 /// Assemble global stiffness (E) and mass (B) matrices from all tetrahedra.
 /// Returns COO triplets: (rows, cols, data_e, data_b).
-/// Parallelized with rayon — each tet writes to its own 400-entry slice.
+/// Parallelized with rayon when the `parallel` feature is enabled.
+/// Each tet writes to its own 400-entry slice (no synchronization).
 pub fn assemble_global_matrices(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
@@ -373,6 +374,7 @@ pub fn assemble_global_matrices(
     ur: &[[[C64; 3]; 3]],  // per-tet permeability tensors
 ) -> (Vec<usize>, Vec<usize>, Vec<C64>, Vec<C64>)
 {
+    #[cfg(feature = "parallel")]
     use rayon::prelude::*;
 
     let n_tets = mesh.n_tets();
@@ -395,7 +397,12 @@ pub fn assemble_global_matrices(
             .collect()
     };
 
-    chunks.into_par_iter().for_each(|(itet, row_slice, col_slice, de_slice, db_slice)| {
+    #[cfg(feature = "parallel")]
+    let chunks_iter = chunks.into_par_iter();
+    #[cfg(not(feature = "parallel"))]
+    let chunks_iter = chunks.into_iter();
+
+    chunks_iter.for_each(|(itet, row_slice, col_slice, de_slice, db_slice)| {
         let tet = &mesh.tets[itet];
         let xs = [mesh.nodes[tet[0]][0], mesh.nodes[tet[1]][0], mesh.nodes[tet[2]][0], mesh.nodes[tet[3]][0]];
         let ys = [mesh.nodes[tet[0]][1], mesh.nodes[tet[1]][1], mesh.nodes[tet[2]][1], mesh.nodes[tet[3]][1]];
