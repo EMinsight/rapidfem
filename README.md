@@ -6,12 +6,15 @@ Production frequency-domain electromagnetic FEM solver in Rust. Exact port of [E
 
 - **Nedelec-2 elements** — 20 DOFs/tet, second-kind edge elements
 - **Rectangular waveguide ports** — Robin BC with arbitrary TE modes
-- **Lumped ports** — TEM excitation with voltage-based S-parameters
+- **Lumped ports** — TEM excitation with multi-line voltage-based S-parameters
 - **Absorbing boundary conditions** — Order 1 and 2 with selectable type (A-E)
 - **Lossy materials** — Complex permittivity with loss tangent and conductivity
 - **MKL PARDISO solver** — Complex-symmetric LDLt (mtype=6), 7-10x faster than pure Rust. Optional: falls back to faer if MKL not installed
 - **Frequency sweep** — Cached E/B matrices, symbolic LU reuse across frequencies
-- **Touchstone export** — S1P/S2P/SNP output
+- **Eigenmode solver** — Shift-invert Lanczos with PARDISO, complex-symmetric. Cavity / waveguide modes.
+- **Adaptive mesh refinement** — Residual error estimator (volume residual + face jumps), Dörfler marking, gmsh size-field export.
+- **Far-field radiation** — Near-field-to-far-field transform on a closed surface (NFFT). E_θ, E_φ, directivity (dBi), 2D cuts. *(experimental, on `feature/patch-antenna-farfield`)*
+- **Touchstone export** — S1P/S2P/SNP output, plus VTK field export for ParaView
 - **Parallel assembly** — rayon-parallelized element matrix computation
 
 ## Quick Start
@@ -139,7 +142,7 @@ Ensure `mkl_rt.2.dll` (or `mkl_rt.dll`) is on your system PATH.
 
 ## Performance
 
-Benchmarks on WR-90 iris waveguide (10 GHz, 2-port):
+WR-90 iris waveguide driven sweep (10 GHz, 2-port):
 
 | Mesh | DOFs | PARDISO | faer |
 |------|------|---------|------|
@@ -148,11 +151,20 @@ Benchmarks on WR-90 iris waveguide (10 GHz, 2-port):
 | 2,595 tets | 19,196 | 0.17s | 1.39s |
 | 3,284 tets | 23,968 | 0.21s | 1.98s |
 
+Larger problems:
+- 327K DOFs driven sweep: 5s per frequency (PARDISO)
+- 905K DOFs eigenmode (3-turn spiral, shift-invert Lanczos): 54s
+
 11-point frequency sweep (10K DOFs): **2.5s** with PARDISO.
 
 ## Verification
 
-All element-level functions verified against EMerge to machine precision (1e-12 to 1e-16). S-parameters match EMerge to 6 significant digits on identical meshes.
+Element-level functions (curl-curl, robin BC, ABC order-2, mode-power, surface integrals) are
+verified against EMerge to machine precision (1e-12 to 1e-16) by `cargo test --release`.
+
+End-to-end S-parameter parity is checked by the harness at `tests/validation/` — see its
+README for status per case. Each case spins up an EMerge run alongside rapidfem on the same
+problem and compares with defined tolerances.
 
 ```bash
 cargo test --release
