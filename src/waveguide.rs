@@ -269,17 +269,19 @@ impl CoaxPort {
     }
 
     pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, _k0: f64) -> (f64, f64, f64) {
-        // Local cylindrical: rho = sqrt(xl² + yl²), phi = atan2(yl, xl)
+        // Local cylindrical: rho = sqrt(xl² + yl²), phi = atan2(yl, xl).
+        // The mode formula is mathematically valid for any ρ>0; the gmsh-meshed annulus
+        // confines us to ρ ∈ [Ri, Ro], so we don't gate on the radii (mesh-imperfect quadrature
+        // points slightly outside the geometric bounds would otherwise be cut, costing power).
         let (xl, yl, _) = self.cs.in_local_cs(x, y, z);
         let rho = (xl * xl + yl * yl).sqrt();
-        if rho < self.ri || rho > self.ro || rho < 1e-30 {
+        if rho < 1e-30 {
             return (0.0, 0.0, 0.0);
         }
         let phi = yl.atan2(xl);
         let e_rho = self.v0() / (rho * (self.ro / self.ri).ln());
         let ex_l = e_rho * phi.cos();
         let ey_l = e_rho * phi.sin();
-        // Convert local vector components back to global basis
         self.cs.in_global_basis(ex_l, ey_l, 0.0)
     }
 
