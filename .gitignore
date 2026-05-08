@@ -15,3 +15,13 @@ tests/meshes/*_size.pos
 # Python
 __pycache__/
 *.pyc
+*.pyd
+*.pdb
+*.so
+*.dylib
+python/target/
+python/python_src/rapidfem/_native.*
+python/python_src/rapidfem/rapidfem.*
+python/dist/
+python/*.egg-info/
+.maturin/

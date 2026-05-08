@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rapidfem"
+version = "0.1.0"
+description = "Frequency-domain electromagnetic FEM solver in Rust, exposed to Python via PyO3."
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+dependencies = [
+    "numpy>=1.26",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "rapidfem._native"
+python-source = "python_src"
