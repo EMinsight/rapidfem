@@ -21,3 +21,4 @@ pub mod eigenmode;
 pub mod config;
 pub mod assembly;
 pub mod farfield;
+pub mod simulation;
