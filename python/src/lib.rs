@@ -96,6 +96,49 @@ impl PySimulation {
             .collect())
     }
 
+    /// Mesh node coordinates as a `(n_nodes, 3)` float64 numpy array.
+    #[getter]
+    fn mesh_nodes<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let n = self.inner.mesh.n_nodes();
+        let mut flat: Vec<f64> = Vec::with_capacity(n * 3);
+        for p in &self.inner.mesh.nodes {
+            flat.extend_from_slice(p);
+        }
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), flat).expect("shape");
+        arr.into_pyarray_bound(py)
+    }
+
+    /// Mesh tetrahedra as a `(n_tets, 4)` int64 numpy array of node indices.
+    #[getter]
+    fn mesh_tets<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<i64>> {
+        let n = self.inner.mesh.n_tets();
+        let mut flat: Vec<i64> = Vec::with_capacity(n * 4);
+        for tet in &self.inner.mesh.tets {
+            for &v in tet {
+                flat.push(v as i64);
+            }
+        }
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 4), flat).expect("shape");
+        arr.into_pyarray_bound(py)
+    }
+
+    /// FEM E-field interpolated at every mesh node for a given (freq_idx, port_idx).
+    /// Returns a `(n_nodes, 3)` complex128 numpy array (Ex, Ey, Ez per node).
+    /// Use this with `pyvista` or any mesh-viz library for field visualization.
+    fn field_at_nodes<'py>(
+        &self,
+        py: Python<'py>,
+        result: &PySweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+    ) -> Option<Bound<'py, PyArray2<NpC64>>> {
+        let flat = self.inner.field_at_nodes(&result.inner, freq_idx, port_idx)?;
+        let n = self.inner.mesh.n_nodes();
+        let conv: Vec<NpC64> = flat.iter().map(|c| NpC64::new(c.re, c.im)).collect();
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), conv).expect("shape");
+        Some(arr.into_pyarray_bound(py))
+    }
+
     /// Compute the far-field radiation pattern at (freq_idx, port_idx) on a (theta, phi) grid.
     /// Returns None if the NFFT surface is empty or out-of-bounds indices.
     #[pyo3(signature = (result, freq_idx=0, port_idx=0, n_theta=91, n_phi=72))]

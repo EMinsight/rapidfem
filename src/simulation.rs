@@ -229,6 +229,41 @@ impl Simulation {
         Some((1.0 - s11_sum_sq).clamp(0.0, 1.0))
     }
 
+    /// Interpolate the FEM E-field at each mesh node for a given (freq_idx, port_idx).
+    /// Returns a flat `Vec<C64>` of length `3 * n_nodes` (interleaved Ex, Ey, Ez per node).
+    /// Used by the Python pyvista exporter.
+    pub fn field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
+        let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
+        let n_nodes = self.mesh.n_nodes();
+
+        // Node → adjacent tet (first one wins, like vtk_export)
+        let mut node_to_tet = vec![usize::MAX; n_nodes];
+        for (itet, tet) in self.mesh.tets.iter().enumerate() {
+            for &ni in tet {
+                if node_to_tet[ni] == usize::MAX {
+                    node_to_tet[ni] = itet;
+                }
+            }
+        }
+
+        let mut out: Vec<C64> = Vec::with_capacity(3 * n_nodes);
+        for ni in 0..n_nodes {
+            let tet_idx = node_to_tet[ni];
+            if tet_idx == usize::MAX {
+                out.extend_from_slice(&[C64::new(0.0, 0.0); 3]);
+                continue;
+            }
+            let p = self.mesh.nodes[ni];
+            let (ex, ey, ez) = crate::interp::eval_field_in_tet(
+                &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
+            );
+            out.push(ex);
+            out.push(ey);
+            out.push(ez);
+        }
+        Some(out)
+    }
+
     /// Compute the far-field at a given (freq_idx, exc_port_idx). NFFT surface = config.output.nfft_tag
     /// (auto-detected ABC tag if not specified). PEC surfaces from config.pec.tags are included to close
     /// the integration boundary.
