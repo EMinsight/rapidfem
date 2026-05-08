@@ -1,11 +1,7 @@
 """
 PML self-validation: WR-90 with PML termination at +z.
-Without PML, end-PEC would reflect ~100%. With PML, |S11| should be small (≪ 1).
-A 1.5 wavelength thick uniaxial PML with δmax=8, n=1.5 typically gives |S11|<0.01.
-
-NOTE: This case currently requires RAPIDFEM_SOLVER=faer because PARDISO has crashed
-on Windows for the anisotropic-complex tensors PML produces. Using faer LU is fine
-for this test (slower but correct).
+Without PML, end-PEC would reflect ~100%. With PML, |S11| should be small (<<1).
+A 1.5 wavelength thick uniaxial PML with delta_max=8, n=1.5 typically gives |S11|<0.01.
 """
 from __future__ import annotations
 import os
@@ -27,11 +23,9 @@ def main() -> int:
     if not os.path.exists(mesh):
         subprocess.check_call([sys.executable, os.path.join(HERE, "build_wr90_pml_mesh.py")], cwd=HERE)
 
-    env = os.environ.copy()
-    env["RAPIDFEM_SOLVER"] = "faer"
     rc = subprocess.call(
         ["cargo", "run", "--release", "--quiet", "--", os.path.relpath(rf_toml, REPO)],
-        cwd=REPO, env=env,
+        cwd=REPO,
     )
     if rc != 0:
         return rc

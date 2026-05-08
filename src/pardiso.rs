@@ -57,13 +57,18 @@ impl PardisoSolver {
             *sym
         };
 
-        let mut pt = [0i64; 64];
+        let pt = [0i64; 64];
         let mut iparm = [0i32; 64];
 
-        // Match Python test exactly: minimal iparm settings
-        iparm[0] = 1;   // Don't use default values — we set them
-        iparm[1] = 2;   // Nested dissection ordering
-        iparm[34] = 1;  // 0-based indexing (C-style)
+        // Match EMerge's PARDISO config (pardiso_interface.py:380-405)
+        iparm[0] = 1;    // Don't use default values — we set them
+        iparm[1] = 3;    // Permutation: METIS-style minimum-degree (EMerge default)
+        iparm[2] = 4;    // Number of threads
+        iparm[7] = 0;    // No iterative refinement
+        iparm[9] = 13;   // Pivot perturbation magnitude (1e-13). Critical for ill-conditioned
+                         // matrices like PML's anisotropic-complex stretched tensors.
+        iparm[12] = 2;   // Improved weighted matching — needed for complex-symmetric non-PD.
+        iparm[34] = 1;   // 0-based (C-style) indexing
 
         eprintln!("  PARDISO: MKL loaded successfully");
 
