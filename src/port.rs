@@ -75,6 +75,20 @@ impl Port for crate::waveguide::SurfaceImpedance {
     fn port_number(&self) -> usize { 0 }
 }
 
+// Implement Port for FloquetPort
+impl Port for crate::waveguide::FloquetPort {
+    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
+    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
+        Some(self.get_uinc(x, y, z, k0))
+    }
+    fn is_driven(&self) -> bool { true }
+    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
+        Some(self.port_mode_3d_global(x, y, z, k0))
+    }
+    fn z_mode(&self, _k0: f64) -> f64 { crate::constants::Z0 }
+    fn port_number(&self) -> usize { self.port_number }
+}
+
 // Implement Port for UserDefinedPort
 impl Port for crate::waveguide::UserDefinedPort {
     fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }

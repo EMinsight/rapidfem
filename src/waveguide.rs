@@ -189,6 +189,80 @@ impl AbsorbingBoundary {
     }
 }
 
+/// Floquet plane-wave port — port of microwave_bc.py:FloquetPort (lines 451-549).
+///
+/// Models an incident plane wave at scan angles (θ, φ). Robin BC with γ = j·k₀·cos(θ).
+/// Two polarization modes: TE (S-pol, mode_nr=1) and TM (P-pol, mode_nr=2).
+///
+/// LIMITATION: This implementation uses real-valued port_mode_3d_global, which is exact
+/// at normal incidence (θ=0) where the mode field has no transverse phase variation.
+/// For oblique incidence the field has a phase factor exp(-j(kx·x + ky·y)) which currently
+/// does not flow through the S-parameter extraction trait. Full oblique support requires
+/// extending the Port trait to a complex-valued mode field.
+///
+/// LIMITATION: A full Floquet simulation also requires periodic boundary conditions on the
+/// side walls of the unit cell with phase factor exp(-jk₀·u·Δv). That's a separate feature
+/// (master/slave DOF elimination in the assembly layer) and is not yet implemented; without
+/// it, FloquetPort is only useful for problems whose side walls are physically PEC/PMC.
+pub struct FloquetPort {
+    pub port_number: usize,
+    pub power: f64,
+    pub er: f64,
+    /// Port-face area (m²) — used for amplitude normalization.
+    pub area: f64,
+    /// Scan angle θ measured from port normal (radians). 0 = normal incidence.
+    pub scan_theta: f64,
+    /// Scan angle φ in the port plane (radians).
+    pub scan_phi: f64,
+    /// 1 = TE (S-pol), 2 = TM (P-pol)
+    pub mode_nr: u32,
+    /// Local CS: origin = port-face anchor, z = outward normal.
+    pub cs: CoordinateSystem,
+}
+
+impl FloquetPort {
+    pub fn beta(&self, k0: f64) -> f64 { k0 * self.scan_theta.cos() }
+
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, self.beta(k0))
+    }
+
+    pub fn amplitude(&self, _k0: f64) -> f64 {
+        // E0 = sqrt(2·Z0·P / (A · cos θ)). Same as EMerge FloquetPort.get_amplitude.
+        (2.0 * Z0 * self.power / (self.area * self.scan_theta.cos())).sqrt()
+    }
+
+    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
+        let (xl, yl, _) = self.cs.in_local_cs(x, y, z);
+        let (s, p): (f64, f64) = match self.mode_nr {
+            1 => (1.0, 0.0),  // TE
+            _ => (0.0, 1.0),  // TM
+        };
+        let cos_p = self.scan_phi.cos();
+        let sin_p = self.scan_phi.sin();
+        let cos_t = self.scan_theta.cos();
+        let sin_t = self.scan_theta.sin();
+        let e0 = self.amplitude(k0);
+
+        // At normal incidence (θ=0): no phase factor; field is real and uniform.
+        // For oblique incidence we'd multiply by exp(-j(xl·kx + yl·ky)). Currently we drop
+        // that phase (real-only API) — see struct doc.
+        let _phase_xy = xl * (k0 * sin_t * cos_p) + yl * (k0 * sin_t * sin_p);
+        let phase = 1.0;  // approximation; exact at θ=0
+
+        let ex_l = e0 * (-s * sin_p - p * cos_t * cos_p) * phase;
+        let ey_l = e0 * (s * cos_p - p * cos_t * sin_p) * phase;
+        let ez_l = e0 * (-p * sin_t) * phase;
+        self.cs.in_global_basis(ex_l, ey_l, ez_l)
+    }
+
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let (mx, my, mz) = self.port_mode_3d_global(x, y, z, k0);
+        let factor = C64::new(0.0, -2.0 * self.beta(k0));
+        [factor * C64::from(mx), factor * C64::from(my), factor * C64::from(mz)]
+    }
+}
+
 /// User-defined port — port of microwave_bc.py:UserDefinedPort (lines 1172-1292).
 ///
 /// The user supplies the port's E-field mode as a closure. A common case (constant E

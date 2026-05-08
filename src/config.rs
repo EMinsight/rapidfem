@@ -86,6 +86,27 @@ pub enum PortConfig {
         #[serde(default = "default_one")]
         power: f64,
     },
+    /// Floquet plane-wave port for unit-cell simulations. NOTE: a full Floquet sim also
+    /// requires periodic BCs on side walls (not yet implemented); see `FloquetPort` doc.
+    /// Mode = 1 (TE/S-pol) or 2 (TM/P-pol). At normal incidence (θ=0) the implementation
+    /// is exact; at oblique angles the transverse phase factor is dropped (approximation).
+    #[serde(rename = "floquet")]
+    Floquet {
+        tag: i32,
+        /// Scan θ in degrees from port normal. Default 0 (normal incidence).
+        #[serde(default)]
+        scan_theta_deg: f64,
+        /// Scan φ in degrees. Default 0.
+        #[serde(default)]
+        scan_phi_deg: f64,
+        /// Polarization mode: 1 = TE (S), 2 = TM (P)
+        #[serde(default = "default_floquet_mode")]
+        mode_nr: u32,
+        #[serde(default = "default_one")]
+        er: f64,
+        #[serde(default = "default_one")]
+        power: f64,
+    },
     /// User-defined port with a uniform constant E vector mode (covers the parallel-plate
     /// TEM case directly). For more elaborate spatial modes, instantiate `UserDefinedPort`
     /// programmatically via the Rust API rather than TOML.
@@ -236,6 +257,7 @@ fn default_abc_order() -> usize { 1 }
 fn default_abc_type() -> String { "B".to_string() }
 fn default_solver_prefer() -> String { "auto".to_string() }
 fn default_z_dir() -> [f64; 3] { [0.0, 0.0, 1.0] }
+fn default_floquet_mode() -> u32 { 1 }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
     let content = std::fs::read_to_string(path)

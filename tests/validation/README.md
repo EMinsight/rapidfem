@@ -24,6 +24,7 @@ problems. Foundation for any "parity" claim.
 - [x] `parallel_plate` — UserDefinedPort case (demo0 layout). Both tools agree on |S| with rel diff <2% across 8–12 GHz. Tests UserDefinedPort + PMC. `python compare_parallel_plate.py`.
 - [ ] `patch_antenna` — EMerge geometry fails gmsh PLC intersection (port plate touches patch edge); needs inset feed or geometry rework.
 - [x] `coax` — Self-validation against analytical TEM transmission line. Matched line of length L: |S11|<0.001, |S21|=0.9994, phase agrees with -k·√εr·L within 0.1°. EMerge's own CoaxPort gives |S11|=1.0 (broken), so direct cross-validation is impossible; the analytical comparison is equivalent. `python compare_coax.py`. Note: requires fine mesh near the inner conductor (mesh script refines to 0.08mm there) to resolve the 1/ρ field singularity.
+- [x] `floquet` — FloquetPort smoke test at normal incidence (θ=0) with PMC side walls (proxy for periodic BC at θ=0). 9/9 freq points, |S11|<0.003, |S21|=1.0. `python compare_floquet.py`. **Limitations**: oblique incidence drops the transverse phase factor (real-only mode field API), and there are no Periodic BCs on side walls yet (task #28) — for true phased-array unit cell sims at θ≠0 both pieces are needed.
 
 ## Adding a new case
 

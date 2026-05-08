@@ -2,7 +2,7 @@ use num_complex::Complex64 as C64;
 use rapidfem::config::{self, PortConfig};
 use rapidfem::mesh_io::load_mesh;
 use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, CoaxPort, UserDefinedPort, detect_rect_port, lumped_port_dims, cs_from_origin_zaxis};
+use rapidfem::waveguide::{RectWaveguide, AbsorbingBoundary, LumpedPort, SurfaceImpedance, LumpedElement, CoaxPort, UserDefinedPort, FloquetPort, detect_rect_port, lumped_port_dims, cs_from_origin_zaxis};
 use rapidfem::port::Port;
 use rapidfem::assembly::frequency_sweep;
 use rapidfem::sparam::{sparam_waveport, sparam_voltage_line};
@@ -51,6 +51,34 @@ fn main() {
                 };
                 eprintln!("  Port {}: rectangular, tag={}, TE{}{}, dims=({:.2}mm, {:.2}mm), er={:.1}",
                     port_num, tag, mode[0], mode[1], w*1e3, h*1e3, er);
+                port_tri_indices_owned.push(tri_ids);
+                port_refs.push(Box::new(port));
+            }
+            PortConfig::Floquet { tag, scan_theta_deg, scan_phi_deg, mode_nr, er, power } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping FloquetPort", tag);
+                    continue;
+                }
+                // Compute port-face area and CS from the triangulation
+                let (cs_detected, det_w, det_h) = detect_rect_port(&mesh, &tri_ids);
+                let area = det_w * det_h;
+                let port_num = port_refs.len() + 1;
+                let port = FloquetPort {
+                    port_number: port_num,
+                    power: *power, er: *er, area,
+                    scan_theta: scan_theta_deg.to_radians(),
+                    scan_phi: scan_phi_deg.to_radians(),
+                    mode_nr: *mode_nr,
+                    cs: cs_detected,
+                };
+                eprintln!("  Port {}: floquet, tag={}, mode={} ({}), θ={:.1}°, φ={:.1}°, A={:.2}mm²",
+                    port_num, tag, mode_nr,
+                    if *mode_nr == 1 { "TE/S" } else { "TM/P" },
+                    scan_theta_deg, scan_phi_deg, area*1e6);
+                if *scan_theta_deg > 1e-6 {
+                    eprintln!("    WARNING: oblique incidence drops transverse phase factor in mode field — approximate");
+                }
                 port_tri_indices_owned.push(tri_ids);
                 port_refs.push(Box::new(port));
             }
