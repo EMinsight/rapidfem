@@ -229,56 +229,57 @@ pub fn compute_farfield_full(
     eprintln!("  Far-field: {} surface integration points ({} ABC tris + {} PEC tris)",
         surf_data.len(), nfft_tri_ids.len(), pec_tri_ids.len());
 
-    // Compute far-field for each (theta, phi) direction
-    let mut total_power = 0.0;
+    // Compute far-field for each (theta, phi) direction.
+    // The outer loop is embarrassingly parallel: each direction integrates the same surf_data
+    // independently. With the `parallel` feature, rayon distributes ip across cores.
+    let dtheta = PI / (n_theta - 1) as f64;
+    let dphi = 2.0 * PI / n_phi as f64;
 
-    for (ip, &phi) in phis.iter().enumerate() {
-        for (it, &theta) in thetas.iter().enumerate() {
+    let direction_results: Vec<(usize, usize, C64, C64, f64)> = {
+        let pairs: Vec<(usize, usize)> = (0..n_phi)
+            .flat_map(|ip| (0..n_theta).map(move |it| (ip, it)))
+            .collect();
+
+        let compute_one = |&(ip, it): &(usize, usize)| -> (usize, usize, C64, C64, f64) {
+            let theta = thetas[it];
+            let phi = phis[ip];
             let sin_t = theta.sin();
             let cos_t = theta.cos();
             let sin_p = phi.sin();
             let cos_p = phi.cos();
 
-            // Unit vectors in spherical coordinates
-            let r_hat = [sin_t*cos_p, sin_t*sin_p, cos_t];
-            let theta_hat = [cos_t*cos_p, cos_t*sin_p, -sin_t];
+            let r_hat = [sin_t * cos_p, sin_t * sin_p, cos_t];
+            let theta_hat = [cos_t * cos_p, cos_t * sin_p, -sin_t];
             let phi_hat = [-sin_p, cos_p, 0.0];
 
-            // Radiation integrals N and L (vector, in θ and φ components)
             let mut nt = C64::new(0.0, 0.0);
             let mut np = C64::new(0.0, 0.0);
             let mut lt = C64::new(0.0, 0.0);
             let mut lp = C64::new(0.0, 0.0);
 
             for sp in &surf_data {
-                // Phase: e^{jk r̂·r'}
-                let rdot = r_hat[0]*sp.pos[0] + r_hat[1]*sp.pos[1] + r_hat[2]*sp.pos[2];
+                let rdot = r_hat[0] * sp.pos[0] + r_hat[1] * sp.pos[1] + r_hat[2] * sp.pos[2];
                 let phase = (j * C64::from(k0 * rdot)).exp();
                 let daw = C64::from(sp.aw) * phase;
 
-                // J_s = n̂ × H
-                let jx = C64::from(sp.normal[1])*sp.h[2] - C64::from(sp.normal[2])*sp.h[1];
-                let jy = C64::from(sp.normal[2])*sp.h[0] - C64::from(sp.normal[0])*sp.h[2];
-                let jz = C64::from(sp.normal[0])*sp.h[1] - C64::from(sp.normal[1])*sp.h[0];
+                let jx = C64::from(sp.normal[1]) * sp.h[2] - C64::from(sp.normal[2]) * sp.h[1];
+                let jy = C64::from(sp.normal[2]) * sp.h[0] - C64::from(sp.normal[0]) * sp.h[2];
+                let jz = C64::from(sp.normal[0]) * sp.h[1] - C64::from(sp.normal[1]) * sp.h[0];
 
-                // M_s = -n̂ × E. On PEC, tangential E = 0 by definition, so M_s ≡ 0.
-                // Skipping the FEM-interpolated value avoids spurious contributions from
-                // small numerical residue near the boundary.
                 let (mx, my, mz) = if sp.is_pec {
                     (C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0))
                 } else {
                     (
-                        -(C64::from(sp.normal[1])*sp.e[2] - C64::from(sp.normal[2])*sp.e[1]),
-                        -(C64::from(sp.normal[2])*sp.e[0] - C64::from(sp.normal[0])*sp.e[2]),
-                        -(C64::from(sp.normal[0])*sp.e[1] - C64::from(sp.normal[1])*sp.e[0]),
+                        -(C64::from(sp.normal[1]) * sp.e[2] - C64::from(sp.normal[2]) * sp.e[1]),
+                        -(C64::from(sp.normal[2]) * sp.e[0] - C64::from(sp.normal[0]) * sp.e[2]),
+                        -(C64::from(sp.normal[0]) * sp.e[1] - C64::from(sp.normal[1]) * sp.e[0]),
                     )
                 };
 
-                // Project onto θ̂ and φ̂
-                let j_t = jx*C64::from(theta_hat[0]) + jy*C64::from(theta_hat[1]) + jz*C64::from(theta_hat[2]);
-                let j_p = jx*C64::from(phi_hat[0]) + jy*C64::from(phi_hat[1]) + jz*C64::from(phi_hat[2]);
-                let m_t = mx*C64::from(theta_hat[0]) + my*C64::from(theta_hat[1]) + mz*C64::from(theta_hat[2]);
-                let m_p = mx*C64::from(phi_hat[0]) + my*C64::from(phi_hat[1]) + mz*C64::from(phi_hat[2]);
+                let j_t = jx * C64::from(theta_hat[0]) + jy * C64::from(theta_hat[1]) + jz * C64::from(theta_hat[2]);
+                let j_p = jx * C64::from(phi_hat[0]) + jy * C64::from(phi_hat[1]) + jz * C64::from(phi_hat[2]);
+                let m_t = mx * C64::from(theta_hat[0]) + my * C64::from(theta_hat[1]) + mz * C64::from(theta_hat[2]);
+                let m_p = mx * C64::from(phi_hat[0]) + my * C64::from(phi_hat[1]) + mz * C64::from(phi_hat[2]);
 
                 nt += j_t * daw;
                 np += j_p * daw;
@@ -286,26 +287,30 @@ pub fn compute_farfield_full(
                 lp += m_p * daw;
             }
 
-            // Far-field: E_θ = -jk/(4π) (L_φ + η₀ N_θ)
-            //            E_φ = -jk/(4π) (-L_θ + η₀ N_φ)
             let factor = -j * C64::from(k0 / (4.0 * PI));
             let e_t = factor * (lp + C64::from(Z0) * nt);
             let e_p = factor * (-lt + C64::from(Z0) * np);
-
-            e_theta[ip][it] = e_t;
-            e_phi[ip][it] = e_p;
-
-            // Radiation intensity: U = (|E_θ|² + |E_φ|²) / (2η₀)
             let u = (e_t.norm().powi(2) + e_p.norm().powi(2)) / (2.0 * Z0);
+            (ip, it, e_t, e_p, u)
+        };
 
-            // Accumulate for total radiated power
-            // P_rad = ∫∫ U sin(θ) dθ dφ
-            let dtheta = PI / (n_theta - 1) as f64;
-            let dphi = 2.0 * PI / n_phi as f64;
-            total_power += u * sin_t * dtheta * dphi;
-
-            directivity[ip][it] = u; // Store U temporarily, convert to D later
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            pairs.par_iter().map(compute_one).collect()
         }
+        #[cfg(not(feature = "parallel"))]
+        {
+            pairs.iter().map(compute_one).collect()
+        }
+    };
+
+    let mut total_power = 0.0;
+    for (ip, it, e_t, e_p, u) in &direction_results {
+        e_theta[*ip][*it] = *e_t;
+        e_phi[*ip][*it] = *e_p;
+        directivity[*ip][*it] = *u;
+        total_power += u * thetas[*it].sin() * dtheta * dphi;
     }
 
     // D(θ,φ) = 4π U(θ,φ) / P_rad

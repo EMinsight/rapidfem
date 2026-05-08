@@ -7,7 +7,7 @@ Quick start::
     result = sim.run_sweep()
     print(result.frequencies.shape, result.sparams.shape)
 """
-from rapidfem._native import Simulation, SweepResult
+from rapidfem._native import Simulation, SweepResult, Eigenmode, RadiationPattern
 
-__all__ = ["Simulation", "SweepResult"]
+__all__ = ["Simulation", "SweepResult", "Eigenmode", "RadiationPattern"]
 __version__ = "0.1.0"

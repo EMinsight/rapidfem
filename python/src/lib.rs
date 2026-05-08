@@ -4,9 +4,11 @@
 //! See `examples/wr90.py` for usage.
 
 use num_complex::Complex64;
-use numpy::{Complex64 as NpC64, IntoPyArray, PyArray1, PyArray3};
+use numpy::{Complex64 as NpC64, IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use rapidfem::eigenmode::Eigenmode;
+use rapidfem::farfield::RadiationPattern;
 use rapidfem::simulation::{Simulation, SweepResult};
 
 /// A frequency-sweep simulation. Build once, run sweeps, inspect results.
@@ -22,6 +24,18 @@ struct PySimulation {
 #[pyclass(name = "SweepResult")]
 struct PySweepResult {
     inner: SweepResult,
+}
+
+/// One eigenmode of a cavity / waveguide.
+#[pyclass(name = "Eigenmode", unsendable)]
+struct PyEigenmode {
+    inner: Eigenmode,
+}
+
+/// Far-field radiation pattern with directivity, gain, axial ratio, LCP/RCP.
+#[pyclass(name = "RadiationPattern", unsendable)]
+struct PyRadiationPattern {
+    inner: RadiationPattern,
 }
 
 #[pymethods]
@@ -65,6 +79,38 @@ impl PySimulation {
     fn n_driven_ports(&self) -> usize {
         self.inner.ports.iter().filter(|p| p.is_driven()).count()
     }
+
+    /// Run an eigenmode analysis. Requires `[eigenmode]` block in the TOML config.
+    /// Returns a list of `Eigenmode` (frequency, Q, field).
+    fn run_eigenmode(&self) -> PyResult<Vec<PyEigenmode>> {
+        if self.inner.config.eigenmode.is_none() {
+            return Err(PyRuntimeError::new_err(
+                "config.eigenmode block not set in TOML",
+            ));
+        }
+        Ok(self
+            .inner
+            .run_eigenmode()
+            .into_iter()
+            .map(|m| PyEigenmode { inner: m })
+            .collect())
+    }
+
+    /// Compute the far-field radiation pattern at (freq_idx, port_idx) on a (theta, phi) grid.
+    /// Returns None if the NFFT surface is empty or out-of-bounds indices.
+    #[pyo3(signature = (result, freq_idx=0, port_idx=0, n_theta=91, n_phi=72))]
+    fn compute_farfield(
+        &self,
+        result: &PySweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+        n_theta: usize,
+        n_phi: usize,
+    ) -> Option<PyRadiationPattern> {
+        self.inner
+            .compute_farfield(&result.inner, freq_idx, port_idx, n_theta, n_phi)
+            .map(|p| PyRadiationPattern { inner: p })
+    }
 }
 
 #[pymethods]
@@ -105,11 +151,120 @@ impl PySweepResult {
     fn solve_time_s(&self) -> f64 { self.inner.solve_time_s }
 }
 
+#[pymethods]
+impl PyEigenmode {
+    /// Real part of the resonant frequency (Hz).
+    #[getter]
+    fn frequency_hz(&self) -> f64 { self.inner.frequency.re }
+
+    /// Imaginary part of the resonant frequency (Hz). Non-zero for lossy / leaky modes.
+    #[getter]
+    fn frequency_imag_hz(&self) -> f64 { self.inner.frequency.im }
+
+    /// Quality factor Q = f_re / (2 * f_im). Infinite for lossless modes.
+    #[getter]
+    fn q_factor(&self) -> f64 { self.inner.q_factor }
+
+    /// E-field DOF coefficient vector for this mode (complex128).
+    #[getter]
+    fn field<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<NpC64>> {
+        let conv: Vec<NpC64> = self.inner.field.iter().map(|c| NpC64::new(c.re, c.im)).collect();
+        conv.into_pyarray_bound(py)
+    }
+}
+
+#[pymethods]
+impl PyRadiationPattern {
+    /// Theta angles (radians, 0..pi).
+    #[getter]
+    fn theta_rad<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.theta.clone().into_pyarray_bound(py)
+    }
+
+    /// Phi angles (radians, 0..2pi).
+    #[getter]
+    fn phi_rad<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.phi.clone().into_pyarray_bound(py)
+    }
+
+    #[getter]
+    fn directivity_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        flatten_2d(&self.inner.directivity_dbi, py)
+    }
+
+    #[getter]
+    fn gain_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        flatten_2d(&self.inner.gain_dbi, py)
+    }
+
+    #[getter]
+    fn axial_ratio_db<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        flatten_2d(&self.inner.axial_ratio_db, py)
+    }
+
+    #[getter]
+    fn lcp_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        flatten_2d(&self.inner.lcp_dbi, py)
+    }
+
+    #[getter]
+    fn rcp_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        flatten_2d(&self.inner.rcp_dbi, py)
+    }
+
+    /// Complex E_theta(theta, phi), shape `[n_phi, n_theta]`.
+    #[getter]
+    fn e_theta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<NpC64>> {
+        flatten_2d_complex(&self.inner.e_theta, py)
+    }
+
+    /// Complex E_phi(theta, phi), shape `[n_phi, n_theta]`.
+    #[getter]
+    fn e_phi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<NpC64>> {
+        flatten_2d_complex(&self.inner.e_phi, py)
+    }
+
+    #[getter]
+    fn peak_directivity_dbi(&self) -> f64 { self.inner.peak_directivity_dbi }
+
+    #[getter]
+    fn peak_gain_dbi(&self) -> f64 { self.inner.peak_gain_dbi }
+
+    #[getter]
+    fn radiated_power(&self) -> f64 { self.inner.radiated_power }
+}
+
+fn flatten_2d<'py>(grid: &[Vec<f64>], py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+    let n_phi = grid.len();
+    let n_theta = grid.first().map(|r| r.len()).unwrap_or(0);
+    let mut flat: Vec<f64> = Vec::with_capacity(n_phi * n_theta);
+    for row in grid {
+        flat.extend_from_slice(row);
+    }
+    let arr = numpy::ndarray::Array2::from_shape_vec((n_phi, n_theta), flat).expect("shape");
+    arr.into_pyarray_bound(py)
+}
+
+fn flatten_2d_complex<'py>(grid: &[Vec<Complex64>], py: Python<'py>) -> Bound<'py, PyArray2<NpC64>> {
+    let n_phi = grid.len();
+    let n_theta = grid.first().map(|r| r.len()).unwrap_or(0);
+    let mut flat: Vec<NpC64> = Vec::with_capacity(n_phi * n_theta);
+    for row in grid {
+        for c in row {
+            flat.push(NpC64::new(c.re, c.im));
+        }
+    }
+    let arr = numpy::ndarray::Array2::from_shape_vec((n_phi, n_theta), flat).expect("shape");
+    arr.into_pyarray_bound(py)
+}
+
 /// rapidfem — frequency-domain EM FEM solver.
 #[pymodule]
 #[pyo3(name = "_native")]
 fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulation>()?;
     m.add_class::<PySweepResult>()?;
+    m.add_class::<PyEigenmode>()?;
+    m.add_class::<PyRadiationPattern>()?;
     Ok(())
 }
