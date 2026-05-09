@@ -81,21 +81,26 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
     )
     air.material = "air"
 
-    # ── Metal polygons as 2D PEC plates ────────────────────────────────────
-    # (thin-conductor approximation — see Geometry.from_gds(thin_conductors=True))
-    plates: list = []
+    # ── Metal/via polygons as 3D extrusions ────────────────────────────────
+    # Each polygon becomes a real 3D conductor at its layer's (z, thickness).
+    # Faces of these volumes get re-tagged with the layer name AFTER the
+    # global fragment, so the PEC BC matches a SURFACE physical group.
+    import numpy as np
+    conductors: list = []   # (volume_obj, layer_name)
+    conductor_maxh = spec["maxh"] / 3.0
     for poly in spec["polygons"]:
         layer = _layer_by_name(stack, poly["layer"])
-        if not layer or layer["type"] != "metal":
+        if not layer or layer["type"] not in ("metal", "via"):
             continue
         pts = [(poly["xy"][i], poly["xy"][i + 1]) for i in range(0, len(poly["xy"]), 2)]
-        import numpy as np
         arr = np.asarray(pts, dtype=np.float64)
-        plate = g._plate_polygon(arr, z=layer["z"])
-        plate.name = layer["name"]
-        plates.append(plate)
+        vol = g._extrude_polygon(arr, z=layer["z"], thickness=layer["thickness"])
+        vol.name = layer["name"]
+        vol.maxh = conductor_maxh
+        conductors.append((vol, layer["name"]))
 
-    # ── Ports: extension pad on layer + ground patch on gnd_layer + port plate
+    # ── Ports: extension pad (3D, on the trace metal) + ground patch (2D)
+    #          + port plate (vertical 2D, between gnd and trace bottom)
     port_objs: list = []
     port_names: list[str] = []
     for port in spec["ports"]:
@@ -103,29 +108,43 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         gnd = _layer_by_name(stack, port["gnd_layer"])
         if not layer or not gnd:
             raise ValueError(f"port {port['name']!r} references unknown layer/gnd_layer")
-        z_metal = layer["z"]
-        z_gnd = gnd["z"] + gnd["thickness"]
+        z_metal_bot = layer["z"]
+        z_gnd_top = gnd["z"] + gnd["thickness"]
         size = port.get("size") or 6e-6
         gnd_pad_size = 4 * size
         cxp, cyp = port["x"], port["y"]
 
-        ext = g.xy_plate(size, size,
-                         position=(cxp - size / 2, cyp - size / 2, z_metal))
+        # Extension pad as 3D box welded onto the trace's z extent
+        ext = g.box(size, size, layer["thickness"],
+                    position=(cxp - size / 2, cyp - size / 2, z_metal_bot))
         ext.name = layer["name"]
+        ext.maxh = conductor_maxh
+        # Ground pad: thin plate at top of gnd layer
         gnd_pad = g.xy_plate(gnd_pad_size, gnd_pad_size,
-                              position=(cxp - gnd_pad_size / 2, cyp - gnd_pad_size / 2, z_gnd))
+                              position=(cxp - gnd_pad_size / 2, cyp - gnd_pad_size / 2, z_gnd_top))
         gnd_pad.name = f"{port['name']}_gnd"
+        # Vertical port plate
         port_plate = g.plate(
-            p0=(cxp - size / 2, cyp - size / 2, z_gnd),
+            p0=(cxp - size / 2, cyp - size / 2, z_gnd_top),
             width=(size, 0, 0),
-            height=(0, 0, z_metal - z_gnd),
+            height=(0, 0, z_metal_bot - z_gnd_top),
         )
         port_plate.name = port["name"]
         port_objs += [ext, gnd_pad, port_plate]
         port_names.append(port["name"])
 
     # ── Single batched conformal fragment ────────────────────────────────
-    g.fragment(sub_box, ox_box, *plates, *port_objs)
+    g.fragment(sub_box, ox_box, *(c[0] for c in conductors), *port_objs)
+
+    # ── Tag the boundary faces of every conductor volume with its layer
+    #    name. The PEC BC matches a SURFACE physical group, so a 3D volume
+    #    named "met5" alone wouldn't propagate to the FEM BC — we explicitly
+    #    name each face. After fragment, vol._entity.tag is up-to-date.
+    for vol, layer_name in conductors:
+        try:
+            vol.faces.name = layer_name
+        except Exception as e:
+            print(f"warn: could not tag faces of {layer_name}: {e}")
 
     # ABC on outer faces of air
     air.faces.where(lambda c, _, h=air_top_z + air_h: abs(c[2] - h) < 1e-12).name = "abc"
@@ -134,10 +153,12 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         air.faces.where(lambda c, _, s=s, f=fxy[1]: abs(c[1] - cy - s * f / 2) < 1e-12).name = "abc"
 
     # ── SimulationBuilder ─────────────────────────────────────────────────
-    # Only metals that actually have polygons (or host a port extension pad)
-    # become PEC physical groups in the geometry.
-    metals_used = {p["layer"] for p in spec["polygons"]
-                   if (_layer_by_name(stack, p["layer"]) or {}).get("type") == "metal"}
+    # All conductor layers (metal AND via) that appear in the spec become
+    # PEC physical groups via their auto-tagged boundary faces.
+    metals_used = {
+        p["layer"] for p in spec["polygons"]
+        if (_layer_by_name(stack, p["layer"]) or {}).get("type") in ("metal", "via")
+    }
     metals_used.update(p["layer"] for p in spec["ports"])
     metal_pec_names = sorted(metals_used)
     gnd_names = [f"{p['name']}_gnd" for p in spec["ports"]]

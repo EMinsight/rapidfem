@@ -1,15 +1,14 @@
 """End-to-end demo: rapidpassives Python generator -> rapidfem Bridge -> mesh.
 
-Picks a couple of rapidpassives' canonical RFIC layout generators
-(SpiralInductor, SymmetricInductor), maps their layers onto our Sky130 PDK,
-builds a GeometrySpec, runs it through rapidfem.bridge.build_from_spec, and
-dumps the resulting (.msh, .toml) into the WASM demo's static directory so
-they show up as new examples in the browser.
+Picks a couple of rapidpassives' RFIC layout generators (SpiralInductor,
+SymmetricInductor), maps each rapidpassives layer onto the matching Sky130
+stack layer (windings -> met5, crossings -> met4, vias -> via4, pgs -> li1),
+extrudes them as 3D conductors, and runs the resulting GeometrySpec through
+rapidfem.bridge.build_from_spec to produce (.msh, .toml) for the WASM demo.
 
-The mapping is intentionally simplified: every metal-bearing layer
-(windings/crossings/vias/centertap) lives on met5, ground shield on li1.
-Real designs use multiple metals — that's a follow-up. This script's job
-is to prove the rapidpassives->rapidfem pipeline.
+Conductors get a refined maxh (one third of the global value) so the mesh
+captures the trace edges. Boundary faces are auto-tagged in the bridge so
+PEC BC matches the proper surface group.
 """
 from __future__ import annotations
 
@@ -24,23 +23,53 @@ sys.path.insert(0, str(REPO / "python" / "python_src"))
 import rapidfem
 from rapidfem.bridge import build_from_spec
 
-# rapidpassives Python lives outside our repo
-RP_REPO = Path("/c/Repositories/rapidpassives") if Path("/c/Repositories/rapidpassives").exists() \
-    else Path("C:/Repositories/rapidpassives")
+RP_REPO = Path("C:/Repositories/rapidpassives")
 sys.path.insert(0, str(RP_REPO))
 
 from rapidpassives.spiralinductor import SpiralInductor
 from rapidpassives.symmetricinductor import SymmetricInductor
 
 
-def _layers_to_polygons(layers: dict, fem_layer: str) -> list[dict]:
-    """Take a rapidpassives `self.layers` dict (LayerName -> list of
-    (x_arr, y_arr) polygon tuples) and project ALL polygons onto a single
-    FEM layer. Returns SpecPolygon dicts in METERS."""
+# rapidpassives layer-name -> Sky130 stack layer
+RP_LAYER_MAP = {
+    "windings":     "met5",
+    "windings_m4":  "met5",
+    "windings_m2":  "met5",
+    "crossings":    "met4",
+    "crossings_m1": "met4",
+    "vias":         "via4",
+    "vias1":        "via4",
+    "vias2":        "via4",
+    "vias3":        "via4",
+    "centertap":    "met5",
+    "pgs":          "li1",
+    "guard_ring":   "met5",
+}
+
+
+def _sky130_stack_dict() -> list[dict]:
+    """Trimmed Sky130 stack covering the layers our rapidpassives demos use."""
+    return [
+        {"name": "substrate", "type": "substrate", "z": -3.018e-5, "thickness": 30e-6,
+         "er": 11.9, "conductivity": 10},
+        {"name": "oxide",     "type": "oxide",     "z": -1.8e-7,   "thickness": 5.805e-6, "er": 4.2},
+        {"name": "li1",       "type": "metal",     "z":  0.0,      "thickness": 1.0e-7},
+        {"name": "met4",      "type": "metal",     "z":  3.515e-6, "thickness": 0.65e-6},
+        {"name": "via4",      "type": "via",       "z":  4.165e-6, "thickness": 0.20e-6},
+        {"name": "met5",      "type": "metal",     "z":  4.365e-6, "thickness": 1.26e-6},
+    ]
+
+
+def _layers_to_polygons(layers: dict) -> list[dict]:
+    """Project rapidpassives' per-layer polygons onto FEM stack layers via
+    RP_LAYER_MAP. Layers absent from the map are silently dropped."""
     out: list[dict] = []
     UM = 1e-6
-    for layer_polys in layers.values():
-        for xs, ys in layer_polys:
+    for rp_layer, polys in layers.items():
+        fem_layer = RP_LAYER_MAP.get(rp_layer)
+        if not fem_layer or not polys:
+            continue
+        for xs, ys in polys:
             xy = []
             for x, y in zip(xs, ys):
                 xy.extend([float(x) * UM, float(y) * UM])
@@ -48,24 +77,12 @@ def _layers_to_polygons(layers: dict, fem_layer: str) -> list[dict]:
     return out
 
 
-def _sky130_stack_dict() -> list[dict]:
-    """A trimmed Sky130 stack dict (substrate + oxide + li1 + met5 only)
-    in the JSON format the bridge expects."""
-    return [
-        {"name": "substrate", "type": "substrate", "z": -3.018e-5, "thickness": 30e-6,
-         "er": 11.9, "conductivity": 10},
-        {"name": "oxide", "type": "oxide", "z": -1.8e-7, "thickness": 5.805e-6, "er": 4.2},
-        {"name": "li1", "type": "metal", "z": 0.0, "thickness": 1e-7},
-        {"name": "met5", "type": "metal", "z": 4.365e-6, "thickness": 1.26e-6},
-    ]
-
-
 def build_spiral_spec() -> dict:
-    """Smaller-than-default spiral so the FEM stays fast in WASM."""
     sp = SpiralInductor(Dout=80, N=1, sides=8, width=8, spacing=4)
-    polys = _layers_to_polygons(sp.layers, "met5")
+    polys = _layers_to_polygons(sp.layers)
     UM = 1e-6
-    # rapidpassives places port labels near the outer end of the windings.
+    # rapidpassives port labels: P1 on windings (top metal), P2 on crossings
+    # (lower metal), both at the outer edge of the spiral.
     x_lab = (sp.Dout / 2 + sp.width) * UM
     y_lab = (sp.width / 2 + sp.spacing / 2) * UM
     return {
@@ -73,23 +90,25 @@ def build_spiral_spec() -> dict:
         "stack": _sky130_stack_dict(),
         "polygons": polys,
         "ports": [
+            # P1 sits on met5 (windings); P2 on met4 (crossings under-pass)
             {"name": "p1", "x": +x_lab, "y": +y_lab, "layer": "met5", "gnd_layer": "li1",
              "size": 6e-6, "z0": 50},
-            {"name": "p2", "x": +x_lab, "y": -y_lab, "layer": "met5", "gnd_layer": "li1",
+            {"name": "p2", "x": +x_lab, "y": -y_lab, "layer": "met4", "gnd_layer": "li1",
              "size": 6e-6, "z0": 50},
         ],
-        "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 30e-6, "abc": "B"},
+        "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],
-        "maxh": 15e-6,
+        "maxh": 12e-6,
     }
 
 
 def build_symmetric_spec() -> dict:
     si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3)
-    polys = _layers_to_polygons(si.layers, "met5")
+    polys = _layers_to_polygons(si.layers)
     UM = 1e-6
-    # SymmetricInductor's two terminals straddle x=0; pick the outer-most
-    # winding tangent points.
+    # Symmetric inductor terminals: rapidpassives places P1/P2 at the two
+    # outer windings on opposite sides. Both end on the top winding (met5);
+    # crossings are internal under-passes.
     xt = (si.Dout / 2 + si.width) * UM
     return {
         "name": "rp_symmetric",
@@ -99,9 +118,9 @@ def build_symmetric_spec() -> dict:
             {"name": "p1", "x": -xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50},
             {"name": "p2", "x": +xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50},
         ],
-        "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 30e-6, "abc": "B"},
+        "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],
-        "maxh": 15e-6,
+        "maxh": 12e-6,
     }
 
 
