@@ -139,15 +139,18 @@
 
 	/** Volume hull from tets — for EACH volume independently: face appearing
 	 *  exactly once in that volume's tets = part of its hull. A face shared
-	 *  between two volumes (e.g. substrate↔oxide interface) ends up in BOTH
-	 *  hulls — required so hiding one volume still shows the interface as
-	 *  the exposed face of the other.  */
+	 *  between two volumes ends up in BOTH hulls so hiding one volume still
+	 *  shows the interface from the other side.
+	 *
+	 *  CRITICAL: every boundary triangle is oriented so its face normal points
+	 *  AWAY from the tet's fourth vertex (= outward from the volume). Without
+	 *  this, adjacent boundary triangles can have flipped normals → dappled
+	 *  shading on flat surfaces. */
 	function build_volume_boundaries(m: MeshData): Map<number, number[]> {
 		const enc = (a: number, b: number, c: number): bigint => {
 			const s = [a, b, c].sort((x, y) => x - y);
 			return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
 		};
-		// Group tet indices per volume
 		const per_vol = new Map<number, number[]>();
 		const ntets = m.tet_phys.length;
 		for (let t = 0; t < ntets; t++) {
@@ -157,20 +160,48 @@
 			if (!arr) { arr = []; per_vol.set(v, arr); }
 			arr.push(t);
 		}
+
+		// Orient triangle (a,b,c) so its normal points away from the opposite
+		// vertex `o` of the same tet. Returns the (possibly swapped) tri.
+		const orient_outward = (
+			a: number, b: number, c: number, o: number
+		): [number, number, number] => {
+			if (!mesh) return [a, b, c];
+			const ax = m.nodes[a * 3], ay = m.nodes[a * 3 + 1], az = m.nodes[a * 3 + 2];
+			const bx = m.nodes[b * 3], by = m.nodes[b * 3 + 1], bz = m.nodes[b * 3 + 2];
+			const cx = m.nodes[c * 3], cy = m.nodes[c * 3 + 1], cz = m.nodes[c * 3 + 2];
+			const ox = m.nodes[o * 3], oy = m.nodes[o * 3 + 1], oz = m.nodes[o * 3 + 2];
+			const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+			const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+			const nx = e1y * e2z - e1z * e2y;
+			const ny = e1z * e2x - e1x * e2z;
+			const nz = e1x * e2y - e1y * e2x;
+			const dx = ox - ax, dy = oy - ay, dz = oz - az;
+			// If normal · (o - a) > 0, normal points toward o (inward) → swap b/c
+			if (nx * dx + ny * dy + nz * dz > 0) return [a, c, b];
+			return [a, b, c];
+		};
+
 		const out = new Map<number, number[]>();
 		for (const [vol, tet_indices] of per_vol.entries()) {
-			// Per-volume face counter: encoded key → { count, tri (oriented from any occurrence) }
 			const seen = new Map<bigint, { count: number; tri: [number, number, number] }>();
 			for (const t of tet_indices) {
 				const a = m.tets[t * 4], b = m.tets[t * 4 + 1], c = m.tets[t * 4 + 2], d = m.tets[t * 4 + 3];
-				const faces: [number, number, number][] = [
-					[a, b, c], [a, b, d], [a, c, d], [b, c, d]
+				// face, opposite vertex
+				const tri_descs: [[number, number, number], number][] = [
+					[[a, b, c], d],
+					[[a, b, d], c],
+					[[a, c, d], b],
+					[[b, c, d], a]
 				];
-				for (const f of faces) {
+				for (const [f, opp] of tri_descs) {
 					const k = enc(f[0], f[1], f[2]);
 					const prev = seen.get(k);
-					if (!prev) seen.set(k, { count: 1, tri: f });
-					else prev.count++;
+					if (!prev) {
+						seen.set(k, { count: 1, tri: orient_outward(f[0], f[1], f[2], opp) });
+					} else {
+						prev.count++;
+					}
 				}
 			}
 			const arr: number[] = [];
