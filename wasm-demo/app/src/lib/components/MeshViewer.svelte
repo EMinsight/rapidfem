@@ -160,35 +160,47 @@
 		return normals;
 	}
 
-	/** Volume hull from tets — face appearing exactly once per volume = boundary. */
+	/** Volume hull from tets — for EACH volume independently: face appearing
+	 *  exactly once in that volume's tets = part of its hull. A face shared
+	 *  between two volumes (e.g. substrate↔oxide interface) ends up in BOTH
+	 *  hulls — required so hiding one volume still shows the interface as
+	 *  the exposed face of the other.  */
 	function build_volume_boundaries(m: MeshData): Map<number, number[]> {
-		const out = new Map<number, number[]>();
-		const seen = new Map<bigint, { vol: number; tri: [number, number, number] } | null>();
 		const enc = (a: number, b: number, c: number): bigint => {
 			const s = [a, b, c].sort((x, y) => x - y);
 			return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
 		};
+		// Group tet indices per volume
+		const per_vol = new Map<number, number[]>();
 		const ntets = m.tet_phys.length;
 		for (let t = 0; t < ntets; t++) {
 			const v = m.tet_phys[t];
 			if (!v) continue;
-			const a = m.tets[t * 4], b = m.tets[t * 4 + 1], c = m.tets[t * 4 + 2], d = m.tets[t * 4 + 3];
-			const faces: [number, number, number][] = [
-				[a, b, c], [a, b, d], [a, c, d], [b, c, d]
-			];
-			for (const f of faces) {
-				const k = enc(f[0], f[1], f[2]);
-				const prev = seen.get(k);
-				if (prev === undefined) seen.set(k, { vol: v, tri: f });
-				else if (prev !== null && prev.vol === v) seen.set(k, null);
-				else seen.set(k, { vol: v, tri: f });
-			}
+			let arr = per_vol.get(v);
+			if (!arr) { arr = []; per_vol.set(v, arr); }
+			arr.push(t);
 		}
-		for (const entry of seen.values()) {
-			if (!entry) continue;
-			let arr = out.get(entry.vol);
-			if (!arr) { arr = []; out.set(entry.vol, arr); }
-			arr.push(entry.tri[0], entry.tri[1], entry.tri[2]);
+		const out = new Map<number, number[]>();
+		for (const [vol, tet_indices] of per_vol.entries()) {
+			// Per-volume face counter: encoded key → { count, tri (oriented from any occurrence) }
+			const seen = new Map<bigint, { count: number; tri: [number, number, number] }>();
+			for (const t of tet_indices) {
+				const a = m.tets[t * 4], b = m.tets[t * 4 + 1], c = m.tets[t * 4 + 2], d = m.tets[t * 4 + 3];
+				const faces: [number, number, number][] = [
+					[a, b, c], [a, b, d], [a, c, d], [b, c, d]
+				];
+				for (const f of faces) {
+					const k = enc(f[0], f[1], f[2]);
+					const prev = seen.get(k);
+					if (!prev) seen.set(k, { count: 1, tri: f });
+					else prev.count++;
+				}
+			}
+			const arr: number[] = [];
+			for (const e of seen.values()) {
+				if (e.count === 1) arr.push(e.tri[0], e.tri[1], e.tri[2]);
+			}
+			if (arr.length) out.set(vol, arr);
 		}
 		return out;
 	}
