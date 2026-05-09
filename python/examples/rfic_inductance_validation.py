@@ -56,6 +56,8 @@ def run_fem(gds_path, geom, *, freq_hz=1e9):
     stack = rfic.Stack.sky130()
 
     g = rapidfem.Geometry.from_gds(gds_path, stack=stack, merge=False)
+    # The wire from the GDS is the only met5 volume — grab it for fragmentation
+    wire_obj = next((o for o in g._objects if o.dim == 3 and o._entity.name == "met5"), None)
 
     # Footprint: a bit larger than the wire
     foot = (geom["length_um"] * 1.5 * um, 80 * um)
@@ -72,34 +74,24 @@ def run_fem(gds_path, geom, *, freq_hz=1e9):
         air.faces.where(lambda c, _, s=s, f=foot[0]: abs(c[0] - s * f / 2) < 1e-12).name = "abc"
         air.faces.where(lambda c, _, s=s, f=foot[1]: abs(c[1] - s * f / 2) < 1e-12).name = "abc"
 
-    # Two ground patches on li1 (z=0) directly under each wire end — PEC.
-    z_li1 = stack.by_name("li1").z
-    z_met5 = stack.by_name("met5").z
+    # Use the rfic.trace_port helper at each wire end — handles fragment internally
     half_L = geom["length_um"] * um / 2
-    pad_size = 8 * um
+    fragment_targets = [oxide_obj] if oxide_obj is not None else []
+    if wire_obj is not None:
+        fragment_targets.append(wire_obj)
 
-    port_plates = []
-    for label, x_pos in [("p1", -half_L), ("p2", +half_L)]:
-        gnd = g.xy_plate(pad_size, pad_size,
-                         position=(x_pos - pad_size / 2, -pad_size / 2, z_li1))
-        gnd.name = "ground_pec"
-        port_plate = g.plate(
-            p0=(x_pos, -pad_size / 2, z_li1),
-            width=(0, pad_size, 0),
-            height=(0, 0, z_met5 - z_li1),
-        )
-        port_plate.name = label
-        port_plates.append(port_plate)
-
-    # Fragment port plates with the oxide so they become conformal interior surfaces
-    if oxide_obj is not None:
-        g.fragment(oxide_obj, *port_plates)
+    rfic.trace_port(g, stack, layer="met5", gnd_layer="li1",
+                    position=(-half_L, 0), name="p1",
+                    fragment_with=fragment_targets)
+    rfic.trace_port(g, stack, layer="met5", gnd_layer="li1",
+                    position=(+half_L, 0), name="p2",
+                    fragment_with=fragment_targets)
 
     builder = (
         rapidfem.SimulationBuilder()
         .from_geometry(g, maxh=15 * um)
         .frequencies([freq_hz])
-        .pec("met5", "ground_pec")
+        .pec("met5", "p1_gnd", "p2_gnd")
         .lumped_port("p1", direction=(0, 0, 1), z0=50.0)
         .lumped_port("p2", direction=(0, 0, 1), z0=50.0)
         .abc("abc", order=1)
@@ -115,11 +107,14 @@ def run_fem(gds_path, geom, *, freq_hz=1e9):
 
 
 def extract_L_from_S(s, freq_hz, z0=50.0):
+    """Extract series-L from π-equivalent: L = 1/(w·Im(Y21)).
+    Im(Z21) is dominated by shunt-C at low frequency for short traces."""
     omega = 2 * math.pi * freq_hz
     I = np.eye(2)
     Z = np.sqrt(z0) * (I + s) @ np.linalg.inv(I - s) * np.sqrt(z0)
-    L_from_Z21 = Z[1, 0].imag / omega
-    return Z, L_from_Z21
+    Y = np.linalg.inv(Z)
+    L_from_Y21 = 1.0 / (omega * Y[1, 0].imag) if Y[1, 0].imag != 0 else float("nan")
+    return Z, Y, L_from_Y21
 
 
 def main() -> int:
@@ -142,13 +137,17 @@ def main() -> int:
             for j in range(2):
                 print(f"    S{i+1}{j+1} = {s[i,j].real:+.4f} {s[i,j].imag:+.4f}j   |S|={abs(s[i,j]):.4f}")
 
-        Z, L_fem = extract_L_from_S(s, freq_hz=1e9, z0=50.0)
+        Z, Y, L_fem = extract_L_from_S(s, freq_hz=1e9, z0=50.0)
         print(f"\n  Z-matrix at 1 GHz:")
         for i in range(2):
             for j in range(2):
                 print(f"    Z{i+1}{j+1} = {Z[i,j].real:+.2f} {Z[i,j].imag:+.2f}j Ohm")
+        print(f"\n  Y-matrix at 1 GHz:")
+        for i in range(2):
+            for j in range(2):
+                print(f"    Y{i+1}{j+1} = {Y[i,j].real:+.4e} {Y[i,j].imag:+.4e}j S")
 
-        print(f"\n  L_fem (Im(Z21)/w)  = {L_fem * 1e12:.1f} pH = {L_fem * 1e9:.4f} nH")
+        print(f"\n  L_fem (1/(w·Im(Y21))) = {L_fem * 1e12:.1f} pH = {L_fem * 1e9:.4f} nH")
         print(f"  L_analytical (Rosa) = {L_ana * 1e12:.1f} pH")
         rel_err = abs(L_fem - L_ana) / L_ana
         print(f"  Relative error: {rel_err * 100:.1f}%")
