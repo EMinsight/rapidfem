@@ -23,7 +23,7 @@
   <select id="example">
     <option value="wr90">WR-90 waveguide (9–11 GHz)</option>
     <option value="microstrip">Sky130 microstrip (1–6 GHz)</option>
-    <option value="spiral">Sky130 octagonal spiral inductor (0.5–5.5 GHz)</option>
+    <option value="spiral">Sky130 octagonal spiral inductor (1–100 GHz, captures SRF)</option>
   </select>
   <button id="run" style="margin-left: 0.5em;">Run sweep</button>
   <span id="status" style="margin-left: 1em;"></span>
@@ -186,16 +186,36 @@
         log(`max |S11| = ${Math.max(...s11).toExponential(3)}, min |S21| = ${Math.min(...s21).toFixed(4)}`);
 
         if (ex.extractLC && n_driven >= 2 && Smats[0]) {
-          // Extract L from Y21 = inv(Z)[1][0]: L = 1 / (w·Im(Y21))
-          // Pick lowest frequency for cleanest L (least dispersive)
+          // Extract L at the LOWEST frequency where the device is purely
+          // inductive (Im(Y21) > 0). Self-resonance: |S21| dips when the
+          // inductor's L-C tank tank goes parallel-resonant.
           const k0 = 0;
           const omega = 2 * Math.PI * result.frequencies_hz[k0];
           const Z = sToZ(Smats[k0], 50.0);
           const Y = inv2x2(Z);
           const L_pH = 1e12 / (omega * Y[1][0].im);
           const C_fF = 2e15 * (Y[0][0].im + Y[1][0].im) / omega;
+          // Quality factor at port 1: Q = Im(Z11)/Re(Z11) (positive when inductive)
+          const Q = Z[0][0].im / Z[0][0].re;
           log(`extracted at ${(result.frequencies_hz[k0]/1e9).toFixed(2)} GHz: ` +
-              `L = ${L_pH.toFixed(1)} pH, C_total = ${C_fF.toFixed(2)} fF`);
+              `L = ${L_pH.toFixed(1)} pH, C_total = ${C_fF.toFixed(2)} fF, Q = ${Q.toFixed(1)}`);
+          // Find self-resonance from |S21| minimum (or where Im(Y21) flips sign)
+          let kSRF = -1;
+          for (let k = 1; k < n_freq; k++) {
+            const Yk = inv2x2(sToZ(Smats[k], 50.0));
+            if (Yk[1][0].im < 0) { kSRF = k; break; }
+          }
+          if (kSRF > 0) {
+            // Linear interp between kSRF-1 and kSRF for Im(Y21)=0
+            const f0 = result.frequencies_hz[kSRF - 1];
+            const f1 = result.frequencies_hz[kSRF];
+            const Y0 = inv2x2(sToZ(Smats[kSRF - 1], 50.0))[1][0].im;
+            const Y1 = inv2x2(sToZ(Smats[kSRF], 50.0))[1][0].im;
+            const fSRF = f0 + (f1 - f0) * Y0 / (Y0 - Y1);
+            log(`self-resonance ≈ ${(fSRF/1e9).toFixed(1)} GHz (Im(Y21) sign-flip)`);
+          } else {
+            log(`no SRF in sweep — extend frequency range`);
+          }
         }
 
         status.innerHTML = '<span class="ok">done</span>';

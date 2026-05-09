@@ -38,7 +38,10 @@ def make_spiral_gds(path, *, dout_um=130, n_turns=2, width_um=10, spacing_um=4):
 def build_spiral_demo(out_msh: Path, out_toml: Path,
                        freqs_hz=None, dout_um=80, n_turns=1):
     if freqs_hz is None:
-        freqs_hz = [1e9, 3e9, 5e9]   # 3 pts
+        # Sweep through the self-resonance. With L≈190pH, C≈28fF the SRF is
+        # around 70 GHz, so 1..100 GHz captures the inductive region, the
+        # resonance peak, and the capacitive tail beyond.
+        freqs_hz = [1e9, 5e9, 10e9, 20e9, 30e9, 40e9, 50e9, 60e9, 70e9, 80e9, 100e9]
     um = 1e-6
 
     with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
