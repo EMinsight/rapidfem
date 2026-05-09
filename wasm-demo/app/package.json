@@ -20,6 +20,8 @@
 		"vite": "^7.3.1"
 	},
 	"dependencies": {
-		"plotly.js-dist-min": "^3.4.0"
+		"@types/three": "^0.184.1",
+		"plotly.js-dist-min": "^3.4.0",
+		"three": "^0.184.0"
 	}
 }

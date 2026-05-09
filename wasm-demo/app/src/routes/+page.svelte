@@ -6,6 +6,8 @@
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import StatusPanel from '$lib/components/StatusPanel.svelte';
 	import ExampleSelect from '$lib/components/ExampleSelect.svelte';
+	import MeshViewer from '$lib/components/MeshViewer.svelte';
+	import { parse_msh, type MeshData } from '$lib/msh';
 	import { L_eq_pH, Q_factor, find_srf } from '$lib/sparams';
 
 	let selected_id = $state('spiral');
@@ -19,7 +21,25 @@
 	let freqs = $state<number[]>([]);
 	let smats = $state<SMatrix[]>([]);
 
+	let mesh_data = $state<MeshData | null>(null);
+	type Display = 'geometry' | 'mesh' | 'both' | 'plots';
+	let display = $state<Display>('geometry');
+
 	let abort_controller: AbortController | null = null;
+
+	// Auto-load mesh when example changes so the geometry is visible before run
+	$effect(() => {
+		const url = example.msh_url;
+		(async () => {
+			try {
+				const t = await fetch(url).then((r) => r.text());
+				mesh_data = parse_msh(t);
+			} catch (e) {
+				console.error('mesh parse failed', e);
+				mesh_data = null;
+			}
+		})();
+	});
 
 	function log(msg: string) {
 		log_lines = [...log_lines, msg];
@@ -33,6 +53,7 @@
 		log_lines = [];
 		smats = [];
 		freqs = [];
+		display = 'plots';
 		abort_controller = new AbortController();
 
 		try {
@@ -139,7 +160,19 @@
 		</aside>
 
 		<main class="results-area">
-			<ResultsPanel {freqs} {smats} metrics={example.metrics} />
+			<div class="view-tabs">
+				<button class="vt" class:active={display === 'geometry'} onclick={() => (display = 'geometry')}>Geometry</button>
+				<button class="vt" class:active={display === 'mesh'} onclick={() => (display = 'mesh')}>Mesh</button>
+				<button class="vt" class:active={display === 'both'} onclick={() => (display = 'both')}>Both</button>
+				<button class="vt" class:active={display === 'plots'} onclick={() => (display = 'plots')}>Plots</button>
+			</div>
+			<div class="view-body">
+				{#if display === 'plots'}
+					<ResultsPanel {freqs} {smats} metrics={example.metrics} />
+				{:else}
+					<MeshViewer mesh={mesh_data} mode={display} />
+				{/if}
+			</div>
 		</main>
 	</div>
 </div>
@@ -214,6 +247,40 @@
 		min-width: 0;
 		min-height: 0;
 		background: var(--bg);
+		display: flex;
+		flex-direction: column;
+	}
+	.view-tabs {
+		display: flex;
+		gap: 0;
+		height: 32px;
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.vt {
+		display: flex;
+		align-items: center;
+		padding: 0 14px;
+		font-size: var(--fs-xs);
+		font-weight: 600;
+		font-family: var(--font-mono);
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		text-transform: uppercase;
+		background: transparent;
+		border: 0;
+		border-right: 1px solid var(--border);
+		cursor: pointer;
+		transition: color var(--transition);
+	}
+	.vt:hover { color: var(--text-muted); }
+	.vt.active {
+		color: var(--accent);
+	}
+	.view-body {
+		flex: 1;
+		min-height: 0;
 	}
 	.desc {
 		color: var(--text-muted);
