@@ -72,52 +72,110 @@
 		return '#5a6470';
 	}
 
-	/** Build per-tag THREE.Mesh objects from the surface triangles. */
+	/** From the tet array, derive the BOUNDARY of each volume (faces that
+	 * belong to exactly one tet within that volume — i.e. the volume's
+	 * external skin). Returns map: volume_tag → flat array of node indices. */
+	function build_volume_boundary(m: MeshData): Map<number, number[]> {
+		const out = new Map<number, number[]>();
+		const ntets = m.tet_phys.length;
+		// face_key (sorted node triple) → { vol_tag, indices [a,b,c] (oriented) }
+		// If the same face shows up twice within ONE volume, both occurrences cancel
+		// (it's an interior face). If it shows up only once, it's a boundary face.
+		const seen = new Map<bigint, { vol: number; tri: [number, number, number] } | null>();
+		const enc = (a: number, b: number, c: number): bigint => {
+			const s = [a, b, c].sort((x, y) => x - y);
+			return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
+		};
+		for (let t = 0; t < ntets; t++) {
+			const v = m.tet_phys[t];
+			if (!v) continue;
+			const a = m.tets[t * 4], b = m.tets[t * 4 + 1], c = m.tets[t * 4 + 2], d = m.tets[t * 4 + 3];
+			// Tet faces: (a,b,c), (a,b,d), (a,c,d), (b,c,d)
+			const faces: [number, number, number][] = [
+				[a, b, c],
+				[a, b, d],
+				[a, c, d],
+				[b, c, d]
+			];
+			for (const f of faces) {
+				const k = enc(f[0], f[1], f[2]);
+				const prev = seen.get(k);
+				if (prev === undefined) seen.set(k, { vol: v, tri: f });
+				else if (prev !== null && prev.vol === v) seen.set(k, null);
+				else seen.set(k, { vol: v, tri: f });
+			}
+		}
+		for (const entry of seen.values()) {
+			if (!entry) continue;
+			let arr = out.get(entry.vol);
+			if (!arr) { arr = []; out.set(entry.vol, arr); }
+			arr.push(entry.tri[0], entry.tri[1], entry.tri[2]);
+		}
+		return out;
+	}
+
+	/** Build per-tag THREE.Mesh objects. Two sources:
+	 *  - explicit named SURFACE tris (met5, p1, p1_gnd, …) — these are the
+	 *    user-tagged 2D plates;
+	 *  - implicit VOLUME boundary tris derived from the tet array, colored
+	 *    by their volume name (substrate, oxide, …). */
 	function build_geometry(m: MeshData) {
-		const by_tag = new Map<number, number[]>();
-		const ntri = m.tri_phys.length;
-		for (let i = 0; i < ntri; i++) {
+		const meshes: THREE.Mesh[] = [];
+
+		// 1) Named SURFACE tris (dim=2 physical groups)
+		const by_surf_tag = new Map<number, number[]>();
+		for (let i = 0; i < m.tri_phys.length; i++) {
 			const tag = m.tri_phys[i];
-			let arr = by_tag.get(tag);
-			if (!arr) { arr = []; by_tag.set(tag, arr); }
+			if (!tag) continue;             // unnamed surface tri → skip (handled via volume boundary)
+			if ((m.phys_dim.get(tag) ?? 2) !== 2) continue;  // only surface groups here
+			let arr = by_surf_tag.get(tag);
+			if (!arr) { arr = []; by_surf_tag.set(tag, arr); }
 			arr.push(m.tris[i * 3], m.tris[i * 3 + 1], m.tris[i * 3 + 2]);
 		}
-
-		const meshes: THREE.Mesh[] = [];
-		for (const [tag, idx] of by_tag.entries()) {
+		for (const [tag, idx] of by_surf_tag.entries()) {
 			const name = m.phys_names.get(tag) ?? `tag_${tag}`;
 			if (name === 'abc' || name.startsWith('_mat_')) continue;
 			const kind = classify(name);
-			const style = style_for(kind, tag);
-			if (kind === 'dielectric') style.color = dielectric_color(name);
-
-			const geom = new THREE.BufferGeometry();
-			geom.setAttribute('position', new THREE.BufferAttribute(m.nodes, 3));
-			geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
-			geom.computeVertexNormals();
-
-			const mat = new THREE.MeshStandardMaterial({
-				color: new THREE.Color(style.color),
-				transparent: style.opacity < 1,
-				opacity: style.opacity,
-				roughness: kind === 'conductor' ? 0.35 : 0.6,
-				metalness: kind === 'conductor' ? 0.6 : 0.05,
-				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
-				depthWrite: style.depth_write,
-				// Push 2D conductor plates slightly toward the camera so they
-				// don't z-fight with the (coplanar) interior face of the oxide box
-				polygonOffset: kind === 'conductor' || kind === 'port' || kind === 'gnd',
-				polygonOffsetFactor: -2,
-				polygonOffsetUnits: -2
-			});
-			const mesh3 = new THREE.Mesh(geom, mat);
-			mesh3.renderOrder = style.render_order;
-			mesh3.userData = { tag, name, kind };
-			meshes.push(mesh3);
+			meshes.push(make_mesh(m, idx, tag, name, kind));
 		}
-		// Sort so dielectric draws first → conductors → ports
+
+		// 2) Implicit volume-boundary tris (substrate / oxide / air hulls)
+		const vol_boundaries = build_volume_boundary(m);
+		for (const [vol_tag, idx] of vol_boundaries.entries()) {
+			const name = m.phys_names.get(vol_tag) ?? `vol_${vol_tag}`;
+			if (name.startsWith('_mat_')) continue;  // material-marker volumes (already covered)
+			meshes.push(make_mesh(m, idx, vol_tag, name, 'dielectric'));
+		}
+
 		meshes.sort((a, b) => a.renderOrder - b.renderOrder);
 		return meshes;
+	}
+
+	function make_mesh(m: MeshData, idx: number[], tag: number, name: string, kind: TagKind): THREE.Mesh {
+		const style = style_for(kind, tag);
+		if (kind === 'dielectric') style.color = dielectric_color(name);
+
+		const geom = new THREE.BufferGeometry();
+		geom.setAttribute('position', new THREE.BufferAttribute(m.nodes, 3));
+		geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
+		geom.computeVertexNormals();
+
+		const mat = new THREE.MeshStandardMaterial({
+			color: new THREE.Color(style.color),
+			transparent: style.opacity < 1,
+			opacity: style.opacity,
+			roughness: kind === 'conductor' ? 0.35 : 0.6,
+			metalness: kind === 'conductor' ? 0.6 : 0.05,
+			side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
+			depthWrite: style.depth_write,
+			polygonOffset: kind === 'conductor' || kind === 'port' || kind === 'gnd',
+			polygonOffsetFactor: -2,
+			polygonOffsetUnits: -2
+		});
+		const mesh3 = new THREE.Mesh(geom, mat);
+		mesh3.renderOrder = style.render_order;
+		mesh3.userData = { tag, name, kind };
+		return mesh3;
 	}
 
 	function build_wireframe(m: MeshData) {
@@ -283,20 +341,34 @@
 	});
 
 	const tag_legend = $derived.by(() => {
-		if (!mesh) return [] as { name: string; color: string; tag: number }[];
+		if (!mesh) return [] as { name: string; color: string; kind: TagKind }[];
 		const seen = new Set<number>();
-		const out: { name: string; color: string; tag: number }[] = [];
-		for (const tag of mesh.tri_phys) {
-			if (seen.has(tag)) continue;
-			const name = mesh.phys_names.get(tag) ?? `tag_${tag}`;
-			if (name === 'abc' || name.startsWith('_mat_')) {
-				seen.add(tag);
-				continue;
-			}
+		const items: { name: string; color: string; kind: TagKind; rank: number }[] = [];
+		const add = (tag: number, kind: TagKind) => {
+			if (seen.has(tag)) return;
 			seen.add(tag);
-			out.push({ name, color: plotColors.cycle[tag % plotColors.cycle.length], tag });
+			const name = mesh!.phys_names.get(tag) ?? `tag_${tag}`;
+			if (name === 'abc' || name.startsWith('_mat_')) return;
+			const style = style_for(kind, tag);
+			const color = kind === 'dielectric' ? dielectric_color(name) : style.color;
+			const rank =
+				kind === 'conductor' ? 0 : kind === 'port' ? 1 : kind === 'gnd' ? 2 : 3;
+			items.push({ name, color, kind, rank });
+		};
+		for (let i = 0; i < mesh.tri_phys.length; i++) {
+			const tag = mesh.tri_phys[i];
+			if (!tag || (mesh.phys_dim.get(tag) ?? 2) !== 2) continue;
+			const name = mesh.phys_names.get(tag) ?? '';
+			add(tag, classify(name));
 		}
-		return out;
+		for (let i = 0; i < mesh.tet_phys.length; i++) {
+			const tag = mesh.tet_phys[i];
+			const name = mesh.phys_names.get(tag) ?? '';
+			if (name.startsWith('_mat_')) continue;
+			add(tag, 'dielectric');
+		}
+		items.sort((a, b) => a.rank - b.rank);
+		return items;
 	});
 </script>
 
@@ -307,7 +379,7 @@
 		<div class="legend">
 			{#each tag_legend as l}
 				<div class="legend-item">
-					<span class="swatch" style="background: {l.color}"></span>
+					<span class="swatch" style="background: {l.color}; opacity: {l.kind === 'dielectric' ? 0.4 : 1};"></span>
 					<span class="legend-name">{l.name}</span>
 				</div>
 			{/each}
