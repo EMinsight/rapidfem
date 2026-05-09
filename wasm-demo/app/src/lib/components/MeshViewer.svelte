@@ -607,7 +607,7 @@
 	></canvas>
 
 	<div class="overlay-stack">
-		{#if tag_legend.length > 0}
+		{#if tag_legend.length > 0 && mode !== 'field'}
 			<div class="overlay-panel">
 				<div class="op-title">Layers</div>
 				<div class="op-body">
