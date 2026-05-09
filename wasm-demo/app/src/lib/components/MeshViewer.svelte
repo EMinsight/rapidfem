@@ -1,9 +1,11 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import * as THREE from 'three';
-	import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+	import { onMount } from 'svelte';
+	import {
+		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
+		render3D, fitCamera, type GLState, type Camera
+	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
-	import { palette, plotColors } from '$lib/theme';
+	import { palette } from '$lib/theme';
 
 	let {
 		mesh = null,
@@ -13,49 +15,38 @@
 		mode?: 'geometry' | 'mesh' | 'both';
 	} = $props();
 
+	let canvas = $state<HTMLCanvasElement | null>(null);
 	let container = $state<HTMLDivElement | null>(null);
-	let canvas_el: HTMLCanvasElement | null = null;
-	let renderer: THREE.WebGLRenderer | null = null;
-	let scene: THREE.Scene | null = null;
-	let camera: THREE.PerspectiveCamera | null = null;
-	let controls: OrbitControls | null = null;
-	let resize_observer: ResizeObserver | null = null;
-	let surface_meshes: THREE.Mesh[] = [];
-	let wire_lines: THREE.LineSegments | null = null;
-	let raf_id: number | null = null;
+	let gl_state: GLState | null = null;
+	let camera: Camera = { theta: Math.PI / 4, phi: Math.PI / 4, distance: 1, target: [0, 0, 0] };
 	let z_flip = 1;
-	let cursor_world = $state({ x: 0, y: 0, z: 0 });
-	let last_bbox: MeshData['bbox'] | null = null;
+	let mounted = false;
+	let needs_rebuild = true;
+	let cursor_world = $state({ x: 0, y: 0 });
+	let is_dragging = false;
+	let is_right_drag = false;
+	let last_mouse = { x: 0, y: 0 };
 
-	// ── Imperative API exposed via bind:this ────────────────────────────────
-	export function zoom_in() { dolly(1 / 1.3); }
-	export function zoom_out() { dolly(1.3); }
-	export function fit_view() { if (mesh) fit_camera(mesh); }
+	// ── Imperative API ─────────────────────────────────────────────────
+	export function zoom_in() { camera = { ...camera, distance: camera.distance / 1.3 }; render_frame(); }
+	export function zoom_out() { camera = { ...camera, distance: camera.distance * 1.3 }; render_frame(); }
+	export function fit_view() {
+		if (!mesh) return;
+		camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		render_frame();
+	}
 	export function rotate_90() {
-		if (!camera || !controls) return;
-		const t = controls.target;
-		const offset = new THREE.Vector3().subVectors(camera.position, t);
-		const ang = Math.PI / 2;
-		const cos = Math.cos(ang), sin = Math.sin(ang);
-		const x = offset.x * cos - offset.y * sin;
-		const y = offset.x * sin + offset.y * cos;
-		camera.position.set(t.x + x, t.y + y, camera.position.z);
-		camera.lookAt(t);
-		controls.update();
+		camera = { ...camera, theta: camera.theta + Math.PI / 2 };
+		render_frame();
 	}
 	export function flip_z() {
-		if (!camera) return;
 		z_flip *= -1;
-		camera.up.set(0, 0, z_flip);
-		controls?.update();
+		render_frame();
 	}
 	export function save_png() {
-		if (!renderer || !canvas_el || !scene || !camera) return;
-		const prev_clear = renderer.getClearColor(new THREE.Color()).clone();
-		const prev_alpha = renderer.getClearAlpha();
-		renderer.setClearColor(0x000000, 0);
-		renderer.render(scene, camera);
-		canvas_el.toBlob((blob) => {
+		if (!canvas) return;
+		render_frame();
+		canvas.toBlob((blob) => {
 			if (!blob) return;
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
@@ -63,91 +54,82 @@
 			a.download = 'rapidfem-mesh.png';
 			a.click();
 			URL.revokeObjectURL(url);
-			renderer!.setClearColor(prev_clear, prev_alpha);
 		}, 'image/png');
 	}
 
-	function dolly(scale: number) {
-		if (!camera || !controls) return;
-		const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
-		offset.multiplyScalar(scale);
-		camera.position.copy(controls.target).add(offset);
-		controls.update();
-	}
-
-	type TagKind = 'dielectric' | 'conductor' | 'port' | 'gnd' | 'other';
-	function classify(name: string): TagKind {
+	// ── Mesh classification & coloring ──────────────────────────────────
+	type Kind = 'dielectric' | 'conductor' | 'port' | 'gnd';
+	function classify(name: string): Kind | null {
+		if (name === 'abc' || name.startsWith('_mat_')) return null;
 		if (name === 'substrate' || name === 'oxide' || name === 'air') return 'dielectric';
 		if (name.endsWith('_gnd') || name === 'gnd') return 'gnd';
 		if (name === 'p1' || name === 'p2' || /^p\d+$/.test(name)) return 'port';
-		// Anything else that's been registered as a face physical group is a
-		// conductor (e.g. met5, met4, li1, "wire_pec" from manual examples).
 		return 'conductor';
 	}
 
-	function style_for(kind: TagKind, tag: number): {
-		color: string;
-		opacity: number;
-		render_order: number;
-		double_side: boolean;
-		depth_write: boolean;
-	} {
-		switch (kind) {
-			case 'dielectric':
-				// Pastel translucent, render first, behind everything else.
-				return {
-					color:
-						{ substrate: '#4a9ec2', oxide: '#7b5e8a', air: '#3a3a44' }[
-							{ 0: 'substrate' }[tag] ?? ''
-						] ?? '#5a6470',
-					opacity: 0.08,
-					render_order: 0,
-					double_side: false,
-					depth_write: false
-				};
-			case 'gnd':
-				return { color: '#4a9ec2', opacity: 0.9, render_order: 1, double_side: true, depth_write: true };
-			case 'conductor':
-				return { color: '#e8944a', opacity: 1.0, render_order: 2, double_side: true, depth_write: true };
-			case 'port':
-				return { color: '#d9513c', opacity: 0.85, render_order: 3, double_side: true, depth_write: false };
-			default:
-				return { color: '#7d7a85', opacity: 0.5, render_order: 1, double_side: true, depth_write: true };
+	function color_for(kind: Kind, name: string): [number, number, number] {
+		// Match rapidpassives palette where it makes sense (accent for ports,
+		// muted dielectrics, copper-orange for conductors).
+		if (kind === 'dielectric') {
+			if (name === 'substrate') return hex(palette.accentSecondary === '#e8944a' ? '#4a9ec2' : '#4a9ec2');
+			if (name === 'oxide') return hex('#7b5e8a');
+			if (name === 'air') return hex('#5a6470');
+			return hex('#5a6470');
 		}
+		if (kind === 'gnd') return hex('#5aad78');     // greenish ground
+		if (kind === 'port') return hex(palette.accent);
+		return hex(palette.accentSecondary);             // conductors → copper-orange
 	}
 
-	/** Custom dielectric color by name (substrate=blue, oxide=purple, air=grey). */
-	function dielectric_color(name: string): string {
-		if (name === 'substrate') return '#4a9ec2';
-		if (name === 'oxide') return '#7b5e8a';
-		if (name === 'air') return '#5a6470';
-		return '#5a6470';
+	function hex(s: string): [number, number, number] {
+		return [
+			parseInt(s.slice(1, 3), 16) / 255,
+			parseInt(s.slice(3, 5), 16) / 255,
+			parseInt(s.slice(5, 7), 16) / 255
+		];
 	}
 
-	/** From the tet array, derive the BOUNDARY of each volume (faces that
-	 * belong to exactly one tet within that volume — i.e. the volume's
-	 * external skin). Returns map: volume_tag → flat array of node indices. */
-	function build_volume_boundary(m: MeshData): Map<number, number[]> {
+	// ── Build per-group triangle buffers ──────────────────────────────
+	function compute_normals(positions: Float32Array): Float32Array {
+		const n = positions.length / 9;
+		const normals = new Float32Array(n * 9);
+		const a = [0, 0, 0], b = [0, 0, 0], c = [0, 0, 0];
+		for (let t = 0; t < n; t++) {
+			const i = t * 9;
+			a[0] = positions[i + 0]; a[1] = positions[i + 1]; a[2] = positions[i + 2];
+			b[0] = positions[i + 3]; b[1] = positions[i + 4]; b[2] = positions[i + 5];
+			c[0] = positions[i + 6]; c[1] = positions[i + 7]; c[2] = positions[i + 8];
+			const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+			const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+			let nx = e1y * e2z - e1z * e2y;
+			let ny = e1z * e2x - e1x * e2z;
+			let nz = e1x * e2y - e1y * e2x;
+			const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+			nx /= l; ny /= l; nz /= l;
+			for (let k = 0; k < 3; k++) {
+				normals[i + k * 3 + 0] = nx;
+				normals[i + k * 3 + 1] = ny;
+				normals[i + k * 3 + 2] = nz;
+			}
+		}
+		return normals;
+	}
+
+	/** Volume hull from tets — face appearing exactly once per volume = boundary. */
+	function build_volume_boundaries(m: MeshData): Map<number, number[]> {
 		const out = new Map<number, number[]>();
-		const ntets = m.tet_phys.length;
-		// face_key (sorted node triple) → { vol_tag, indices [a,b,c] (oriented) }
-		// If the same face shows up twice within ONE volume, both occurrences cancel
-		// (it's an interior face). If it shows up only once, it's a boundary face.
 		const seen = new Map<bigint, { vol: number; tri: [number, number, number] } | null>();
 		const enc = (a: number, b: number, c: number): bigint => {
 			const s = [a, b, c].sort((x, y) => x - y);
 			return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
 		};
+		const ntets = m.tet_phys.length;
 		for (let t = 0; t < ntets; t++) {
 			const v = m.tet_phys[t];
 			if (!v) continue;
 			const a = m.tets[t * 4], b = m.tets[t * 4 + 1], c = m.tets[t * 4 + 2], d = m.tets[t * 4 + 3];
-			// Tet faces: (a,b,c), (a,b,d), (a,c,d), (b,c,d)
 			const faces: [number, number, number][] = [
-				[a, b, c],
-				[a, b, d],
-				[a, c, d],
-				[b, c, d]
+				[a, b, c], [a, b, d], [a, c, d], [b, c, d]
 			];
 			for (const f of faces) {
 				const k = enc(f[0], f[1], f[2]);
@@ -166,380 +148,251 @@
 		return out;
 	}
 
-	/** Build per-tag THREE.Mesh objects. Two sources:
-	 *  - explicit named SURFACE tris (met5, p1, p1_gnd, …) — these are the
-	 *    user-tagged 2D plates;
-	 *  - implicit VOLUME boundary tris derived from the tet array, colored
-	 *    by their volume name (substrate, oxide, …). */
-	function build_geometry(m: MeshData) {
-		const meshes: THREE.Mesh[] = [];
-
-		// 1) Named SURFACE tris (dim=2 physical groups)
-		const by_surf_tag = new Map<number, number[]>();
-		for (let i = 0; i < m.tri_phys.length; i++) {
-			const tag = m.tri_phys[i];
-			if (!tag) continue;             // unnamed surface tri → skip (handled via volume boundary)
-			if ((m.phys_dim.get(tag) ?? 2) !== 2) continue;  // only surface groups here
-			let arr = by_surf_tag.get(tag);
-			if (!arr) { arr = []; by_surf_tag.set(tag, arr); }
-			arr.push(m.tris[i * 3], m.tris[i * 3 + 1], m.tris[i * 3 + 2]);
-		}
-		for (const [tag, idx] of by_surf_tag.entries()) {
-			const name = m.phys_names.get(tag) ?? `tag_${tag}`;
-			if (name === 'abc' || name.startsWith('_mat_')) continue;
-			const kind = classify(name);
-			meshes.push(make_mesh(m, idx, tag, name, kind));
-		}
-
-		// 2) Implicit volume-boundary tris (substrate / oxide / air hulls)
-		const vol_boundaries = build_volume_boundary(m);
-		for (const [vol_tag, idx] of vol_boundaries.entries()) {
-			const name = m.phys_names.get(vol_tag) ?? `vol_${vol_tag}`;
-			if (name.startsWith('_mat_')) continue;  // material-marker volumes (already covered)
-			meshes.push(make_mesh(m, idx, vol_tag, name, 'dielectric'));
-		}
-
-		meshes.sort((a, b) => a.renderOrder - b.renderOrder);
-		return meshes;
-	}
-
-	function make_mesh(m: MeshData, idx: number[], tag: number, name: string, kind: TagKind): THREE.Mesh {
-		const style = style_for(kind, tag);
-		if (kind === 'dielectric') style.color = dielectric_color(name);
-
-		const geom = new THREE.BufferGeometry();
-		geom.setAttribute('position', new THREE.BufferAttribute(m.nodes, 3));
-		geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
-		geom.computeVertexNormals();
-
-		const is_metal = kind === 'conductor' || kind === 'gnd';
-		const mat = is_metal
-			? new THREE.MeshPhysicalMaterial({
-				color: new THREE.Color(style.color),
-				transparent: style.opacity < 1,
-				opacity: style.opacity,
-				roughness: 0.28,
-				metalness: 0.85,
-				clearcoat: 0.4,
-				clearcoatRoughness: 0.25,
-				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
-				depthWrite: style.depth_write,
-				polygonOffset: true,
-				polygonOffsetFactor: -2,
-				polygonOffsetUnits: -2
-			})
-			: new THREE.MeshStandardMaterial({
-				color: new THREE.Color(style.color),
-				transparent: style.opacity < 1,
-				opacity: style.opacity,
-				roughness: kind === 'port' ? 0.5 : 0.85,
-				metalness: 0.0,
-				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
-				depthWrite: style.depth_write,
-				polygonOffset: kind === 'port',
-				polygonOffsetFactor: -2,
-				polygonOffsetUnits: -2
-			});
-		const mesh3 = new THREE.Mesh(geom, mat);
-		mesh3.renderOrder = style.render_order;
-		mesh3.userData = { tag, name, kind };
-		// Conductors and gnd cast shadows; dielectric volumes only receive.
-		mesh3.castShadow = kind === 'conductor' || kind === 'gnd' || kind === 'port';
-		mesh3.receiveShadow = kind === 'dielectric' || kind === 'gnd';
-		return mesh3;
-	}
-
-	function update_shadow_camera() {
-		if (!scene) return;
-		const dir_light = scene.children.find(
-			(c) => c instanceof THREE.DirectionalLight && (c as THREE.DirectionalLight).castShadow
-		) as THREE.DirectionalLight | undefined;
-		if (!dir_light || !mesh) return;
-		const dx = mesh.bbox.max[0] - mesh.bbox.min[0];
-		const dy = mesh.bbox.max[1] - mesh.bbox.min[1];
-		const dz = mesh.bbox.max[2] - mesh.bbox.min[2];
-		const r = 0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz);
-		const cx = (mesh.bbox.min[0] + mesh.bbox.max[0]) / 2;
-		const cy = (mesh.bbox.min[1] + mesh.bbox.max[1]) / 2;
-		const cz = (mesh.bbox.min[2] + mesh.bbox.max[2]) / 2;
-		// Place directional light "sun" at distance ~5r from scene center,
-		// shining roughly from upper-right.
-		const sun_dist = r * 5;
-		dir_light.position.set(cx + r * 1.2, cy + r * 1.0, cz + r * 1.5).normalize().multiplyScalar(sun_dist).add(new THREE.Vector3(cx, cy, cz));
-		dir_light.target.position.set(cx, cy, cz);
-		dir_light.target.updateMatrixWorld();
-		const cam = dir_light.shadow.camera as THREE.OrthographicCamera;
-		cam.left = -r * 1.2; cam.right = r * 1.2;
-		cam.top = r * 1.2; cam.bottom = -r * 1.2;
-		cam.near = sun_dist - r * 2;
-		cam.far = sun_dist + r * 2;
-		cam.updateProjectionMatrix();
-	}
-
-	function build_wireframe(m: MeshData) {
-		// All surface triangle edges (deduplicated)
-		const edge_set = new Set<bigint>();
-		const edges: number[] = [];
-		const add_edge = (a: number, b: number) => {
-			const lo = a < b ? a : b;
-			const hi = a < b ? b : a;
-			const key = (BigInt(lo) << 32n) | BigInt(hi);
-			if (!edge_set.has(key)) {
-				edge_set.add(key);
-				edges.push(a, b);
-			}
-		};
-		for (let i = 0; i < m.tri_phys.length; i++) {
-			const a = m.tris[i * 3], b = m.tris[i * 3 + 1], c = m.tris[i * 3 + 2];
-			add_edge(a, b); add_edge(b, c); add_edge(c, a);
-		}
-		const geom = new THREE.BufferGeometry();
-		geom.setAttribute('position', new THREE.BufferAttribute(m.nodes, 3));
-		geom.setIndex(new THREE.Uint32BufferAttribute(edges, 1));
-		const mat = new THREE.LineBasicMaterial({
-			color: new THREE.Color(palette.textDim),
-			transparent: true,
-			opacity: 0.55
-		});
-		return new THREE.LineSegments(geom, mat);
-	}
-
-	function setup() {
-		if (!container) return;
-		scene = new THREE.Scene();
-		scene.background = new THREE.Color(palette.bgInset);
-
-		// FOV=30° matches rapidpassives canvas3d, gives a more orthographic feel
-		camera = new THREE.PerspectiveCamera(30, 1, 1e-9, 1);
-		camera.up.set(0, 0, 1);
-
-		renderer = new THREE.WebGLRenderer({
-			antialias: true,
-			preserveDrawingBuffer: true,
-			alpha: true,
-			powerPreference: 'high-performance'
-		});
-		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-		// ACES Filmic tone mapping for nicer highlights on metals / dielectrics
-		renderer.toneMapping = THREE.ACESFilmicToneMapping;
-		renderer.toneMappingExposure = 1.0;
-		// Soft shadows
-		renderer.shadowMap.enabled = true;
-		renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-		canvas_el = renderer.domElement;
-		container.appendChild(canvas_el);
-		canvas_el.addEventListener('pointermove', on_pointer_move);
-
-		controls = new OrbitControls(camera, renderer.domElement);
-		controls.enableDamping = true;
-		controls.dampingFactor = 0.08;
-
-		// Procedural studio-like environment for reflections on metal surfaces.
-		// PMREMGenerator turns a low-res equirectangular gradient into a usable env map.
-		const pmrem = new THREE.PMREMGenerator(renderer);
-		const env_scene = new THREE.Scene();
-		// 4 colored "lights" arranged around the origin to give metal nice anisotropic
-		// reflections instead of mirror-perfect highlights.
-		const make_panel = (color: number, x: number, y: number, z: number) => {
-			const m = new THREE.Mesh(
-				new THREE.PlaneGeometry(2, 2),
-				new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
-			);
-			m.position.set(x, y, z);
-			m.lookAt(0, 0, 0);
-			return m;
-		};
-		env_scene.add(make_panel(0x444450, 1, 0, 0));
-		env_scene.add(make_panel(0x2a2a32, -1, 0, 0));
-		env_scene.add(make_panel(0x383840, 0, 1, 0));
-		env_scene.add(make_panel(0x202028, 0, -1, 0));
-		env_scene.add(make_panel(0x55555c, 0, 0, 1));   // bright top
-		env_scene.add(make_panel(0x18181d, 0, 0, -1));  // dark bottom
-		const env_target = pmrem.fromScene(env_scene, 0.04);
-		scene.environment = env_target.texture;
-		pmrem.dispose();
-
-		const ambient = new THREE.AmbientLight(0xffffff, 0.35);
-		scene.add(ambient);
-		const dir1 = new THREE.DirectionalLight(0xffffff, 1.1);
-		dir1.position.set(1, 1, 1.5);
-		dir1.castShadow = true;
-		dir1.shadow.mapSize.set(1024, 1024);
-		dir1.shadow.bias = -0.0005;
-		scene.add(dir1);
-		const dir2 = new THREE.DirectionalLight(0x9ab5cc, 0.45);
-		dir2.position.set(-1, -0.5, 0.7);
-		scene.add(dir2);
-		const dir3 = new THREE.DirectionalLight(0xffd1a8, 0.25);
-		dir3.position.set(0, -1, -0.3);
-		scene.add(dir3);
-
-		resize_observer = new ResizeObserver(handle_resize);
-		resize_observer.observe(container);
-		handle_resize();
-
-		const tick = () => {
-			controls?.update();
-			if (renderer && scene && camera) renderer.render(scene, camera);
-			raf_id = requestAnimationFrame(tick);
-		};
-		raf_id = requestAnimationFrame(tick);
-	}
-
-	const _ndc_v = new THREE.Vector3();
-	const _ray = new THREE.Raycaster();
-	const _z0_plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-	const _hit = new THREE.Vector3();
-	function on_pointer_move(e: PointerEvent) {
-		if (!camera || !canvas_el) return;
-		const rect = canvas_el.getBoundingClientRect();
-		const x_ndc = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-		const y_ndc = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-		_ndc_v.set(x_ndc, y_ndc, 0.5);
-		_ray.setFromCamera({ x: x_ndc, y: y_ndc } as THREE.Vector2, camera);
-		// Project onto z=z_metal plane (use bbox top of metal layers if known, else 0)
-		// Use camera target z as the reference plane height
-		const z_ref = controls?.target.z ?? 0;
-		_z0_plane.constant = -z_ref;
-		if (_ray.ray.intersectPlane(_z0_plane, _hit)) {
-			cursor_world = { x: _hit.x, y: _hit.y, z: z_ref };
-		}
-	}
-
-	function handle_resize() {
-		if (!container || !renderer || !camera) return;
-		const w = container.clientWidth;
-		const h = container.clientHeight;
-		if (w <= 0 || h <= 0) return;
-		renderer.setSize(w, h, false);
-		camera.aspect = w / h;
-		camera.updateProjectionMatrix();
-	}
-
-	function fit_camera(m: MeshData) {
-		if (!camera || !controls) return;
-		if (!camera.aspect || !isFinite(camera.aspect) || camera.aspect <= 0) {
-			requestAnimationFrame(() => fit_camera(m));
-			return;
-		}
-		// Match rapidpassives' canvas3d fitCamera exactly:
-		//   theta=phi=π/4 iso view, FOV=30°, distance from XY extent only (the
-		//   stack is wide-and-flat so XY dominates, and z can be small/negative).
-		const [xmin, ymin, zmin] = m.bbox.min;
-		const [xmax, ymax, zmax] = m.bbox.max;
-		const cx = (xmin + xmax) / 2, cy = (ymin + ymax) / 2, cz = (zmin + zmax) / 2;
-		const dx = xmax - xmin, dy = ymax - ymin;
-		const xy_extent = Math.max(dx, dy, 1e-9);
-		const half_fov = (camera.fov * Math.PI) / 180 / 2;   // already 30°/2 = 15°
-		const distance = (xy_extent / 2) / Math.tan(half_fov) * 1.1;   // 10% margin
-
-		const theta = Math.PI / 4, phi = Math.PI / 4;
-		const cp = Math.cos(phi);
-		const ex = cx + distance * cp * Math.sin(theta);
-		const ey = cy + distance * cp * Math.cos(theta);
-		const ez = cz + distance * Math.sin(phi) * z_flip;
-
-		controls.target.set(cx, cy, cz);
-		camera.position.set(ex, ey, ez);
-		camera.up.set(0, 0, z_flip);
-		camera.lookAt(cx, cy, cz);
-
-		// Near/far around full bounding sphere so substrate/air don't get clipped.
-		const dz_full = m.bbox.max[2] - m.bbox.min[2];
-		const radius3 = 0.5 * Math.sqrt(dx * dx + dy * dy + dz_full * dz_full);
-		camera.near = Math.max(distance * 1e-3, 1e-9);
-		camera.far = (distance + radius3) * 4;
-		camera.updateProjectionMatrix();
-		controls.update();
-	}
-
-	function clear_objects() {
-		if (!scene) return;
-		for (const m of surface_meshes) {
-			scene.remove(m);
-			m.geometry.dispose();
-			(m.material as THREE.Material).dispose();
-		}
-		surface_meshes = [];
-		if (wire_lines) {
-			scene.remove(wire_lines);
-			wire_lines.geometry.dispose();
-			(wire_lines.material as THREE.Material).dispose();
-			wire_lines = null;
-		}
-	}
-
 	function rebuild() {
-		if (!scene || !mesh) return;
-		clear_objects();
+		if (!gl_state || !mesh) return;
+		clearMeshes(gl_state);
+
 		const showFaces = mode === 'geometry' || mode === 'both';
 		const showWire = mode === 'mesh' || mode === 'both';
+
+		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
+
 		if (showFaces) {
-			surface_meshes = build_geometry(mesh);
-			for (const m of surface_meshes) scene.add(m);
+			// 1) Named surface tris
+			const by_surf = new Map<number, number[]>();
+			for (let i = 0; i < mesh.tri_phys.length; i++) {
+				const tag = mesh.tri_phys[i];
+				if (!tag || (mesh.phys_dim.get(tag) ?? 2) !== 2) continue;
+				let arr = by_surf.get(tag);
+				if (!arr) { arr = []; by_surf.set(tag, arr); }
+				arr.push(mesh.tris[i * 3], mesh.tris[i * 3 + 1], mesh.tris[i * 3 + 2]);
+			}
+			for (const [tag, idx] of by_surf.entries()) {
+				const name = mesh.phys_names.get(tag) ?? '';
+				const kind = classify(name);
+				if (!kind) continue;
+				push_group(idx, kind, name);
+			}
+			// 2) Implicit volume hulls
+			const vol_b = build_volume_boundaries(mesh);
+			for (const [vtag, idx] of vol_b.entries()) {
+				const name = mesh.phys_names.get(vtag) ?? '';
+				if (!name || name.startsWith('_mat_')) continue;
+				push_group(idx, 'dielectric', name);
+			}
 		}
+
 		if (showWire) {
-			wire_lines = build_wireframe(mesh);
-			scene.add(wire_lines);
+			// Wireframe edges from surface tris (deduped)
+			const edges: number[] = [];
+			const seen = new Set<bigint>();
+			const add_edge = (a: number, b: number) => {
+				const lo = a < b ? a : b;
+				const hi = a < b ? b : a;
+				const k = (BigInt(lo) << 32n) | BigInt(hi);
+				if (!seen.has(k)) {
+					seen.add(k);
+					edges.push(
+						mesh.nodes[a * 3], mesh.nodes[a * 3 + 1], mesh.nodes[a * 3 + 2],
+						mesh.nodes[b * 3], mesh.nodes[b * 3 + 1], mesh.nodes[b * 3 + 2]
+					);
+				}
+			};
+			for (let i = 0; i < mesh.tri_phys.length; i++) {
+				const a = mesh.tris[i * 3], b = mesh.tris[i * 3 + 1], c = mesh.tris[i * 3 + 2];
+				add_edge(a, b); add_edge(b, c); add_edge(c, a);
+			}
+			addLineMesh(gl_state, new Float32Array(edges), hex(palette.textDim));
 		}
-		fit_camera(mesh);
-		update_shadow_camera();
+
+		needs_rebuild = false;
 	}
 
-	$effect(() => {
-		mesh; mode;
-		if (scene && mesh) rebuild();
+	function push_group(idx: number[], kind: Kind, name: string) {
+		if (!gl_state || !mesh) return;
+		const ntri = idx.length / 3;
+		if (ntri === 0) return;
+		const positions = new Float32Array(ntri * 9);
+		for (let t = 0; t < ntri; t++) {
+			for (let v = 0; v < 3; v++) {
+				const ni = idx[t * 3 + v] * 3;
+				positions[t * 9 + v * 3 + 0] = mesh.nodes[ni];
+				positions[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
+				positions[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
+			}
+		}
+		const normals = compute_normals(positions);
+		addMesh(gl_state, positions, normals, color_for(kind, name));
+	}
+
+	// ── Frame loop / sizing ─────────────────────────────────────────────
+	function get_size(): { w: number; h: number } {
+		if (!container) return { w: 0, h: 0 };
+		const r = container.getBoundingClientRect();
+		return { w: Math.round(r.width), h: Math.round(r.height) };
+	}
+	function sync_canvas(): { w: number; h: number } {
+		const { w, h } = get_size();
+		if (w <= 0 || h <= 0 || !canvas) return { w, h };
+		const dpr = window.devicePixelRatio || 1;
+		const bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+		if (canvas.width !== bw || canvas.height !== bh) {
+			canvas.width = bw;
+			canvas.height = bh;
+			canvas.style.width = w + 'px';
+			canvas.style.height = h + 'px';
+		}
+		return { w: bw, h: bh };
+	}
+	function render_frame() {
+		if (!gl_state || !canvas) return;
+		const { w, h } = sync_canvas();
+		if (w <= 0 || h <= 0) return;
+		if (needs_rebuild) rebuild();
+		render3D(gl_state, camera, w, h, z_flip);
+	}
+
+	// ── Pointer / wheel handlers (orbit/pan/zoom analog rapidpassives) ──
+	function on_wheel(e: WheelEvent) {
+		e.preventDefault();
+		const factor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
+		camera = { ...camera, distance: camera.distance * factor };
+		render_frame();
+	}
+	function on_pointer_down(e: PointerEvent) {
+		is_dragging = true;
+		is_right_drag = e.button === 2;
+		last_mouse = { x: e.clientX, y: e.clientY };
+		canvas?.setPointerCapture(e.pointerId);
+	}
+	function on_pointer_move(e: PointerEvent) {
+		// HUD coords (project to z=target plane)
+		if (canvas) {
+			const r = canvas.getBoundingClientRect();
+			const mx = e.clientX - r.left, my = e.clientY - r.top;
+			const { w, h } = get_size();
+			const halfH = camera.distance * Math.tan(Math.PI / 12);
+			const halfW = halfH * (w / h || 1);
+			const nx = (mx / w - 0.5) * 2;
+			const ny = -(my / h - 0.5) * 2;
+			const ct = Math.cos(camera.theta), st = Math.sin(camera.theta);
+			cursor_world = {
+				x: camera.target[0] + nx * halfW * ct + ny * halfH * st * Math.sin(camera.phi),
+				y: camera.target[1] - nx * halfW * st + ny * halfH * ct * Math.sin(camera.phi)
+			};
+		}
+		if (!is_dragging) return;
+		const dx = e.clientX - last_mouse.x;
+		const dy = e.clientY - last_mouse.y;
+		last_mouse = { x: e.clientX, y: e.clientY };
+		if (is_right_drag) {
+			const panScale = camera.distance * 0.0007;
+			const ct = Math.cos(camera.theta), st = Math.sin(camera.theta);
+			camera = {
+				...camera,
+				target: [
+					camera.target[0] + (dx * ct - dy * st * Math.sin(camera.phi)) * panScale,
+					camera.target[1] - (dx * st + dy * ct * Math.sin(camera.phi)) * panScale,
+					camera.target[2] + dy * Math.cos(camera.phi) * panScale
+				]
+			};
+		} else {
+			camera = {
+				...camera,
+				theta: camera.theta + dx * 0.005,
+				phi: Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, camera.phi + dy * 0.005))
+			};
+		}
+		render_frame();
+	}
+	function on_pointer_up() { is_dragging = false; is_right_drag = false; }
+	function on_context_menu(e: Event) { e.preventDefault(); }
+	function on_dbl_click() { fit_view(); }
+
+	// ── Lifecycle ───────────────────────────────────────────────────────
+	onMount(() => {
+		mounted = true;
+		if (!canvas) return;
+		gl_state = initGL(canvas);
+		if (!gl_state) return;
+
+		const ro = new ResizeObserver(() => mounted && render_frame());
+		if (container) ro.observe(container);
+
+		// Initial fit + render once mesh is available
+		if (mesh) {
+			camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+			needs_rebuild = true;
+		}
+		requestAnimationFrame(render_frame);
+
+		return () => {
+			mounted = false;
+			ro.disconnect();
+			if (gl_state) disposeGL(gl_state);
+			gl_state = null;
+		};
 	});
 
-	onMount(() => setup());
-
-	onDestroy(() => {
-		if (raf_id != null) cancelAnimationFrame(raf_id);
-		resize_observer?.disconnect();
-		clear_objects();
-		renderer?.dispose();
+	// React to mesh / mode changes
+	$effect(() => {
+		mesh; mode;
+		if (!mounted || !gl_state) return;
+		if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		needs_rebuild = true;
+		render_frame();
 	});
 
 	const tag_legend = $derived.by(() => {
-		if (!mesh) return [] as { name: string; color: string; kind: TagKind }[];
+		if (!mesh) return [] as { name: string; color: string; kind: Kind; rank: number }[];
 		const seen = new Set<number>();
-		const items: { name: string; color: string; kind: TagKind; rank: number }[] = [];
-		const add = (tag: number, kind: TagKind) => {
+		const items: { name: string; color: string; kind: Kind; rank: number }[] = [];
+		const add = (tag: number, kind: Kind) => {
 			if (seen.has(tag)) return;
 			seen.add(tag);
-			const name = mesh!.phys_names.get(tag) ?? `tag_${tag}`;
-			if (name === 'abc' || name.startsWith('_mat_')) return;
-			const style = style_for(kind, tag);
-			const color = kind === 'dielectric' ? dielectric_color(name) : style.color;
-			const rank =
-				kind === 'conductor' ? 0 : kind === 'port' ? 1 : kind === 'gnd' ? 2 : 3;
-			items.push({ name, color, kind, rank });
+			const name = mesh!.phys_names.get(tag) ?? '';
+			if (!name || name === 'abc' || name.startsWith('_mat_')) return;
+			const c = color_for(kind, name);
+			const rank = kind === 'conductor' ? 0 : kind === 'port' ? 1 : kind === 'gnd' ? 2 : 3;
+			items.push({
+				name,
+				color: `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`,
+				kind,
+				rank
+			});
 		};
 		for (let i = 0; i < mesh.tri_phys.length; i++) {
 			const tag = mesh.tri_phys[i];
 			if (!tag || (mesh.phys_dim.get(tag) ?? 2) !== 2) continue;
-			const name = mesh.phys_names.get(tag) ?? '';
-			add(tag, classify(name));
+			const k = classify(mesh.phys_names.get(tag) ?? '');
+			if (k) add(tag, k);
 		}
 		for (let i = 0; i < mesh.tet_phys.length; i++) {
 			const tag = mesh.tet_phys[i];
 			const name = mesh.phys_names.get(tag) ?? '';
-			if (name.startsWith('_mat_')) continue;
-			add(tag, 'dielectric');
+			if (name && !name.startsWith('_mat_')) add(tag, 'dielectric');
 		}
 		items.sort((a, b) => a.rank - b.rank);
 		return items;
 	});
 </script>
 
-<div class="viewer">
-	<div class="canvas" bind:this={container}></div>
+<div class="viewer" bind:this={container}>
+	<canvas
+		bind:this={canvas}
+		onwheel={on_wheel}
+		onpointerdown={on_pointer_down}
+		onpointermove={on_pointer_move}
+		onpointerup={on_pointer_up}
+		oncontextmenu={on_context_menu}
+		ondblclick={on_dbl_click}
+	></canvas>
 
 	{#if tag_legend.length > 0}
 		<div class="legend">
 			{#each tag_legend as l}
 				<div class="legend-item">
-					<span class="swatch" style="background: {l.color}; opacity: {l.kind === 'dielectric' ? 0.4 : 1};"></span>
+					<span class="swatch" style="background: {l.color}; opacity: {l.kind === 'dielectric' ? 0.5 : 1};"></span>
 					<span class="legend-name">{l.name}</span>
 				</div>
 			{/each}
@@ -552,10 +405,8 @@
 		<button class="tb" onclick={fit_view}>
 			<span class="tip">Fit view<kbd>F</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<polyline points="1,5 1,1 5,1" />
-				<polyline points="11,1 15,1 15,5" />
-				<polyline points="15,11 15,15 11,15" />
-				<polyline points="5,15 1,15 1,11" />
+				<polyline points="1,5 1,1 5,1" /><polyline points="11,1 15,1 15,5" />
+				<polyline points="15,11 15,15 11,15" /><polyline points="5,15 1,15 1,11" />
 				<rect x="5" y="5" width="6" height="6" rx="0.5" />
 			</svg>
 		</button>
@@ -569,17 +420,13 @@
 		<button class="tb" onclick={flip_z}>
 			<span class="tip">Flip Z<kbd>Z</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<path d="M3 4h10" />
-				<path d="M8 4v8" />
-				<path d="M5 9l3 3 3-3" />
+				<path d="M3 4h10" /><path d="M8 4v8" /><path d="M5 9l3 3 3-3" />
 			</svg>
 		</button>
 		<button class="tb" onclick={save_png}>
 			<span class="tip">Save PNG<kbd>Ctrl+S</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<path d="M2 10v3h12v-3" />
-				<path d="M8 2v8" />
-				<path d="M5 7l3 3 3-3" />
+				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
 			</svg>
 		</button>
 	</div>
@@ -599,13 +446,17 @@
 		width: 100%;
 		height: 100%;
 		min-height: 320px;
-		background: var(--bg-inset);
+		background: var(--canvas-bg);
 		overflow: hidden;
 	}
-	.canvas {
-		position: absolute;
-		inset: 0;
+	canvas {
+		display: block;
+		width: 100%;
+		height: 100%;
+		cursor: grab;
 	}
+	canvas:active { cursor: grabbing; }
+
 	.legend {
 		position: absolute;
 		top: 10px;
@@ -649,11 +500,7 @@
 		padding: 0;
 		transition: background var(--transition), border-color var(--transition), color var(--transition);
 	}
-	.tb:hover {
-		background: var(--bg-panel);
-		border-color: var(--accent);
-		color: var(--text);
-	}
+	.tb:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
 	.tb .tip {
 		display: none;
 		position: absolute;
@@ -670,12 +517,7 @@
 		pointer-events: none;
 		z-index: 20;
 	}
-	.tb .tip kbd {
-		margin-left: 6px;
-		color: var(--accent);
-		font-family: var(--font-mono);
-		font-weight: 600;
-	}
+	.tb .tip kbd { margin-left: 6px; color: var(--accent); font-weight: 600; }
 	.tb:hover .tip { display: flex; align-items: center; gap: 4px; }
 
 	.hud {
