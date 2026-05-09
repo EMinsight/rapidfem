@@ -627,16 +627,21 @@
 		{/if}
 
 		{#if mode === 'field' && field_range}
-			<div class="overlay-panel">
-				<div class="op-title">|E| · V/m · log</div>
-				<div class="op-body cb-body">
-					<div class="cb-gradient"></div>
-					<div class="cb-ticks">
-						{#each colorbar_ticks.toReversed() as tk}
-							<span class="cb-tick">{tk.label}</span>
+			<div class="overlay-panel cb-panel">
+				<div class="op-title">|E| · V/m</div>
+				<div class="cb-body">
+					<div class="cb-gradient">
+						{#each colorbar_ticks as tk}
+							<span class="cb-tick" style="bottom: {tk.frac * 100}%"></span>
+						{/each}
+					</div>
+					<div class="cb-labels">
+						{#each colorbar_ticks as tk}
+							<span class="cb-label" style="bottom: {tk.frac * 100}%">{tk.label}</span>
 						{/each}
 					</div>
 				</div>
+				<div class="op-foot">log scale</div>
 			</div>
 		{/if}
 	</div>
@@ -827,15 +832,19 @@
 	}
 	.hud .stats { color: var(--text-muted); }
 
+	.cb-panel { padding-bottom: 6px; }
 	.cb-body {
+		display: flex;
 		flex-direction: row;
-		gap: 8px;
+		gap: 6px;
 		align-items: stretch;
 		height: 180px;
+		position: relative;
 	}
 	.cb-gradient {
-		width: 10px;
+		width: 14px;
 		flex-shrink: 0;
+		position: relative;
 		background: linear-gradient(
 			to top,
 			#000004 0%,
@@ -847,17 +856,37 @@
 			#DD513A 85%,
 			#FCFFA4 100%
 		);
-	}
-	.cb-ticks {
-		display: flex;
-		flex-direction: column;
-		justify-content: space-between;
-		text-align: left;
+		border: 1px solid var(--border-subtle);
 	}
 	.cb-tick {
+		position: absolute;
+		right: -5px;
+		width: 5px;
+		height: 1px;
+		background: var(--text-muted);
+		transform: translateY(50%);
+	}
+	.cb-labels {
+		position: relative;
+		flex: 1;
+		min-width: 36px;
+	}
+	.cb-label {
+		position: absolute;
+		left: 4px;
+		transform: translateY(50%);
 		font-size: var(--fs-xs);
 		line-height: 1;
 		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.op-foot {
+		text-align: center;
+		color: var(--text-dim);
+		font-size: 9px;
+		text-transform: uppercase;
+		letter-spacing: 1px;
+		padding-top: 2px;
 	}
 
 </style>
