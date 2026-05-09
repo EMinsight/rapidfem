@@ -228,9 +228,12 @@
 		// Field mode: hide solid surfaces, show wireframe only — point cloud
 		// fills the volume against a clean mesh skeleton instead of being
 		// occluded by the geometry.
+		// Field mode: hide solid surfaces, show wireframe + (when field data
+		// is available) the volumetric point cloud. With no field results yet
+		// the user still sees the mesh skeleton — useful preview before Run.
 		const useField = mode === 'field' && field != null;
 		const showFaces = mode === 'geometry' || mode === 'both';
-		const showWire = mode === 'mesh' || mode === 'both' || useField;
+		const showWire = mode === 'mesh' || mode === 'both' || mode === 'field';
 
 		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
 		field_norm = null;

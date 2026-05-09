@@ -87,7 +87,7 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
     # global fragment, so the PEC BC matches a SURFACE physical group.
     import numpy as np
     conductors: list = []   # (volume_obj, layer_name)
-    conductor_maxh = spec["maxh"] / 3.0
+    metal_maxh = spec["maxh"] / 3.0
     for poly in spec["polygons"]:
         layer = _layer_by_name(stack, poly["layer"])
         if not layer or layer["type"] not in ("metal", "via"):
@@ -96,7 +96,10 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         arr = np.asarray(pts, dtype=np.float64)
         vol = g._extrude_polygon(arr, z=layer["z"], thickness=layer["thickness"])
         vol.name = layer["name"]
-        vol.maxh = conductor_maxh
+        # Refine ONLY metal layers — vias are already sub-µm; refining them
+        # would push gmsh's adaptive size-field down to nm and explode tet count.
+        if layer["type"] == "metal":
+            vol.maxh = metal_maxh
         conductors.append((vol, layer["name"]))
 
     # ── Ports: extension pad (3D, on the trace metal) + ground patch (2D)
@@ -118,7 +121,7 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         ext = g.box(size, size, layer["thickness"],
                     position=(cxp - size / 2, cyp - size / 2, z_metal_bot))
         ext.name = layer["name"]
-        ext.maxh = conductor_maxh
+        ext.maxh = metal_maxh
         # Ground pad: thin plate at top of gnd layer
         gnd_pad = g.xy_plate(gnd_pad_size, gnd_pad_size,
                               position=(cxp - gnd_pad_size / 2, cyp - gnd_pad_size / 2, z_gnd_top))

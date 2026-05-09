@@ -231,7 +231,7 @@
 				<button class="vt" class:active={display === 'geometry'} onclick={() => (display = 'geometry')}>Geometry</button>
 				<button class="vt" class:active={display === 'mesh'} onclick={() => (display = 'mesh')}>Mesh</button>
 				<button class="vt" class:active={display === 'both'} onclick={() => (display = 'both')}>Both</button>
-				<button class="vt" class:active={display === 'field'} disabled={field_results.length === 0} onclick={() => (display = 'field')}>Field</button>
+				<button class="vt" class:active={display === 'field'} onclick={() => (display = 'field')}>Field</button>
 				<button class="vt" class:active={display === 'plots'} onclick={() => (display = 'plots')}>Plots</button>
 				{#if display === 'field' && field_results.length > 0}
 					<div class="field-controls">

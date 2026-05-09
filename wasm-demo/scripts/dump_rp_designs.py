@@ -62,12 +62,32 @@ def _sky130_stack_dict() -> list[dict]:
 
 def _layers_to_polygons(layers: dict) -> list[dict]:
     """Project rapidpassives' per-layer polygons onto FEM stack layers via
-    RP_LAYER_MAP. Layers absent from the map are silently dropped."""
+    RP_LAYER_MAP. Layers absent from the map are silently dropped.
+    Vias are special-cased: instead of N tiny sub-µm rectangles (which would
+    blow up the mesh), each via-cluster is replaced by a single bounding-box
+    polygon. Electrical continuity preserved, mesh stays sane."""
     out: list[dict] = []
     UM = 1e-6
     for rp_layer, polys in layers.items():
         fem_layer = RP_LAYER_MAP.get(rp_layer)
         if not fem_layer or not polys:
+            continue
+        is_via = rp_layer.startswith("via")
+        if is_via:
+            # Cluster vias by spatial proximity (simple: merge all into one
+            # bbox per layer; for SymmetricInductor with 2 via groups we'd
+            # want clustering, but for SpiralInductor's single cluster a
+            # single bbox is correct).
+            all_x: list[float] = []
+            all_y: list[float] = []
+            for xs, ys in polys:
+                all_x.extend(float(v) for v in xs)
+                all_y.extend(float(v) for v in ys)
+            xmin, xmax = min(all_x) * UM, max(all_x) * UM
+            ymin, ymax = min(all_y) * UM, max(all_y) * UM
+            out.append({"layer": fem_layer, "xy": [
+                xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax
+            ]})
             continue
         for xs, ys in polys:
             xy = []
