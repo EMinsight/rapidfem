@@ -91,3 +91,20 @@ export function abs_s(smats: SMatrix[], i: number, j: number): number[] {
 		return Math.hypot(S[i][j].re, S[i][j].im);
 	});
 }
+
+/** Characteristic impedance of a uniform 2-port transmission line.
+ *  From Z-params: Z0 = sqrt(Z11^2 - Z12^2) (Pozar §4.4 / ABCD relation
+ *  B/C = Z0^2 for a symmetric reciprocal line; equivalently
+ *  Z0^2 = Z11·Z22 - Z12·Z21, which simplifies for uniform symmetric TLs).
+ *  Returns the real part of the principal square root in ohms. */
+export function Z0_TL(S: SMatrix, z0_ref = 50): number {
+	const Z = sToZ(S, z0_ref);
+	const z11_sq = cmul_local(Z[0][0], Z[0][0]);
+	const z12_sq = cmul_local(Z[0][1], Z[1][0]);
+	const inside: C = { re: z11_sq.re - z12_sq.re, im: z11_sq.im - z12_sq.im };
+	return Math.sqrt(Math.max(0, inside.re));
+}
+
+function cmul_local(a: C, b: C): C {
+	return { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re };
+}

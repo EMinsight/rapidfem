@@ -67,13 +67,19 @@
 				}
 			});
 
-			if (example.extract_l && smats.length > 0) {
-				const L0 = L_eq_pH(smats[0], freqs[0]);
-				const Q0 = Q_factor(smats[0]);
-				log(`L_eq(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${L0.toFixed(1)} pH · Q = ${Q0.toFixed(1)}`);
-				const fSRF = find_srf(freqs, smats);
-				if (fSRF != null) log(`SRF ≈ ${(fSRF / 1e9).toFixed(1)} GHz (where L_eq diverges)`);
-				else log(`no SRF in sweep range`);
+			if (smats.length > 0) {
+				const m = example.metrics;
+				if (m.includes('L_eq')) {
+					const L0 = L_eq_pH(smats[0], freqs[0]);
+					log(`L_eq(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${L0.toFixed(1)} pH`);
+					const fSRF = find_srf(freqs, smats);
+					if (fSRF != null) log(`SRF ≈ ${(fSRF / 1e9).toFixed(1)} GHz (where L_eq diverges)`);
+					else log(`no SRF in sweep range`);
+				}
+				if (m.includes('Q')) {
+					const Q0 = Q_factor(smats[0]);
+					log(`Q(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${Q0.toFixed(1)}`);
+				}
 			}
 			status = 'done';
 		} catch (e) {
@@ -133,7 +139,7 @@
 		</aside>
 
 		<main class="results-area">
-			<ResultsPanel {freqs} {smats} extract_l={example.extract_l} />
+			<ResultsPanel {freqs} {smats} metrics={example.metrics} />
 		</main>
 	</div>
 </div>

@@ -2,16 +2,17 @@
 	import { onMount, tick } from 'svelte';
 	import { plotColors, fonts } from '$lib/theme';
 	import type { SMatrix } from '$lib/wasm';
-	import { L_eq_pH, find_srf, sToZ } from '$lib/sparams';
+	import { L_eq_pH, find_srf, sToZ, Z0_TL } from '$lib/sparams';
+	import type { Metric } from '$lib/examples';
 
 	let {
 		freqs = [],
 		smats = [],
-		extract_l = false
+		metrics = []
 	}: {
 		freqs?: number[];
 		smats?: SMatrix[];
-		extract_l?: boolean;
+		metrics?: Metric[];
 	} = $props();
 
 	let container = $state<HTMLDivElement | null>(null);
@@ -35,15 +36,15 @@
 	$effect(() => {
 		const f = freqs;
 		const s = smats;
-		const ex = extract_l;
+		const m = metrics;
 		const P = Plotly;
 		const el = container;
 		if (!P || f.length === 0) return;
 		if (!el) {
-			tick().then(() => container && render(container, f, s, ex, P));
+			tick().then(() => container && render(container, f, s, m, P));
 			return;
 		}
-		render(el, f, s, ex, P);
+		render(el, f, s, m, P);
 	});
 
 	function s_mag(s: { re: number; im: number }): number {
@@ -53,7 +54,7 @@
 		return (Math.atan2(s.im, s.re) * 180) / Math.PI;
 	}
 
-	function render(el: HTMLDivElement, f: number[], s: SMatrix[], ex: boolean, P: any) {
+	function render(el: HTMLDivElement, f: number[], s: SMatrix[], metricSet: Metric[], P: any) {
 		const fHz = f;
 		const xType = (Math.max(...fHz) / Math.max(1, Math.min(...fHz))) > 50 ? 'log' : 'linear';
 
@@ -126,8 +127,9 @@
 			});
 		}
 
-		// Equivalent inductance + SRF marker (only for RFIC examples)
-		if (ex && n >= 2) {
+		const want = new Set(metricSet);
+
+		if (want.has('L_eq') && n >= 2) {
 			const Leq = fHz.map((freq, k) => L_eq_pH(s[k], freq));
 			const valid = Leq.filter((v) => isFinite(v) && Math.abs(v) < 1e6).map(Math.abs);
 			const cap = valid.length > 0 ? 5 * Math.max(...valid) : 1e4;
@@ -152,8 +154,9 @@
 				yaxis: yax('L_eq (pH)', Lplot),
 				layout: { shapes, annotations }
 			});
+		}
 
-			// Quality factor at port 1
+		if (want.has('Q') && n >= 2) {
 			const Q = s.map((mat) => {
 				const Z = sToZ(mat, 50);
 				return Z[0][0].im / Z[0][0].re;
@@ -165,11 +168,20 @@
 			});
 		}
 
-		const want = new Map(plots.map((p) => [p.id, p]));
-		for (const id of ['p-smag', 'p-sph', 'p-leq', 'p-q']) {
+		if (want.has('Z0') && n >= 2) {
+			const Z0 = s.map((mat) => Z0_TL(mat, 50));
+			plots.push({
+				id: 'p-z0',
+				data: [tr(Z0, 3)],
+				yaxis: yax('Z0 (Ω)', Z0)
+			});
+		}
+
+		const wantMap = new Map(plots.map((p) => [p.id, p]));
+		for (const id of ['p-smag', 'p-sph', 'p-leq', 'p-q', 'p-z0']) {
 			const div = el.querySelector(`#${id}`) as HTMLDivElement | null;
 			if (!div) continue;
-			const p = want.get(id);
+			const p = wantMap.get(id);
 			if (p) {
 				P.react(div, p.data, { ...base, yaxis: p.yaxis, hovermode: 'closest', ...(p.layout || {}) }, cfg);
 			} else {
@@ -191,10 +203,19 @@
 				<div id="p-smag" class="plot-cell"></div>
 				<div id="p-sph" class="plot-cell"></div>
 			</div>
-			{#if extract_l}
+			{#if metrics.includes('L_eq') || metrics.includes('Q')}
 				<div class="plot-col">
-					<div id="p-leq" class="plot-cell"></div>
-					<div id="p-q" class="plot-cell"></div>
+					{#if metrics.includes('L_eq')}
+						<div id="p-leq" class="plot-cell"></div>
+					{/if}
+					{#if metrics.includes('Q')}
+						<div id="p-q" class="plot-cell"></div>
+					{/if}
+				</div>
+			{/if}
+			{#if metrics.includes('Z0')}
+				<div class="plot-col">
+					<div id="p-z0" class="plot-cell"></div>
 				</div>
 			{/if}
 		</div>
