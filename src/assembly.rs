@@ -70,12 +70,12 @@ pub fn assemble_and_solve_with_pml(
         (vec![identity; n_tets], vec![identity; n_tets])
     };
 
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Assembled E,B in {:.1}ms ({} entries)", t0.elapsed().as_secs_f64()*1e3, rows.len());
 
     // Step 2: K = E - k0² * B (defer CSR construction — build faer triplets directly later)
-    let t1 = std::time::Instant::now();
+    let t1 = web_time::Instant::now();
     let k0_sq = C64::from(k0 * k0);
 
     // Step 3: PEC DOFs — exact port of assembler.py lines 356-373
@@ -189,7 +189,7 @@ pub fn assemble_and_solve_with_pml(
     }
 
     // Build COO triplets for reduced system: K = (E - k0²*B) + Robin
-    let t2 = std::time::Instant::now();
+    let t2 = web_time::Instant::now();
     let mut coo_rows: Vec<usize> = Vec::new();
     let mut coo_cols: Vec<usize> = Vec::new();
     let mut coo_vals: Vec<C64> = Vec::new();
@@ -221,7 +221,7 @@ pub fn assemble_and_solve_with_pml(
     let pardiso_opt = if force_faer { None } else { crate::pardiso::PardisoSolver::try_new() };
     let solutions = if let Some(mut pardiso) = pardiso_opt {
         // Build upper-triangle CSR for PARDISO (mtype=6: complex symmetric)
-        let t_par = std::time::Instant::now();
+        let t_par = web_time::Instant::now();
         let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
         eprintln!("  PARDISO: upper CSR {} nnz, built in {:.1}ms", a.len(), t_par.elapsed().as_secs_f64()*1e3);
 
@@ -258,7 +258,7 @@ pub fn assemble_and_solve_with_pml(
             n_free, n_free, &triplets,
         ).expect("faer matrix");
 
-        let t_solve = std::time::Instant::now();
+        let t_solve = web_time::Instant::now();
         let lu = k_faer.sp_lu().expect("Sparse LU factorization failed");
         eprintln!("  faer LU factorized in {:.1}ms", t_solve.elapsed().as_secs_f64()*1e3);
 
@@ -337,7 +337,7 @@ pub fn frequency_sweep_with_pml(
         (vec![identity; n_tets], vec![identity; n_tets])
     };
 
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let (rows, cols, mut data_e, mut data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Assembled E,B in {:.1}ms{}", t0.elapsed().as_secs_f64()*1e3,
         if materials_dispersive { "" } else { " (cached for sweep)" });
@@ -387,7 +387,7 @@ pub fn frequency_sweep_with_pml(
     let mut bempty = basis.empty_tri_matrix();
 
     for (fi, &freq) in frequencies.iter().enumerate() {
-        let t_freq = std::time::Instant::now();
+        let t_freq = web_time::Instant::now();
         let k0 = 2.0 * PI * freq / crate::constants::C0;
         let k0_sq = C64::from(k0 * k0);
         let n_field = basis.n_field;

@@ -41,7 +41,7 @@ pub fn solve_eigenmode(
         (vec![id; n_tets], vec![id; n_tets])
     };
 
-    let t0 = std::time::Instant::now();
+    let t0 = web_time::Instant::now();
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Eigenmode: assembled E,B in {:.1}ms", t0.elapsed().as_secs_f64()*1e3);
 
@@ -88,7 +88,7 @@ pub fn solve_eigenmode(
     }
 
     // Factorize (E - σB) with PARDISO or faer
-    let t1 = std::time::Instant::now();
+    let t1 = web_time::Instant::now();
 
     // Build a trait-object-like solver to abstract PARDISO vs faer
     let (ia_p, ja_p, a_p) = crate::pardiso::build_upper_csr(n_free, &shift_rows, &shift_cols, &shift_vals);
@@ -154,7 +154,7 @@ pub fn solve_eigenmode(
     };
 
     // Shift-invert Lanczos: find eigenvalues of (E-σB)⁻¹ B near σ
-    let t2 = std::time::Instant::now();
+    let t2 = web_time::Instant::now();
     let n_lanczos = (3 * n_modes + 20).min(n_free).min(100);
 
     // Random start vector

@@ -123,7 +123,7 @@ impl Simulation {
         let port_tri_refs = self.port_tris_slices();
         let n_driven = port_dyn.iter().filter(|p| p.is_driven()).count();
 
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let results = crate::assembly::frequency_sweep_with_pml(
             &self.mesh,
             &self.basis,
