@@ -36,16 +36,16 @@ def make_spiral_gds(path, *, dout_um=130, n_turns=2, width_um=10, spacing_um=4):
 
 
 def build_spiral_demo(out_msh: Path, out_toml: Path,
-                       freqs_hz=None, dout_um=130, n_turns=2):
+                       freqs_hz=None, dout_um=80, n_turns=1):
     if freqs_hz is None:
-        freqs_hz = [0.5e9, 1e9, 2e9, 3e9, 4e9]   # 5 pts for WASM memory
+        freqs_hz = [1e9, 3e9, 5e9]   # 3 pts
     um = 1e-6
 
     with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
         gds_path = f.name
     try:
         geom = make_spiral_gds(gds_path, dout_um=dout_um, n_turns=n_turns,
-                                width_um=10, spacing_um=4)
+                                width_um=8, spacing_um=4)
         stack = rfic.Stack.sky130()
         g = rapidfem.Geometry.from_gds(gds_path, stack=stack, merge=False,
                                         thin_conductors=True)
@@ -92,7 +92,7 @@ def build_spiral_demo(out_msh: Path, out_toml: Path,
 
         builder = (
             rapidfem.SimulationBuilder()
-            .from_geometry(g, maxh=25 * um)   # coarse for WASM memory
+            .from_geometry(g, maxh=35 * um)   # very coarse for WASM 4GB ceiling
             .frequencies(freqs_hz)
             .pec("met5", "p1_gnd", "p2_gnd")
             .lumped_port("p1", direction=(0, 0, 1), z0=50.0)
