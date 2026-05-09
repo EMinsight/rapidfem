@@ -858,8 +858,7 @@
 			#DD513A 85%,
 			#FCFFA4 100%
 		);
-		border: 1px solid var(--border);
-		box-shadow: 0 0 0 1px var(--bg-inset);
+		border: 1px solid var(--text-dim);
 	}
 	.cb-tick {
 		position: absolute;
