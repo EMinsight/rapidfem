@@ -832,11 +832,14 @@
 	}
 	.hud .stats { color: var(--text-muted); }
 
-	.cb-panel { padding-bottom: 6px; }
+	.cb-panel {
+		padding: 12px 14px;
+		gap: 10px;
+	}
 	.cb-body {
 		display: flex;
 		flex-direction: row;
-		gap: 6px;
+		gap: 10px;
 		align-items: stretch;
 		height: 180px;
 		position: relative;
@@ -856,7 +859,8 @@
 			#DD513A 85%,
 			#FCFFA4 100%
 		);
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border);
+		box-shadow: 0 0 0 1px var(--bg-inset);
 	}
 	.cb-tick {
 		position: absolute;
