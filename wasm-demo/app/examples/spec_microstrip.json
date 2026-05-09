@@ -1,0 +1,20 @@
+{
+  "name": "spec_microstrip",
+  "stack": [
+    { "name": "substrate", "type": "substrate", "z": -3.018e-5, "thickness": 30e-6, "er": 11.9, "conductivity": 10 },
+    { "name": "oxide", "type": "oxide", "z": -1.8e-7, "thickness": 5.805e-6, "er": 4.2 },
+    { "name": "li1", "type": "metal", "z": 0.0, "thickness": 1e-7 },
+    { "name": "met5", "type": "metal", "z": 4.365e-6, "thickness": 1.26e-6 }
+  ],
+  "polygons": [
+    { "layer": "met5", "xy": [-1e-4, -2.5e-6, 1e-4, -2.5e-6, 1e-4, 2.5e-6, -1e-4, 2.5e-6] },
+    { "layer": "li1",  "xy": [-1.2e-4, -1.25e-5, 1.2e-4, -1.25e-5, 1.2e-4, 1.25e-5, -1.2e-4, 1.25e-5] }
+  ],
+  "ports": [
+    { "name": "p1", "x": -1e-4, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50 },
+    { "name": "p2", "x":  1e-4, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50 }
+  ],
+  "boundary": { "air_padding_xy": 50e-6, "air_padding_z": 30e-6, "abc": "B" },
+  "frequencies_hz": [1e9, 3e9, 5e9],
+  "maxh": 15e-6
+}
