@@ -24,6 +24,40 @@
 	let mesh_data = $state<MeshData | null>(null);
 	type Display = 'geometry' | 'mesh' | 'both' | 'plots';
 	let display = $state<Display>('geometry');
+	let viewer: MeshViewer | undefined = $state();
+
+	// Resizable sidebar
+	let sidebar_width = $state(280);
+	let dragging_sidebar = false;
+	function on_sidebar_drag_start(e: PointerEvent) {
+		dragging_sidebar = true;
+		(e.target as HTMLElement).setPointerCapture(e.pointerId);
+	}
+	function on_sidebar_drag(e: PointerEvent) {
+		if (!dragging_sidebar) return;
+		sidebar_width = Math.max(240, Math.min(500, e.clientX));
+	}
+	function on_sidebar_drag_end() {
+		dragging_sidebar = false;
+	}
+
+	function on_keydown(e: KeyboardEvent) {
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+		if (display === 'plots') return; // Viewer shortcuts only when viewer active
+		switch (e.key) {
+			case 'f': case 'F': viewer?.fit_view(); break;
+			case '+': case '=': viewer?.zoom_in(); break;
+			case '-': case '_': viewer?.zoom_out(); break;
+			case 'r': case 'R': viewer?.rotate_90(); break;
+			case 'z': case 'Z': viewer?.flip_z(); break;
+			case 's': case 'S':
+				if (e.ctrlKey || e.metaKey) {
+					e.preventDefault();
+					viewer?.save_png();
+				}
+				break;
+		}
+	}
 
 	let abort_controller: AbortController | null = null;
 
@@ -125,6 +159,8 @@
 	<meta name="description" content="WebAssembly-powered FEM EM solver. Solve Sky130 microstrip and spiral inductor S-parameters and L_eq(f) in your browser, with no backend." />
 </svelte:head>
 
+<svelte:window onkeydown={on_keydown} />
+
 <div class="app">
 	<header>
 		<a class="brand" href="/">
@@ -138,7 +174,7 @@
 	</header>
 
 	<div class="body">
-		<aside class="sidebar">
+		<aside class="sidebar" style="width: {sidebar_width}px; min-width: {sidebar_width}px;">
 			<ParamSidebar>
 				<div class="param-section">
 					<h4>Example</h4>
@@ -159,6 +195,15 @@
 			</ParamSidebar>
 		</aside>
 
+		<div
+			class="resize-handle-v"
+			onpointerdown={on_sidebar_drag_start}
+			onpointermove={on_sidebar_drag}
+			onpointerup={on_sidebar_drag_end}
+			role="separator"
+			aria-label="Resize sidebar"
+			tabindex="-1"
+		></div>
 		<main class="results-area">
 			<div class="view-tabs">
 				<button class="vt" class:active={display === 'geometry'} onclick={() => (display = 'geometry')}>Geometry</button>
@@ -170,7 +215,7 @@
 				{#if display === 'plots'}
 					<ResultsPanel {freqs} {smats} metrics={example.metrics} />
 				{:else}
-					<MeshViewer mesh={mesh_data} mode={display} />
+					<MeshViewer bind:this={viewer} mesh={mesh_data} mode={display} />
 				{/if}
 			</div>
 		</main>
@@ -234,16 +279,27 @@
 	}
 
 	.body {
-		display: grid;
-		grid-template-columns: 280px 1fr;
+		display: flex;
 		flex: 1;
 		min-height: 0;
 	}
 	.sidebar {
-		border-right: 1px solid var(--border);
+		flex-shrink: 0;
 		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		background: var(--bg);
 	}
+	.resize-handle-v {
+		width: 2px;
+		cursor: col-resize;
+		background: var(--border);
+		flex-shrink: 0;
+		transition: background var(--transition);
+	}
+	.resize-handle-v:hover, .resize-handle-v:active { background: var(--accent); }
 	.results-area {
+		flex: 1;
 		min-width: 0;
 		min-height: 0;
 		background: var(--bg);

@@ -14,6 +14,7 @@
 	} = $props();
 
 	let container = $state<HTMLDivElement | null>(null);
+	let canvas_el: HTMLCanvasElement | null = null;
 	let renderer: THREE.WebGLRenderer | null = null;
 	let scene: THREE.Scene | null = null;
 	let camera: THREE.PerspectiveCamera | null = null;
@@ -22,6 +23,57 @@
 	let surface_meshes: THREE.Mesh[] = [];
 	let wire_lines: THREE.LineSegments | null = null;
 	let raf_id: number | null = null;
+	let z_flip = 1;
+	let cursor_world = $state({ x: 0, y: 0, z: 0 });
+	let last_bbox: MeshData['bbox'] | null = null;
+
+	// ── Imperative API exposed via bind:this ────────────────────────────────
+	export function zoom_in() { dolly(1 / 1.3); }
+	export function zoom_out() { dolly(1.3); }
+	export function fit_view() { if (mesh) fit_camera(mesh); }
+	export function rotate_90() {
+		if (!camera || !controls) return;
+		const t = controls.target;
+		const offset = new THREE.Vector3().subVectors(camera.position, t);
+		const ang = Math.PI / 2;
+		const cos = Math.cos(ang), sin = Math.sin(ang);
+		const x = offset.x * cos - offset.y * sin;
+		const y = offset.x * sin + offset.y * cos;
+		camera.position.set(t.x + x, t.y + y, camera.position.z);
+		camera.lookAt(t);
+		controls.update();
+	}
+	export function flip_z() {
+		if (!camera) return;
+		z_flip *= -1;
+		camera.up.set(0, 0, z_flip);
+		controls?.update();
+	}
+	export function save_png() {
+		if (!renderer || !canvas_el || !scene || !camera) return;
+		const prev_clear = renderer.getClearColor(new THREE.Color()).clone();
+		const prev_alpha = renderer.getClearAlpha();
+		renderer.setClearColor(0x000000, 0);
+		renderer.render(scene, camera);
+		canvas_el.toBlob((blob) => {
+			if (!blob) return;
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = 'rapidfem-mesh.png';
+			a.click();
+			URL.revokeObjectURL(url);
+			renderer!.setClearColor(prev_clear, prev_alpha);
+		}, 'image/png');
+	}
+
+	function dolly(scale: number) {
+		if (!camera || !controls) return;
+		const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+		offset.multiplyScalar(scale);
+		camera.position.copy(controls.target).add(offset);
+		controls.update();
+	}
 
 	type TagKind = 'dielectric' | 'conductor' | 'port' | 'gnd' | 'other';
 	function classify(name: string): TagKind {
@@ -214,9 +266,11 @@
 		camera = new THREE.PerspectiveCamera(40, 1, 1e-9, 1);
 		camera.up.set(0, 0, 1);
 
-		renderer = new THREE.WebGLRenderer({ antialias: true });
+		renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-		container.appendChild(renderer.domElement);
+		canvas_el = renderer.domElement;
+		container.appendChild(canvas_el);
+		canvas_el.addEventListener('pointermove', on_pointer_move);
 
 		controls = new OrbitControls(camera, renderer.domElement);
 		controls.enableDamping = true;
@@ -241,6 +295,26 @@
 			raf_id = requestAnimationFrame(tick);
 		};
 		raf_id = requestAnimationFrame(tick);
+	}
+
+	const _ndc_v = new THREE.Vector3();
+	const _ray = new THREE.Raycaster();
+	const _z0_plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+	const _hit = new THREE.Vector3();
+	function on_pointer_move(e: PointerEvent) {
+		if (!camera || !canvas_el) return;
+		const rect = canvas_el.getBoundingClientRect();
+		const x_ndc = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+		const y_ndc = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+		_ndc_v.set(x_ndc, y_ndc, 0.5);
+		_ray.setFromCamera({ x: x_ndc, y: y_ndc } as THREE.Vector2, camera);
+		// Project onto z=z_metal plane (use bbox top of metal layers if known, else 0)
+		// Use camera target z as the reference plane height
+		const z_ref = controls?.target.z ?? 0;
+		_z0_plane.constant = -z_ref;
+		if (_ray.ray.intersectPlane(_z0_plane, _hit)) {
+			cursor_world = { x: _hit.x, y: _hit.y, z: z_ref };
+		}
 	}
 
 	function handle_resize() {
@@ -386,11 +460,51 @@
 		</div>
 	{/if}
 
-	{#if mesh}
-		<div class="stats">
-			{(mesh.nodes.length / 3) | 0} nodes · {(mesh.tris.length / 3) | 0} tris · {(mesh.tets.length / 4) | 0} tets
-		</div>
-	{/if}
+	<div class="viewer-toolbar">
+		<button class="tb" onclick={zoom_in}><span class="tip">Zoom in<kbd>+</kbd></span>+</button>
+		<button class="tb" onclick={zoom_out}><span class="tip">Zoom out<kbd>−</kbd></span>−</button>
+		<button class="tb" onclick={fit_view}>
+			<span class="tip">Fit view<kbd>F</kbd></span>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+				<polyline points="1,5 1,1 5,1" />
+				<polyline points="11,1 15,1 15,5" />
+				<polyline points="15,11 15,15 11,15" />
+				<polyline points="5,15 1,15 1,11" />
+				<rect x="5" y="5" width="6" height="6" rx="0.5" />
+			</svg>
+		</button>
+		<button class="tb" onclick={rotate_90}>
+			<span class="tip">Rotate<kbd>R</kbd></span>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+				<polyline points="15.3 2.7 15.3 6.7 11.3 6.7" />
+				<path d="M13.66 10a6 6 0 1 1-1.41-6.24L15.3 6.7" />
+			</svg>
+		</button>
+		<button class="tb" onclick={flip_z}>
+			<span class="tip">Flip Z<kbd>Z</kbd></span>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+				<path d="M3 4h10" />
+				<path d="M8 4v8" />
+				<path d="M5 9l3 3 3-3" />
+			</svg>
+		</button>
+		<button class="tb" onclick={save_png}>
+			<span class="tip">Save PNG<kbd>Ctrl+S</kbd></span>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+				<path d="M2 10v3h12v-3" />
+				<path d="M8 2v8" />
+				<path d="M5 7l3 3 3-3" />
+			</svg>
+		</button>
+	</div>
+
+	<div class="hud">
+		<span class="coord">x {(cursor_world.x * 1e6).toFixed(1)} µm</span>
+		<span class="coord">y {(cursor_world.y * 1e6).toFixed(1)} µm</span>
+		{#if mesh}
+			<span class="coord stats">{(mesh.nodes.length / 3) | 0}n · {(mesh.tris.length / 3) | 0}t · {(mesh.tets.length / 4) | 0}T</span>
+		{/if}
+	</div>
 </div>
 
 <style>
@@ -408,8 +522,8 @@
 	}
 	.legend {
 		position: absolute;
-		top: 8px;
-		left: 8px;
+		top: 10px;
+		left: 10px;
 		background: rgba(24, 24, 29, 0.75);
 		border: 1px solid var(--border-subtle);
 		padding: 6px 8px;
@@ -421,29 +535,73 @@
 		color: var(--text-muted);
 		pointer-events: none;
 	}
-	.legend-item {
+	.legend-item { display: flex; align-items: center; gap: 6px; }
+	.swatch { width: 10px; height: 10px; flex-shrink: 0; }
+
+	.viewer-toolbar {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		z-index: 10;
+		display: flex;
+		gap: 2px;
+	}
+	.tb {
+		position: relative;
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--border);
+		background: var(--bg-surface);
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		justify-content: center;
+		padding: 0;
+		transition: background var(--transition), border-color var(--transition), color var(--transition);
 	}
-	.swatch {
-		width: 10px;
-		height: 10px;
-		flex-shrink: 0;
+	.tb:hover {
+		background: var(--bg-panel);
+		border-color: var(--accent);
+		color: var(--text);
 	}
-	.legend-name {
-		text-transform: none;
+	.tb .tip {
+		display: none;
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 0;
+		white-space: nowrap;
+		font-size: var(--fs-xs);
+		font-family: var(--font-mono);
+		font-weight: 400;
+		color: var(--text-muted);
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		padding: 3px 8px;
+		pointer-events: none;
+		z-index: 20;
 	}
-	.stats {
+	.tb .tip kbd {
+		margin-left: 6px;
+		color: var(--accent);
+		font-family: var(--font-mono);
+		font-weight: 600;
+	}
+	.tb:hover .tip { display: flex; align-items: center; gap: 4px; }
+
+	.hud {
 		position: absolute;
 		bottom: 8px;
-		right: 8px;
-		background: rgba(24, 24, 29, 0.75);
-		border: 1px solid var(--border-subtle);
-		padding: 4px 8px;
-		font-family: var(--font-mono);
+		left: 8px;
+		display: flex;
+		gap: 12px;
 		font-size: var(--fs-xs);
-		color: var(--text-muted);
+		font-family: var(--font-mono);
+		color: var(--text-dim);
 		pointer-events: none;
 	}
+	.hud .stats { color: var(--text-muted); }
 </style>
