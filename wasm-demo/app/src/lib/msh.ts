@@ -8,13 +8,15 @@
  */
 
 export interface MeshData {
-	nodes: Float32Array;        // [x0,y0,z0, x1,y1,z1, ...] — in METERS
-	tris: Uint32Array;          // [a0,b0,c0, a1,b1,c1, ...] — node indices
-	tri_phys: Int32Array;       // physical-group tag of each triangle
-	tets: Uint32Array;          // [a0,b0,c0,d0, ...]
+	nodes: Float64Array;        // [x0,y0,z0, ...] in METERS — kept f64 for clean
+	                             // analytical normals on coplanar triangles
+	                             // (μm-scale geometry suffers from f32 cross-product noise)
+	tris: Uint32Array;
+	tri_phys: Int32Array;
+	tets: Uint32Array;
 	tet_phys: Int32Array;
-	phys_names: Map<number, string>;  // physical-group integer tag → name
-	phys_dim: Map<number, number>;    // physical-group → dim (2=surf, 3=vol)
+	phys_names: Map<number, string>;
+	phys_dim: Map<number, number>;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -165,7 +167,7 @@ export function parse_msh(text: string): MeshData {
 
 	// Build dense node array, remap gmsh tags → 0-indexed positions
 	const node_count = node_idx_to_pos.size;
-	const nodes = new Float32Array(node_count * 3);
+	const nodes = new Float64Array(node_count * 3);
 	const remap = new Map<number, number>();
 	let nidx = 0;
 	const bbMin: [number, number, number] = [Infinity, Infinity, Infinity];

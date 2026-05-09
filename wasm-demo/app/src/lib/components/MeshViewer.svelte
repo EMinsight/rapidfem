@@ -134,31 +134,8 @@
 		];
 	}
 
-	// ── Build per-group triangle buffers ──────────────────────────────
-	function compute_normals(positions: Float32Array): Float32Array {
-		const n = positions.length / 9;
-		const normals = new Float32Array(n * 9);
-		const a = [0, 0, 0], b = [0, 0, 0], c = [0, 0, 0];
-		for (let t = 0; t < n; t++) {
-			const i = t * 9;
-			a[0] = positions[i + 0]; a[1] = positions[i + 1]; a[2] = positions[i + 2];
-			b[0] = positions[i + 3]; b[1] = positions[i + 4]; b[2] = positions[i + 5];
-			c[0] = positions[i + 6]; c[1] = positions[i + 7]; c[2] = positions[i + 8];
-			const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
-			const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
-			let nx = e1y * e2z - e1z * e2y;
-			let ny = e1z * e2x - e1x * e2z;
-			let nz = e1x * e2y - e1y * e2x;
-			const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-			nx /= l; ny /= l; nz /= l;
-			for (let k = 0; k < 3; k++) {
-				normals[i + k * 3 + 0] = nx;
-				normals[i + k * 3 + 1] = ny;
-				normals[i + k * 3 + 2] = nz;
-			}
-		}
-		return normals;
-	}
+	// (compute_normals is inlined in push_group below to keep the cross-product
+	//  in full f64 precision against the original mesh.nodes Float64Array)
 
 	/** Volume hull from tets — for EACH volume independently: face appearing
 	 *  exactly once in that volume's tets = part of its hull. A face shared
@@ -240,7 +217,6 @@
 		}
 
 		if (showWire) {
-			// Wireframe edges from surface tris (deduped)
 			const edges: number[] = [];
 			const seen = new Set<bigint>();
 			const add_edge = (a: number, b: number) => {
@@ -259,7 +235,7 @@
 				const a = mesh.tris[i * 3], b = mesh.tris[i * 3 + 1], c = mesh.tris[i * 3 + 2];
 				add_edge(a, b); add_edge(b, c); add_edge(c, a);
 			}
-			addLineMesh(gl_state, new Float32Array(edges), hex(palette.textDim), -1);
+			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
 		// Reset visibility tracking after rebuild — everything visible by default
@@ -274,21 +250,53 @@
 		if (!gl_state || !mesh) return;
 		const ntri = idx.length / 3;
 		if (ntri === 0) return;
-		const positions = new Float32Array(ntri * 9);
+
+		// Stage everything in f64 so cross-product normals on coplanar
+		// triangles are bit-identical. Only quantize to f32 at GPU upload.
+		const pos64 = new Float64Array(ntri * 9);
 		for (let t = 0; t < ntri; t++) {
 			for (let v = 0; v < 3; v++) {
 				const ni = idx[t * 3 + v] * 3;
-				positions[t * 9 + v * 3 + 0] = mesh.nodes[ni];
-				positions[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
-				positions[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
+				pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
+				pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
+				pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
 			}
 		}
-		const normals = compute_normals(positions);
+		const norm64 = new Float64Array(ntri * 9);
+		for (let t = 0; t < ntri; t++) {
+			const i = t * 9;
+			const ax = pos64[i + 0], ay = pos64[i + 1], az = pos64[i + 2];
+			const bx = pos64[i + 3], by = pos64[i + 4], bz = pos64[i + 5];
+			const cx = pos64[i + 6], cy = pos64[i + 7], cz = pos64[i + 8];
+			const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+			const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+			let nx = e1y * e2z - e1z * e2y;
+			let ny = e1z * e2x - e1x * e2z;
+			let nz = e1x * e2y - e1y * e2x;
+			const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+			nx /= l; ny /= l; nz /= l;
+			// Snap any axis-aligned normal back to its exact value — kills any
+			// residual sub-bit FP noise that would dapple coplanar shading.
+			if (Math.abs(nx) > 0.9999) { nx = Math.sign(nx); ny = 0; nz = 0; }
+			else if (Math.abs(ny) > 0.9999) { ny = Math.sign(ny); nx = 0; nz = 0; }
+			else if (Math.abs(nz) > 0.9999) { nz = Math.sign(nz); nx = 0; ny = 0; }
+			for (let k = 0; k < 3; k++) {
+				norm64[i + k * 3 + 0] = nx;
+				norm64[i + k * 3 + 1] = ny;
+				norm64[i + k * 3 + 2] = nz;
+			}
+		}
 		// Push dielectric volume hulls slightly back so coplanar conductor
-		// plates (e.g. met5 spiral at the same z as oxide's internal face
-		// after fragmentation) win the depth test cleanly.
+		// plates win the depth test cleanly.
 		const offset: [number, number] | undefined = kind === 'dielectric' ? [2, 2] : undefined;
-		addMesh(gl_state, positions, normals, color_for(kind, name), tag, offset);
+		addMesh(
+			gl_state,
+			Float32Array.from(pos64),
+			Float32Array.from(norm64),
+			color_for(kind, name),
+			tag,
+			offset
+		);
 	}
 
 	// ── Frame loop / sizing ─────────────────────────────────────────────
