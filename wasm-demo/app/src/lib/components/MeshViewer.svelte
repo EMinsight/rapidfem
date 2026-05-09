@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		render3D, fitCamera, setTagVisible, setClipPlane,
+		setPointCloud, render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
@@ -29,8 +29,6 @@
 	let needs_rebuild = true;
 	let cursor_world = $state({ x: 0, y: 0 });
 	let visible_tags = $state(new Set<number>());
-	let iso_level = $state(0.5);          // 0..1 normalized — field-magnitude iso-surface level
-	let iso_enabled = $state(false);
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
@@ -227,31 +225,10 @@
 		const showFaces = mode === 'geometry' || mode === 'both' || mode === 'field';
 		const showWire = mode === 'mesh' || mode === 'both';
 		const useField = mode === 'field' && field != null;
-		// Compute log-scaled field per node (|E| spans many orders of magnitude
-		// across a passive RFIC structure).
-		let f_norm: Float32Array | null = null;
-		if (useField && field) {
-			let max_v = 0;
-			for (let i = 0; i < field.length; i++) {
-				if (field[i] > max_v) max_v = field[i];
-			}
-			f_norm = new Float32Array(field.length);
-			if (max_v > 0) {
-				const log_max = Math.log10(max_v + 1e-30);
-				const log_floor = log_max - 4; // 4 decades below max
-				for (let i = 0; i < field.length; i++) {
-					const v = field[i];
-					if (v <= 0) f_norm[i] = 0;
-					else {
-						const l = Math.log10(v);
-						f_norm[i] = Math.max(0, Math.min(1, (l - log_floor) / (log_max - log_floor)));
-					}
-				}
-			}
-		}
 
 		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
-		field_norm = f_norm;   // visible to push_group below
+		field_norm = null;
+		in_field_mode = useField;
 
 		if (showFaces) {
 			// 1) Named surface tris
@@ -300,17 +277,45 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
-		// Iso-surface (volumetric field viz) — only in field mode when enabled.
-		// Uses the LOG-mapped normalized field so the slider 0..1 corresponds
-		// linearly to log(|E|) decades rather than to a raw V/m value range
-		// (which would otherwise be unusably skewed toward the very high end).
-		if (useField && f_norm && iso_enabled) {
-			const iso = build_iso_surface(iso_level, f_norm);
-			if (iso.positions.length > 0) {
-				const scalars = new Float32Array(iso.positions.length / 3);
-				scalars.fill(iso_level);
-				addMesh(gl_state, iso.positions, iso.normals, [1, 1, 1], -2, undefined, scalars);
+		// Volumetric field: emit one additive-blended point per tet centroid,
+		// brightness/color modulated by log-normalized |E| at the centroid
+		// (averaged from the four tet vertices' nodal field).
+		if (useField && field) {
+			const ntets = mesh.tets.length / 4;
+			let max_v = 0;
+			const tet_field = new Float32Array(ntets);
+			for (let t = 0; t < ntets; t++) {
+				const v = mesh.tets;
+				const f = (
+					field[v[t * 4]] + field[v[t * 4 + 1]] +
+					field[v[t * 4 + 2]] + field[v[t * 4 + 3]]
+				) / 4;
+				tet_field[t] = f;
+				if (f > max_v) max_v = f;
 			}
+			const log_max = Math.log10(max_v + 1e-30);
+			const log_floor = log_max - 4;          // 4 decades dynamic range
+			const positions: number[] = [];
+			const scalars: number[] = [];
+			for (let t = 0; t < ntets; t++) {
+				const f = tet_field[t];
+				if (f <= 0) continue;
+				const norm = Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)));
+				if (norm < 0.05) continue;            // skip near-empty regions
+				const v = mesh.tets;
+				let cx = 0, cy = 0, cz = 0;
+				for (let k = 0; k < 4; k++) {
+					const ni = v[t * 4 + k] * 3;
+					cx += mesh.nodes[ni];
+					cy += mesh.nodes[ni + 1];
+					cz += mesh.nodes[ni + 2];
+				}
+				positions.push(cx / 4, cy / 4, cz / 4);
+				scalars.push(norm);
+			}
+			setPointCloud(gl_state, Float32Array.from(positions), Float32Array.from(scalars));
+		} else {
+			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
 		}
 
 		// Reset visibility tracking after rebuild — everything visible by default
@@ -321,77 +326,8 @@
 		needs_rebuild = false;
 	}
 
-	/** Marching-tets iso-surface extraction. For each tet: classify each
-	 *  vertex above/below the threshold, then emit 0/1/2 triangles where
-	 *  edges cross the iso-level. Returns positions+normals as f32 arrays. */
-	function build_iso_surface(level: number, f: Float32Array): { positions: Float32Array; normals: Float32Array } {
-		if (!mesh) return { positions: new Float32Array(0), normals: new Float32Array(0) };
-		const nodes = mesh.nodes;
-		const tets = mesh.tets;
-		const ntets = mesh.tets.length / 4;
-		const tri_pos: number[] = [];
-		// Each tet has 6 edges, each edge = pair of tet-local indices
-		const tet_edges: [number, number][] = [
-			[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]
-		];
-		const interp = (a: number, b: number, fa: number, fb: number): [number, number, number] => {
-			let t = fa === fb ? 0.5 : (level - fa) / (fb - fa);
-			t = Math.max(0, Math.min(1, t));
-			return [
-				nodes[a * 3 + 0] * (1 - t) + nodes[b * 3 + 0] * t,
-				nodes[a * 3 + 1] * (1 - t) + nodes[b * 3 + 1] * t,
-				nodes[a * 3 + 2] * (1 - t) + nodes[b * 3 + 2] * t
-			];
-		};
-		for (let ti = 0; ti < ntets; ti++) {
-			const v = [tets[ti * 4], tets[ti * 4 + 1], tets[ti * 4 + 2], tets[ti * 4 + 3]];
-			const fv = [f[v[0]], f[v[1]], f[v[2]], f[v[3]]];
-			let mask = 0;
-			for (let i = 0; i < 4; i++) if (fv[i] >= level) mask |= 1 << i;
-			if (mask === 0 || mask === 15) continue;
-			// Find crossing edges (edge endpoints have different above/below)
-			const cross_pts: [number, number, number][] = [];
-			for (const [i, j] of tet_edges) {
-				const ai = (mask >> i) & 1;
-				const aj = (mask >> j) & 1;
-				if (ai !== aj) cross_pts.push(interp(v[i], v[j], fv[i], fv[j]));
-			}
-			if (cross_pts.length === 3) {
-				for (const p of cross_pts) tri_pos.push(p[0], p[1], p[2]);
-			} else if (cross_pts.length === 4) {
-				// Quad → split into 2 tris (simple fan; ordering of cross_pts is
-				// already coherent because tet_edges enumerates in fixed order)
-				const [a, b, c, d] = cross_pts;
-				tri_pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
-				tri_pos.push(a[0], a[1], a[2], c[0], c[1], c[2], d[0], d[1], d[2]);
-			}
-		}
-		const positions = Float32Array.from(tri_pos);
-		// Face normals via cross product (no smoothing — clean per-face shading)
-		const ntri = positions.length / 9;
-		const normals = new Float32Array(positions.length);
-		for (let t = 0; t < ntri; t++) {
-			const i = t * 9;
-			const ax = positions[i], ay = positions[i + 1], az = positions[i + 2];
-			const bx = positions[i + 3], by = positions[i + 4], bz = positions[i + 5];
-			const cx = positions[i + 6], cy = positions[i + 7], cz = positions[i + 8];
-			const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-			const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-			let nx = e1y * e2z - e1z * e2y;
-			let ny = e1z * e2x - e1x * e2z;
-			let nz = e1x * e2y - e1y * e2x;
-			const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-			nx /= l; ny /= l; nz /= l;
-			for (let k = 0; k < 3; k++) {
-				normals[i + k * 3 + 0] = nx;
-				normals[i + k * 3 + 1] = ny;
-				normals[i + k * 3 + 2] = nz;
-			}
-		}
-		return { positions, normals };
-	}
-
 	let field_norm: Float32Array | null = null;
+	let in_field_mode = false;
 	function push_group(idx: number[], kind: Kind, name: string, tag: number) {
 		if (!gl_state || !mesh) return;
 		const ntri = idx.length / 3;
@@ -575,13 +511,6 @@
 		render_frame();
 	});
 
-	// React to iso-level changes (full rebuild — recomputes the iso-surface)
-	$effect(() => {
-		iso_level; iso_enabled;
-		if (!mounted || !gl_state) return;
-		needs_rebuild = true;
-		render_frame();
-	});
 
 	// Refit camera only when mesh changes
 	$effect(() => {
@@ -688,28 +617,6 @@
 		{/if}
 	</div>
 
-	{#if mode === 'field' && field}
-		<div class="iso-control">
-			<label>
-				<input
-					type="checkbox"
-					bind:checked={iso_enabled}
-				/>
-				iso-surface
-			</label>
-			{#if iso_enabled}
-				<input
-					class="iso-slider"
-					type="range"
-					min={0.05}
-					max={0.95}
-					step={0.01}
-					bind:value={iso_level}
-				/>
-				<span class="iso-readout">|E| · {(iso_level * 100).toFixed(0)}%</span>
-			{/if}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -822,54 +729,4 @@
 	}
 	.hud .stats { color: var(--text-muted); }
 
-	.iso-control {
-		position: absolute;
-		bottom: 8px;
-		right: 10px;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 4px 8px;
-		background: rgba(24, 24, 29, 0.75);
-		border: 1px solid var(--border-subtle);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-	}
-	.iso-control label {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		cursor: pointer;
-	}
-	.iso-control input[type='checkbox'] {
-		accent-color: var(--accent);
-		cursor: pointer;
-	}
-	.iso-slider {
-		appearance: none;
-		width: 160px;
-		height: 2px;
-		background: var(--input-border);
-		outline: none;
-	}
-	.iso-slider::-webkit-slider-thumb {
-		appearance: none;
-		width: 10px;
-		height: 14px;
-		background: var(--accent);
-		cursor: pointer;
-	}
-	.iso-slider::-moz-range-thumb {
-		width: 10px;
-		height: 14px;
-		background: var(--accent);
-		border: 0;
-		cursor: pointer;
-	}
-	.iso-readout {
-		min-width: 64px;
-		text-align: right;
-		color: var(--accent);
-	}
 </style>

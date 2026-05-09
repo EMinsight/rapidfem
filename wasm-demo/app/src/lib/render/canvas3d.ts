@@ -62,8 +62,13 @@ export interface GLState {
 	lineProgram: WebGLProgram;
 	uLineMVP: WebGLUniformLocation;
 	uLineColor: WebGLUniformLocation;
+	pointProgram: WebGLProgram;
+	uPointMVP: WebGLUniformLocation;
+	uPointZFlip: WebGLUniformLocation;
+	uPointScale: WebGLUniformLocation;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
+	pointCloud: { vao: WebGLVertexArrayObject; buffers: WebGLBuffer[]; count: number } | null;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -139,6 +144,49 @@ precision highp float;
 uniform vec3 uColor;
 out vec4 fragColor;
 void main() { fragColor = vec4(uColor, 1.0); }`;
+
+// ── Volumetric point cloud (gl.POINTS) ──
+const POINT_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in float aScalar;       // 0..1 normalized field magnitude
+uniform mat4 uMVP;
+uniform float uZFlip;
+uniform float uPointScale;                 // base size in pixels at unit clip-w
+out float vScalar;
+void main() {
+	vec3 pos = aPos;
+	pos.z *= uZFlip;
+	gl_Position = uMVP * vec4(pos, 1.0);
+	vScalar = aScalar;
+	float w = max(gl_Position.w, 1e-6);
+	gl_PointSize = clamp(uPointScale / w * (0.6 + 0.8 * aScalar), 1.0, 64.0);
+}`;
+
+const POINT_FS = `#version 300 es
+precision highp float;
+in float vScalar;
+out vec4 fragColor;
+vec3 inferno(float t) {
+	t = clamp(t, 0.0, 1.0);
+	const vec3 c0 = vec3(0.0002, 0.0016, -0.0194);
+	const vec3 c1 = vec3(0.1065, 0.5639, 3.9327);
+	const vec3 c2 = vec3(11.6024, -3.972, -15.9423);
+	const vec3 c3 = vec3(-41.7039, 17.4363, 44.354);
+	const vec3 c4 = vec3(77.1629, -33.4023, -81.8073);
+	const vec3 c5 = vec3(-71.319, 32.6261, 73.2095);
+	const vec3 c6 = vec3(25.1311, -12.2426, -23.0703);
+	return c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
+}
+void main() {
+	vec2 uv = gl_PointCoord * 2.0 - 1.0;
+	float r2 = dot(uv, uv);
+	if (r2 > 1.0) discard;
+	float falloff = pow(1.0 - r2, 2.0);
+	vec3 col = inferno(vScalar);
+	// Additive contribution: low-field points fade out, high-field accumulate brightness
+	fragColor = vec4(col * (vScalar * falloff), 1.0);
+}`;
 
 // ─── GL helpers ─────────────────────────────────────────────────────
 
@@ -246,6 +294,7 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 
 	const program = linkProgram(gl, VS, FS);
 	const lineProgram = linkProgram(gl, LINE_VS, LINE_FS);
+	const pointProgram = linkProgram(gl, POINT_VS, POINT_FS);
 
 	const bg = hexToRgb(canvasTheme.bg);
 	gl.clearColor(bg[0], bg[1], bg[2], 1);
@@ -269,8 +318,13 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		lineProgram,
 		uLineMVP: gl.getUniformLocation(lineProgram, 'uMVP')!,
 		uLineColor: gl.getUniformLocation(lineProgram, 'uColor')!,
+		pointProgram,
+		uPointMVP: gl.getUniformLocation(pointProgram, 'uMVP')!,
+		uPointZFlip: gl.getUniformLocation(pointProgram, 'uZFlip')!,
+		uPointScale: gl.getUniformLocation(pointProgram, 'uPointScale')!,
 		meshes: [],
 		lineMeshes: [],
+		pointCloud: null,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -301,6 +355,39 @@ export function clearMeshes(state: GLState): void {
 		for (const b of m.buffers) gl.deleteBuffer(b);
 	}
 	state.lineMeshes = [];
+	if (state.pointCloud) {
+		gl.deleteVertexArray(state.pointCloud.vao);
+		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
+		state.pointCloud = null;
+	}
+}
+
+/** Replace the volumetric point cloud. positions: [x,y,z,...] in METERS,
+ *  scalars: 0..1 normalized field magnitude, one per point. */
+export function setPointCloud(state: GLState, positions: Float32Array, scalars: Float32Array): void {
+	const { gl } = state;
+	if (state.pointCloud) {
+		gl.deleteVertexArray(state.pointCloud.vao);
+		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
+	}
+	if (positions.length === 0) {
+		state.pointCloud = null;
+		return;
+	}
+	const vao = gl.createVertexArray()!;
+	gl.bindVertexArray(vao);
+	const posBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+	gl.enableVertexAttribArray(0);
+	gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+	const scaBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, scaBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, scalars, gl.STATIC_DRAW);
+	gl.enableVertexAttribArray(1);
+	gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 0, 0);
+	gl.bindVertexArray(null);
+	state.pointCloud = { vao, buffers: [posBuf, scaBuf], count: positions.length / 3 };
 }
 
 /** Add a triangle group with a single color. positions and normals must
@@ -454,6 +541,28 @@ export function render3D(
 			gl.bindVertexArray(lm.vao);
 			gl.drawArrays(gl.LINES, 0, lm.count);
 		}
+	}
+
+	// Point cloud pass (volumetric field) — additive blending so overlapping
+	// points accumulate brightness (cloud-like density visualization).
+	if (state.pointCloud && state.pointCloud.count > 0) {
+		gl.useProgram(state.pointProgram);
+		gl.uniformMatrix4fv(state.uPointMVP, false, vp);
+		gl.uniform1f(state.uPointZFlip, zFlip);
+		// Base point pixel size (relative to clip-space w). Tuned for typical
+		// 100µm RFIC structures viewed at fitCamera distance.
+		const dx = state.bbox.max[0] - state.bbox.min[0];
+		const dy = state.bbox.max[1] - state.bbox.min[1];
+		const xy = Math.max(dx, dy, 1e-9);
+		const point_scale = xy * 0.04;
+		gl.uniform1f(state.uPointScale, point_scale);
+		gl.depthMask(false);
+		gl.enable(gl.BLEND);
+		gl.blendFunc(gl.ONE, gl.ONE);     // additive
+		gl.bindVertexArray(state.pointCloud.vao);
+		gl.drawArrays(gl.POINTS, 0, state.pointCloud.count);
+		gl.disable(gl.BLEND);
+		gl.depthMask(true);
 	}
 	gl.bindVertexArray(null);
 }
