@@ -363,6 +363,78 @@ def via(
 
 
 @dataclass
+class TracePort:
+    """Result of `rfic.trace_port`: ground patch + port plate, ready to be wired
+    into the SimulationBuilder. Both top and bottom edges of the port plate
+    fully touch a PEC piece (the trace's bottom face above, the ground patch
+    below) so the lumped-port BC sees a clean voltage gap."""
+    trace_extension: "GeoObject"   # small pad welded onto the trace at port location
+    ground_pad: "GeoObject"
+    port_plate: "GeoObject"
+
+
+def trace_port(
+    g: "Geometry",
+    stack: Stack,
+    *,
+    layer: str,
+    position: tuple[float, float],
+    gnd_layer: str = "li1",
+    extension_size: float = 4e-6,
+    name: str = "port",
+    fragment_with: Iterable["GeoObject"] = (),
+) -> TracePort:
+    """Place a vertical lumped-port plate at a trace's edge with proper
+    PEC references on both ends.
+
+    Geometry:
+      1. A small extension pad on the trace's `layer` (e.g. met5) at `position`
+         — guarantees the port plate's TOP edge sits fully on PEC.
+      2. A ground pad on `gnd_layer` (e.g. li1) directly below — anchor for
+         the port plate's BOTTOM edge.
+      3. A vertical port plate spanning from gnd_layer top to trace_layer bottom.
+
+    Pass any volumes that the port should fragment with via `fragment_with` —
+    typically the oxide block and the trace volume (so all three become
+    conformal at the port boundary).
+    """
+    pdk_trace = stack.by_name(layer)
+    pdk_gnd = stack.by_name(gnd_layer)
+    z_trace = pdk_trace.z
+    z_gnd_top = pdk_gnd.z_top   # ground patch top z (where port plate's bottom edge lands)
+    cx, cy = position
+    half = extension_size / 2
+
+    # 1. Extension pad on the trace layer — must inherit the trace's `layer`
+    # name so the SimulationBuilder marks it PEC alongside the rest of the trace
+    extension = g.box(extension_size, extension_size, pdk_trace.thickness,
+                      position=(cx - half, cy - half, z_trace))
+    extension.name = layer
+
+    # 2. Ground pad
+    ground = g.xy_plate(extension_size, extension_size,
+                        position=(cx - half, cy - half, z_gnd_top))
+
+    # 3. Port plate — a 2D rectangle in the yz-plane at x=cx, spanning the gap
+    port_plate = g.plate(
+        p0=(cx, cy - half, z_gnd_top),
+        width=(0, extension_size, 0),
+        height=(0, 0, z_trace - z_gnd_top),
+    )
+    port_plate.name = name
+    ground.name = f"{name}_gnd"
+
+    # 4. Fragment with surrounding volumes so all interfaces are conformal.
+    # Always fragment ground+port with oxide at minimum.
+    if fragment_with:
+        first = list(fragment_with)[0]
+        rest = list(fragment_with)[1:] + [extension, ground, port_plate]
+        g.fragment(first, *rest)
+
+    return TracePort(trace_extension=extension, ground_pad=ground, port_plate=port_plate)
+
+
+@dataclass
 class GsgPort:
     signal_pad: "GeoObject"
     ground_pads: tuple["GeoObject", "GeoObject"]
@@ -442,6 +514,6 @@ def differential_port(
 
 __all__ = [
     "Stack", "PdkLayer", "LayerType",
-    "microstrip", "via", "gsg_port", "differential_port",
-    "GsgPort", "DifferentialPort",
+    "microstrip", "via", "trace_port", "gsg_port", "differential_port",
+    "TracePort", "GsgPort", "DifferentialPort",
 ]

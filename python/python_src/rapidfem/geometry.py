@@ -211,32 +211,66 @@ class GeoObject:
     def __init__(self, geometry: "Geometry", entity: _Entity):
         self._geometry = geometry
         self._entity = entity
+        # Note: `.faces` and `.edges` are computed on-demand (properties) so
+        # they always reflect the CURRENT gmsh topology. After a boolean op
+        # splits a face into pieces, accessing `obj.faces` re-discovers them
+        # all. Names set previously persist via the geometry's entity registry
+        # (matched by cog+bbox).
 
-        # Discover faces (dim=2) and edges (dim=1) of the parent entity.
-        # gmsh's getBoundary recursive=True returns vertices (lowest dim), not edges.
-        # We walk faces ourselves to find edges, deduping shared edges.
-        face_ents: list[_Entity] = []
-        edge_ents: list[_Entity] = []
-        seen_edge_tags: set[int] = set()
-        if entity.dim == 3:
-            for d, t in gmsh.model.getBoundary([(3, entity.tag)], oriented=False):
+    def _discover_subentities(self, target_dim: int) -> list[_Entity]:
+        """Re-query gmsh for the current sub-entities of dimension `target_dim`.
+        Existing entries in `self._geometry._entities` matching by (cog, bbox)
+        keep their name/material/maxh; new entries get fresh blank metadata."""
+        if self._entity.dim == 3 and target_dim == 2:
+            children = [(d, t) for d, t in
+                        gmsh.model.getBoundary([(3, self._entity.tag)], oriented=False)
+                        if d == 2]
+        elif self._entity.dim == 3 and target_dim == 1:
+            children = []
+            seen: set[int] = set()
+            for d, t in gmsh.model.getBoundary([(3, self._entity.tag)], oriented=False):
                 if d != 2:
                     continue
-                face_ents.append(_Entity.from_dimtag(d, t))
                 for d_e, t_e in gmsh.model.getBoundary([(2, t)], oriented=False):
-                    if d_e == 1 and t_e not in seen_edge_tags:
-                        seen_edge_tags.add(t_e)
-                        edge_ents.append(_Entity.from_dimtag(d_e, t_e))
-        elif entity.dim == 2:
-            for d, t in gmsh.model.getBoundary([(2, entity.tag)], oriented=False):
-                if d == 1 and t not in seen_edge_tags:
-                    seen_edge_tags.add(t)
-                    edge_ents.append(_Entity.from_dimtag(d, t))
+                    if d_e == 1 and t_e not in seen:
+                        seen.add(t_e)
+                        children.append((d_e, t_e))
+        elif self._entity.dim == 2 and target_dim == 1:
+            children = [(d, t) for d, t in
+                        gmsh.model.getBoundary([(2, self._entity.tag)], oriented=False)
+                        if d == 1]
+        else:
+            children = []
 
-        self.faces = EntityCollection(geometry, face_ents)
-        self.edges = EntityCollection(geometry, edge_ents)
-        for e in face_ents + edge_ents:
-            geometry._entities.append(e)
+        # Build entries, reusing existing _Entity records if cog+bbox matches
+        out: list[_Entity] = []
+        for d, t in children:
+            cog = tuple(gmsh.model.occ.getCenterOfMass(d, t))
+            bbox = tuple(gmsh.model.getBoundingBox(d, t))
+            existing = self._find_or_register_entity(d, t, cog, bbox)
+            out.append(existing)
+        return out
+
+    def _find_or_register_entity(self, dim, tag, cog, bbox) -> _Entity:
+        """Look up an existing _Entity in the geometry registry by (cog, bbox);
+        register a new one if not found. Updates the tag to current."""
+        for ent in self._geometry._entities:
+            if ent.dim != dim:
+                continue
+            if math.dist(ent.cog, cog) < _COG_TOL and _bbox_match(ent.bbox, bbox, _BBOX_TOL):
+                ent.tag = tag       # refresh tag (may have changed after fragment)
+                return ent
+        new_ent = _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)
+        self._geometry._entities.append(new_ent)
+        return new_ent
+
+    @property
+    def faces(self) -> EntityCollection:
+        return EntityCollection(self._geometry, self._discover_subentities(2))
+
+    @property
+    def edges(self) -> EntityCollection:
+        return EntityCollection(self._geometry, self._discover_subentities(1))
 
     @property
     def name(self) -> str | None:
@@ -293,6 +327,7 @@ class Geometry:
         bbox: tuple[float, float, float, float] | None = None,
         flatten: bool = True,
         merge: bool = True,
+        thin_conductors: bool = False,
     ) -> "Geometry":
         """Load a GDSII layout and extrude all matching polygons into 3D primitives.
 
@@ -312,6 +347,11 @@ class Geometry:
                 Set False only if your top cell has no references.
             merge: Merge co-layer polygons via gmsh fragment so adjacent traces
                 produce a conformal mesh (default True).
+            thin_conductors: If True, metal layers become 2D PEC plates at the
+                layer's bottom z (thin-conductor approximation, t << w). The
+                resulting plate carries the layer's name as a SURFACE physical
+                group, which is what the simulator's `.pec(...)` BC expects.
+                Recommended for RFIC-style metal with thicknesses ≤ wavelength/100.
         """
         try:
             import gdstk
@@ -363,15 +403,19 @@ class Geometry:
             pts_m = pts_raw * unit  # convert GDS coords → meters
             per_layer.setdefault(pdk_layer.name, []).append(pts_m)
 
-        # Extrude each polygon into a 3D solid at the layer's z with its thickness.
-        # Rectangular axis-aligned polygons take the fast addBox path;
-        # everything else builds a wire → plane surface → extrude.
+        # Build each polygon at its layer's z. With thin_conductors=True (or
+        # for non-metal types) we keep it as a 2D plate so PEC BC can attach
+        # to a SURFACE group; otherwise we extrude to a 3D solid.
         per_layer_objs: dict[str, list[GeoObject]] = {}
         for layer_name, polys in per_layer.items():
             pdk = stack.by_name(layer_name)
+            use_2d = thin_conductors and pdk.type == "metal"
             objs: list[GeoObject] = []
             for pts in polys:
-                obj = g._extrude_polygon(pts, z=pdk.z, thickness=pdk.thickness)
+                if use_2d:
+                    obj = g._plate_polygon(pts, z=pdk.z)
+                else:
+                    obj = g._extrude_polygon(pts, z=pdk.z, thickness=pdk.thickness)
                 obj.name = layer_name
                 objs.append(obj)
             per_layer_objs[layer_name] = objs
@@ -383,6 +427,44 @@ class Geometry:
                     g.fragment(objs[0], *objs[1:])
 
         return g
+
+    def _plate_polygon(self, pts: "np.ndarray", z: float) -> GeoObject:
+        """Create a 2D plane surface from a closed polygon at height z.
+
+        Used by `from_gds(thin_conductors=True)` so metals stay 2D and their
+        layer-name physical group lands on FACES (PEC-compatible).
+        """
+        import numpy as np
+        # Rectangle fast path
+        if pts.shape[0] in (4, 5):
+            p = pts[:4]
+            xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))
+            if len(xs) == 2 and len(ys) == 2:
+                tag = gmsh.model.occ.addRectangle(
+                    xs[0], ys[0], z, xs[1] - xs[0], ys[1] - ys[0]
+                )
+                return self._wrap_face(tag)
+        # General polygon
+        if np.allclose(pts[0], pts[-1]):
+            pts = pts[:-1]
+        tol = 1e-9
+        keep = [pts[0]]
+        for p in pts[1:]:
+            if np.linalg.norm(p - keep[-1]) > tol:
+                keep.append(p)
+        if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:
+            keep = keep[:-1]
+        pts = np.asarray(keep)
+        if len(pts) < 3:
+            raise ValueError(f"Polygon collapsed to {len(pts)} unique vertices")
+        pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]
+        line_tags = [
+            gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])
+            for i in range(len(pt_tags))
+        ]
+        loop = gmsh.model.occ.addCurveLoop(line_tags)
+        surf = gmsh.model.occ.addPlaneSurface([loop])
+        return self._wrap_face(surf)
 
     def _extrude_polygon(
         self,
@@ -412,6 +494,20 @@ class Geometry:
         # Drop duplicated last point (gdstk includes it sometimes)
         if np.allclose(pts[0], pts[-1]):
             pts = pts[:-1]
+        # Drop adjacent coincident vertices — gdstk boolean unions can leave
+        # them at shared corners and they'd collapse OCC line endpoints into a
+        # broken loop. Keep one of every coincident-pair (within ~1nm).
+        tol = 1e-9
+        keep = [pts[0]]
+        for p in pts[1:]:
+            if np.linalg.norm(p - keep[-1]) > tol:
+                keep.append(p)
+        # Also check wraparound (last vs first)
+        if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:
+            keep = keep[:-1]
+        pts = np.asarray(keep)
+        if len(pts) < 3:
+            raise ValueError(f"Polygon collapsed to {len(pts)} unique vertices")
         pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]
         line_tags = [
             gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])
