@@ -231,7 +231,8 @@
 		in_field_mode = useField;
 
 		if (showFaces) {
-			// 1) Named surface tris
+			// 1) Named surface tris (conductors/ports/gnd). In field mode we
+			//    keep these as faint silhouettes for spatial reference.
 			const by_surf = new Map<number, number[]>();
 			for (let i = 0; i < mesh.tri_phys.length; i++) {
 				const tag = mesh.tri_phys[i];
@@ -246,12 +247,15 @@
 				if (!kind) continue;
 				push_group(idx, kind, name, tag);
 			}
-			// 2) Implicit volume hulls
-			const vol_b = build_volume_boundaries(mesh);
-			for (const [vtag, idx] of vol_b.entries()) {
-				const name = mesh.phys_names.get(vtag) ?? '';
-				if (!name || name.startsWith('_mat_')) continue;
-				push_group(idx, 'dielectric', name, vtag);
+			// 2) Implicit volume hulls (substrate/oxide/air). Skipped in field
+			//    mode so the point cloud fills the volume unobstructed.
+			if (!useField) {
+				const vol_b = build_volume_boundaries(mesh);
+				for (const [vtag, idx] of vol_b.entries()) {
+					const name = mesh.phys_names.get(vtag) ?? '';
+					if (!name || name.startsWith('_mat_')) continue;
+					push_group(idx, 'dielectric', name, vtag);
+				}
 			}
 		}
 
@@ -277,10 +281,11 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
-		// Volumetric field: emit one additive-blended point per tet centroid,
-		// brightness/color modulated by log-normalized |E| at the centroid
-		// (averaged from the four tet vertices' nodal field).
+		// Volumetric field as an additive point cloud: emit several points per
+		// tet at random barycentric positions so the cloud densely fills the
+		// volume. Brightness/color = log-normalized |E| at the tet centroid.
 		if (useField && field) {
+			const SAMPLES_PER_TET = 12;
 			const ntets = mesh.tets.length / 4;
 			let max_v = 0;
 			const tet_field = new Float32Array(ntets);
@@ -294,24 +299,35 @@
 				if (f > max_v) max_v = f;
 			}
 			const log_max = Math.log10(max_v + 1e-30);
-			const log_floor = log_max - 4;          // 4 decades dynamic range
+			const log_floor = log_max - 4;
 			const positions: number[] = [];
 			const scalars: number[] = [];
 			for (let t = 0; t < ntets; t++) {
 				const f = tet_field[t];
 				if (f <= 0) continue;
 				const norm = Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)));
-				if (norm < 0.05) continue;            // skip near-empty regions
+				if (norm < 0.03) continue;
 				const v = mesh.tets;
-				let cx = 0, cy = 0, cz = 0;
-				for (let k = 0; k < 4; k++) {
-					const ni = v[t * 4 + k] * 3;
-					cx += mesh.nodes[ni];
-					cy += mesh.nodes[ni + 1];
-					cz += mesh.nodes[ni + 2];
+				const n0 = v[t * 4] * 3, n1 = v[t * 4 + 1] * 3,
+				      n2 = v[t * 4 + 2] * 3, n3 = v[t * 4 + 3] * 3;
+				const x0 = mesh.nodes[n0], y0 = mesh.nodes[n0 + 1], z0 = mesh.nodes[n0 + 2];
+				const x1 = mesh.nodes[n1], y1 = mesh.nodes[n1 + 1], z1 = mesh.nodes[n1 + 2];
+				const x2 = mesh.nodes[n2], y2 = mesh.nodes[n2 + 1], z2 = mesh.nodes[n2 + 2];
+				const x3 = mesh.nodes[n3], y3 = mesh.nodes[n3 + 1], z3 = mesh.nodes[n3 + 2];
+				for (let s = 0; s < SAMPLES_PER_TET; s++) {
+					// Uniform tetrahedron sampling via 4 sorted uniform reals
+					let r1 = Math.random(), r2 = Math.random(), r3 = Math.random();
+					if (r1 + r2 > 1) { r1 = 1 - r1; r2 = 1 - r2; }
+					if (r2 + r3 > 1) { const t1 = r3; r3 = 1 - r1 - r2; r2 = 1 - t1; }
+					else if (r1 + r2 + r3 > 1) { const t1 = r3; r3 = r1 + r2 + r3 - 1; r1 = 1 - r2 - t1; }
+					const r0 = 1 - r1 - r2 - r3;
+					positions.push(
+						r0 * x0 + r1 * x1 + r2 * x2 + r3 * x3,
+						r0 * y0 + r1 * y1 + r2 * y2 + r3 * y3,
+						r0 * z0 + r1 * z1 + r2 * z2 + r3 * z3
+					);
+					scalars.push(norm);
 				}
-				positions.push(cx / 4, cy / 4, cz / 4);
-				scalars.push(norm);
 			}
 			setPointCloud(gl_state, Float32Array.from(positions), Float32Array.from(scalars));
 		} else {

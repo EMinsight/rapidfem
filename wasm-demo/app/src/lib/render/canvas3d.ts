@@ -160,7 +160,7 @@ void main() {
 	gl_Position = uMVP * vec4(pos, 1.0);
 	vScalar = aScalar;
 	float w = max(gl_Position.w, 1e-6);
-	gl_PointSize = clamp(uPointScale / w * (0.6 + 0.8 * aScalar), 1.0, 64.0);
+	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * aScalar), 4.0, 96.0);
 }`;
 
 const POINT_FS = `#version 300 es
@@ -544,25 +544,28 @@ export function render3D(
 	}
 
 	// Point cloud pass (volumetric field) — additive blending so overlapping
-	// points accumulate brightness (cloud-like density visualization).
+	// points accumulate brightness. Depth test off so points behind solid
+	// conductor surfaces still contribute to the cloud (we want to see the
+	// whole volume, not only the front-facing slab).
 	if (state.pointCloud && state.pointCloud.count > 0) {
 		gl.useProgram(state.pointProgram);
 		gl.uniformMatrix4fv(state.uPointMVP, false, vp);
 		gl.uniform1f(state.uPointZFlip, zFlip);
-		// Base point pixel size (relative to clip-space w). Tuned for typical
-		// 100µm RFIC structures viewed at fitCamera distance.
 		const dx = state.bbox.max[0] - state.bbox.min[0];
 		const dy = state.bbox.max[1] - state.bbox.min[1];
 		const xy = Math.max(dx, dy, 1e-9);
-		const point_scale = xy * 0.04;
-		gl.uniform1f(state.uPointScale, point_scale);
+		// Base size in pixels at unit clip-w, scaled by scene XY extent.
+		// 0.4 makes individual sprites ~visible at default zoom.
+		gl.uniform1f(state.uPointScale, xy * 0.4);
+		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);
-		gl.blendFunc(gl.ONE, gl.ONE);     // additive
+		gl.blendFunc(gl.ONE, gl.ONE);
 		gl.bindVertexArray(state.pointCloud.vao);
 		gl.drawArrays(gl.POINTS, 0, state.pointCloud.count);
 		gl.disable(gl.BLEND);
 		gl.depthMask(true);
+		gl.enable(gl.DEPTH_TEST);
 	}
 	gl.bindVertexArray(null);
 }
