@@ -38,10 +38,11 @@ def make_spiral_gds(path, *, dout_um=130, n_turns=2, width_um=10, spacing_um=4):
 def build_spiral_demo(out_msh: Path, out_toml: Path,
                        freqs_hz=None, dout_um=80, n_turns=1):
     if freqs_hz is None:
-        # Sweep through the self-resonance. With L≈190pH, C≈28fF the SRF is
-        # around 70 GHz, so 1..100 GHz captures the inductive region, the
-        # resonance peak, and the capacitive tail beyond.
-        freqs_hz = [1e9, 5e9, 10e9, 20e9, 30e9, 40e9, 50e9, 60e9, 70e9, 80e9, 100e9]
+        # The naive LC estimate from the port-plate C overestimates SRF
+        # — the inductor's self-capacitance is much smaller. Sweep generously
+        # up to 250 GHz to catch the actual L_eq divergence.
+        freqs_hz = [1e9, 10e9, 30e9, 50e9, 80e9, 110e9,
+                    140e9, 170e9, 200e9, 230e9, 250e9]
     um = 1e-6
 
     with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
