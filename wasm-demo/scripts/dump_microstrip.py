@@ -44,6 +44,9 @@ def build_microstrip_demo(out_msh: Path, out_toml: Path,
         make_wire_gds(gds_path, length_um=length_um, width_um=width_um)
 
         stack = rfic.Stack.sky130()
+        # Thin substrate for WASM-friendly mesh (real Sky130 is 280um thick;
+        # 30um still gives the right lossy-ground reference behavior).
+        stack.substrate_thickness = 30e-6
         g = rapidfem.Geometry.from_gds(gds_path, stack=stack, merge=False,
                                         thin_conductors=True)
         wire = next(o for o in g._objects if o.dim == 2 and o._entity.name == "met5")
@@ -53,7 +56,7 @@ def build_microstrip_demo(out_msh: Path, out_toml: Path,
                                             fragment_existing=False)
         oxide, substrate = sub_objs["oxide"], sub_objs["substrate"]
 
-        air_h = 100 * um
+        air_h = 30 * um   # thin air for WASM mesh budget
         air = g.box(foot[0], foot[1], air_h,
                     position=(-foot[0] / 2, -foot[1] / 2, stack.top_z))
         air.material = "air"
@@ -92,12 +95,11 @@ def build_microstrip_demo(out_msh: Path, out_toml: Path,
             air.faces.where(lambda c, _, s=s, f=foot[0]: abs(c[0] - s * f / 2) < 1e-12).name = "abc"
             air.faces.where(lambda c, _, s=s, f=foot[1]: abs(c[1] - s * f / 2) < 1e-12).name = "abc"
 
-        # Coarser mesh than the validation example (was maxh=15um → 15k tets,
-        # ~500MB LU working set, OOM in WASM). 30um → ~3-4k tets, fits well
-        # under the WASM linear-memory ceiling.
+        # 15um maxh gives proper trace resolution; thin air/substrate keep
+        # total tet count tractable (~5-8k tets) for browser.
         builder = (
             rapidfem.SimulationBuilder()
-            .from_geometry(g, maxh=30 * um)
+            .from_geometry(g, maxh=15 * um)
             .frequencies(freqs_hz)
             .pec("met5", "gnd")
             .lumped_port("p1", direction=(0, 0, 1), z0=50.0)

@@ -47,6 +47,12 @@ def build_spiral_demo(out_msh: Path, out_toml: Path,
         geom = make_spiral_gds(gds_path, dout_um=dout_um, n_turns=n_turns,
                                 width_um=8, spacing_um=4)
         stack = rfic.Stack.sky130()
+        # Aggressively thin the substrate for the WASM demo. Real Sky130 wafer
+        # is 280um thick — fine native, but a 280um × 1.4·dout box meshed even
+        # at maxh=20um is hundreds of thousands of tets. A 30um substrate
+        # gives the right qualitative behavior (lossy ground reference) while
+        # keeping the FEM tractable in the browser.
+        stack.substrate_thickness = 30e-6
         g = rapidfem.Geometry.from_gds(gds_path, stack=stack, merge=False,
                                         thin_conductors=True)
         spiral = next(o for o in g._objects
@@ -57,7 +63,7 @@ def build_spiral_demo(out_msh: Path, out_toml: Path,
                                             fragment_existing=False)
         oxide, substrate = sub_objs["oxide"], sub_objs["substrate"]
 
-        air_h = 100 * um
+        air_h = 30 * um   # shrunk from 100um to keep tet count low
         air = g.box(foot[0], foot[1], air_h,
                     position=(-foot[0]/2, -foot[1]/2, stack.top_z))
         air.material = "air"
@@ -92,7 +98,7 @@ def build_spiral_demo(out_msh: Path, out_toml: Path,
 
         builder = (
             rapidfem.SimulationBuilder()
-            .from_geometry(g, maxh=35 * um)   # very coarse for WASM 4GB ceiling
+            .from_geometry(g, maxh=15 * um)   # finer now that air+substrate are thinner
             .frequencies(freqs_hz)
             .pec("met5", "p1_gnd", "p2_gnd")
             .lumped_port("p1", direction=(0, 0, 1), z0=50.0)
