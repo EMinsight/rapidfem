@@ -258,12 +258,9 @@ class SimulationBuilder:
 
     # ── Build ──────────────────────────────────────────────────────────────
 
-    def build(self) -> Simulation:
-        if self._mesh_bytes is None:
-            raise ValueError("call .mesh(...) or .from_geometry(...) before .build()")
+    def _make_config_toml(self) -> str:
         if not self._frequencies:
-            raise ValueError("call .frequencies(...) before .build()")
-
+            raise ValueError("call .frequencies(...) before .build()/.dump()")
         toml = ['[mesh]\nfile = "(in-memory)"\n']
         freqs_str = ", ".join(_f64(f) for f in self._frequencies)
         toml.append(f"[frequency]\nvalues = [{freqs_str}]\n")
@@ -275,9 +272,23 @@ class SimulationBuilder:
         else:
             toml.append("[pec]\ntags = []\n")
         toml.append(f"[output]\nz0 = {_f64(self._z0_ref)}\n")
+        return "\n".join(toml)
 
-        config_toml = "\n".join(toml)
-        return Simulation.from_bytes(self._mesh_bytes, config_toml)
+    def build(self) -> Simulation:
+        if self._mesh_bytes is None:
+            raise ValueError("call .mesh(...) or .from_geometry(...) before .build()")
+        return Simulation.from_bytes(self._mesh_bytes, self._make_config_toml())
+
+    def dump(self, mesh_path: str, config_path: str) -> None:
+        """Write the assembled mesh + TOML to disk. Use this to ship inputs
+        to the WASM demo (or any other consumer) without running the solver.
+        """
+        if self._mesh_bytes is None:
+            raise ValueError("call .mesh(...) or .from_geometry(...) before .dump()")
+        with open(mesh_path, "wb") as f:
+            f.write(self._mesh_bytes)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(self._make_config_toml())
 
     # ── Internals ──────────────────────────────────────────────────────────
 

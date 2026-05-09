@@ -1,0 +1,56 @@
+[mesh]
+file = "(in-memory)"
+
+[frequency]
+values = [500000000, 1000000000, 1500000000, 2000000000, 2500000000, 3000000000, 3500000000, 4000000000, 4500000000, 5000000000, 5500000000]
+
+[[ports]]
+type = "lumped"
+tag = 5
+z0 = 50
+power = 1
+direction = [0, 0, 1]
+width = 0
+height = 0
+
+[[ports]]
+type = "lumped"
+tag = 7
+z0 = 50
+power = 1
+direction = [0, 0, 1]
+width = 0
+height = 0
+
+[[ports]]
+type = "abc"
+tag = 8
+order = 1
+abctype = "B"
+
+[[materials]]
+volume_tag = 11
+er = 1
+ur = 1
+tand = 0
+conductivity = 0
+
+[[materials]]
+volume_tag = 9
+er = 11.9
+ur = 1
+tand = 0
+conductivity = 10
+
+[[materials]]
+volume_tag = 10
+er = 4.2
+ur = 1
+tand = 0
+conductivity = 0
+
+[pec]
+tags = [1, 4, 6]
+
+[output]
+z0 = 50

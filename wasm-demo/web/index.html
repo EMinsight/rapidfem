@@ -16,10 +16,16 @@
   </style>
 </head>
 <body>
-  <h1>rapidfem — WR-90 straight waveguide</h1>
-  <div class="sub">FEM-solved S-parameters across 9–11 GHz, computed in your browser via WebAssembly.</div>
+  <h1>rapidfem — in-browser FEM</h1>
+  <div class="sub">FEM-solved S-parameters computed entirely in your browser via WebAssembly. Pick an example and hit Run.</div>
 
-  <button id="run">Run sweep</button>
+  <label for="example">Example: </label>
+  <select id="example">
+    <option value="wr90">WR-90 waveguide (9–11 GHz)</option>
+    <option value="microstrip">Sky130 microstrip (1–6 GHz)</option>
+    <option value="spiral">Sky130 octagonal spiral inductor (0.5–5.5 GHz)</option>
+  </select>
+  <button id="run" style="margin-left: 0.5em;">Run sweep</button>
   <span id="status" style="margin-left: 1em;"></span>
 
   <canvas id="plot" width="720" height="320"></canvas>
@@ -78,17 +84,70 @@
       drawTrace(s11, "#c62828", "|S11|", padL + W - 120);
     };
 
+    const EXAMPLES = {
+      wr90: { msh: "./wr90_straight.msh", toml: "./wr90.toml",
+              label: "WR-90 waveguide", extractLC: false },
+      microstrip: { msh: "./microstrip.msh", toml: "./microstrip.toml",
+                    label: "Sky130 microstrip", extractLC: true },
+      spiral: { msh: "./spiral.msh", toml: "./spiral.toml",
+                label: "Sky130 spiral inductor", extractLC: true },
+    };
+
+    function inv2x2(m) {
+      // m is [[a,b],[c,d]] of complex {re,im}
+      const a = m[0][0], b = m[0][1], c = m[1][0], d = m[1][1];
+      const det = cMul(a, d); cSub(det, cMul(b, c));
+      const D = { re: a.re*d.re - a.im*d.im - (b.re*c.re - b.im*c.im),
+                  im: a.re*d.im + a.im*d.re - (b.re*c.im + b.im*c.re) };
+      const inv = (z) => {
+        const m2 = z.re*z.re + z.im*z.im;
+        return { re: z.re/m2, im: -z.im/m2 };
+      };
+      const Di = inv(D);
+      const neg = (z) => ({ re: -z.re, im: -z.im });
+      return [
+        [ cMul(d, Di), cMul(neg(b), Di) ],
+        [ cMul(neg(c), Di), cMul(a, Di) ],
+      ];
+    }
+    function cMul(a, b) { return { re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }; }
+    function cSub(a, b) { return { re: a.re-b.re, im: a.im-b.im }; }
+    function cAdd(a, b) { return { re: a.re+b.re, im: a.im+b.im }; }
+
+    // Z = sqrt(z0) (I + S) (I - S)^-1 sqrt(z0)
+    function sToZ(S, z0) {
+      const I = [[{re:1,im:0},{re:0,im:0}],[{re:0,im:0},{re:1,im:0}]];
+      const IpS = [[cAdd(I[0][0], S[0][0]), cAdd(I[0][1], S[0][1])],
+                   [cAdd(I[1][0], S[1][0]), cAdd(I[1][1], S[1][1])]];
+      const ImS = [[cSub(I[0][0], S[0][0]), cSub(I[0][1], S[0][1])],
+                   [cSub(I[1][0], S[1][0]), cSub(I[1][1], S[1][1])]];
+      const ImSinv = inv2x2(ImS);
+      const matMul2 = (A, B) => [
+        [ cAdd(cMul(A[0][0],B[0][0]), cMul(A[0][1],B[1][0])),
+          cAdd(cMul(A[0][0],B[0][1]), cMul(A[0][1],B[1][1])) ],
+        [ cAdd(cMul(A[1][0],B[0][0]), cMul(A[1][1],B[1][0])),
+          cAdd(cMul(A[1][0],B[0][1]), cMul(A[1][1],B[1][1])) ],
+      ];
+      const Z = matMul2(IpS, ImSinv);
+      return [
+        [{re:Z[0][0].re*z0, im:Z[0][0].im*z0}, {re:Z[0][1].re*z0, im:Z[0][1].im*z0}],
+        [{re:Z[1][0].re*z0, im:Z[1][0].im*z0}, {re:Z[1][1].re*z0, im:Z[1][1].im*z0}],
+      ];
+    }
+
     document.getElementById("run").addEventListener("click", async () => {
       const btn = document.getElementById("run");
       const status = document.getElementById("status");
+      const sel = document.getElementById("example").value;
+      const ex = EXAMPLES[sel];
       btn.disabled = true; status.textContent = "loading WASM…";
       try {
         await init();
-        status.textContent = "fetching mesh…";
-        const meshBytes = new Uint8Array(await (await fetch("./wr90_straight.msh")).arrayBuffer());
-        const configToml = await (await fetch("./wr90.toml")).text();
+        status.textContent = `fetching ${ex.label}…`;
+        const meshBytes = new Uint8Array(await (await fetch(ex.msh)).arrayBuffer());
+        const configToml = await (await fetch(ex.toml)).text();
 
-        status.textContent = "solving…";
+        status.textContent = "solving (this may take a few seconds)…";
         const t0 = performance.now();
         const result = run_sweep(meshBytes, configToml);
         const dt = ((performance.now() - t0) / 1000).toFixed(2);
@@ -98,19 +157,39 @@
         const stride = n_driven * n_driven * 2;
         const s11 = new Array(n_freq);
         const s21 = new Array(n_freq);
+        // Per-frequency 2x2 complex S-matrix (for L extraction)
+        const Smats = [];
         for (let k = 0; k < n_freq; k++) {
-          const re11 = result.sparams_flat[k * stride + 0];
-          const im11 = result.sparams_flat[k * stride + 1];
-          // Index of (obs=1, exc=0) in row-major [obs][exc]: 1*n_driven + 0 = n_driven
-          const re21 = result.sparams_flat[k * stride + 2 * n_driven];
-          const im21 = result.sparams_flat[k * stride + 2 * n_driven + 1];
-          s11[k] = Math.hypot(re11, im11);
-          s21[k] = Math.hypot(re21, im21);
+          const off = k * stride;
+          const get = (obs, exc) => ({
+            re: result.sparams_flat[off + 2*(obs*n_driven + exc)],
+            im: result.sparams_flat[off + 2*(obs*n_driven + exc) + 1],
+          });
+          const S = n_driven >= 2
+            ? [[get(0,0), get(0,1)], [get(1,0), get(1,1)]]
+            : null;
+          Smats.push(S);
+          s11[k] = Math.hypot(get(0,0).re, get(0,0).im);
+          s21[k] = n_driven >= 2 ? Math.hypot(get(1,0).re, get(1,0).im) : 0;
         }
 
         plotS(result.frequencies_hz, s11, s21);
-        log(`solved ${n_freq} frequencies in ${dt}s (FEM-side ${result.solve_time_s.toFixed(3)}s)`, "OK");
+        log(`[${ex.label}] solved ${n_freq} frequencies in ${dt}s (FEM-side ${result.solve_time_s.toFixed(3)}s)`, "OK");
         log(`max |S11| = ${Math.max(...s11).toExponential(3)}, min |S21| = ${Math.min(...s21).toFixed(4)}`);
+
+        if (ex.extractLC && n_driven >= 2 && Smats[0]) {
+          // Extract L from Y21 = inv(Z)[1][0]: L = 1 / (w·Im(Y21))
+          // Pick lowest frequency for cleanest L (least dispersive)
+          const k0 = 0;
+          const omega = 2 * Math.PI * result.frequencies_hz[k0];
+          const Z = sToZ(Smats[k0], 50.0);
+          const Y = inv2x2(Z);
+          const L_pH = 1e12 / (omega * Y[1][0].im);
+          const C_fF = 2e15 * (Y[0][0].im + Y[1][0].im) / omega;
+          log(`extracted at ${(result.frequencies_hz[k0]/1e9).toFixed(2)} GHz: ` +
+              `L = ${L_pH.toFixed(1)} pH, C_total = ${C_fF.toFixed(2)} fF`);
+        }
+
         status.innerHTML = '<span class="ok">done</span>';
       } catch (e) {
         log("ERROR: " + e, "err");
