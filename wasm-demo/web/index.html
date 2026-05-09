@@ -2,15 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>rapidfem — WR-90 Browser Demo</title>
+  <title>rapidfem — in-browser FEM</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2em auto; padding: 0 1em; color: #222; }
+    body { font-family: system-ui, sans-serif; max-width: 920px; margin: 2em auto; padding: 0 1em; color: #222; }
     h1 { font-size: 1.4em; margin-bottom: 0.2em; }
     .sub { color: #666; margin-bottom: 1.2em; }
     button { padding: 0.5em 1em; font-size: 1em; cursor: pointer; }
     button:disabled { cursor: progress; opacity: 0.6; }
-    canvas { display: block; border: 1px solid #ccc; margin-top: 1em; background: #fafafa; }
-    pre { background: #f3f3f3; padding: 0.6em 0.9em; font-size: 0.85em; overflow-x: auto; }
+    #plot_s, #plot_l { width: 100%; height: 320px; margin-top: 1em; }
+    pre { background: #f3f3f3; padding: 0.6em 0.9em; font-size: 0.85em; overflow-x: auto; white-space: pre-wrap; }
     .ok { color: #060; }
     .err { color: #a00; }
   </style>
@@ -28,19 +29,17 @@
   <button id="run" style="margin-left: 0.5em;">Run sweep</button>
   <span id="status" style="margin-left: 1em;"></span>
 
-  <canvas id="plot" width="720" height="320"></canvas>
+  <div id="plot_s"></div>
+  <div id="plot_l" style="display:none;"></div>
 
   <pre id="log"></pre>
 
   <script type="module">
   (async () => {
-    // Cache-bust the WASM glue + binary on every page load. Without this,
-    // browsers happily serve a stale .wasm even after a "hard" refresh.
     const BUILD = Date.now();
     const mod = await import(`../pkg/rapidfem_wasm.js?v=${BUILD}`);
     const init = mod.default;
     const run_sweep = mod.run_sweep;
-    // Ensure the actual .wasm binary is also fetched fresh.
     const WASM_URL = `../pkg/rapidfem_wasm_bg.wasm?v=${BUILD}`;
 
     const log = (msg, cls = "") => {
@@ -48,48 +47,51 @@
       el.textContent += (cls ? `[${cls}] ` : "") + msg + "\n";
     };
 
+    const fGHz = (freqs_hz) => freqs_hz.map(f => f / 1e9);
+
     const plotS = (freqs_hz, s11, s21) => {
-      const c = document.getElementById("plot");
-      const ctx = c.getContext("2d");
-      ctx.clearRect(0, 0, c.width, c.height);
+      const x = fGHz(freqs_hz);
+      Plotly.react("plot_s", [
+        { x, y: s11, mode: "lines+markers", name: "|S11|", line: { color: "#c62828" } },
+        { x, y: s21, mode: "lines+markers", name: "|S21|", line: { color: "#1565c0" } },
+      ], {
+        margin: { t: 20, l: 60, r: 20, b: 50 },
+        xaxis: { title: "Frequency [GHz]" },
+        yaxis: { title: "|S|", range: [0, 1.05] },
+        legend: { orientation: "h", y: 1.1 },
+      }, { displayModeBar: false, responsive: true });
+    };
 
-      const xMin = Math.min(...freqs_hz), xMax = Math.max(...freqs_hz);
-      const yMin = 0, yMax = 1.05;
-      const padL = 50, padR = 14, padT = 14, padB = 28;
-      const W = c.width - padL - padR, H = c.height - padT - padB;
-      const xT = f => padL + ((f - xMin) / (xMax - xMin)) * W;
-      const yT = v => padT + (1 - (v - yMin) / (yMax - yMin)) * H;
-
-      // axes + gridlines
-      ctx.strokeStyle = "#ddd";
-      ctx.lineWidth = 1;
-      for (let v = 0; v <= 1.0; v += 0.2) {
-        ctx.beginPath(); ctx.moveTo(padL, yT(v)); ctx.lineTo(padL + W, yT(v)); ctx.stroke();
-        ctx.fillStyle = "#666"; ctx.font = "11px sans-serif";
-        ctx.fillText(v.toFixed(1), 14, yT(v) + 4);
-      }
-      ctx.fillStyle = "#666";
-      for (let i = 0; i <= 4; i++) {
-        const f = xMin + ((xMax - xMin) * i) / 4;
-        ctx.fillText((f / 1e9).toFixed(2) + " GHz", xT(f) - 22, padT + H + 18);
-      }
-      ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
-      ctx.strokeRect(padL, padT, W, H);
-
-      const drawTrace = (vals, color, label, labelX) => {
-        ctx.strokeStyle = color; ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let i = 0; i < freqs_hz.length; i++) {
-          const x = xT(freqs_hz[i]), y = yT(vals[i]);
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        ctx.fillStyle = color; ctx.font = "13px sans-serif";
-        ctx.fillText(label, labelX, padT + 16);
+    const plotLeq = (freqs_hz, Leq_pH, fSRF) => {
+      const x = fGHz(freqs_hz);
+      const traces = [{
+        x, y: Leq_pH, mode: "lines+markers", name: "L_eq(f)",
+        line: { color: "#2e7d32" },
+      }];
+      const layout = {
+        margin: { t: 20, l: 70, r: 20, b: 50 },
+        xaxis: { title: "Frequency [GHz]" },
+        yaxis: { title: "L_eq [pH]", zeroline: true, zerolinewidth: 1, zerolinecolor: "#888" },
+        legend: { orientation: "h", y: 1.1 },
+        shapes: [],
+        annotations: [],
       };
+      if (fSRF != null) {
+        layout.shapes.push({
+          type: "line", x0: fSRF/1e9, x1: fSRF/1e9, y0: 0, y1: 1, yref: "paper",
+          line: { color: "#888", width: 1, dash: "dash" },
+        });
+        layout.annotations.push({
+          x: fSRF/1e9, y: 1, yref: "paper", text: `SRF ≈ ${(fSRF/1e9).toFixed(1)} GHz`,
+          showarrow: false, yshift: 10, xanchor: "left",
+        });
+      }
+      Plotly.react("plot_l", traces, layout, { displayModeBar: false, responsive: true });
+      document.getElementById("plot_l").style.display = "block";
+    };
 
-      drawTrace(s21, "#1565c0", "|S21|", padL + W - 56);
-      drawTrace(s11, "#c62828", "|S11|", padL + W - 120);
+    const hideLeq = () => {
+      document.getElementById("plot_l").style.display = "none";
     };
 
     const EXAMPLES = {
@@ -101,10 +103,12 @@
                 label: "Sky130 spiral inductor", extractLC: true },
     };
 
+    function cMul(a, b) { return { re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }; }
+    function cSub(a, b) { return { re: a.re-b.re, im: a.im-b.im }; }
+    function cAdd(a, b) { return { re: a.re+b.re, im: a.im+b.im }; }
+
     function inv2x2(m) {
-      // m is [[a,b],[c,d]] of complex {re,im}
       const a = m[0][0], b = m[0][1], c = m[1][0], d = m[1][1];
-      const det = cMul(a, d); cSub(det, cMul(b, c));
       const D = { re: a.re*d.re - a.im*d.im - (b.re*c.re - b.im*c.im),
                   im: a.re*d.im + a.im*d.re - (b.re*c.im + b.im*c.re) };
       const inv = (z) => {
@@ -118,11 +122,7 @@
         [ cMul(neg(c), Di), cMul(a, Di) ],
       ];
     }
-    function cMul(a, b) { return { re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }; }
-    function cSub(a, b) { return { re: a.re-b.re, im: a.im-b.im }; }
-    function cAdd(a, b) { return { re: a.re+b.re, im: a.im+b.im }; }
 
-    // Z = sqrt(z0) (I + S) (I - S)^-1 sqrt(z0)
     function sToZ(S, z0) {
       const I = [[{re:1,im:0},{re:0,im:0}],[{re:0,im:0},{re:1,im:0}]];
       const IpS = [[cAdd(I[0][0], S[0][0]), cAdd(I[0][1], S[0][1])],
@@ -165,7 +165,6 @@
         const stride = n_driven * n_driven * 2;
         const s11 = new Array(n_freq);
         const s21 = new Array(n_freq);
-        // Per-frequency 2x2 complex S-matrix (for L extraction)
         const Smats = [];
         for (let k = 0; k < n_freq; k++) {
           const off = k * stride;
@@ -186,10 +185,8 @@
         log(`max |S11| = ${Math.max(...s11).toExponential(3)}, min |S21| = ${Math.min(...s21).toFixed(4)}`);
 
         if (ex.extractLC && n_driven >= 2 && Smats[0]) {
-          // Equivalent series inductance vs frequency: L_eq(f) = 1/(w·Im(Y21)).
-          // The π-equivalent series-L diverges at the parallel L-C tank's SRF;
-          // that's the standard definition (Mohan/Yue: inductor SRF is where
-          // L_eq(f) → ∞, equivalently where Im(Y21) crosses zero).
+          // L_eq(f) = 1 / (ω · Im(Y21)). SRF is where L_eq diverges
+          // (equivalent: Im(Y21) crosses zero) — Mohan/Yue convention.
           const Leq_pH = new Array(n_freq);
           for (let k = 0; k < n_freq; k++) {
             const omega = 2 * Math.PI * result.frequencies_hz[k];
@@ -198,34 +195,33 @@
           }
           const Z0 = sToZ(Smats[0], 50.0);
           const Q0 = Z0[0][0].im / Z0[0][0].re;
-          const f0_label = (result.frequencies_hz[0]/1e9).toFixed(2);
-          log(`L_eq(${f0_label} GHz) = ${Leq_pH[0].toFixed(1)} pH, Q = ${Q0.toFixed(1)}`);
-          // SRF: the frequency where L_eq sign-flips (Im(Y21) zero crossing).
-          // Find first k where L_eq sign changes vs k=0.
+          const f0_lab = (result.frequencies_hz[0]/1e9).toFixed(2);
+          log(`L_eq(${f0_lab} GHz) = ${Leq_pH[0].toFixed(1)} pH, Q = ${Q0.toFixed(1)}`);
+
+          // Detect SRF via L_eq sign-flip
           const sign0 = Math.sign(Leq_pH[0]);
           let kSRF = -1;
           for (let k = 1; k < n_freq; k++) {
             if (Math.sign(Leq_pH[k]) !== sign0 && isFinite(Leq_pH[k])) { kSRF = k; break; }
           }
+          let fSRF = null;
           if (kSRF > 0) {
-            // Interp on Im(Y21) (which is monotonic-ish near zero) rather
-            // than on L_eq (which diverges).
             const f1 = result.frequencies_hz[kSRF - 1];
             const f2 = result.frequencies_hz[kSRF];
             const Y1 = inv2x2(sToZ(Smats[kSRF - 1], 50.0))[1][0].im;
             const Y2 = inv2x2(sToZ(Smats[kSRF], 50.0))[1][0].im;
-            const fSRF = f1 + (f2 - f1) * Y1 / (Y1 - Y2);
+            fSRF = f1 + (f2 - f1) * Y1 / (Y1 - Y2);
             log(`SRF ≈ ${(fSRF/1e9).toFixed(1)} GHz (where L_eq diverges)`);
           } else {
             log(`no SRF in sweep range`);
           }
-          // Tabulate L_eq across the sweep so the user can see the trend.
-          log(`L_eq(f) [pH]:`);
-          for (let k = 0; k < n_freq; k++) {
-            const f = (result.frequencies_hz[k]/1e9).toFixed(1).padStart(5);
-            const L = isFinite(Leq_pH[k]) ? Leq_pH[k].toFixed(1).padStart(8) : '   diverg';
-            log(`  ${f} GHz : ${L}`);
-          }
+
+          // Clip L_eq to a reasonable range for the plot — near SRF L_eq → ±∞
+          const cap = 5 * Math.max(...Leq_pH.filter(v => isFinite(v) && Math.abs(v) < 1e5).map(Math.abs));
+          const Lplot = Leq_pH.map(v => !isFinite(v) ? null : (Math.abs(v) > cap ? null : v));
+          plotLeq(result.frequencies_hz, Lplot, fSRF);
+        } else {
+          hideLeq();
         }
 
         status.innerHTML = '<span class="ok">done</span>';
