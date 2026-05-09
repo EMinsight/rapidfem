@@ -33,6 +33,10 @@
 	let active_field = $derived<Float32Array | null>(
 		field_results[field_freq_idx]?.fields[field_exc_idx] ?? null
 	);
+	// Volumetric point cloud density — points per simulation volume.
+	// 1 = sparse (~3k pts), 10 = dense (~500k pts). The MeshViewer scales
+	// per-tet sample count proportional to each tet's share of total volume.
+	let field_density = $state(5);
 
 	// Resizable sidebar
 	let sidebar_width = $state(280);
@@ -246,6 +250,10 @@
 								{/each}
 							</select>
 						</label>
+						<label>
+							density
+							<input type="range" min="1" max="10" step="1" bind:value={field_density} />
+						</label>
 					</div>
 				{/if}
 			</div>
@@ -258,6 +266,7 @@
 						mesh={mesh_data}
 						mode={display === 'field' ? 'field' : display}
 						field={display === 'field' ? active_field : null}
+						point_density={field_density}
 					/>
 				{/if}
 			</div>
@@ -397,12 +406,45 @@
 		letter-spacing: 0.5px;
 	}
 	.field-controls select {
-		background: var(--bg-inset);
+		appearance: none;
+		background: var(--input-bg);
 		border: 1px solid var(--input-border);
-		color: var(--text);
+		color: var(--text-muted);
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
-		padding: 2px 4px;
+		font-weight: 500;
+		padding: 4px 22px 4px 8px;
+		text-transform: none;
+		letter-spacing: 0;
+		cursor: pointer;
+		background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%237d7a85' d='M0 0L4 5L8 0Z'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 8px center;
+		background-size: 8px 5px;
+		transition: border-color var(--transition), color var(--transition);
+	}
+	.field-controls select:hover { border-color: var(--accent); color: var(--text); }
+	.field-controls select:focus { outline: none; border-color: var(--accent); }
+	.field-controls input[type='range'] {
+		appearance: none;
+		width: 100px;
+		height: 2px;
+		background: var(--input-border);
+		outline: none;
+	}
+	.field-controls input[type='range']::-webkit-slider-thumb {
+		appearance: none;
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		cursor: pointer;
+	}
+	.field-controls input[type='range']::-moz-range-thumb {
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		border: 0;
+		cursor: pointer;
 	}
 	.view-body {
 		flex: 1;

@@ -11,13 +11,15 @@
 	let {
 		mesh = null,
 		mode = 'geometry',
-		field = null
+		field = null,
+		point_density = 5
 	}: {
 		mesh?: MeshData | null;
 		mode?: 'geometry' | 'mesh' | 'both' | 'field';
-		/** Per-node scalar (e.g. |E| in V/m). Length must match mesh.n_nodes.
-		 *  Activates field-colormap rendering when set. */
 		field?: Float32Array | null;
+		/** Volumetric point-cloud density. 1 ≈ 3k pts total, 10 ≈ 500k.
+		 *  Each tet gets samples proportional to its share of total volume. */
+		point_density?: number;
 	} = $props();
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
@@ -282,17 +284,20 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
-		// Volumetric field point cloud: many random barycentric samples per
-		// tet, including weak-field tets (air) — log-normalized |E| over a
-		// generous 6-decade range so even faint regions register a non-zero
-		// scalar, which becomes visible via additive blending.
+		// Volumetric field point cloud: tets get samples proportional to their
+		// share of the total simulation volume, so a tet that's twice as big
+		// gets twice as many points. Density slider controls the total point
+		// budget. Log-normalized |E| over 6 decades so faint air regions
+		// still register a non-zero scalar.
 		if (useField && field) {
-			const SAMPLES_PER_TET = 40;
 			const DECADES = 6;
 			field_range = null;
 			const ntets = mesh.tets.length / 4;
-			let max_v = 0;
+			// Per-tet field magnitude (centroid-averaged) and signed volume.
 			const tet_field = new Float32Array(ntets);
+			const tet_vol = new Float64Array(ntets);
+			let max_v = 0;
+			let total_vol = 0;
 			for (let t = 0; t < ntets; t++) {
 				const v = mesh.tets;
 				const f = (
@@ -301,15 +306,45 @@
 				) / 4;
 				tet_field[t] = f;
 				if (f > max_v) max_v = f;
+				const n0 = v[t * 4] * 3, n1 = v[t * 4 + 1] * 3,
+				      n2 = v[t * 4 + 2] * 3, n3 = v[t * 4 + 3] * 3;
+				const ax = mesh.nodes[n0 + 0], ay = mesh.nodes[n0 + 1], az = mesh.nodes[n0 + 2];
+				const e1x = mesh.nodes[n1 + 0] - ax, e1y = mesh.nodes[n1 + 1] - ay, e1z = mesh.nodes[n1 + 2] - az;
+				const e2x = mesh.nodes[n2 + 0] - ax, e2y = mesh.nodes[n2 + 1] - ay, e2z = mesh.nodes[n2 + 2] - az;
+				const e3x = mesh.nodes[n3 + 0] - ax, e3y = mesh.nodes[n3 + 1] - ay, e3z = mesh.nodes[n3 + 2] - az;
+				const det = e1x * (e2y * e3z - e2z * e3y) - e1y * (e2x * e3z - e2z * e3x) + e1z * (e2x * e3y - e2y * e3x);
+				const vol = Math.abs(det) / 6;
+				tet_vol[t] = vol;
+				total_vol += vol;
 			}
 			const log_max = Math.log10(max_v + 1e-30);
 			const log_floor = log_max - DECADES;
 			field_range = { min: Math.pow(10, log_floor), max: max_v, decades: DECADES };
-			const total_pts = ntets * SAMPLES_PER_TET;
-			const positions = new Float32Array(total_pts * 3);
-			const scalars = new Float32Array(total_pts);
+
+			// Point budget: density 1 → 3k pts, density 10 → 500k pts (log-ish ramp)
+			const target_total = Math.round(3000 * Math.pow(500000 / 3000, (point_density - 1) / 9));
+			const points_per_vol = total_vol > 0 ? target_total / total_vol : 0;
+
+			// First pass: integer samples per tet using stochastic rounding so
+			// fractional remainders accumulate over the mesh and we hit the
+			// target_total in expectation.
+			const samples = new Int32Array(ntets);
+			let n_total = 0;
+			for (let t = 0; t < ntets; t++) {
+				const expected = points_per_vol * tet_vol[t];
+				const base = Math.floor(expected);
+				const frac = expected - base;
+				const n = base + (Math.random() < frac ? 1 : 0);
+				samples[t] = n;
+				n_total += n;
+			}
+
+			const positions = new Float32Array(n_total * 3);
+			const scalars = new Float32Array(n_total);
 			let p = 0;
 			for (let t = 0; t < ntets; t++) {
+				const n = samples[t];
+				if (n === 0) continue;
 				const f = tet_field[t];
 				const norm = f > 0
 					? Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)))
@@ -321,8 +356,7 @@
 				const x1 = mesh.nodes[n1], y1 = mesh.nodes[n1 + 1], z1 = mesh.nodes[n1 + 2];
 				const x2 = mesh.nodes[n2], y2 = mesh.nodes[n2 + 1], z2 = mesh.nodes[n2 + 2];
 				const x3 = mesh.nodes[n3], y3 = mesh.nodes[n3 + 1], z3 = mesh.nodes[n3 + 2];
-				for (let s = 0; s < SAMPLES_PER_TET; s++) {
-					// Uniform tetrahedron sampling
+				for (let s = 0; s < n; s++) {
 					let r1 = Math.random(), r2 = Math.random(), r3 = Math.random();
 					if (r1 + r2 > 1) { r1 = 1 - r1; r2 = 1 - r2; }
 					if (r2 + r3 > 1) { const t1 = r3; r3 = 1 - r1 - r2; r2 = 1 - t1; }
@@ -526,9 +560,9 @@
 		};
 	});
 
-	// React to mesh / mode / field changes
+	// React to mesh / mode / field / density changes
 	$effect(() => {
-		mesh; mode; field;
+		mesh; mode; field; point_density;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
 		render_frame();
