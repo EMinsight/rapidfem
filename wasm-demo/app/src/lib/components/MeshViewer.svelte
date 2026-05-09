@@ -212,22 +212,68 @@
 		geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
 		geom.computeVertexNormals();
 
-		const mat = new THREE.MeshStandardMaterial({
-			color: new THREE.Color(style.color),
-			transparent: style.opacity < 1,
-			opacity: style.opacity,
-			roughness: kind === 'conductor' ? 0.35 : 0.6,
-			metalness: kind === 'conductor' ? 0.6 : 0.05,
-			side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
-			depthWrite: style.depth_write,
-			polygonOffset: kind === 'conductor' || kind === 'port' || kind === 'gnd',
-			polygonOffsetFactor: -2,
-			polygonOffsetUnits: -2
-		});
+		const is_metal = kind === 'conductor' || kind === 'gnd';
+		const mat = is_metal
+			? new THREE.MeshPhysicalMaterial({
+				color: new THREE.Color(style.color),
+				transparent: style.opacity < 1,
+				opacity: style.opacity,
+				roughness: 0.28,
+				metalness: 0.85,
+				clearcoat: 0.4,
+				clearcoatRoughness: 0.25,
+				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
+				depthWrite: style.depth_write,
+				polygonOffset: true,
+				polygonOffsetFactor: -2,
+				polygonOffsetUnits: -2
+			})
+			: new THREE.MeshStandardMaterial({
+				color: new THREE.Color(style.color),
+				transparent: style.opacity < 1,
+				opacity: style.opacity,
+				roughness: kind === 'port' ? 0.5 : 0.85,
+				metalness: 0.0,
+				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
+				depthWrite: style.depth_write,
+				polygonOffset: kind === 'port',
+				polygonOffsetFactor: -2,
+				polygonOffsetUnits: -2
+			});
 		const mesh3 = new THREE.Mesh(geom, mat);
 		mesh3.renderOrder = style.render_order;
 		mesh3.userData = { tag, name, kind };
+		// Conductors and gnd cast shadows; dielectric volumes only receive.
+		mesh3.castShadow = kind === 'conductor' || kind === 'gnd' || kind === 'port';
+		mesh3.receiveShadow = kind === 'dielectric' || kind === 'gnd';
 		return mesh3;
+	}
+
+	function update_shadow_camera() {
+		if (!scene) return;
+		const dir_light = scene.children.find(
+			(c) => c instanceof THREE.DirectionalLight && (c as THREE.DirectionalLight).castShadow
+		) as THREE.DirectionalLight | undefined;
+		if (!dir_light || !mesh) return;
+		const dx = mesh.bbox.max[0] - mesh.bbox.min[0];
+		const dy = mesh.bbox.max[1] - mesh.bbox.min[1];
+		const dz = mesh.bbox.max[2] - mesh.bbox.min[2];
+		const r = 0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz);
+		const cx = (mesh.bbox.min[0] + mesh.bbox.max[0]) / 2;
+		const cy = (mesh.bbox.min[1] + mesh.bbox.max[1]) / 2;
+		const cz = (mesh.bbox.min[2] + mesh.bbox.max[2]) / 2;
+		// Place directional light "sun" at distance ~5r from scene center,
+		// shining roughly from upper-right.
+		const sun_dist = r * 5;
+		dir_light.position.set(cx + r * 1.2, cy + r * 1.0, cz + r * 1.5).normalize().multiplyScalar(sun_dist).add(new THREE.Vector3(cx, cy, cz));
+		dir_light.target.position.set(cx, cy, cz);
+		dir_light.target.updateMatrixWorld();
+		const cam = dir_light.shadow.camera as THREE.OrthographicCamera;
+		cam.left = -r * 1.2; cam.right = r * 1.2;
+		cam.top = r * 1.2; cam.bottom = -r * 1.2;
+		cam.near = sun_dist - r * 2;
+		cam.far = sun_dist + r * 2;
+		cam.updateProjectionMatrix();
 	}
 
 	function build_wireframe(m: MeshData) {
@@ -263,11 +309,23 @@
 		scene = new THREE.Scene();
 		scene.background = new THREE.Color(palette.bgInset);
 
-		camera = new THREE.PerspectiveCamera(40, 1, 1e-9, 1);
+		// FOV=30° matches rapidpassives canvas3d, gives a more orthographic feel
+		camera = new THREE.PerspectiveCamera(30, 1, 1e-9, 1);
 		camera.up.set(0, 0, 1);
 
-		renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+		renderer = new THREE.WebGLRenderer({
+			antialias: true,
+			preserveDrawingBuffer: true,
+			alpha: true,
+			powerPreference: 'high-performance'
+		});
 		renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+		// ACES Filmic tone mapping for nicer highlights on metals / dielectrics
+		renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		renderer.toneMappingExposure = 1.0;
+		// Soft shadows
+		renderer.shadowMap.enabled = true;
+		renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 		canvas_el = renderer.domElement;
 		container.appendChild(canvas_el);
 		canvas_el.addEventListener('pointermove', on_pointer_move);
@@ -276,14 +334,45 @@
 		controls.enableDamping = true;
 		controls.dampingFactor = 0.08;
 
-		const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+		// Procedural studio-like environment for reflections on metal surfaces.
+		// PMREMGenerator turns a low-res equirectangular gradient into a usable env map.
+		const pmrem = new THREE.PMREMGenerator(renderer);
+		const env_scene = new THREE.Scene();
+		// 4 colored "lights" arranged around the origin to give metal nice anisotropic
+		// reflections instead of mirror-perfect highlights.
+		const make_panel = (color: number, x: number, y: number, z: number) => {
+			const m = new THREE.Mesh(
+				new THREE.PlaneGeometry(2, 2),
+				new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+			);
+			m.position.set(x, y, z);
+			m.lookAt(0, 0, 0);
+			return m;
+		};
+		env_scene.add(make_panel(0x444450, 1, 0, 0));
+		env_scene.add(make_panel(0x2a2a32, -1, 0, 0));
+		env_scene.add(make_panel(0x383840, 0, 1, 0));
+		env_scene.add(make_panel(0x202028, 0, -1, 0));
+		env_scene.add(make_panel(0x55555c, 0, 0, 1));   // bright top
+		env_scene.add(make_panel(0x18181d, 0, 0, -1));  // dark bottom
+		const env_target = pmrem.fromScene(env_scene, 0.04);
+		scene.environment = env_target.texture;
+		pmrem.dispose();
+
+		const ambient = new THREE.AmbientLight(0xffffff, 0.35);
 		scene.add(ambient);
-		const dir1 = new THREE.DirectionalLight(0xffffff, 0.7);
-		dir1.position.set(1, 1, 1);
+		const dir1 = new THREE.DirectionalLight(0xffffff, 1.1);
+		dir1.position.set(1, 1, 1.5);
+		dir1.castShadow = true;
+		dir1.shadow.mapSize.set(1024, 1024);
+		dir1.shadow.bias = -0.0005;
 		scene.add(dir1);
-		const dir2 = new THREE.DirectionalLight(0xffffff, 0.35);
+		const dir2 = new THREE.DirectionalLight(0x9ab5cc, 0.45);
 		dir2.position.set(-1, -0.5, 0.7);
 		scene.add(dir2);
+		const dir3 = new THREE.DirectionalLight(0xffd1a8, 0.25);
+		dir3.position.set(0, -1, -0.3);
+		scene.add(dir3);
 
 		resize_observer = new ResizeObserver(handle_resize);
 		resize_observer.observe(container);
@@ -329,35 +418,37 @@
 
 	function fit_camera(m: MeshData) {
 		if (!camera || !controls) return;
-		// Defer if canvas hasn't been sized yet (aspect would be invalid).
 		if (!camera.aspect || !isFinite(camera.aspect) || camera.aspect <= 0) {
 			requestAnimationFrame(() => fit_camera(m));
 			return;
 		}
-		// Use the FULL mesh bbox so everything visible fits.
+		// Match rapidpassives' canvas3d fitCamera exactly:
+		//   theta=phi=π/4 iso view, FOV=30°, distance from XY extent only (the
+		//   stack is wide-and-flat so XY dominates, and z can be small/negative).
 		const [xmin, ymin, zmin] = m.bbox.min;
 		const [xmax, ymax, zmax] = m.bbox.max;
 		const cx = (xmin + xmax) / 2, cy = (ymin + ymax) / 2, cz = (zmin + zmax) / 2;
-		const dx = xmax - xmin, dy = ymax - ymin, dz = zmax - zmin;
-		// Bounding-sphere radius (largest distance from center to any bbox corner)
-		const radius = Math.max(0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-9);
+		const dx = xmax - xmin, dy = ymax - ymin;
+		const xy_extent = Math.max(dx, dy, 1e-9);
+		const half_fov = (camera.fov * Math.PI) / 180 / 2;   // already 30°/2 = 15°
+		const distance = (xy_extent / 2) / Math.tan(half_fov) * 1.1;   // 10% margin
 
-		// Distance so the bounding sphere fits inside the smaller of horizontal/vertical FOV.
-		const half_fov_v = (camera.fov * Math.PI) / 180 / 2;
-		const half_fov_h = Math.atan(Math.tan(half_fov_v) * camera.aspect);
-		const half_fov = Math.min(half_fov_v, half_fov_h);
-		const distance = radius / Math.sin(half_fov) * 1.1;   // 10% margin
+		const theta = Math.PI / 4, phi = Math.PI / 4;
+		const cp = Math.cos(phi);
+		const ex = cx + distance * cp * Math.sin(theta);
+		const ey = cy + distance * cp * Math.cos(theta);
+		const ez = cz + distance * Math.sin(phi) * z_flip;
 
-		// Iso view from upper-front-right
-		const dir = new THREE.Vector3(1, -1, 0.7).normalize();
 		controls.target.set(cx, cy, cz);
-		camera.position.set(cx + dir.x * distance, cy + dir.y * distance, cz + dir.z * distance);
+		camera.position.set(ex, ey, ez);
 		camera.up.set(0, 0, z_flip);
 		camera.lookAt(cx, cy, cz);
 
-		// Generous near/far around the bounding sphere
+		// Near/far around full bounding sphere so substrate/air don't get clipped.
+		const dz_full = m.bbox.max[2] - m.bbox.min[2];
+		const radius3 = 0.5 * Math.sqrt(dx * dx + dy * dy + dz_full * dz_full);
 		camera.near = Math.max(distance * 1e-3, 1e-9);
-		camera.far = distance * 200;
+		camera.far = (distance + radius3) * 4;
 		camera.updateProjectionMatrix();
 		controls.update();
 	}
@@ -392,6 +483,7 @@
 			scene.add(wire_lines);
 		}
 		fit_camera(mesh);
+		update_shadow_camera();
 	}
 
 	$effect(() => {
