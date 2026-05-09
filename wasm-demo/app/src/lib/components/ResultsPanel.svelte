@@ -165,25 +165,20 @@
 			});
 		}
 
-		const grid = el.querySelector('.plot-grid')!;
-		// Remove plots that no longer apply
-		const wantIds = new Set(plots.map((p) => p.id));
-		for (const child of Array.from(grid.children)) {
-			if (!wantIds.has(child.id)) grid.removeChild(child);
-		}
-
-		for (const p of plots) {
-			let div = grid.querySelector(`#${p.id}`) as HTMLDivElement;
-			if (!div) {
-				div = document.createElement('div');
-				div.id = p.id;
-				grid.appendChild(div);
+		const want = new Map(plots.map((p) => [p.id, p]));
+		for (const id of ['p-smag', 'p-sph', 'p-leq', 'p-q']) {
+			const div = el.querySelector(`#${id}`) as HTMLDivElement | null;
+			if (!div) continue;
+			const p = want.get(id);
+			if (p) {
+				P.react(div, p.data, { ...base, yaxis: p.yaxis, hovermode: 'closest', ...(p.layout || {}) }, cfg);
+			} else {
+				P.purge(div);
 			}
-			P.react(div, p.data, { ...base, yaxis: p.yaxis, hovermode: 'closest', ...(p.layout || {}) }, cfg);
 		}
 
 		requestAnimationFrame(() => {
-			const divs = grid.querySelectorAll(':scope > div');
+			const divs = el.querySelectorAll('.plot-cell');
 			for (const div of divs) P.Plots?.resize(div);
 		});
 	}
@@ -191,7 +186,18 @@
 
 {#if freqs.length > 0}
 	<div class="results" bind:this={container}>
-		<div class="plot-grid"></div>
+		<div class="plot-grid">
+			<div class="plot-col">
+				<div id="p-smag" class="plot-cell"></div>
+				<div id="p-sph" class="plot-cell"></div>
+			</div>
+			{#if extract_l}
+				<div class="plot-col">
+					<div id="p-leq" class="plot-cell"></div>
+					<div id="p-q" class="plot-cell"></div>
+				</div>
+			{/if}
+		</div>
 	</div>
 {:else}
 	<div class="no-result">Run sweep to see results</div>
@@ -200,16 +206,28 @@
 <style>
 	.results {
 		height: 100%;
-		overflow: auto;
 		background: var(--bg-surface);
-		padding: 8px;
+		padding: 6px;
 	}
 	.plot-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-		grid-auto-rows: minmax(180px, 1fr);
-		gap: 4px;
-		min-height: 100%;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		height: 100%;
+	}
+	.plot-col {
+		flex: 1 1 380px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+	.plot-cell {
+		flex: 1 1 0;
+		min-height: 240px;
+		min-width: 0;
+		background: var(--bg-panel);
+		border: 1px solid var(--border-subtle);
 	}
 	.no-result {
 		padding: 24px;
