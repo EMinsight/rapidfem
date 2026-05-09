@@ -23,50 +23,100 @@
 	let wire_lines: THREE.LineSegments | null = null;
 	let raf_id: number | null = null;
 
-	function color_for_tag(tag: number, _name: string): THREE.Color {
-		const c = plotColors.cycle[tag % plotColors.cycle.length];
-		return new THREE.Color(c);
+	type TagKind = 'dielectric' | 'conductor' | 'port' | 'gnd' | 'other';
+	function classify(name: string): TagKind {
+		if (name === 'substrate' || name === 'oxide' || name === 'air') return 'dielectric';
+		if (name.endsWith('_gnd') || name === 'gnd') return 'gnd';
+		if (name === 'p1' || name === 'p2' || /^p\d+$/.test(name)) return 'port';
+		// Anything else that's been registered as a face physical group is a
+		// conductor (e.g. met5, met4, li1, "wire_pec" from manual examples).
+		return 'conductor';
+	}
+
+	function style_for(kind: TagKind, tag: number): {
+		color: string;
+		opacity: number;
+		render_order: number;
+		double_side: boolean;
+		depth_write: boolean;
+	} {
+		switch (kind) {
+			case 'dielectric':
+				// Pastel translucent, render first, behind everything else.
+				return {
+					color:
+						{ substrate: '#4a9ec2', oxide: '#7b5e8a', air: '#3a3a44' }[
+							{ 0: 'substrate' }[tag] ?? ''
+						] ?? '#5a6470',
+					opacity: 0.08,
+					render_order: 0,
+					double_side: false,
+					depth_write: false
+				};
+			case 'gnd':
+				return { color: '#4a9ec2', opacity: 0.9, render_order: 1, double_side: true, depth_write: true };
+			case 'conductor':
+				return { color: '#e8944a', opacity: 1.0, render_order: 2, double_side: true, depth_write: true };
+			case 'port':
+				return { color: '#d9513c', opacity: 0.85, render_order: 3, double_side: true, depth_write: false };
+			default:
+				return { color: '#7d7a85', opacity: 0.5, render_order: 1, double_side: true, depth_write: true };
+		}
+	}
+
+	/** Custom dielectric color by name (substrate=blue, oxide=purple, air=grey). */
+	function dielectric_color(name: string): string {
+		if (name === 'substrate') return '#4a9ec2';
+		if (name === 'oxide') return '#7b5e8a';
+		if (name === 'air') return '#5a6470';
+		return '#5a6470';
 	}
 
 	/** Build per-tag THREE.Mesh objects from the surface triangles. */
 	function build_geometry(m: MeshData) {
-		// Group triangles by their physical tag
 		const by_tag = new Map<number, number[]>();
 		const ntri = m.tri_phys.length;
 		for (let i = 0; i < ntri; i++) {
 			const tag = m.tri_phys[i];
 			let arr = by_tag.get(tag);
-			if (!arr) {
-				arr = [];
-				by_tag.set(tag, arr);
-			}
+			if (!arr) { arr = []; by_tag.set(tag, arr); }
 			arr.push(m.tris[i * 3], m.tris[i * 3 + 1], m.tris[i * 3 + 2]);
 		}
 
 		const meshes: THREE.Mesh[] = [];
 		for (const [tag, idx] of by_tag.entries()) {
 			const name = m.phys_names.get(tag) ?? `tag_${tag}`;
-			// Skip ABCs and material-only volume groups in surface viz
 			if (name === 'abc' || name.startsWith('_mat_')) continue;
+			const kind = classify(name);
+			const style = style_for(kind, tag);
+			if (kind === 'dielectric') style.color = dielectric_color(name);
+
 			const geom = new THREE.BufferGeometry();
 			geom.setAttribute('position', new THREE.BufferAttribute(m.nodes, 3));
 			geom.setIndex(new THREE.Uint32BufferAttribute(idx, 1));
 			geom.computeVertexNormals();
-			const color = color_for_tag(tag, name);
-			const isPort = name === 'p1' || name === 'p2' || name.endsWith('_gnd');
+
 			const mat = new THREE.MeshStandardMaterial({
-				color,
-				transparent: true,
-				opacity: isPort ? 0.6 : 0.85,
-				roughness: 0.55,
-				metalness: 0.1,
-				side: THREE.DoubleSide,
-				depthWrite: !isPort
+				color: new THREE.Color(style.color),
+				transparent: style.opacity < 1,
+				opacity: style.opacity,
+				roughness: kind === 'conductor' ? 0.35 : 0.6,
+				metalness: kind === 'conductor' ? 0.6 : 0.05,
+				side: style.double_side ? THREE.DoubleSide : THREE.FrontSide,
+				depthWrite: style.depth_write,
+				// Push 2D conductor plates slightly toward the camera so they
+				// don't z-fight with the (coplanar) interior face of the oxide box
+				polygonOffset: kind === 'conductor' || kind === 'port' || kind === 'gnd',
+				polygonOffsetFactor: -2,
+				polygonOffsetUnits: -2
 			});
 			const mesh3 = new THREE.Mesh(geom, mat);
-			mesh3.userData = { tag, name };
+			mesh3.renderOrder = style.render_order;
+			mesh3.userData = { tag, name, kind };
 			meshes.push(mesh3);
 		}
+		// Sort so dielectric draws first → conductors → ports
+		meshes.sort((a, b) => a.renderOrder - b.renderOrder);
 		return meshes;
 	}
 
@@ -147,17 +197,41 @@
 
 	function fit_camera(m: MeshData) {
 		if (!camera || !controls) return;
-		const cx = (m.bbox.min[0] + m.bbox.max[0]) / 2;
-		const cy = (m.bbox.min[1] + m.bbox.max[1]) / 2;
-		const cz = (m.bbox.min[2] + m.bbox.max[2]) / 2;
-		const dx = m.bbox.max[0] - m.bbox.min[0];
-		const dy = m.bbox.max[1] - m.bbox.min[1];
-		const dz = m.bbox.max[2] - m.bbox.min[2];
-		const radius = 0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz);
+		// Compute bbox from interesting faces only (conductors + ports + gnd).
+		// Falls back to full mesh bbox if there are no such faces.
+		let xmin = Infinity, ymin = Infinity, zmin = Infinity;
+		let xmax = -Infinity, ymax = -Infinity, zmax = -Infinity;
+		let have = false;
+		const ntri = m.tri_phys.length;
+		for (let i = 0; i < ntri; i++) {
+			const name = m.phys_names.get(m.tri_phys[i]) ?? '';
+			const kind = classify(name);
+			if (kind === 'dielectric' || name === 'abc' || name.startsWith('_mat_')) continue;
+			have = true;
+			for (let k = 0; k < 3; k++) {
+				const ni = m.tris[i * 3 + k] * 3;
+				const x = m.nodes[ni], y = m.nodes[ni + 1], z = m.nodes[ni + 2];
+				if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+				if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+				if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+			}
+		}
+		if (!have) {
+			[xmin, ymin, zmin] = m.bbox.min;
+			[xmax, ymax, zmax] = m.bbox.max;
+		}
+		const cx = (xmin + xmax) / 2, cy = (ymin + ymax) / 2, cz = (zmin + zmax) / 2;
+		const dx = xmax - xmin, dy = ymax - ymin, dz = zmax - zmin;
+		const radius = Math.max(0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-9);
 		controls.target.set(cx, cy, cz);
 		camera.position.set(cx + radius * 1.6, cy - radius * 1.6, cz + radius * 1.2);
-		camera.near = radius * 1e-3;
-		camera.far = radius * 100;
+		// Use the FULL mesh bbox to size the near/far so dielectric volumes stay visible
+		const fullDx = m.bbox.max[0] - m.bbox.min[0];
+		const fullDy = m.bbox.max[1] - m.bbox.min[1];
+		const fullDz = m.bbox.max[2] - m.bbox.min[2];
+		const fullRadius = 0.5 * Math.sqrt(fullDx * fullDx + fullDy * fullDy + fullDz * fullDz);
+		camera.near = Math.max(fullRadius * 1e-4, 1e-9);
+		camera.far = fullRadius * 200;
 		camera.updateProjectionMatrix();
 		controls.update();
 	}
