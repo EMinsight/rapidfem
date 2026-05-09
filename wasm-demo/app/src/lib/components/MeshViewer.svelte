@@ -222,9 +222,12 @@
 		if (!gl_state || !mesh) return;
 		clearMeshes(gl_state);
 
-		const showFaces = mode === 'geometry' || mode === 'both' || mode === 'field';
-		const showWire = mode === 'mesh' || mode === 'both';
+		// Field mode: hide solid surfaces, show wireframe only — point cloud
+		// fills the volume against a clean mesh skeleton instead of being
+		// occluded by the geometry.
 		const useField = mode === 'field' && field != null;
+		const showFaces = mode === 'geometry' || mode === 'both';
+		const showWire = mode === 'mesh' || mode === 'both' || useField;
 
 		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
 		field_norm = null;
@@ -247,15 +250,12 @@
 				if (!kind) continue;
 				push_group(idx, kind, name, tag);
 			}
-			// 2) Implicit volume hulls (substrate/oxide/air). Skipped in field
-			//    mode so the point cloud fills the volume unobstructed.
-			if (!useField) {
-				const vol_b = build_volume_boundaries(mesh);
-				for (const [vtag, idx] of vol_b.entries()) {
-					const name = mesh.phys_names.get(vtag) ?? '';
-					if (!name || name.startsWith('_mat_')) continue;
-					push_group(idx, 'dielectric', name, vtag);
-				}
+			// 2) Implicit volume hulls (substrate/oxide/air)
+			const vol_b = build_volume_boundaries(mesh);
+			for (const [vtag, idx] of vol_b.entries()) {
+				const name = mesh.phys_names.get(vtag) ?? '';
+				if (!name || name.startsWith('_mat_')) continue;
+				push_group(idx, 'dielectric', name, vtag);
 			}
 		}
 
@@ -281,11 +281,13 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
-		// Volumetric field as an additive point cloud: emit several points per
-		// tet at random barycentric positions so the cloud densely fills the
-		// volume. Brightness/color = log-normalized |E| at the tet centroid.
+		// Volumetric field point cloud: many random barycentric samples per
+		// tet, including weak-field tets (air) — log-normalized |E| over a
+		// generous 6-decade range so even faint regions register a non-zero
+		// scalar, which becomes visible via additive blending.
 		if (useField && field) {
-			const SAMPLES_PER_TET = 12;
+			const SAMPLES_PER_TET = 40;
+			const DECADES = 6;
 			const ntets = mesh.tets.length / 4;
 			let max_v = 0;
 			const tet_field = new Float32Array(ntets);
@@ -299,14 +301,16 @@
 				if (f > max_v) max_v = f;
 			}
 			const log_max = Math.log10(max_v + 1e-30);
-			const log_floor = log_max - 4;
-			const positions: number[] = [];
-			const scalars: number[] = [];
+			const log_floor = log_max - DECADES;
+			const total_pts = ntets * SAMPLES_PER_TET;
+			const positions = new Float32Array(total_pts * 3);
+			const scalars = new Float32Array(total_pts);
+			let p = 0;
 			for (let t = 0; t < ntets; t++) {
 				const f = tet_field[t];
-				if (f <= 0) continue;
-				const norm = Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)));
-				if (norm < 0.03) continue;
+				const norm = f > 0
+					? Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)))
+					: 0;
 				const v = mesh.tets;
 				const n0 = v[t * 4] * 3, n1 = v[t * 4 + 1] * 3,
 				      n2 = v[t * 4 + 2] * 3, n3 = v[t * 4 + 3] * 3;
@@ -315,21 +319,20 @@
 				const x2 = mesh.nodes[n2], y2 = mesh.nodes[n2 + 1], z2 = mesh.nodes[n2 + 2];
 				const x3 = mesh.nodes[n3], y3 = mesh.nodes[n3 + 1], z3 = mesh.nodes[n3 + 2];
 				for (let s = 0; s < SAMPLES_PER_TET; s++) {
-					// Uniform tetrahedron sampling via 4 sorted uniform reals
+					// Uniform tetrahedron sampling
 					let r1 = Math.random(), r2 = Math.random(), r3 = Math.random();
 					if (r1 + r2 > 1) { r1 = 1 - r1; r2 = 1 - r2; }
 					if (r2 + r3 > 1) { const t1 = r3; r3 = 1 - r1 - r2; r2 = 1 - t1; }
 					else if (r1 + r2 + r3 > 1) { const t1 = r3; r3 = r1 + r2 + r3 - 1; r1 = 1 - r2 - t1; }
 					const r0 = 1 - r1 - r2 - r3;
-					positions.push(
-						r0 * x0 + r1 * x1 + r2 * x2 + r3 * x3,
-						r0 * y0 + r1 * y1 + r2 * y2 + r3 * y3,
-						r0 * z0 + r1 * z1 + r2 * z2 + r3 * z3
-					);
-					scalars.push(norm);
+					positions[p * 3 + 0] = r0 * x0 + r1 * x1 + r2 * x2 + r3 * x3;
+					positions[p * 3 + 1] = r0 * y0 + r1 * y1 + r2 * y2 + r3 * y3;
+					positions[p * 3 + 2] = r0 * z0 + r1 * z1 + r2 * z2 + r3 * z3;
+					scalars[p] = norm;
+					p++;
 				}
 			}
-			setPointCloud(gl_state, Float32Array.from(positions), Float32Array.from(scalars));
+			setPointCloud(gl_state, positions, scalars);
 		} else {
 			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
 		}
