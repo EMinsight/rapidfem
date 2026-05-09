@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '$lib/components/fields.css';
 	import { EXAMPLES, type DemoExample } from '$lib/examples';
-	import { run_streaming_sweep, type SMatrix } from '$lib/wasm';
+	import { run_streaming_sweep, abort_solver, type SMatrix } from '$lib/wasm';
 	import ParamSidebar from '$lib/components/ParamSidebar.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import StatusPanel from '$lib/components/StatusPanel.svelte';
@@ -106,8 +106,9 @@
 			]);
 			const mesh_bytes = new Uint8Array(await mesh_resp.arrayBuffer());
 			const config_toml = await toml_resp.text();
-			log(`[${ex.label}] mesh ${(mesh_bytes.byteLength / 1024).toFixed(0)} KB · ${ex.frequencies_hz.length} freqs`);
+			log(`${ex.label} · ${ex.frequencies_hz.length} freqs`);
 
+			const t_start = performance.now();
 			await run_streaming_sweep({
 				mesh_bytes,
 				config_toml,
@@ -119,17 +120,10 @@
 					smats = [...smats, point.S];
 					field_results = [...field_results, { freq_hz: point.freq_hz, fields: point.fields }];
 					progress = (k + 1) / total;
-					const s11 = Math.hypot(point.S[0][0].re, point.S[0][0].im);
-					const s21 = point.S.length >= 2
-						? Math.hypot(point.S[1][0].re, point.S[1][0].im)
-						: NaN;
-					log(
-						`  f=${(point.freq_hz / 1e9).toFixed(1).padStart(5)} GHz · |S11|=${s11.toFixed(3)}` +
-						(isFinite(s21) ? ` · |S21|=${s21.toFixed(3)}` : '') +
-						` · ${point.solve_time_s.toFixed(2)}s`
-					);
 				}
 			});
+			const dt_total = (performance.now() - t_start) / 1000;
+			log(`done in ${dt_total.toFixed(1)}s`);
 
 			if (smats.length > 0) {
 				const m = example.metrics;
@@ -137,8 +131,7 @@
 					const L0 = L_eq_pH(smats[0], freqs[0]);
 					log(`L_eq(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${L0.toFixed(1)} pH`);
 					const fSRF = find_srf(freqs, smats);
-					if (fSRF != null) log(`SRF ≈ ${(fSRF / 1e9).toFixed(1)} GHz (where L_eq diverges)`);
-					else log(`no SRF in sweep range`);
+					if (fSRF != null) log(`SRF ≈ ${(fSRF / 1e9).toFixed(1)} GHz`);
 				}
 				if (m.includes('Q')) {
 					const Q0 = Q_factor(smats[0]);
@@ -148,7 +141,7 @@
 			status = 'done';
 		} catch (e) {
 			status = 'failed';
-			log(`ERROR: ${e}`);
+			log(`error: ${e}`);
 			console.error(e);
 		} finally {
 			running = false;
@@ -158,6 +151,7 @@
 
 	function abort() {
 		abort_controller?.abort();
+		abort_solver();   // terminates the worker so the in-flight LU stops immediately
 		status = 'aborted';
 		running = false;
 	}

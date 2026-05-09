@@ -1,26 +1,66 @@
 /**
- * WASM solver wrapper. Loads ../pkg/rapidfem_wasm.js with cache-bust and
- * exposes a streaming sweep that emits one frequency at a time so the UI
- * can render progress + plot points as they arrive.
+ * WASM solver wrapper. The actual solver runs in a Web Worker so the main
+ * thread (UI / 3D viewer) stays responsive while the LU factorization grinds.
  *
- * Strategy: rather than refactor the Rust solver into a stateful streamer,
- * we rewrite the [frequency].values list per-call to a single point and
- * invoke run_sweep(mesh_bytes, single_freq_toml). Assembly is cheap (~30ms)
- * compared to the LU solve (~10s/freq) so re-doing it per frequency costs
- * negligible total time and keeps the WASM API unchanged.
+ * Strategy: rewrite the [frequency].values list per-call to a single point
+ * and dispatch one solve message per frequency to the worker. Assembly is
+ * cheap (~30ms) compared to the LU solve (~10s/freq) so re-doing it per
+ * frequency in the worker costs negligible total time.
  */
 
-let cached: { init: (...args: any[]) => Promise<unknown>; run_sweep: any } | null = null;
+import SolverWorker from './solver.worker?worker';
 
-async function loadWasm() {
-	if (cached) return cached;
-	const build = Date.now();
-	// Vite serves ../pkg via fs.allow; use absolute fetch so the import
-	// works from any route depth.
-	const mod = await import(/* @vite-ignore */ `/pkg/rapidfem_wasm.js?v=${build}`);
-	await mod.default({ module_or_path: `/pkg/rapidfem_wasm_bg.wasm?v=${build}` });
-	cached = { init: mod.default, run_sweep: mod.run_sweep };
-	return cached;
+let worker: Worker | null = null;
+let next_msg_id = 1;
+const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
+let init_promise: Promise<void> | null = null;
+
+function ensure_worker(): Promise<void> {
+	if (init_promise) return init_promise;
+	init_promise = new Promise((resolve, reject) => {
+		worker = new SolverWorker();
+		worker.onmessage = (e: MessageEvent) => {
+			const m = e.data;
+			if (m.type === 'ready') resolve();
+			else if (m.type === 'point') pending.get(m.id)?.resolve(m);
+			else if (m.type === 'error') {
+				if (m.id != null) pending.get(m.id)?.reject(new Error(m.message));
+				else reject(new Error(m.message));
+			}
+		};
+		worker.onerror = (e) => reject(new Error(e.message));
+		worker.postMessage({ type: 'init', wasm_url: '/pkg' });
+	});
+	return init_promise;
+}
+
+function solve_one(mesh_bytes: Uint8Array, config_toml: string, freq_hz: number) {
+	if (!worker) throw new Error('worker not initialized');
+	const id = next_msg_id++;
+	return new Promise<any>((resolve, reject) => {
+		pending.set(id, { resolve, reject });
+		// Slice mesh_bytes into a fresh ArrayBuffer we can transfer (zero-copy).
+		const buf = new Uint8Array(mesh_bytes.byteLength);
+		buf.set(mesh_bytes);
+		worker!.postMessage(
+			{ type: 'solve', id, mesh_bytes: buf.buffer, config_toml, freq_hz },
+			[buf.buffer]
+		);
+	}).finally(() => pending.delete(id));
+}
+
+export async function preload_wasm() {
+	await ensure_worker();
+}
+
+export function abort_solver() {
+	if (worker) {
+		worker.terminate();
+		worker = null;
+		init_promise = null;
+		for (const p of pending.values()) p.reject(new Error('aborted'));
+		pending.clear();
+	}
 }
 
 export type SParam = { re: number; im: number };
@@ -77,51 +117,34 @@ function override_frequency(toml: string, freq_hz: number): string {
 }
 
 export async function run_streaming_sweep(cfg: SweepConfig) {
-	const { run_sweep } = await loadWasm();
+	await ensure_worker();
 	const { mesh_bytes, config_toml, frequencies_hz, on_point, on_status, abort_signal } = cfg;
 	for (let k = 0; k < frequencies_hz.length; k++) {
 		if (abort_signal?.aborted) return;
 		const f = frequencies_hz[k];
 		on_status?.(`solving ${(f / 1e9).toFixed(1)} GHz (${k + 1}/${frequencies_hz.length})…`);
-		// Yield to the browser so the UI can repaint between solves.
-		await new Promise((r) => setTimeout(r, 0));
 		const single_toml = override_frequency(config_toml, f);
-		const t0 = performance.now();
-		const result = run_sweep(mesh_bytes, single_toml) as {
-			frequencies_hz: number[];
-			n_driven: number;
-			n_nodes: number;
-			sparams_flat: number[];
-			fields_flat: number[];
-			solve_time_s: number;
-		};
-		const dt = (performance.now() - t0) / 1000;
+		const result = await solve_one(mesh_bytes, single_toml, f);
+		if (abort_signal?.aborted) return;
 		const n = result.n_driven;
 		const nN = result.n_nodes;
-		const stride = n * n * 2;
+		const sp = result.sparams_flat as Float64Array;
+		const ff = result.fields_flat as Float32Array;
 		const S: SMatrix = [];
 		for (let obs = 0; obs < n; obs++) {
 			const row: SParam[] = [];
 			for (let exc = 0; exc < n; exc++) {
-				row.push({
-					re: result.sparams_flat[2 * (obs * n + exc)],
-					im: result.sparams_flat[2 * (obs * n + exc) + 1]
-				});
+				row.push({ re: sp[2 * (obs * n + exc)], im: sp[2 * (obs * n + exc) + 1] });
 			}
 			S.push(row);
 		}
-		// Field flat is laid out [exc][node] for this single-frequency call.
 		const fields: Float32Array[] = [];
 		for (let exc = 0; exc < n; exc++) {
-			fields.push(
-				new Float32Array(result.fields_flat.slice(exc * nN, (exc + 1) * nN))
-			);
+			fields.push(ff.slice(exc * nN, (exc + 1) * nN));
 		}
-		await on_point(k, frequencies_hz.length, { freq_hz: f, S, fields, solve_time_s: dt });
+		await on_point(k, frequencies_hz.length, {
+			freq_hz: f, S, fields, solve_time_s: result.solve_time_s
+		});
 	}
 	on_status?.('done');
-}
-
-export async function preload_wasm() {
-	await loadWasm();
 }

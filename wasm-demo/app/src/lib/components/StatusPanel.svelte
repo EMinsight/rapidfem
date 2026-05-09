@@ -105,10 +105,11 @@
 		padding: 6px 8px;
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
-		color: var(--text);
+		color: var(--text-muted);
 		overflow-y: auto;
-		max-height: 360px;
+		max-height: 240px;
 		white-space: pre-wrap;
 		margin: 0;
+		line-height: 1.5;
 	}
 </style>
