@@ -284,7 +284,11 @@
 			}
 		}
 		const normals = compute_normals(positions);
-		addMesh(gl_state, positions, normals, color_for(kind, name), tag);
+		// Push dielectric volume hulls slightly back so coplanar conductor
+		// plates (e.g. met5 spiral at the same z as oxide's internal face
+		// after fragmentation) win the depth test cleanly.
+		const offset: [number, number] | undefined = kind === 'dielectric' ? [2, 2] : undefined;
+		addMesh(gl_state, positions, normals, color_for(kind, name), tag, offset);
 	}
 
 	// ── Frame loop / sizing ─────────────────────────────────────────────

@@ -30,6 +30,10 @@ interface Mesh {
 	color: [number, number, number];
 	tag: number;
 	visible: boolean;
+	/** Polygon offset (factor, units). Positive pushes geometry away from
+	 *  camera, used on dielectric hulls so coplanar conductors win the depth
+	 *  test and don't z-fight. */
+	depth_offset?: [number, number];
 }
 
 interface LineMesh {
@@ -263,7 +267,14 @@ export function clearMeshes(state: GLState): void {
 /** Add a triangle group with a single color. positions and normals must
  *  contain 3 components per vertex, in matching order. `tag` is the physical
  *  group integer used for visibility toggling via setTagVisible. */
-export function addMesh(state: GLState, positions: Float32Array, normals: Float32Array, color: [number, number, number], tag = 0): void {
+export function addMesh(
+	state: GLState,
+	positions: Float32Array,
+	normals: Float32Array,
+	color: [number, number, number],
+	tag = 0,
+	depth_offset?: [number, number]
+): void {
 	const { gl } = state;
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
@@ -281,7 +292,7 @@ export function addMesh(state: GLState, positions: Float32Array, normals: Float3
 	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 
 	gl.bindVertexArray(null);
-	state.meshes.push({ vao, buffers: [posBuf, normBuf], count: positions.length / 3, color, tag, visible: true });
+	state.meshes.push({ vao, buffers: [posBuf, normBuf], count: positions.length / 3, color, tag, visible: true, depth_offset });
 }
 
 /** Line segments. positions: 3 components per vertex, every two vertices = one segment. */
@@ -352,12 +363,21 @@ export function render3D(
 	gl.uniform3f(state.uLightDir, lightDir[0], lightDir[1], lightDir[2]);
 	gl.uniform1f(state.uAmbient, 0.8);
 	gl.uniform1f(state.uZFlip, zFlip);
+	let offset_on = false;
 	for (const m of state.meshes) {
 		if (!m.visible) continue;
+		if (m.depth_offset) {
+			if (!offset_on) { gl.enable(gl.POLYGON_OFFSET_FILL); offset_on = true; }
+			gl.polygonOffset(m.depth_offset[0], m.depth_offset[1]);
+		} else if (offset_on) {
+			gl.disable(gl.POLYGON_OFFSET_FILL);
+			offset_on = false;
+		}
 		gl.uniform3f(state.uColor, m.color[0], m.color[1], m.color[2]);
 		gl.bindVertexArray(m.vao);
 		gl.drawArrays(gl.TRIANGLES, 0, m.count);
 	}
+	if (offset_on) gl.disable(gl.POLYGON_OFFSET_FILL);
 
 	// Line pass (wireframe / axes / grid)
 	if (state.lineMeshes.length > 0) {
