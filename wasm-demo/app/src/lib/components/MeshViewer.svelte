@@ -2,7 +2,8 @@
 	import { onMount } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		render3D, fitCamera, setTagVisible, type GLState, type Camera
+		render3D, fitCamera, setTagVisible, setClipPlane,
+		type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
@@ -28,6 +29,7 @@
 	let needs_rebuild = true;
 	let cursor_world = $state({ x: 0, y: 0 });
 	let visible_tags = $state(new Set<number>());
+	let clip_z = $state<number | null>(null);   // null = clipping disabled
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
@@ -347,8 +349,10 @@
 			}
 		}
 		// Push dielectric volume hulls slightly back so coplanar conductor
-		// plates win the depth test cleanly.
-		const offset: [number, number] | undefined = kind === 'dielectric' ? [2, 2] : undefined;
+		// plates win the depth test cleanly. In field mode we color all
+		// surfaces by |E| anyway — z-fighting isn't a concern.
+		const offset: [number, number] | undefined =
+			kind === 'dielectric' && !field_norm ? [2, 2] : undefined;
 		// Per-vertex scalar lookup from the global per-node field array
 		let scalars: Float32Array | undefined;
 		if (field_norm) {
@@ -483,12 +487,25 @@
 	$effect(() => {
 		mesh; mode; field;
 		if (!mounted || !gl_state) return;
-		if (mesh && needs_rebuild === false) {
-			// Only refit camera on mesh change, not on every field/mode flip
-		}
 		needs_rebuild = true;
 		render_frame();
 	});
+
+	// React to clip-plane slider (no rebuild needed, just re-render)
+	$effect(() => {
+		if (!gl_state) return;
+		if (clip_z != null) {
+			// Clip plane: discard fragments where world.z > clip_z (so we cut
+			// the upper part away and look down into the volume).
+			setClipPlane(gl_state, [0, 0, 1], clip_z, true);
+		} else {
+			setClipPlane(gl_state, [0, 0, 1], 0, false);
+		}
+		render_frame();
+	});
+
+	// Slider range from current mesh bbox
+	let clip_range = $derived(mesh ? { lo: mesh.bbox.min[2], hi: mesh.bbox.max[2] } : null);
 
 	// Refit camera only when mesh changes
 	$effect(() => {
@@ -594,6 +611,32 @@
 			<span class="coord stats">{(mesh.nodes.length / 3) | 0}n · {(mesh.tris.length / 3) | 0}t · {(mesh.tets.length / 4) | 0}T</span>
 		{/if}
 	</div>
+
+	{#if clip_range}
+		<div class="clip-control">
+			<label>
+				<input
+					type="checkbox"
+					checked={clip_z != null}
+					onchange={(e) => (clip_z = (e.currentTarget as HTMLInputElement).checked
+						? (clip_range!.lo + clip_range!.hi) / 2
+						: null)}
+				/>
+				clip Z
+			</label>
+			{#if clip_z != null}
+				<input
+					class="z-slider"
+					type="range"
+					min={clip_range.lo}
+					max={clip_range.hi}
+					step={(clip_range.hi - clip_range.lo) / 200}
+					bind:value={clip_z}
+				/>
+				<span class="z-readout">{(clip_z * 1e6).toFixed(1)} µm</span>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -705,4 +748,55 @@
 		pointer-events: none;
 	}
 	.hud .stats { color: var(--text-muted); }
+
+	.clip-control {
+		position: absolute;
+		bottom: 8px;
+		right: 10px;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 8px;
+		background: rgba(24, 24, 29, 0.75);
+		border: 1px solid var(--border-subtle);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.clip-control label {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		cursor: pointer;
+	}
+	.clip-control input[type='checkbox'] {
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
+	.z-slider {
+		appearance: none;
+		width: 140px;
+		height: 2px;
+		background: var(--input-border);
+		outline: none;
+	}
+	.z-slider::-webkit-slider-thumb {
+		appearance: none;
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		cursor: pointer;
+	}
+	.z-slider::-moz-range-thumb {
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		border: 0;
+		cursor: pointer;
+	}
+	.z-readout {
+		min-width: 48px;
+		text-align: right;
+		color: var(--accent);
+	}
 </style>

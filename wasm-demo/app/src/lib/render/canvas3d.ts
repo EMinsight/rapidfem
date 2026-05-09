@@ -55,6 +55,10 @@ export interface GLState {
 	uAmbient: WebGLUniformLocation;
 	uZFlip: WebGLUniformLocation;
 	uColormap: WebGLUniformLocation;
+	uClipPlane: WebGLUniformLocation;
+	uClipEnable: WebGLUniformLocation;
+	clip_plane: [number, number, number, number];
+	clip_enable: boolean;
 	lineProgram: WebGLProgram;
 	uLineMVP: WebGLUniformLocation;
 	uLineColor: WebGLUniformLocation;
@@ -69,18 +73,20 @@ const VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
-layout(location=2) in float aScalar;   // optional per-vertex scalar (0..1) for colormap
+layout(location=2) in float aScalar;
 uniform mat4 uMVP;
 uniform mat3 uNormalMat;
 uniform float uZFlip;
 out vec3 vNormal;
 out float vScalar;
+out vec3 vWorld;
 void main() {
 	vec3 n = aNormal;
 	n.z *= uZFlip;
 	vNormal = normalize(uNormalMat * n);
 	vec3 pos = aPos;
 	pos.z *= uZFlip;
+	vWorld = pos;
 	gl_Position = uMVP * vec4(pos, 1.0);
 	vScalar = aScalar;
 }`;
@@ -89,26 +95,35 @@ const FS = `#version 300 es
 precision highp float;
 in vec3 vNormal;
 in float vScalar;
+in vec3 vWorld;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform float uAmbient;
-uniform float uColormap;   // 0 = uniform color, 1 = viridis on vScalar
+uniform float uColormap;
+uniform vec4 uClipPlane;          // (nx, ny, nz, d): discard fragments where dot(world, n) > d
+uniform float uClipEnable;
 out vec4 fragColor;
 
-// 5-stop polynomial Viridis approximation. Cheap, no LUT texture needed.
-vec3 viridis(float t) {
+// Polynomial Inferno colormap — black → purple → red → orange → yellow → white.
+// Matches our warm rapidpassives palette better than viridis.
+vec3 inferno(float t) {
 	t = clamp(t, 0.0, 1.0);
-	const vec3 c0 = vec3(0.2670, 0.0049, 0.3294);
-	const vec3 c1 = vec3(0.1058, 1.4046, 1.3845);
-	const vec3 c2 = vec3(-3.232, -0.353, 1.6053);
-	const vec3 c3 = vec3(2.886, 0.892, -8.1779);
-	const vec3 c4 = vec3(0.106, -0.910, 4.1239);
-	return c0 + t*(c1 + t*(c2 + t*(c3 + t*c4)));
+	const vec3 c0 = vec3(0.0002, 0.0016, -0.0194);
+	const vec3 c1 = vec3(0.1065, 0.5639, 3.9327);
+	const vec3 c2 = vec3(11.6024, -3.972, -15.9423);
+	const vec3 c3 = vec3(-41.7039, 17.4363, 44.354);
+	const vec3 c4 = vec3(77.1629, -33.4023, -81.8073);
+	const vec3 c5 = vec3(-71.319, 32.6261, 73.2095);
+	const vec3 c6 = vec3(25.1311, -12.2426, -23.0703);
+	return c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
 }
 
 void main() {
+	if (uClipEnable > 0.5) {
+		if (dot(vWorld, uClipPlane.xyz) > uClipPlane.w) discard;
+	}
 	float diff = max(dot(normalize(vNormal), uLightDir), 0.0);
-	vec3 base = mix(uColor, viridis(vScalar), uColormap);
+	vec3 base = mix(uColor, inferno(vScalar), uColormap);
 	vec3 lit = base * (uAmbient + (1.0 - uAmbient) * diff);
 	fragColor = vec4(lit, 1.0);
 }`;
@@ -247,6 +262,10 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		uAmbient: gl.getUniformLocation(program, 'uAmbient')!,
 		uZFlip: gl.getUniformLocation(program, 'uZFlip')!,
 		uColormap: gl.getUniformLocation(program, 'uColormap')!,
+		uClipPlane: gl.getUniformLocation(program, 'uClipPlane')!,
+		uClipEnable: gl.getUniformLocation(program, 'uClipEnable')!,
+		clip_plane: [0, 0, 1, 0],
+		clip_enable: false,
 		lineProgram,
 		uLineMVP: gl.getUniformLocation(lineProgram, 'uMVP')!,
 		uLineColor: gl.getUniformLocation(lineProgram, 'uColor')!,
@@ -354,6 +373,12 @@ export function setTagVisible(state: GLState, tag: number, visible: boolean): vo
 	for (const m of state.lineMeshes) if (m.tag === tag) m.visible = visible;
 }
 
+/** Set the clipping plane: discards fragments where dot(world, n) > d. */
+export function setClipPlane(state: GLState, normal: [number, number, number], d: number, enable: boolean) {
+	state.clip_plane = [normal[0], normal[1], normal[2], d];
+	state.clip_enable = enable;
+}
+
 export function setBBox(state: GLState, min: [number, number, number], max: [number, number, number]): void {
 	state.bbox.min = min;
 	state.bbox.max = max;
@@ -400,6 +425,8 @@ export function render3D(
 	gl.uniform3f(state.uLightDir, lightDir[0], lightDir[1], lightDir[2]);
 	gl.uniform1f(state.uAmbient, 0.8);
 	gl.uniform1f(state.uZFlip, zFlip);
+	gl.uniform4f(state.uClipPlane, state.clip_plane[0], state.clip_plane[1], state.clip_plane[2], state.clip_plane[3]);
+	gl.uniform1f(state.uClipEnable, state.clip_enable ? 1.0 : 0.0);
 	let offset_on = false;
 	for (const m of state.meshes) {
 		if (!m.visible) continue;
