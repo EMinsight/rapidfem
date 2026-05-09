@@ -28,6 +28,8 @@ interface Mesh {
 	buffers: WebGLBuffer[];
 	count: number;
 	color: [number, number, number];
+	tag: number;
+	visible: boolean;
 }
 
 interface LineMesh {
@@ -35,6 +37,8 @@ interface LineMesh {
 	buffers: WebGLBuffer[];
 	count: number;
 	color: [number, number, number];
+	tag: number;
+	visible: boolean;
 }
 
 export interface GLState {
@@ -257,8 +261,9 @@ export function clearMeshes(state: GLState): void {
 }
 
 /** Add a triangle group with a single color. positions and normals must
- *  contain 3 components per vertex, in matching order. */
-export function addMesh(state: GLState, positions: Float32Array, normals: Float32Array, color: [number, number, number]): void {
+ *  contain 3 components per vertex, in matching order. `tag` is the physical
+ *  group integer used for visibility toggling via setTagVisible. */
+export function addMesh(state: GLState, positions: Float32Array, normals: Float32Array, color: [number, number, number], tag = 0): void {
 	const { gl } = state;
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
@@ -276,11 +281,11 @@ export function addMesh(state: GLState, positions: Float32Array, normals: Float3
 	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 
 	gl.bindVertexArray(null);
-	state.meshes.push({ vao, buffers: [posBuf, normBuf], count: positions.length / 3, color });
+	state.meshes.push({ vao, buffers: [posBuf, normBuf], count: positions.length / 3, color, tag, visible: true });
 }
 
 /** Line segments. positions: 3 components per vertex, every two vertices = one segment. */
-export function addLineMesh(state: GLState, positions: Float32Array, color: [number, number, number]): void {
+export function addLineMesh(state: GLState, positions: Float32Array, color: [number, number, number], tag = 0): void {
 	const { gl } = state;
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
@@ -292,7 +297,13 @@ export function addLineMesh(state: GLState, positions: Float32Array, color: [num
 	gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
 
 	gl.bindVertexArray(null);
-	state.lineMeshes.push({ vao, buffers: [buf], count: positions.length / 3, color });
+	state.lineMeshes.push({ vao, buffers: [buf], count: positions.length / 3, color, tag, visible: true });
+}
+
+/** Toggle visibility of all meshes whose tag matches. */
+export function setTagVisible(state: GLState, tag: number, visible: boolean): void {
+	for (const m of state.meshes) if (m.tag === tag) m.visible = visible;
+	for (const m of state.lineMeshes) if (m.tag === tag) m.visible = visible;
 }
 
 export function setBBox(state: GLState, min: [number, number, number], max: [number, number, number]): void {
@@ -342,6 +353,7 @@ export function render3D(
 	gl.uniform1f(state.uAmbient, 0.8);
 	gl.uniform1f(state.uZFlip, zFlip);
 	for (const m of state.meshes) {
+		if (!m.visible) continue;
 		gl.uniform3f(state.uColor, m.color[0], m.color[1], m.color[2]);
 		gl.bindVertexArray(m.vao);
 		gl.drawArrays(gl.TRIANGLES, 0, m.count);
@@ -352,6 +364,7 @@ export function render3D(
 		gl.useProgram(state.lineProgram);
 		gl.uniformMatrix4fv(state.uLineMVP, false, vp);
 		for (const lm of state.lineMeshes) {
+			if (!lm.visible) continue;
 			gl.uniform3f(state.uLineColor, lm.color[0], lm.color[1], lm.color[2]);
 			gl.bindVertexArray(lm.vao);
 			gl.drawArrays(gl.LINES, 0, lm.count);

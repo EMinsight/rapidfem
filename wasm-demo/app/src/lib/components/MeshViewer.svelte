@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		render3D, fitCamera, type GLState, type Camera
+		render3D, fitCamera, setTagVisible, type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
@@ -23,21 +23,66 @@
 	let mounted = false;
 	let needs_rebuild = true;
 	let cursor_world = $state({ x: 0, y: 0 });
+	let visible_tags = $state(new Set<number>());
+
+	function toggle_tag(tag: number) {
+		if (!gl_state) return;
+		const next = new Set(visible_tags);
+		if (next.has(tag)) next.delete(tag); else next.add(tag);
+		visible_tags = next;
+		setTagVisible(gl_state, tag, next.has(tag));
+		render_frame();
+	}
 	let is_dragging = false;
 	let is_right_drag = false;
 	let last_mouse = { x: 0, y: 0 };
 
+	// ── Camera animation (ease-out cubic) ──────────────────────────────
+	let anim_id = 0;
+	let anim_target: Camera | null = null;
+	function effective_camera(): Camera { return anim_target ?? camera; }
+	function animate_camera(target: Camera, durationMs = 300) {
+		anim_target = target;
+		const start = { ...camera, target: [...camera.target] as [number, number, number] };
+		const t0 = performance.now();
+		const id = ++anim_id;
+		function tick() {
+			if (!mounted || id !== anim_id) return;
+			const t = Math.min(1, (performance.now() - t0) / durationMs);
+			const e = 1 - Math.pow(1 - t, 3);
+			camera = {
+				theta: start.theta + (target.theta - start.theta) * e,
+				phi: start.phi + (target.phi - start.phi) * e,
+				distance: start.distance + (target.distance - start.distance) * e,
+				target: [
+					start.target[0] + (target.target[0] - start.target[0]) * e,
+					start.target[1] + (target.target[1] - start.target[1]) * e,
+					start.target[2] + (target.target[2] - start.target[2]) * e
+				]
+			};
+			render_frame();
+			if (t < 1) requestAnimationFrame(tick);
+			else anim_target = null;
+		}
+		requestAnimationFrame(tick);
+	}
+
 	// ── Imperative API ─────────────────────────────────────────────────
-	export function zoom_in() { camera = { ...camera, distance: camera.distance / 1.3 }; render_frame(); }
-	export function zoom_out() { camera = { ...camera, distance: camera.distance * 1.3 }; render_frame(); }
+	export function zoom_in() {
+		const base = effective_camera();
+		animate_camera({ ...base, target: [...base.target] as [number, number, number], distance: base.distance / 1.3 }, 200);
+	}
+	export function zoom_out() {
+		const base = effective_camera();
+		animate_camera({ ...base, target: [...base.target] as [number, number, number], distance: base.distance * 1.3 }, 200);
+	}
 	export function fit_view() {
 		if (!mesh) return;
-		camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
-		render_frame();
+		animate_camera(fitCamera(mesh.bbox.min, mesh.bbox.max), 350);
 	}
 	export function rotate_90() {
-		camera = { ...camera, theta: camera.theta + Math.PI / 2 };
-		render_frame();
+		const base = effective_camera();
+		animate_camera({ ...base, target: [...base.target] as [number, number, number], theta: base.theta + Math.PI / 2 }, 400);
 	}
 	export function flip_z() {
 		z_flip *= -1;
@@ -171,14 +216,14 @@
 				const name = mesh.phys_names.get(tag) ?? '';
 				const kind = classify(name);
 				if (!kind) continue;
-				push_group(idx, kind, name);
+				push_group(idx, kind, name, tag);
 			}
 			// 2) Implicit volume hulls
 			const vol_b = build_volume_boundaries(mesh);
 			for (const [vtag, idx] of vol_b.entries()) {
 				const name = mesh.phys_names.get(vtag) ?? '';
 				if (!name || name.startsWith('_mat_')) continue;
-				push_group(idx, 'dielectric', name);
+				push_group(idx, 'dielectric', name, vtag);
 			}
 		}
 
@@ -202,13 +247,18 @@
 				const a = mesh.tris[i * 3], b = mesh.tris[i * 3 + 1], c = mesh.tris[i * 3 + 2];
 				add_edge(a, b); add_edge(b, c); add_edge(c, a);
 			}
-			addLineMesh(gl_state, new Float32Array(edges), hex(palette.textDim));
+			addLineMesh(gl_state, new Float32Array(edges), hex(palette.textDim), -1);
 		}
+
+		// Reset visibility tracking after rebuild — everything visible by default
+		const tags = new Set<number>();
+		for (const m of gl_state.meshes) tags.add(m.tag);
+		visible_tags = tags;
 
 		needs_rebuild = false;
 	}
 
-	function push_group(idx: number[], kind: Kind, name: string) {
+	function push_group(idx: number[], kind: Kind, name: string, tag: number) {
 		if (!gl_state || !mesh) return;
 		const ntri = idx.length / 3;
 		if (ntri === 0) return;
@@ -222,7 +272,7 @@
 			}
 		}
 		const normals = compute_normals(positions);
-		addMesh(gl_state, positions, normals, color_for(kind, name));
+		addMesh(gl_state, positions, normals, color_for(kind, name), tag);
 	}
 
 	// ── Frame loop / sizing ─────────────────────────────────────────────
@@ -344,9 +394,9 @@
 	});
 
 	const tag_legend = $derived.by(() => {
-		if (!mesh) return [] as { name: string; color: string; kind: Kind; rank: number }[];
+		if (!mesh) return [] as { name: string; color: string; kind: Kind; rank: number; tag: number }[];
 		const seen = new Set<number>();
-		const items: { name: string; color: string; kind: Kind; rank: number }[] = [];
+		const items: { name: string; color: string; kind: Kind; rank: number; tag: number }[] = [];
 		const add = (tag: number, kind: Kind) => {
 			if (seen.has(tag)) return;
 			seen.add(tag);
@@ -357,8 +407,7 @@
 			items.push({
 				name,
 				color: `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`,
-				kind,
-				rank
+				kind, rank, tag
 			});
 		};
 		for (let i = 0; i < mesh.tri_phys.length; i++) {
@@ -391,10 +440,15 @@
 	{#if tag_legend.length > 0}
 		<div class="legend">
 			{#each tag_legend as l}
-				<div class="legend-item">
-					<span class="swatch" style="background: {l.color}; opacity: {l.kind === 'dielectric' ? 0.5 : 1};"></span>
+				<button
+					class="legend-item"
+					class:hidden={!visible_tags.has(l.tag)}
+					onclick={() => toggle_tag(l.tag)}
+					title="Click to toggle"
+				>
+					<span class="swatch" style="background: {l.color};"></span>
 					<span class="legend-name">{l.name}</span>
-				</div>
+				</button>
 			{/each}
 		</div>
 	{/if}
@@ -463,17 +517,34 @@
 		left: 10px;
 		background: rgba(24, 24, 29, 0.75);
 		border: 1px solid var(--border-subtle);
-		padding: 6px 8px;
+		padding: 4px;
 		display: flex;
 		flex-direction: column;
-		gap: 3px;
+		gap: 1px;
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		pointer-events: none;
 	}
-	.legend-item { display: flex; align-items: center; gap: 6px; }
-	.swatch { width: 10px; height: 10px; flex-shrink: 0; }
+	.legend-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 3px 6px;
+		background: transparent;
+		border: 0;
+		color: var(--text-muted);
+		cursor: pointer;
+		text-align: left;
+		font-family: inherit;
+		font-size: inherit;
+		text-transform: none;
+		letter-spacing: 0;
+		transition: background var(--transition), color var(--transition);
+	}
+	.legend-item:hover { background: var(--accent-dim); color: var(--text); }
+	.legend-item.hidden { color: var(--text-dim); }
+	.legend-item.hidden .swatch { opacity: 0.25; }
+	.legend-item.hidden .legend-name { text-decoration: line-through; }
+	.swatch { width: 10px; height: 10px; flex-shrink: 0; transition: opacity var(--transition); }
 
 	.viewer-toolbar {
 		position: absolute;
