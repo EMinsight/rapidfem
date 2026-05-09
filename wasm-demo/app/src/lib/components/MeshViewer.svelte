@@ -833,7 +833,7 @@
 
 	.cb-panel {
 		padding: 12px 14px;
-		gap: 10px;
+		gap: 14px;       /* extra breathing room between title and gradient */
 	}
 	.cb-body {
 		display: flex;
