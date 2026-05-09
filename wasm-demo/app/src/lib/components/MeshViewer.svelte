@@ -329,41 +329,35 @@
 
 	function fit_camera(m: MeshData) {
 		if (!camera || !controls) return;
-		// Compute bbox from interesting faces only (conductors + ports + gnd).
-		// Falls back to full mesh bbox if there are no such faces.
-		let xmin = Infinity, ymin = Infinity, zmin = Infinity;
-		let xmax = -Infinity, ymax = -Infinity, zmax = -Infinity;
-		let have = false;
-		const ntri = m.tri_phys.length;
-		for (let i = 0; i < ntri; i++) {
-			const name = m.phys_names.get(m.tri_phys[i]) ?? '';
-			const kind = classify(name);
-			if (kind === 'dielectric' || name === 'abc' || name.startsWith('_mat_')) continue;
-			have = true;
-			for (let k = 0; k < 3; k++) {
-				const ni = m.tris[i * 3 + k] * 3;
-				const x = m.nodes[ni], y = m.nodes[ni + 1], z = m.nodes[ni + 2];
-				if (x < xmin) xmin = x; if (x > xmax) xmax = x;
-				if (y < ymin) ymin = y; if (y > ymax) ymax = y;
-				if (z < zmin) zmin = z; if (z > zmax) zmax = z;
-			}
+		// Defer if canvas hasn't been sized yet (aspect would be invalid).
+		if (!camera.aspect || !isFinite(camera.aspect) || camera.aspect <= 0) {
+			requestAnimationFrame(() => fit_camera(m));
+			return;
 		}
-		if (!have) {
-			[xmin, ymin, zmin] = m.bbox.min;
-			[xmax, ymax, zmax] = m.bbox.max;
-		}
+		// Use the FULL mesh bbox so everything visible fits.
+		const [xmin, ymin, zmin] = m.bbox.min;
+		const [xmax, ymax, zmax] = m.bbox.max;
 		const cx = (xmin + xmax) / 2, cy = (ymin + ymax) / 2, cz = (zmin + zmax) / 2;
 		const dx = xmax - xmin, dy = ymax - ymin, dz = zmax - zmin;
+		// Bounding-sphere radius (largest distance from center to any bbox corner)
 		const radius = Math.max(0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-9);
+
+		// Distance so the bounding sphere fits inside the smaller of horizontal/vertical FOV.
+		const half_fov_v = (camera.fov * Math.PI) / 180 / 2;
+		const half_fov_h = Math.atan(Math.tan(half_fov_v) * camera.aspect);
+		const half_fov = Math.min(half_fov_v, half_fov_h);
+		const distance = radius / Math.sin(half_fov) * 1.1;   // 10% margin
+
+		// Iso view from upper-front-right
+		const dir = new THREE.Vector3(1, -1, 0.7).normalize();
 		controls.target.set(cx, cy, cz);
-		camera.position.set(cx + radius * 1.6, cy - radius * 1.6, cz + radius * 1.2);
-		// Use the FULL mesh bbox to size the near/far so dielectric volumes stay visible
-		const fullDx = m.bbox.max[0] - m.bbox.min[0];
-		const fullDy = m.bbox.max[1] - m.bbox.min[1];
-		const fullDz = m.bbox.max[2] - m.bbox.min[2];
-		const fullRadius = 0.5 * Math.sqrt(fullDx * fullDx + fullDy * fullDy + fullDz * fullDz);
-		camera.near = Math.max(fullRadius * 1e-4, 1e-9);
-		camera.far = fullRadius * 200;
+		camera.position.set(cx + dir.x * distance, cy + dir.y * distance, cz + dir.z * distance);
+		camera.up.set(0, 0, z_flip);
+		camera.lookAt(cx, cy, cz);
+
+		// Generous near/far around the bounding sphere
+		camera.near = Math.max(distance * 1e-3, 1e-9);
+		camera.far = distance * 200;
 		camera.updateProjectionMatrix();
 		controls.update();
 	}
