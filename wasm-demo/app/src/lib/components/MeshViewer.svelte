@@ -29,6 +29,7 @@
 	let needs_rebuild = true;
 	let cursor_world = $state({ x: 0, y: 0 });
 	let visible_tags = $state(new Set<number>());
+	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
@@ -288,6 +289,7 @@
 		if (useField && field) {
 			const SAMPLES_PER_TET = 40;
 			const DECADES = 6;
+			field_range = null;
 			const ntets = mesh.tets.length / 4;
 			let max_v = 0;
 			const tet_field = new Float32Array(ntets);
@@ -302,6 +304,7 @@
 			}
 			const log_max = Math.log10(max_v + 1e-30);
 			const log_floor = log_max - DECADES;
+			field_range = { min: Math.pow(10, log_floor), max: max_v, decades: DECADES };
 			const total_pts = ntets * SAMPLES_PER_TET;
 			const positions = new Float32Array(total_pts * 3);
 			const scalars = new Float32Array(total_pts);
@@ -335,6 +338,7 @@
 			setPointCloud(gl_state, positions, scalars);
 		} else {
 			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			field_range = null;
 		}
 
 		// Reset visibility tracking after rebuild — everything visible by default
@@ -536,6 +540,28 @@
 		if (mesh && mounted) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
 	});
 
+	function fmt_eng(v: number): string {
+		if (!isFinite(v) || v <= 0) return '0';
+		const exp = Math.floor(Math.log10(v) / 3) * 3;
+		const m = v / Math.pow(10, exp);
+		const prefix = ({ '-12': 'p', '-9': 'n', '-6': 'µ', '-3': 'm', '0': '', '3': 'k', '6': 'M', '9': 'G' } as Record<string, string>)[String(exp)];
+		const mantissa = m >= 100 ? m.toFixed(0) : m >= 10 ? m.toFixed(1) : m.toFixed(2);
+		return prefix !== undefined ? `${mantissa} ${prefix}` : `${m.toFixed(1)}e${exp}`;
+	}
+
+	// Six logarithmic ticks for the colorbar (one per decade in our 6-decade range)
+	const colorbar_ticks = $derived.by(() => {
+		if (!field_range) return [] as { frac: number; label: string }[];
+		const out: { frac: number; label: string }[] = [];
+		const log_max = Math.log10(field_range.max);
+		const log_min = log_max - field_range.decades;
+		for (let i = 0; i <= field_range.decades; i++) {
+			const v = Math.pow(10, log_min + i);
+			out.push({ frac: i / field_range.decades, label: fmt_eng(v) });
+		}
+		return out;
+	});
+
 	const tag_legend = $derived.by(() => {
 		if (!mesh) return [] as { name: string; color: string; kind: Kind; rank: number; tag: number }[];
 		const seen = new Set<number>();
@@ -627,6 +653,20 @@
 			</svg>
 		</button>
 	</div>
+
+	{#if mode === 'field' && field_range}
+		<div class="colorbar">
+			<div class="cb-title">|E| (V/m) · log scale</div>
+			<div class="cb-body">
+				<div class="cb-gradient"></div>
+				<div class="cb-ticks">
+					{#each colorbar_ticks.toReversed() as tk}
+						<span class="cb-tick">{tk.label}</span>
+					{/each}
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	<div class="hud">
 		<span class="coord">x {(cursor_world.x * 1e6).toFixed(1)} µm</span>
@@ -747,5 +787,60 @@
 		pointer-events: none;
 	}
 	.hud .stats { color: var(--text-muted); }
+
+	.colorbar {
+		position: absolute;
+		top: 10px;
+		right: 50px;        /* leave room for the toolbar at top:10/right:10 */
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 6px 8px;
+		background: rgba(24, 24, 29, 0.75);
+		border: 1px solid var(--border-subtle);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+		pointer-events: none;
+		z-index: 5;
+	}
+	.cb-title {
+		text-align: center;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--accent);
+	}
+	.cb-body {
+		display: flex;
+		gap: 6px;
+		align-items: stretch;
+		height: 200px;
+	}
+	.cb-gradient {
+		width: 12px;
+		/* Inferno: black → purple → red → orange → yellow */
+		background: linear-gradient(
+			to top,
+			#000004 0%,
+			#1B0C42 14%,
+			#420A68 28%,
+			#6A176E 43%,
+			#932667 57%,
+			#BB3754 71%,
+			#DD513A 85%,
+			#FCFFA4 100%
+		);
+	}
+	.cb-ticks {
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+		text-align: left;
+	}
+	.cb-tick {
+		font-size: 9px;
+		line-height: 1;
+		color: var(--text-muted);
+	}
 
 </style>
