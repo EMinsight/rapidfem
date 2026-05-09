@@ -606,21 +606,40 @@
 		ondblclick={on_dbl_click}
 	></canvas>
 
-	{#if tag_legend.length > 0}
-		<div class="legend">
-			{#each tag_legend as l}
-				<button
-					class="legend-item"
-					class:hidden={!visible_tags.has(l.tag)}
-					onclick={() => toggle_tag(l.tag)}
-					title="Click to toggle"
-				>
-					<span class="swatch" style="background: {l.color};"></span>
-					<span class="legend-name">{l.name}</span>
-				</button>
-			{/each}
-		</div>
-	{/if}
+	<div class="overlay-stack">
+		{#if tag_legend.length > 0}
+			<div class="overlay-panel">
+				<div class="op-title">Layers</div>
+				<div class="op-body">
+					{#each tag_legend as l}
+						<button
+							class="legend-item"
+							class:hidden={!visible_tags.has(l.tag)}
+							onclick={() => toggle_tag(l.tag)}
+							title="Click to toggle"
+						>
+							<span class="swatch" style="background: {l.color};"></span>
+							<span class="legend-name">{l.name}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if mode === 'field' && field_range}
+			<div class="overlay-panel">
+				<div class="op-title">|E| · V/m · log</div>
+				<div class="op-body cb-body">
+					<div class="cb-gradient"></div>
+					<div class="cb-ticks">
+						{#each colorbar_ticks.toReversed() as tk}
+							<span class="cb-tick">{tk.label}</span>
+						{/each}
+					</div>
+				</div>
+			</div>
+		{/if}
+	</div>
 
 	<div class="viewer-toolbar">
 		<button class="tb" onclick={zoom_in}><span class="tip">Zoom in<kbd>+</kbd></span>+</button>
@@ -695,24 +714,44 @@
 	}
 	canvas:active { cursor: grabbing; }
 
-	.legend {
+	.overlay-stack {
 		position: absolute;
 		top: 10px;
 		left: 10px;
-		background: rgba(24, 24, 29, 0.75);
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		max-height: calc(100% - 20px);
+	}
+	.overlay-panel {
+		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
-		padding: 4px;
+		padding: 8px 10px;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 96px;
+	}
+	.op-title {
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 1.5px;
+		color: var(--accent);
+		font-weight: 600;
+	}
+	.op-body {
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
 	}
 	.legend-item {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 3px 6px;
+		padding: 3px 4px;
+		margin: 0 -4px;
 		background: transparent;
 		border: 0;
 		color: var(--text-muted);
@@ -788,37 +827,15 @@
 	}
 	.hud .stats { color: var(--text-muted); }
 
-	.colorbar {
-		position: absolute;
-		top: 10px;
-		right: 50px;        /* leave room for the toolbar at top:10/right:10 */
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 6px 8px;
-		background: rgba(24, 24, 29, 0.75);
-		border: 1px solid var(--border-subtle);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		pointer-events: none;
-		z-index: 5;
-	}
-	.cb-title {
-		text-align: center;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--accent);
-	}
 	.cb-body {
-		display: flex;
-		gap: 6px;
+		flex-direction: row;
+		gap: 8px;
 		align-items: stretch;
-		height: 200px;
+		height: 180px;
 	}
 	.cb-gradient {
-		width: 12px;
-		/* Inferno: black → purple → red → orange → yellow */
+		width: 10px;
+		flex-shrink: 0;
 		background: linear-gradient(
 			to top,
 			#000004 0%,
@@ -838,7 +855,7 @@
 		text-align: left;
 	}
 	.cb-tick {
-		font-size: 9px;
+		font-size: var(--fs-xs);
 		line-height: 1;
 		color: var(--text-muted);
 	}
