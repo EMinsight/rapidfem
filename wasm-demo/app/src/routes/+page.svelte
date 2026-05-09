@@ -68,9 +68,21 @@
 
 	let abort_controller: AbortController | null = null;
 
-	// Auto-load mesh when example changes so the geometry is visible before run
+	// Auto-load mesh when example changes so the geometry is visible before run.
+	// Also: discard any sweep results from the previous example — node indices
+	// won't match the new mesh, so the field/S-params are meaningless after
+	// the switch.
 	$effect(() => {
 		const url = example.msh_url;
+		smats = [];
+		freqs = [];
+		field_results = [];
+		field_freq_idx = 0;
+		field_exc_idx = 0;
+		log_lines = [];
+		status = 'idle';
+		progress = 0;
+		if (display === 'field') display = 'geometry';
 		(async () => {
 			try {
 				const t = await fetch(url).then((r) => r.text());
