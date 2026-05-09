@@ -35,7 +35,7 @@ def build_microstrip_demo(out_msh: Path, out_toml: Path,
                           length_um=200.0, width_um=5.0,
                           freqs_hz=None):
     if freqs_hz is None:
-        freqs_hz = [1e9 + i * 0.5e9 for i in range(11)]   # 1..6 GHz, 11 pts
+        freqs_hz = [1e9, 2e9, 3e9, 4e9, 5e9]   # 5 pts to keep WASM memory usage modest
     um = 1e-6
 
     with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
@@ -92,9 +92,12 @@ def build_microstrip_demo(out_msh: Path, out_toml: Path,
             air.faces.where(lambda c, _, s=s, f=foot[0]: abs(c[0] - s * f / 2) < 1e-12).name = "abc"
             air.faces.where(lambda c, _, s=s, f=foot[1]: abs(c[1] - s * f / 2) < 1e-12).name = "abc"
 
+        # Coarser mesh than the validation example (was maxh=15um → 15k tets,
+        # ~500MB LU working set, OOM in WASM). 30um → ~3-4k tets, fits well
+        # under the WASM linear-memory ceiling.
         builder = (
             rapidfem.SimulationBuilder()
-            .from_geometry(g, maxh=15 * um)
+            .from_geometry(g, maxh=30 * um)
             .frequencies(freqs_hz)
             .pec("met5", "gnd")
             .lumped_port("p1", direction=(0, 0, 1), z0=50.0)

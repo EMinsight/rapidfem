@@ -38,7 +38,7 @@ def make_spiral_gds(path, *, dout_um=130, n_turns=2, width_um=10, spacing_um=4):
 def build_spiral_demo(out_msh: Path, out_toml: Path,
                        freqs_hz=None, dout_um=130, n_turns=2):
     if freqs_hz is None:
-        freqs_hz = [0.5e9 + i * 0.5e9 for i in range(11)]   # 0.5..5.5 GHz
+        freqs_hz = [0.5e9, 1e9, 2e9, 3e9, 4e9]   # 5 pts for WASM memory
     um = 1e-6
 
     with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
@@ -92,7 +92,7 @@ def build_spiral_demo(out_msh: Path, out_toml: Path,
 
         builder = (
             rapidfem.SimulationBuilder()
-            .from_geometry(g, maxh=15 * um)
+            .from_geometry(g, maxh=25 * um)   # coarse for WASM memory
             .frequencies(freqs_hz)
             .pec("met5", "p1_gnd", "p2_gnd")
             .lumped_port("p1", direction=(0, 0, 1), z0=50.0)
