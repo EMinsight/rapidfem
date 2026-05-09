@@ -29,6 +29,9 @@ export type SMatrix = SParam[][]; // [obs][exc]
 export interface FrequencyResult {
 	freq_hz: number;
 	S: SMatrix;
+	/** Per-excitation nodal |E| magnitudes (V/m).
+	 *  fields[exc] has length = mesh.n_nodes. */
+	fields: Float32Array[];
 	solve_time_s: number;
 }
 
@@ -87,11 +90,14 @@ export async function run_streaming_sweep(cfg: SweepConfig) {
 		const result = run_sweep(mesh_bytes, single_toml) as {
 			frequencies_hz: number[];
 			n_driven: number;
+			n_nodes: number;
 			sparams_flat: number[];
+			fields_flat: number[];
 			solve_time_s: number;
 		};
 		const dt = (performance.now() - t0) / 1000;
 		const n = result.n_driven;
+		const nN = result.n_nodes;
 		const stride = n * n * 2;
 		const S: SMatrix = [];
 		for (let obs = 0; obs < n; obs++) {
@@ -104,7 +110,14 @@ export async function run_streaming_sweep(cfg: SweepConfig) {
 			}
 			S.push(row);
 		}
-		await on_point(k, frequencies_hz.length, { freq_hz: f, S, solve_time_s: dt });
+		// Field flat is laid out [exc][node] for this single-frequency call.
+		const fields: Float32Array[] = [];
+		for (let exc = 0; exc < n; exc++) {
+			fields.push(
+				new Float32Array(result.fields_flat.slice(exc * nN, (exc + 1) * nN))
+			);
+		}
+		await on_point(k, frequencies_hz.length, { freq_hz: f, S, fields, solve_time_s: dt });
 	}
 	on_status?.('done');
 }

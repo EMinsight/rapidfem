@@ -9,10 +9,14 @@
 
 	let {
 		mesh = null,
-		mode = 'geometry'
+		mode = 'geometry',
+		field = null
 	}: {
 		mesh?: MeshData | null;
-		mode?: 'geometry' | 'mesh' | 'both';
+		mode?: 'geometry' | 'mesh' | 'both' | 'field';
+		/** Per-node scalar (e.g. |E| in V/m). Length must match mesh.n_nodes.
+		 *  Activates field-colormap rendering when set. */
+		field?: Float32Array | null;
 	} = $props();
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
@@ -217,10 +221,34 @@
 		if (!gl_state || !mesh) return;
 		clearMeshes(gl_state);
 
-		const showFaces = mode === 'geometry' || mode === 'both';
+		const showFaces = mode === 'geometry' || mode === 'both' || mode === 'field';
 		const showWire = mode === 'mesh' || mode === 'both';
+		const useField = mode === 'field' && field != null;
+		// Compute log-scaled field per node (|E| spans many orders of magnitude
+		// across a passive RFIC structure).
+		let f_norm: Float32Array | null = null;
+		if (useField && field) {
+			let max_v = 0;
+			for (let i = 0; i < field.length; i++) {
+				if (field[i] > max_v) max_v = field[i];
+			}
+			f_norm = new Float32Array(field.length);
+			if (max_v > 0) {
+				const log_max = Math.log10(max_v + 1e-30);
+				const log_floor = log_max - 4; // 4 decades below max
+				for (let i = 0; i < field.length; i++) {
+					const v = field[i];
+					if (v <= 0) f_norm[i] = 0;
+					else {
+						const l = Math.log10(v);
+						f_norm[i] = Math.max(0, Math.min(1, (l - log_floor) / (log_max - log_floor)));
+					}
+				}
+			}
+		}
 
 		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
+		field_norm = f_norm;   // visible to push_group below
 
 		if (showFaces) {
 			// 1) Named surface tris
@@ -277,6 +305,7 @@
 		needs_rebuild = false;
 	}
 
+	let field_norm: Float32Array | null = null;   // mutated in rebuild() before push_group calls
 	function push_group(idx: number[], kind: Kind, name: string, tag: number) {
 		if (!gl_state || !mesh) return;
 		const ntri = idx.length / 3;
@@ -320,13 +349,24 @@
 		// Push dielectric volume hulls slightly back so coplanar conductor
 		// plates win the depth test cleanly.
 		const offset: [number, number] | undefined = kind === 'dielectric' ? [2, 2] : undefined;
+		// Per-vertex scalar lookup from the global per-node field array
+		let scalars: Float32Array | undefined;
+		if (field_norm) {
+			scalars = new Float32Array(ntri * 3);
+			for (let t = 0; t < ntri; t++) {
+				for (let v = 0; v < 3; v++) {
+					scalars[t * 3 + v] = field_norm[idx[t * 3 + v]];
+				}
+			}
+		}
 		addMesh(
 			gl_state,
 			Float32Array.from(pos64),
 			Float32Array.from(norm64),
 			color_for(kind, name),
 			tag,
-			offset
+			offset,
+			scalars
 		);
 	}
 
@@ -439,13 +479,20 @@
 		};
 	});
 
-	// React to mesh / mode changes
+	// React to mesh / mode / field changes
 	$effect(() => {
-		mesh; mode;
+		mesh; mode; field;
 		if (!mounted || !gl_state) return;
-		if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		if (mesh && needs_rebuild === false) {
+			// Only refit camera on mesh change, not on every field/mode flip
+		}
 		needs_rebuild = true;
 		render_frame();
+	});
+
+	// Refit camera only when mesh changes
+	$effect(() => {
+		if (mesh && mounted) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
 	});
 
 	const tag_legend = $derived.by(() => {

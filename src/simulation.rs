@@ -116,6 +116,39 @@ impl Simulation {
         }
     }
 
+    /// For a single frequency's solution vector, return |E| (V/m) averaged
+    /// at every mesh node by sampling the Nedelec-2 basis in each tet that
+    /// contains the node and averaging the resulting magnitudes.
+    /// Returned `Vec<f32>` has length `mesh.n_nodes()`.
+    pub fn nodal_field_magnitudes(&self, solution: &[C64]) -> Vec<f32> {
+        let n_nodes = self.mesh.n_nodes();
+        let mut sum = vec![0.0f64; n_nodes];
+        let mut count = vec![0u32; n_nodes];
+        // Sample at each tet's centroid; assign that magnitude to each of its
+        // 4 vertices. Cheap, gives a smooth nodal field via averaging.
+        for ti in 0..self.mesh.n_tets() {
+            let tet = &self.mesh.tets[ti];
+            let mut cx = 0.0; let mut cy = 0.0; let mut cz = 0.0;
+            for k in 0..4 {
+                let p = self.mesh.nodes[tet[k]];
+                cx += p[0]; cy += p[1]; cz += p[2];
+            }
+            cx /= 4.0; cy /= 4.0; cz /= 4.0;
+            let (ex, ey, ez) = crate::interp::eval_field_in_tet(
+                &self.mesh, &self.basis, solution, ti, cx, cy, cz,
+            );
+            let mag = (ex.norm_sqr() + ey.norm_sqr() + ez.norm_sqr()).sqrt();
+            for k in 0..4 {
+                sum[tet[k]] += mag;
+                count[tet[k]] += 1;
+            }
+        }
+        sum.into_iter()
+            .zip(count.into_iter())
+            .map(|(s, c)| if c == 0 { 0.0 } else { (s / c as f64) as f32 })
+            .collect()
+    }
+
     /// Run a frequency sweep and extract S-parameters.
     pub fn run_sweep(&self) -> SweepResult {
         let frequencies = self.frequencies();

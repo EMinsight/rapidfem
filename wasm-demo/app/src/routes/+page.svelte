@@ -22,9 +22,16 @@
 	let smats = $state<SMatrix[]>([]);
 
 	let mesh_data = $state<MeshData | null>(null);
-	type Display = 'geometry' | 'mesh' | 'both' | 'plots';
+	type Display = 'geometry' | 'mesh' | 'both' | 'field' | 'plots';
 	let display = $state<Display>('geometry');
 	let viewer: MeshViewer | undefined = $state();
+	// Field viz: which freq + excitation to show
+	let field_freq_idx = $state(0);
+	let field_exc_idx = $state(0);
+	let field_results = $state<{ freq_hz: number; fields: Float32Array[] }[]>([]);
+	let active_field = $derived<Float32Array | null>(
+		field_results[field_freq_idx]?.fields[field_exc_idx] ?? null
+	);
 
 	// Resizable sidebar
 	let sidebar_width = $state(280);
@@ -87,6 +94,7 @@
 		log_lines = [];
 		smats = [];
 		freqs = [];
+		field_results = [];
 		display = 'plots';
 		abort_controller = new AbortController();
 
@@ -109,6 +117,7 @@
 				on_point: (k, total, point) => {
 					freqs = [...freqs, point.freq_hz];
 					smats = [...smats, point.S];
+					field_results = [...field_results, { freq_hz: point.freq_hz, fields: point.fields }];
 					progress = (k + 1) / total;
 					const s11 = Math.hypot(point.S[0][0].re, point.S[0][0].im);
 					const s21 = point.S.length >= 2
@@ -209,13 +218,39 @@
 				<button class="vt" class:active={display === 'geometry'} onclick={() => (display = 'geometry')}>Geometry</button>
 				<button class="vt" class:active={display === 'mesh'} onclick={() => (display = 'mesh')}>Mesh</button>
 				<button class="vt" class:active={display === 'both'} onclick={() => (display = 'both')}>Both</button>
+				<button class="vt" class:active={display === 'field'} disabled={field_results.length === 0} onclick={() => (display = 'field')}>Field</button>
 				<button class="vt" class:active={display === 'plots'} onclick={() => (display = 'plots')}>Plots</button>
+				{#if display === 'field' && field_results.length > 0}
+					<div class="field-controls">
+						<label>
+							freq
+							<select bind:value={field_freq_idx}>
+								{#each field_results as r, i}
+									<option value={i}>{(r.freq_hz / 1e9).toFixed(2)} GHz</option>
+								{/each}
+							</select>
+						</label>
+						<label>
+							exc
+							<select bind:value={field_exc_idx}>
+								{#each field_results[0]?.fields ?? [] as _, i}
+									<option value={i}>port {i + 1}</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+				{/if}
 			</div>
 			<div class="view-body">
 				{#if display === 'plots'}
 					<ResultsPanel {freqs} {smats} metrics={example.metrics} />
 				{:else}
-					<MeshViewer bind:this={viewer} mesh={mesh_data} mode={display} />
+					<MeshViewer
+						bind:this={viewer}
+						mesh={mesh_data}
+						mode={display === 'field' ? 'field' : display}
+						field={display === 'field' ? active_field : null}
+					/>
 				{/if}
 			</div>
 		</main>
@@ -331,8 +366,35 @@
 		transition: color var(--transition);
 	}
 	.vt:hover { color: var(--text-muted); }
+	.vt:disabled { color: var(--text-dim); cursor: not-allowed; }
+	.vt:disabled:hover { color: var(--text-dim); }
 	.vt.active {
 		color: var(--accent);
+	}
+	.field-controls {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		margin-left: auto;
+		padding-right: 12px;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.field-controls label {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.field-controls select {
+		background: var(--bg-inset);
+		border: 1px solid var(--input-border);
+		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		padding: 2px 4px;
 	}
 	.view-body {
 		flex: 1;

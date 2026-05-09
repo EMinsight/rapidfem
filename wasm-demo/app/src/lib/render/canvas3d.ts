@@ -30,10 +30,10 @@ interface Mesh {
 	color: [number, number, number];
 	tag: number;
 	visible: boolean;
-	/** Polygon offset (factor, units). Positive pushes geometry away from
-	 *  camera, used on dielectric hulls so coplanar conductors win the depth
-	 *  test and don't z-fight. */
 	depth_offset?: [number, number];
+	/** Has a per-vertex scalar buffer attached (location=2). When true, the
+	 *  shader uses Viridis colormap on it instead of the flat color. */
+	has_scalar?: boolean;
 }
 
 interface LineMesh {
@@ -54,6 +54,7 @@ export interface GLState {
 	uLightDir: WebGLUniformLocation;
 	uAmbient: WebGLUniformLocation;
 	uZFlip: WebGLUniformLocation;
+	uColormap: WebGLUniformLocation;
 	lineProgram: WebGLProgram;
 	uLineMVP: WebGLUniformLocation;
 	uLineColor: WebGLUniformLocation;
@@ -68,10 +69,12 @@ const VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
+layout(location=2) in float aScalar;   // optional per-vertex scalar (0..1) for colormap
 uniform mat4 uMVP;
 uniform mat3 uNormalMat;
 uniform float uZFlip;
 out vec3 vNormal;
+out float vScalar;
 void main() {
 	vec3 n = aNormal;
 	n.z *= uZFlip;
@@ -79,18 +82,34 @@ void main() {
 	vec3 pos = aPos;
 	pos.z *= uZFlip;
 	gl_Position = uMVP * vec4(pos, 1.0);
+	vScalar = aScalar;
 }`;
 
 const FS = `#version 300 es
 precision highp float;
 in vec3 vNormal;
+in float vScalar;
 uniform vec3 uColor;
 uniform vec3 uLightDir;
 uniform float uAmbient;
+uniform float uColormap;   // 0 = uniform color, 1 = viridis on vScalar
 out vec4 fragColor;
+
+// 5-stop polynomial Viridis approximation. Cheap, no LUT texture needed.
+vec3 viridis(float t) {
+	t = clamp(t, 0.0, 1.0);
+	const vec3 c0 = vec3(0.2670, 0.0049, 0.3294);
+	const vec3 c1 = vec3(0.1058, 1.4046, 1.3845);
+	const vec3 c2 = vec3(-3.232, -0.353, 1.6053);
+	const vec3 c3 = vec3(2.886, 0.892, -8.1779);
+	const vec3 c4 = vec3(0.106, -0.910, 4.1239);
+	return c0 + t*(c1 + t*(c2 + t*(c3 + t*c4)));
+}
+
 void main() {
 	float diff = max(dot(normalize(vNormal), uLightDir), 0.0);
-	vec3 lit = uColor * (uAmbient + (1.0 - uAmbient) * diff);
+	vec3 base = mix(uColor, viridis(vScalar), uColormap);
+	vec3 lit = base * (uAmbient + (1.0 - uAmbient) * diff);
 	fragColor = vec4(lit, 1.0);
 }`;
 
@@ -227,6 +246,7 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		uLightDir: gl.getUniformLocation(program, 'uLightDir')!,
 		uAmbient: gl.getUniformLocation(program, 'uAmbient')!,
 		uZFlip: gl.getUniformLocation(program, 'uZFlip')!,
+		uColormap: gl.getUniformLocation(program, 'uColormap')!,
 		lineProgram,
 		uLineMVP: gl.getUniformLocation(lineProgram, 'uMVP')!,
 		uLineColor: gl.getUniformLocation(lineProgram, 'uColor')!,
@@ -273,7 +293,8 @@ export function addMesh(
 	normals: Float32Array,
 	color: [number, number, number],
 	tag = 0,
-	depth_offset?: [number, number]
+	depth_offset?: [number, number],
+	scalars?: Float32Array          // one scalar per vertex (range [0,1] for viridis)
 ): void {
 	const { gl } = state;
 	const vao = gl.createVertexArray()!;
@@ -291,8 +312,24 @@ export function addMesh(
 	gl.enableVertexAttribArray(1);
 	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 
+	const buffers = [posBuf, normBuf];
+	let has_scalar = false;
+	if (scalars) {
+		const sBuf = gl.createBuffer()!;
+		gl.bindBuffer(gl.ARRAY_BUFFER, sBuf);
+		gl.bufferData(gl.ARRAY_BUFFER, scalars, gl.STATIC_DRAW);
+		gl.enableVertexAttribArray(2);
+		gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
+		buffers.push(sBuf);
+		has_scalar = true;
+	} else {
+		// Provide a constant 0 for location=2 so the shader's vScalar is defined
+		gl.disableVertexAttribArray(2);
+		gl.vertexAttrib1f(2, 0);
+	}
+
 	gl.bindVertexArray(null);
-	state.meshes.push({ vao, buffers: [posBuf, normBuf], count: positions.length / 3, color, tag, visible: true, depth_offset });
+	state.meshes.push({ vao, buffers, count: positions.length / 3, color, tag, visible: true, depth_offset, has_scalar });
 }
 
 /** Line segments. positions: 3 components per vertex, every two vertices = one segment. */
@@ -374,6 +411,7 @@ export function render3D(
 			offset_on = false;
 		}
 		gl.uniform3f(state.uColor, m.color[0], m.color[1], m.color[2]);
+		gl.uniform1f(state.uColormap, m.has_scalar ? 1.0 : 0.0);
 		gl.bindVertexArray(m.vao);
 		gl.drawArrays(gl.TRIANGLES, 0, m.count);
 	}
