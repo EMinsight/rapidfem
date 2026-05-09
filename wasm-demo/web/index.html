@@ -33,7 +33,15 @@
   <pre id="log"></pre>
 
   <script type="module">
-    import init, { run_sweep } from "../pkg/rapidfem_wasm.js";
+  (async () => {
+    // Cache-bust the WASM glue + binary on every page load. Without this,
+    // browsers happily serve a stale .wasm even after a "hard" refresh.
+    const BUILD = Date.now();
+    const mod = await import(`../pkg/rapidfem_wasm.js?v=${BUILD}`);
+    const init = mod.default;
+    const run_sweep = mod.run_sweep;
+    // Ensure the actual .wasm binary is also fetched fresh.
+    const WASM_URL = `../pkg/rapidfem_wasm_bg.wasm?v=${BUILD}`;
 
     const log = (msg, cls = "") => {
       const el = document.getElementById("log");
@@ -142,7 +150,7 @@
       const ex = EXAMPLES[sel];
       btn.disabled = true; status.textContent = "loading WASM…";
       try {
-        await init();
+        await init(WASM_URL);
         status.textContent = `fetching ${ex.label}…`;
         const meshBytes = new Uint8Array(await (await fetch(ex.msh)).arrayBuffer());
         const configToml = await (await fetch(ex.toml)).text();
@@ -199,6 +207,7 @@
         btn.disabled = false;
       }
     });
+  })();
   </script>
 </body>
 </html>
