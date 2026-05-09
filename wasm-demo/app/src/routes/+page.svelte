@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '$lib/components/fields.css';
+	import { untrack } from 'svelte';
 	import { EXAMPLES, type DemoExample } from '$lib/examples';
 	import { run_streaming_sweep, abort_solver, type SMatrix } from '$lib/wasm';
 	import ParamSidebar from '$lib/components/ParamSidebar.svelte';
@@ -68,21 +69,22 @@
 
 	let abort_controller: AbortController | null = null;
 
-	// Auto-load mesh when example changes so the geometry is visible before run.
-	// Also: discard any sweep results from the previous example — node indices
-	// won't match the new mesh, so the field/S-params are meaningless after
-	// the switch.
+	// Reload mesh + reset all sweep results when the EXAMPLE changes.
+	// Reads from `display` are untracked so view-tab switches don't retrigger
+	// this and wipe an in-flight sweep's progress/log.
 	$effect(() => {
 		const url = example.msh_url;
-		smats = [];
-		freqs = [];
-		field_results = [];
-		field_freq_idx = 0;
-		field_exc_idx = 0;
-		log_lines = [];
-		status = 'idle';
-		progress = 0;
-		if (display === 'field') display = 'geometry';
+		untrack(() => {
+			smats = [];
+			freqs = [];
+			field_results = [];
+			field_freq_idx = 0;
+			field_exc_idx = 0;
+			log_lines = [];
+			status = 'idle';
+			progress = 0;
+			if (display === 'field') display = 'geometry';
+		});
 		(async () => {
 			try {
 				const t = await fetch(url).then((r) => r.text());
