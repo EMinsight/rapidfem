@@ -7,6 +7,7 @@
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import StatusPanel from '$lib/components/StatusPanel.svelte';
 	import ExampleSelect from '$lib/components/ExampleSelect.svelte';
+	import Select from '$lib/components/Select.svelte';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import { parse_msh, type MeshData } from '$lib/msh';
 	import { L_eq_pH, Q_factor, find_srf } from '$lib/sparams';
@@ -235,23 +236,27 @@
 				{#if display === 'field' && field_results.length > 0}
 					<div class="field-controls">
 						<label>
-							freq
-							<select bind:value={field_freq_idx}>
-								{#each field_results as r, i}
-									<option value={i}>{(r.freq_hz / 1e9).toFixed(2)} GHz</option>
-								{/each}
-							</select>
+							<span>freq</span>
+							<Select
+								bind:value={field_freq_idx}
+								options={field_results.map((r, i) => ({
+									value: i,
+									label: `${(r.freq_hz / 1e9).toFixed(2)} GHz`
+								}))}
+							/>
 						</label>
 						<label>
-							exc
-							<select bind:value={field_exc_idx}>
-								{#each field_results[0]?.fields ?? [] as _, i}
-									<option value={i}>port {i + 1}</option>
-								{/each}
-							</select>
+							<span>exc</span>
+							<Select
+								bind:value={field_exc_idx}
+								options={(field_results[0]?.fields ?? []).map((_, i) => ({
+									value: i,
+									label: `port ${i + 1}`
+								}))}
+							/>
 						</label>
 						<label>
-							density
+							<span>density</span>
 							<input type="range" min="1" max="10" step="1" bind:value={field_density} />
 						</label>
 					</div>
@@ -405,26 +410,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 	}
-	.field-controls select {
-		appearance: none;
-		background: var(--input-bg);
-		border: 1px solid var(--input-border);
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		font-weight: 500;
-		padding: 4px 22px 4px 8px;
-		text-transform: none;
-		letter-spacing: 0;
-		cursor: pointer;
-		background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%237d7a85' d='M0 0L4 5L8 0Z'/%3E%3C/svg%3E");
-		background-repeat: no-repeat;
-		background-position: right 8px center;
-		background-size: 8px 5px;
-		transition: border-color var(--transition), color var(--transition);
-	}
-	.field-controls select:hover { border-color: var(--accent); color: var(--text); }
-	.field-controls select:focus { outline: none; border-color: var(--accent); }
 	.field-controls input[type='range'] {
 		appearance: none;
 		width: 100px;
