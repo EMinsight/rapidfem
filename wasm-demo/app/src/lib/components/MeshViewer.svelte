@@ -641,7 +641,6 @@
 						{/each}
 					</div>
 				</div>
-				<div class="op-foot">log scale</div>
 			</div>
 		{/if}
 	</div>
@@ -883,14 +882,6 @@
 		line-height: 1;
 		color: var(--text-muted);
 		white-space: nowrap;
-	}
-	.op-foot {
-		text-align: center;
-		color: var(--text-dim);
-		font-size: 9px;
-		text-transform: uppercase;
-		letter-spacing: 1px;
-		padding-top: 2px;
 	}
 
 </style>
