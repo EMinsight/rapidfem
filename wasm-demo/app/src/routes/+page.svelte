@@ -5,6 +5,7 @@
 	import ParamSidebar from '$lib/components/ParamSidebar.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import StatusPanel from '$lib/components/StatusPanel.svelte';
+	import ExampleSelect from '$lib/components/ExampleSelect.svelte';
 	import { L_eq_pH, Q_factor, find_srf } from '$lib/sparams';
 
 	let selected_id = $state('spiral');
@@ -98,15 +99,15 @@
 </svelte:head>
 
 <div class="app">
-	<header class="topbar">
-		<div class="brand">
-			<span class="brand-name">rapidfem</span>
-			<span class="brand-sep">·</span>
-			<span class="brand-tag">in-browser FEM</span>
-		</div>
-		<div class="ext-link">
-			<a href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
-		</div>
+	<header>
+		<a class="brand" href="/">
+			<span class="brand-text">rapidfem</span>
+		</a>
+		<span class="nav-sep"></span>
+		<nav class="tabs">
+			<a class="tab active" href="/">Demo</a>
+			<a class="tab" href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
+		</nav>
 	</header>
 
 	<div class="body">
@@ -114,16 +115,7 @@
 			<ParamSidebar>
 				<div class="param-section">
 					<h4>Example</h4>
-					<div class="f">
-						<span>Demo</span>
-						<div class="fi">
-							<select bind:value={selected_id} disabled={running}>
-								{#each Object.values(EXAMPLES) as ex}
-									<option value={ex.id}>{ex.label}</option>
-								{/each}
-							</select>
-						</div>
-					</div>
+					<ExampleSelect bind:value={selected_id} />
 					<div class="desc">{example.description}</div>
 				</div>
 
@@ -153,45 +145,54 @@
 		height: 100vh;
 		background: var(--bg);
 	}
-	.topbar {
+	header {
 		display: flex;
-		justify-content: space-between;
 		align-items: center;
-		padding: 8px 16px;
+		padding: 0 16px;
+		height: 36px;
 		background: var(--bg-surface);
 		border-bottom: 1px solid var(--border);
-		height: 40px;
 		flex-shrink: 0;
+		gap: 12px;
 	}
 	.brand {
+		text-decoration: none;
 		display: flex;
-		align-items: baseline;
-		gap: 8px;
+		align-items: center;
 	}
-	.brand-name {
+	.brand-text {
 		font-family: var(--font-mono);
 		font-size: var(--fs-md);
 		font-weight: 600;
 		color: var(--text);
+		letter-spacing: -0.01em;
 	}
-	.brand-sep { color: var(--text-dim); }
-	.brand-tag {
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 1px;
+	.tabs {
+		display: flex;
+		gap: 0;
+		height: 100%;
 	}
-	.ext-link a {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
+	.tab {
+		display: flex;
+		align-items: center;
+		padding: 0 14px;
 		font-size: var(--fs-xs);
+		font-weight: 600;
+		font-family: var(--font-mono);
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
 		text-decoration: none;
 		text-transform: uppercase;
-		letter-spacing: 1px;
 		transition: color var(--transition);
 	}
-	.ext-link a:hover { color: var(--accent); }
+	.tab:hover { color: var(--text-muted); }
+	.tab.active { color: var(--accent); }
+	.nav-sep {
+		width: 1px;
+		height: 100%;
+		background: var(--border);
+		flex-shrink: 0;
+	}
 
 	.body {
 		display: grid;
