@@ -134,7 +134,12 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         air.faces.where(lambda c, _, s=s, f=fxy[1]: abs(c[1] - cy - s * f / 2) < 1e-12).name = "abc"
 
     # ── SimulationBuilder ─────────────────────────────────────────────────
-    metal_pec_names = [L["name"] for L in stack if L["type"] == "metal"]
+    # Only metals that actually have polygons (or host a port extension pad)
+    # become PEC physical groups in the geometry.
+    metals_used = {p["layer"] for p in spec["polygons"]
+                   if (_layer_by_name(stack, p["layer"]) or {}).get("type") == "metal"}
+    metals_used.update(p["layer"] for p in spec["ports"])
+    metal_pec_names = sorted(metals_used)
     gnd_names = [f"{p['name']}_gnd" for p in spec["ports"]]
 
     builder = (
