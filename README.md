@@ -1,23 +1,37 @@
 # RapidFEM
 
-Production frequency-domain electromagnetic FEM solver in Rust. Exact port of [EMerge](https://github.com/rfen/emerge)'s computational path using Nedelec second-kind elements.
+Frequency-domain electromagnetic FEM solver written in Rust. Second-kind Nedelec
+edge elements, complex-symmetric sparse linear algebra, native + WebAssembly
+targets.
 
 ## Features
 
-- **Nedelec-2 elements** — 20 DOFs/tet, second-kind edge elements
-- **Rectangular waveguide ports** — Robin BC with arbitrary TE modes
-- **Lumped ports** — TEM excitation with multi-line voltage-based S-parameters
-- **Absorbing boundary conditions** — Order 1 and 2 with selectable type (A-E)
-- **Lossy materials** — Complex permittivity with loss tangent and conductivity
-- **MKL PARDISO solver** — Complex-symmetric LDLt (mtype=6), 7-10x faster than pure Rust. Optional: falls back to faer if MKL not installed
-- **Frequency sweep** — Cached E/B matrices, symbolic LU reuse across frequencies
-- **Eigenmode solver** — Shift-invert Lanczos with PARDISO, complex-symmetric. Cavity / waveguide modes.
-- **Adaptive mesh refinement** — Residual error estimator (volume residual + face jumps), Dörfler marking, gmsh size-field export.
-- **Far-field radiation** — Near-field-to-far-field transform on a closed surface (NFFT). E_θ, E_φ, directivity (dBi), 2D cuts. *(experimental, on `feature/patch-antenna-farfield`)*
-- **Touchstone export** — S1P/S2P/SNP output, plus VTK field export for ParaView
-- **Parallel assembly** — rayon-parallelized element matrix computation
+- **Nedelec-2 elements** — 20 DOFs per tetrahedron, vector edge basis for the
+  curl–curl form of Maxwell's equations
+- **Excitations** — rectangular waveguide ports (arbitrary TE modes), lumped
+  ports (TEM, multi-line voltage integral), and absorbing boundary conditions
+  of order 1 and 2 (selectable coefficient types A–E)
+- **PML** — anisotropic stretched-coordinate perfectly matched layer
+  (configurable thickness, polynomial grading, peak attenuation)
+- **Lossy materials** — complex permittivity with loss tangent + conductivity;
+  frequency-independent caching speeds up sweeps
+- **Sparse solvers** — MKL PARDISO (complex-symmetric LDLᵀ, fastest path on
+  Windows/Linux) with a pure-Rust [`faer`](https://github.com/sarah-quinones/faer-rs)
+  fallback for WASM and other targets
+- **Frequency sweep** — assembles E/B once, refactors only the frequency-
+  dependent K per point, reuses the symbolic LU pattern
+- **Eigenmode solver** — shift-invert Lanczos on the complex-symmetric system
+  for cavity / waveguide modes
+- **Adaptive refinement** — residual error estimator (volume residual + face
+  jumps) with Dörfler marking, exports a size field for Gmsh re-meshing
+- **In-browser meshing** — companion `rapidfem-mesher` crate produces tagged
+  tetrahedral meshes from a declarative `MeshSpec` (layered RFIC-style stacks
+  with conductors, ports, and PML). No external meshing tool required for the
+  WASM workflow
+- **Output** — Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT
+- **Parallel assembly** — rayon-based element matrix evaluation on native
 
-## Quick Start
+## Quick start
 
 ```bash
 cargo build --release
@@ -26,7 +40,8 @@ cargo run --release -- config.toml
 
 ## Configuration
 
-Simulations are defined via TOML config files. All fields have sensible defaults — only `[mesh]`, `[pec]`, and at least one `[[ports]]` entry are required.
+Simulations are described by a TOML file. Required sections: `[mesh]`,
+`[pec]`, and at least one `[[ports]]` entry.
 
 ### Minimal example
 
@@ -52,124 +67,135 @@ tags = [1]
 touchstone = "result.s2p"
 ```
 
-### Full configuration reference
+### Full reference
 
 ```toml
 [mesh]
-file = "model.msh"              # Gmsh .msh file (v4 format)
+file = "model.msh"               # Gmsh .msh, v4 format
 
 [frequency]
-values = [10.0e9]               # Explicit frequency list (Hz)
+values = [10.0e9]                # explicit list (Hz)
 # OR
-range = [9.0e9, 11.0e9, 21]     # [start, stop, n_points]
+range = [9.0e9, 11.0e9, 21]      # [start, stop, n_points]
 
-# Materials (optional, repeatable)
+# Materials — repeatable
 [[materials]]
-volume_tag = 2                   # Gmsh physical volume tag
-er = 4.0                        # Relative permittivity (default: 1.0)
-ur = 1.0                        # Relative permeability (default: 1.0)
-tand = 0.01                     # Loss tangent (default: 0.0)
-conductivity = 0.0              # Conductivity in S/m (default: 0.0)
+volume_tag = 2
+er = 4.0                         # default 1.0
+ur = 1.0                         # default 1.0
+tand = 0.01                      # default 0.0
+conductivity = 0.0               # S/m, default 0.0
 
-# Ports (repeatable, multiple types)
+# Ports — repeatable; mix types freely
 [[ports]]
-type = "rectangular"             # Rectangular waveguide port
-tag = 3                          # Gmsh physical surface tag
-mode = [1, 0]                    # TE mode [m, n] (default: [1, 0])
-er = 1.0                        # Port fill dielectric (default: 1.0)
-power = 1.0                     # Port power in W (default: 1.0)
-width = 22.86e-3                 # Broad wall in m (default: auto-detected)
-height = 10.16e-3                # Narrow wall in m (default: auto-detected)
-
-[[ports]]
-type = "lumped"                  # Lumped element port
-tag = 5                          # Gmsh physical surface tag
-z0 = 50.0                       # Characteristic impedance in Ohm (default: 50)
-direction = [0, 0, 1]           # E-field direction (required)
-width = 1.0e-3                  # Gap width in m (default: auto-detected)
-height = 1.0e-3                 # Gap height in m (default: auto-detected)
-power = 1.0                     # Port power in W (default: 1.0)
+type = "rectangular"
+tag = 3
+mode = [1, 0]                    # TE mode [m, n], default [1, 0]
+er = 1.0
+power = 1.0                      # W, default 1.0
+width = 22.86e-3                 # m; auto-detected if omitted
+height = 10.16e-3
 
 [[ports]]
-type = "abc"                     # Absorbing boundary condition
-tag = 6                          # Gmsh physical surface tag
-order = 2                        # ABC order: 1 or 2 (default: 1)
-abctype = "B"                   # Coefficient type: A, B, C, D, E (default: B)
+type = "lumped"
+tag = 5
+z0 = 50.0
+direction = [0, 0, 1]            # E-field direction, required
+width = 1.0e-3                   # auto-detected if 0
+height = 1.0e-3
+power = 1.0
+
+[[ports]]
+type = "abc"
+tag = 6
+order = 2                        # 1 or 2
+abctype = "B"                    # A, B, C, D, E
+
+# Perfectly Matched Layer — repeatable, one per absorbing direction
+[[pml]]
+volume_tag = 11
+direction = [1, 0, 0]            # absorption axis (unit vector along ±x/y/z)
+inner_face = 0.0010              # coordinate of inner boundary along the axis
+thickness = 0.0003               # outward thickness
+er_base = 1.0
+ur_base = 1.0
+exponent = 1.5                   # σ ~ uⁿ grading, default 1.5
+delta_max = 8.0                  # peak stretch, default 8.0
 
 [pec]
-tags = [1]                       # Gmsh physical surface tags for PEC walls
+tags = [1]
 
 [solver]
-prefer = "auto"                  # "pardiso", "faer", or "auto" (default: auto)
+prefer = "auto"                  # "pardiso", "faer", or "auto" (default)
 
 [output]
-touchstone = "result.s2p"        # Touchstone output file (optional)
-z0 = 50.0                       # Reference impedance in Ohm (default: 50)
+touchstone = "result.s2p"
+z0 = 50.0
 ```
 
 ### Mesh requirements
 
-Meshes are created externally with [Gmsh](https://gmsh.info/) and exported as `.msh` (v4 format). The mesh must have:
+Native runs consume Gmsh `.msh` files (v4 format) with physical groups for
+every volume (materials) and surface (PEC, ports, ABC). For the in-browser
+WASM path the bundled `rapidfem-mesher` crate generates the mesh directly
+from a `MeshSpec` — no external meshing step.
 
-- **Volume physical groups** — for material assignment
-- **Surface physical groups** — for PEC walls, ports, and ABCs
+## Solver backends
 
-Each surface/volume tag referenced in the config must exist as a physical group in the mesh.
+| Solver | Type | Notes |
+|--------|------|-------|
+| MKL PARDISO | Complex-symmetric LDLᵀ | Fastest; requires `mkl_rt` on PATH |
+| faer | General sparse LU | Pure Rust; the only option in WASM builds |
 
-## Solvers
-
-RapidFEM supports two sparse direct solvers:
-
-| Solver | Type | Speed | Dependency |
-|--------|------|-------|------------|
-| **MKL PARDISO** | Complex-symmetric LDLt | Fast (7-10x) | `mkl_rt.dll` on PATH |
-| **faer** | General sparse LU | Baseline | None (pure Rust) |
-
-The solver is selected at runtime:
-- `prefer = "auto"` (default): tries PARDISO, falls back to faer
-- `prefer = "pardiso"`: PARDISO only (fails if MKL not installed)
-- `prefer = "faer"`: faer only (no MKL needed, works on all platforms including WASM)
+Pick via `solver.prefer = "auto" | "pardiso" | "faer"`.
 
 ### Installing MKL (optional)
 
-PARDISO requires Intel MKL. Install via any of:
 - **conda**: `conda install mkl`
 - **pip**: `pip install mkl`
 - **NuGet**: `nuget install intelmkl.redist.win-x64`
 - **Intel oneAPI**: [download](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html)
 
-Ensure `mkl_rt.2.dll` (or `mkl_rt.dll`) is on your system PATH.
+Ensure `mkl_rt.dll` (or `mkl_rt.2.dll`) is on the system PATH.
 
 ## Performance
 
-WR-90 iris waveguide driven sweep (10 GHz, 2-port):
+WR-90 iris waveguide driven sweep, 10 GHz, 2-port:
 
 | Mesh | DOFs | PARDISO | faer |
 |------|------|---------|------|
-| 693 tets | 5,512 | 0.14s | 0.22s |
-| 1,096 tets | 8,382 | 0.06s | 0.45s |
-| 2,595 tets | 19,196 | 0.17s | 1.39s |
-| 3,284 tets | 23,968 | 0.21s | 1.98s |
+| 693 tets | 5 512 | 0.14 s | 0.22 s |
+| 1 096 tets | 8 382 | 0.06 s | 0.45 s |
+| 2 595 tets | 19 196 | 0.17 s | 1.39 s |
+| 3 284 tets | 23 968 | 0.21 s | 1.98 s |
 
 Larger problems:
-- 327K DOFs driven sweep: 5s per frequency (PARDISO)
-- 905K DOFs eigenmode (3-turn spiral, shift-invert Lanczos): 54s
 
-11-point frequency sweep (10K DOFs): **2.5s** with PARDISO.
+- 327 k DOFs driven sweep (PARDISO): ~5 s per frequency
+- 905 k DOFs eigenmode (3-turn spiral, shift-invert Lanczos): ~54 s
+
+11-point sweep at 10 k DOFs: **2.5 s** with PARDISO.
 
 ## Verification
 
-Element-level functions (curl-curl, robin BC, ABC order-2, mode-power, surface integrals) are
-verified against EMerge to machine precision (1e-12 to 1e-16) by `cargo test --release`.
+Element-level functions (curl–curl integrals, Robin BC, second-order ABC,
+mode-power normalization, surface integrals) are checked to machine precision
+(1e-12 – 1e-16) by `cargo test --release`.
 
-End-to-end S-parameter parity is checked by the harness at `tests/validation/` — see its
-README for status per case. Each case spins up an EMerge run alongside rapidfem on the same
-problem and compares with defined tolerances.
+End-to-end S-parameter accuracy is tracked in `tests/validation/` against
+analytical solutions and external reference solvers — see that directory's
+README for per-case status and tolerances.
 
 ```bash
 cargo test --release
 ```
 
+## In-browser demo
+
+A SvelteKit + WebAssembly demo lives under `wasm-demo/`. Solves a Sky130
+microstrip end-to-end client-side — meshing, FEM, S-params, and a 3D field
+viewer with live wave animation. See `wasm-demo/README.md` for details.
+
 ## License
 
-Based on computational methods from [EMerge](https://github.com/rfen/emerge) (GPL-2.0).
+GPL-2.0.
