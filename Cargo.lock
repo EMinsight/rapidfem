@@ -321,7 +321,7 @@ dependencies = [
  "either",
  "geo",
  "hashbrown 0.15.5",
- "nalgebra 0.34.2",
+ "nalgebra",
  "parry3d-f64",
  "rapier3d-f64",
  "robust",
@@ -1198,21 +1198,6 @@ dependencies = [
 
 [[package]]
 name = "nalgebra"
-version = "0.33.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d43ddcacf343185dfd6de2ee786d9e8b1c2301622afab66b6c73baf9882abfd"
-dependencies = [
- "approx 0.5.1",
- "matrixmultiply",
- "num-complex 0.4.6",
- "num-rational 0.4.2",
- "num-traits",
- "simba",
- "typenum",
-]
-
-[[package]]
-name = "nalgebra"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df76ea0ff5c7e6b88689085804d6132ded0ddb9de5ca5b8aeb9eeadc0508a70a"
@@ -1548,7 +1533,7 @@ dependencies = [
  "foldhash 0.2.0",
  "hashbrown 0.16.1",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra",
  "num-derive 0.4.2",
  "num-traits",
  "ordered-float",
@@ -1723,9 +1708,10 @@ dependencies = [
 name = "rapidfem-mesher"
 version = "0.1.0"
 dependencies = [
- "nalgebra 0.33.3",
  "rapidfem-geom",
+ "serde",
  "spade",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1751,7 +1737,7 @@ dependencies = [
  "bitflags 2.11.0",
  "downcast-rs",
  "log",
- "nalgebra 0.34.2",
+ "nalgebra",
  "num-derive 0.4.2",
  "num-traits",
  "ordered-float",
