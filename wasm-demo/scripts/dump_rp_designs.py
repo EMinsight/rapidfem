@@ -127,16 +127,19 @@ def build_symmetric_spec() -> dict:
     si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3)
     polys = _layers_to_polygons(si.layers)
     UM = 1e-6
-    # Same inset rule as the spiral: pull port centers inward by width/2 so
-    # the pad sits inside the trace.
-    xt = (si.Dout / 2 + si.width / 2) * UM
+    # rapidpassives places SymmetricInductor terminals at the BOTTOM:
+    #   x_label = (spacing + width) / 2   (no center tap)
+    #   y_label = -Dout/2 - width
+    # Pull y inward by width/2 so the pad sits on the trace, not below it.
+    x_lab = (si.spacing + si.width) / 2 * UM
+    y_lab = (-si.Dout / 2 - si.width / 2) * UM     # bus extends from y=-Dout/2 to y=-Dout/2-width
     return {
         "name": "rp_symmetric",
         "stack": _sky130_stack_dict(),
         "polygons": polys,
         "ports": [
-            {"name": "p1", "x": -xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
-            {"name": "p2", "x": +xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
+            {"name": "p1", "x": -x_lab, "y": y_lab, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
+            {"name": "p2", "x": +x_lab, "y": y_lab, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
         ],
         "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],

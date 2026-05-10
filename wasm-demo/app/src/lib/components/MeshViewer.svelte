@@ -121,15 +121,14 @@
 	}
 
 	// Visual extrusion thickness per layer name (Sky130 PDK), in METERS.
-	// Conductor 2D plates are stored in the .msh as flat triangulations at
-	// the layer's z mid-plane; we visually extrude them up/down by
-	// thickness/2 so the user sees real 3D-ish conductors. The FEM is
-	// unaffected — it reads the original 2D triangles.
+	// Vias are exaggerated ~5× so the sub-µm connector posts are actually
+	// visible at the design's overall ~100 µm scale (otherwise they're
+	// 1/500 of the view height — sub-pixel). Real PDK values shown beside.
 	const LAYER_THICKNESS_M: Record<string, number> = {
 		met5: 1.26e-6, met4: 0.65e-6, met3: 0.85e-6,
 		met2: 0.36e-6, met1: 0.36e-6,
-		via5: 0.20e-6, via4: 0.20e-6, via3: 0.50e-6, via2: 0.50e-6, via1: 0.27e-6,
-		mcon: 0.34e-6,
+		via5: 1.00e-6, via4: 1.00e-6, via3: 1.50e-6,        // real: 0.2/0.2/0.5 µm
+		via2: 1.50e-6, via1: 1.20e-6, mcon: 1.20e-6,        // real: 0.5/0.27/0.34 µm
 		li1:  0.10e-6
 	};
 
