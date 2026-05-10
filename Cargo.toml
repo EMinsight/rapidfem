@@ -1,7 +1,6 @@
 [workspace]
 members = [
     ".",
-    "crates/rapidfem-geom",
     "crates/rapidfem-mesher",
     "wasm-demo",
 ]
