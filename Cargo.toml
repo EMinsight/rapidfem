@@ -6,6 +6,10 @@ members = [
     "wasm-demo",
 ]
 
+[profile.release]
+opt-level = "z"
+lto = true
+
 [package]
 name = "rapidfem"
 version = "0.1.0"

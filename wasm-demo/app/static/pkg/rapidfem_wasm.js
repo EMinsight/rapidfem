@@ -22,6 +22,26 @@ export function run_sweep(mesh_bytes, config_toml) {
     }
     return takeFromExternrefTable0(ret[0]);
 }
+
+/**
+ * Mesh from a `MeshSpec` JSON, build the FEM config from a TOML string,
+ * and run a single sweep — all client-side, no `.msh` round-trip.
+ * `spec_json`: serialized `rapidfem_mesher::MeshSpec`.
+ * @param {string} spec_json
+ * @param {string} config_toml
+ * @returns {any}
+ */
+export function solve_from_spec(spec_json, config_toml) {
+    const ptr0 = passStringToWasm0(spec_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(config_toml, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.solve_from_spec(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
