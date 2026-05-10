@@ -1,0 +1,11 @@
+[package]
+name = "rapidfem-mesher"
+version = "0.1.0"
+edition = "2024"
+
+description = "2.5D tet mesher: takes a tagged Brep from rapidfem-geom and produces a tetrahedral mesh in rapidfem's Mesh format. Pure Rust, WASM-bound."
+
+[dependencies]
+rapidfem-geom = { path = "../rapidfem-geom" }
+spade = "2"
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }

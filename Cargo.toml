@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    ".",
+    "crates/rapidfem-geom",
+    "crates/rapidfem-mesher",
+    "wasm-demo",
+]
+
 [package]
 name = "rapidfem"
 version = "0.1.0"
