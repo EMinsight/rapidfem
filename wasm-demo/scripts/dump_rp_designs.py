@@ -101,20 +101,21 @@ def build_spiral_spec() -> dict:
     sp = SpiralInductor(Dout=80, N=1, sides=8, width=8, spacing=4)
     polys = _layers_to_polygons(sp.layers)
     UM = 1e-6
-    # rapidpassives port labels: P1 on windings (top metal), P2 on crossings
-    # (lower metal), both at the outer edge of the spiral.
-    x_lab = (sp.Dout / 2 + sp.width) * UM
-    y_lab = (sp.width / 2 + sp.spacing / 2) * UM
+    # The rapidpassives label position (Dout/2 + width, ±(width/2 + spacing/2))
+    # sits on the OUTER edge of the trace tab — port pads centered there end
+    # up half-outside the metal. Inset inward by width/2 so the pad is
+    # entirely inside the bus / crossing rectangle.
+    x_port = (sp.Dout / 2 + sp.width / 2) * UM
+    y_port = (sp.width / 2 + sp.spacing / 2) * UM
     return {
         "name": "rp_spiral",
         "stack": _sky130_stack_dict(),
         "polygons": polys,
         "ports": [
-            # P1 sits on met5 (windings); P2 on met4 (crossings under-pass)
-            {"name": "p1", "x": +x_lab, "y": +y_lab, "layer": "met5", "gnd_layer": "li1",
-             "size": 6e-6, "z0": 50},
-            {"name": "p2", "x": +x_lab, "y": -y_lab, "layer": "met4", "gnd_layer": "li1",
-             "size": 6e-6, "z0": 50},
+            {"name": "p1", "x": +x_port, "y": +y_port, "layer": "met5", "gnd_layer": "li1",
+             "size": 4e-6, "z0": 50},
+            {"name": "p2", "x": +x_port, "y": -y_port, "layer": "met4", "gnd_layer": "li1",
+             "size": 4e-6, "z0": 50},
         ],
         "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],
@@ -126,17 +127,16 @@ def build_symmetric_spec() -> dict:
     si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3)
     polys = _layers_to_polygons(si.layers)
     UM = 1e-6
-    # Symmetric inductor terminals: rapidpassives places P1/P2 at the two
-    # outer windings on opposite sides. Both end on the top winding (met5);
-    # crossings are internal under-passes.
-    xt = (si.Dout / 2 + si.width) * UM
+    # Same inset rule as the spiral: pull port centers inward by width/2 so
+    # the pad sits inside the trace.
+    xt = (si.Dout / 2 + si.width / 2) * UM
     return {
         "name": "rp_symmetric",
         "stack": _sky130_stack_dict(),
         "polygons": polys,
         "ports": [
-            {"name": "p1", "x": -xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50},
-            {"name": "p2", "x": +xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 6e-6, "z0": 50},
+            {"name": "p1", "x": -xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
+            {"name": "p2", "x": +xt, "y": 0, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
         ],
         "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],

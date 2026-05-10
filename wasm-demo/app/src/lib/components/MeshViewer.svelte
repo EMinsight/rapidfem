@@ -120,6 +120,19 @@
 		return 'conductor';
 	}
 
+	// Visual extrusion thickness per layer name (Sky130 PDK), in METERS.
+	// Conductor 2D plates are stored in the .msh as flat triangulations at
+	// the layer's z mid-plane; we visually extrude them up/down by
+	// thickness/2 so the user sees real 3D-ish conductors. The FEM is
+	// unaffected — it reads the original 2D triangles.
+	const LAYER_THICKNESS_M: Record<string, number> = {
+		met5: 1.26e-6, met4: 0.65e-6, met3: 0.85e-6,
+		met2: 0.36e-6, met1: 0.36e-6,
+		via5: 0.20e-6, via4: 0.20e-6, via3: 0.50e-6, via2: 0.50e-6, via1: 0.27e-6,
+		mcon: 0.34e-6,
+		li1:  0.10e-6
+	};
+
 	function color_for(kind: Kind, name: string): [number, number, number] {
 		if (kind === 'dielectric') {
 			if (name === 'substrate') return hex('#4a9ec2');
@@ -372,20 +385,88 @@
 
 	let field_norm: Float32Array | null = null;
 	let in_field_mode = false;
+
+	/** Extrude the flat 2D triangulation `idx` by `thickness` in z, returning
+	 *  a new index list that draws the conductor as a real 3D box (top +
+	 *  bottom + side walls). The original mesh.nodes positions are reused
+	 *  for the planar tris; side walls use offset copies of edge endpoints.
+	 *  Returns flat positions + normals f64 arrays (instead of indices,
+	 *  because side-wall verts are duplicated). */
+	function extrude_2d_idx(
+		idx: number[],
+		thickness: number
+	): { pos: Float64Array; ntri: number } {
+		if (!mesh) return { pos: new Float64Array(0), ntri: 0 };
+		const half = thickness / 2;
+		const ntri = idx.length / 3;
+		// Boundary edges: appear in exactly one triangle
+		const edge_count = new Map<bigint, { a: number; b: number; count: number }>();
+		for (let t = 0; t < ntri; t++) {
+			const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+			for (const [u, v] of [[a, b], [b, c], [c, a]] as [number, number][]) {
+				const lo = u < v ? u : v;
+				const hi = u < v ? v : u;
+				const k = (BigInt(lo) << 32n) | BigInt(hi);
+				const e = edge_count.get(k);
+				if (e) e.count++;
+				else edge_count.set(k, { a: u, b: v, count: 1 });
+			}
+		}
+		const boundary: { a: number; b: number }[] = [];
+		for (const e of edge_count.values()) if (e.count === 1) boundary.push({ a: e.a, b: e.b });
+
+		const total_tris = 2 * ntri + 2 * boundary.length;
+		const pos = new Float64Array(total_tris * 9);
+		let p = 0;
+		const at = (i: number, dz: number) => {
+			const ni = i * 3;
+			pos[p++] = mesh!.nodes[ni];
+			pos[p++] = mesh!.nodes[ni + 1];
+			pos[p++] = mesh!.nodes[ni + 2] + dz;
+		};
+		// Top face (z + half)
+		for (let t = 0; t < ntri; t++) {
+			at(idx[t * 3], +half); at(idx[t * 3 + 1], +half); at(idx[t * 3 + 2], +half);
+		}
+		// Bottom face (z - half), reversed winding so outward normal points -Z
+		for (let t = 0; t < ntri; t++) {
+			at(idx[t * 3], -half); at(idx[t * 3 + 2], -half); at(idx[t * 3 + 1], -half);
+		}
+		// Side walls — two triangles per boundary edge
+		for (const e of boundary) {
+			at(e.a, -half); at(e.b, -half); at(e.b, +half);
+			at(e.a, -half); at(e.b, +half); at(e.a, +half);
+		}
+		return { pos, ntri: total_tris };
+	}
+
 	function push_group(idx: number[], kind: Kind, name: string, tag: number) {
 		if (!gl_state || !mesh) return;
-		const ntri = idx.length / 3;
-		if (ntri === 0) return;
+		if (idx.length === 0) return;
 
-		// Stage everything in f64 so cross-product normals on coplanar
-		// triangles are bit-identical. Only quantize to f32 at GPU upload.
-		const pos64 = new Float64Array(ntri * 9);
-		for (let t = 0; t < ntri; t++) {
-			for (let v = 0; v < 3; v++) {
-				const ni = idx[t * 3 + v] * 3;
-				pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
-				pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
-				pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
+		// Conductors with a known PDK thickness get visually extruded into
+		// 3D-looking bars instead of paper-thin sheets. FEM mesh data is
+		// untouched; this only affects rendering.
+		const ext_thickness = (kind === 'conductor' || kind === 'gnd')
+			? (LAYER_THICKNESS_M[name] ?? 0)
+			: 0;
+
+		let pos64: Float64Array;
+		let ntri: number;
+		if (ext_thickness > 0) {
+			const ext = extrude_2d_idx(idx, ext_thickness);
+			pos64 = ext.pos;
+			ntri = ext.ntri;
+		} else {
+			ntri = idx.length / 3;
+			pos64 = new Float64Array(ntri * 9);
+			for (let t = 0; t < ntri; t++) {
+				for (let v = 0; v < 3; v++) {
+					const ni = idx[t * 3 + v] * 3;
+					pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
+					pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
+					pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
+				}
 			}
 		}
 		const norm64 = new Float64Array(ntri * 9);
