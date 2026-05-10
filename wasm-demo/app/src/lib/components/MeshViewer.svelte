@@ -121,17 +121,33 @@
 	}
 
 	function color_for(kind: Kind, name: string): [number, number, number] {
-		// Match rapidpassives palette where it makes sense (accent for ports,
-		// muted dielectrics, copper-orange for conductors).
 		if (kind === 'dielectric') {
-			if (name === 'substrate') return hex(palette.accentSecondary === '#e8944a' ? '#4a9ec2' : '#4a9ec2');
+			if (name === 'substrate') return hex('#4a9ec2');
 			if (name === 'oxide') return hex('#7b5e8a');
 			if (name === 'air') return hex('#5a6470');
 			return hex('#5a6470');
 		}
-		if (kind === 'gnd') return hex('#5aad78');     // greenish ground
+		if (kind === 'gnd') return hex('#5aad78');
 		if (kind === 'port') return hex(palette.accent);
-		return hex(palette.accentSecondary);             // conductors → copper-orange
+		// Per-layer conductor coloring so a multi-layer design (met5 + met4
+		// + via4 + ...) is visually distinguishable instead of one orange
+		// blob. Specific metal/via names get fixed hues; anything else
+		// falls through to the warm accent default.
+		const fixed: Record<string, string> = {
+			met5: '#e8944a',     // top metal — copper-orange (accent secondary)
+			met4: '#f0b86a',     // lighter
+			met3: '#c4c46b',     // yellowish
+			met2: '#9bc28b',     // greenish
+			met1: '#7b9fb8',     // bluish
+			li1:  '#5a8caa',
+			via5: '#d9513c',     // vias get accent red so the connector tubes stand out
+			via4: '#e5634f',
+			via3: '#bf4233',
+			via2: '#9d3526',
+			via1: '#7c281b',
+			mcon: '#aa6b40',
+		};
+		return hex(fixed[name] ?? palette.accentSecondary);
 	}
 
 	function hex(s: string): [number, number, number] {
