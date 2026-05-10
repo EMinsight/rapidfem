@@ -106,18 +106,11 @@ def build_spiral_spec() -> dict:
 
 
 def build_symmetric_spec() -> dict:
-    # via_merge=True produces a single bbox via per cluster (instead of N×M
-    # sub-µm vias from the default via_grid that wouldn't fit through the
-    # via_extent window with default params anyway).
     si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3, via_merge=True)
     polys = _layers_to_polygons(si.layers)
     UM = 1e-6
-    # rapidpassives places SymmetricInductor terminals at the BOTTOM:
-    #   x_label = (spacing + width) / 2   (no center tap)
-    #   y_label = -Dout/2 - width
-    # Pull y inward by width/2 so the pad sits on the trace, not below it.
     x_lab = (si.spacing + si.width) / 2 * UM
-    y_lab = (-si.Dout / 2 - si.width / 2) * UM     # bus extends from y=-Dout/2 to y=-Dout/2-width
+    y_lab = (-si.Dout / 2 - si.width / 2) * UM
     return {
         "name": "rp_symmetric",
         "stack": _sky130_stack_dict(),
@@ -126,9 +119,12 @@ def build_symmetric_spec() -> dict:
             {"name": "p1", "x": -x_lab, "y": y_lab, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
             {"name": "p2", "x": +x_lab, "y": y_lab, "layer": "met5", "gnd_layer": "li1", "size": 4e-6, "z0": 50},
         ],
-        "boundary": {"air_padding_xy": 30e-6, "air_padding_z": 50e-6, "abc": "B"},
+        # Tighter air padding + coarser mesh so faer's sparse LU stays under
+        # the WASM 32-bit memory ceiling (rp_symmetric had ~12k tets at the
+        # earlier maxh=12 µm setting and OOM'd in numeric LU).
+        "boundary": {"air_padding_xy": 20e-6, "air_padding_z": 30e-6, "abc": "B"},
         "frequencies_hz": [1e9, 5e9, 10e9, 30e9, 60e9, 100e9],
-        "maxh": 12e-6,
+        "maxh": 18e-6,
     }
 
 
