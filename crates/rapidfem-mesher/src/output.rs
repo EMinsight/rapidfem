@@ -6,6 +6,21 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Per-PML-region geometry that the FEM-side `[[pml]]` config blocks need.
+/// Mesher emits one of these per absorbing direction (xmin/xmax/ymin/ymax/
+/// zmin/zmax) when `MeshSpec.pml` is set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PmlRegionInfo {
+	/// Volume tag of the cells in this PML region.
+	pub volume_tag: i32,
+	/// Absorption direction unit vector (one of ±x̂, ±ŷ, ±ẑ).
+	pub direction: [f64; 3],
+	/// Coordinate of the PML's inner face along the absorption axis [m].
+	pub inner_face: f64,
+	/// Layer thickness [m].
+	pub thickness: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshOutput {
 	/// Vertex positions [m], length 3 × n_nodes.
@@ -22,6 +37,9 @@ pub struct MeshOutput {
 	pub tag_names: Vec<(i32, String)>,
 	/// Tag → dimension lookup (2 for surface groups, 3 for volume groups).
 	pub tag_dim: Vec<(i32, u8)>,
+	/// PML regions. Empty if no PML was configured.
+	#[serde(default)]
+	pub pml_regions: Vec<PmlRegionInfo>,
 }
 
 impl MeshOutput {

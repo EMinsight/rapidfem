@@ -3,10 +3,9 @@ name = "rapidfem-mesher"
 version = "0.1.0"
 edition = "2024"
 
-description = "2.5D tet mesher: takes a tagged Brep from rapidfem-geom and produces a tetrahedral mesh in rapidfem's Mesh format. Pure Rust, WASM-bound."
+description = "2.5D tet mesher: takes a layered MeshSpec (dielectric slabs + conductor polygons + ports) and produces a tagged tetrahedral mesh. Pure Rust, WASM-bound."
 
 [dependencies]
-rapidfem-geom = { path = "../rapidfem-geom" }
 spade = "2"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"

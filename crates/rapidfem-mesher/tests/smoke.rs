@@ -72,6 +72,8 @@ fn microstrip_spec() -> MeshSpec {
 		],
 		abc_tag: "abc".into(),
 		maxh: 15.0 * um,
+		z_maxh: None,
+		pml: None,
 	}
 }
 
