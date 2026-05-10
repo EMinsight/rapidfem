@@ -15,6 +15,20 @@ let init: ((arg?: any) => Promise<unknown>) | null = null;
 let run_sweep: ((mesh: Uint8Array, toml: string) => any) | null = null;
 let ready = false;
 
+// Capture WASM panic messages: console_error_panic_hook in the worker's
+// rust crate writes panics to console.error. We tee them to postMessage so
+// the main thread can show the actual reason instead of just "unreachable".
+const orig_error = console.error.bind(console);
+console.error = (...args: any[]) => {
+	orig_error(...args);
+	try {
+		(self as any).postMessage({
+			type: 'panic_log',
+			message: args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ')
+		});
+	} catch {}
+};
+
 self.onmessage = async (e: MessageEvent) => {
 	const msg = e.data;
 	try {

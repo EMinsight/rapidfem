@@ -23,6 +23,7 @@ function ensure_worker(): Promise<void> {
 			const m = e.data;
 			if (m.type === 'ready') resolve();
 			else if (m.type === 'point') pending.get(m.id)?.resolve(m);
+			else if (m.type === 'panic_log') console.error('[wasm panic]', m.message);
 			else if (m.type === 'error') {
 				if (m.id != null) pending.get(m.id)?.reject(new Error(m.message));
 				else reject(new Error(m.message));
