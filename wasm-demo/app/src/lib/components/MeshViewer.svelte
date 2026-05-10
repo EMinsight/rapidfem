@@ -278,9 +278,11 @@
 				if (!arr) { arr = []; by_surf.set(tag, arr); }
 				arr.push(mesh.tris[i * 3], mesh.tris[i * 3 + 1], mesh.tris[i * 3 + 2]);
 			}
+			console.log('[rebuild] by_surf tags:', [...by_surf.entries()].map(([t, idx]) => `${t}:${idx.length/3}`).join(', '));
 			for (const [tag, idx] of by_surf.entries()) {
 				const name = mesh.phys_names.get(tag) ?? '';
 				const kind = classify(name);
+				console.log(`[rebuild] tag=${tag} name=${name} kind=${kind} ntri=${idx.length/3}`);
 				if (!kind) continue;
 				push_group(idx, kind, name, tag);
 			}
@@ -449,6 +451,7 @@
 		const ext_thickness = (kind === 'conductor' || kind === 'gnd')
 			? (LAYER_THICKNESS_M[name] ?? 0)
 			: 0;
+		console.log(`[push_group] name=${name} kind=${kind} ext_thickness=${ext_thickness} ntri_in=${idx.length/3}`);
 
 		let pos64: Float64Array;
 		let ntri: number;
@@ -456,6 +459,7 @@
 			const ext = extrude_2d_idx(idx, ext_thickness);
 			pos64 = ext.pos;
 			ntri = ext.ntri;
+			console.log(`  -> extruded to ntri=${ntri}`);
 		} else {
 			ntri = idx.length / 3;
 			pos64 = new Float64Array(ntri * 9);

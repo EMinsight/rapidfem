@@ -2,9 +2,22 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-	plugins: [sveltekit()],
-	// Vite dev server needs to serve the wasm-pack output (../pkg) as static assets
-	// and apply correct MIME for .wasm. resolve.alias points "$wasm" at ../pkg.
+	plugins: [
+		sveltekit(),
+		{
+			name: 'no-cache-static-assets',
+			configureServer(server) {
+				server.middlewares.use((req, res, next) => {
+					if (req.url?.startsWith('/examples/') || req.url?.startsWith('/pkg/')) {
+						res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+						res.setHeader('Pragma', 'no-cache');
+						res.setHeader('Expires', '0');
+					}
+					next();
+				});
+			}
+		}
+	],
 	resolve: {
 		alias: {
 			$wasm: new URL('../pkg', import.meta.url).pathname
@@ -12,7 +25,6 @@ export default defineConfig({
 	},
 	server: {
 		fs: {
-			// allow importing files from outside this app dir (the sibling pkg/)
 			allow: ['..', '../..', '../../..']
 		}
 	}
