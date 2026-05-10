@@ -94,7 +94,9 @@
 		});
 		(async () => {
 			try {
-				const t = await fetch(url).then((r) => r.text());
+				const t = await fetch(url, { cache: 'no-store' }).then((r) => r.text());
+				console.log('[mesh] fetched', url, t.length, 'bytes; PhysNames count:',
+					t.match(/\$PhysicalNames\s+(\d+)/)?.[1]);
 				mesh_data = parse_msh(t);
 			} catch (e) {
 				console.error('mesh parse failed', e);

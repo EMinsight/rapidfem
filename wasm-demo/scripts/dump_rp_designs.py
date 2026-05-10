@@ -63,31 +63,13 @@ def _sky130_stack_dict() -> list[dict]:
 def _layers_to_polygons(layers: dict) -> list[dict]:
     """Project rapidpassives' per-layer polygons onto FEM stack layers via
     RP_LAYER_MAP. Layers absent from the map are silently dropped.
-    Vias are special-cased: instead of N tiny sub-µm rectangles (which would
-    blow up the mesh), each via-cluster is replaced by a single bounding-box
-    polygon. Electrical continuity preserved, mesh stays sane."""
+    via_merge=True on the rapidpassives generators already produces a single
+    bbox box per via cluster, so no extra grouping needed here."""
     out: list[dict] = []
     UM = 1e-6
     for rp_layer, polys in layers.items():
         fem_layer = RP_LAYER_MAP.get(rp_layer)
         if not fem_layer or not polys:
-            continue
-        is_via = rp_layer.startswith("via")
-        if is_via:
-            # Cluster vias by spatial proximity (simple: merge all into one
-            # bbox per layer; for SymmetricInductor with 2 via groups we'd
-            # want clustering, but for SpiralInductor's single cluster a
-            # single bbox is correct).
-            all_x: list[float] = []
-            all_y: list[float] = []
-            for xs, ys in polys:
-                all_x.extend(float(v) for v in xs)
-                all_y.extend(float(v) for v in ys)
-            xmin, xmax = min(all_x) * UM, max(all_x) * UM
-            ymin, ymax = min(all_y) * UM, max(all_y) * UM
-            out.append({"layer": fem_layer, "xy": [
-                xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax
-            ]})
             continue
         for xs, ys in polys:
             xy = []
@@ -98,7 +80,7 @@ def _layers_to_polygons(layers: dict) -> list[dict]:
 
 
 def build_spiral_spec() -> dict:
-    sp = SpiralInductor(Dout=80, N=1, sides=8, width=8, spacing=4)
+    sp = SpiralInductor(Dout=80, N=1, sides=8, width=8, spacing=4, via_merge=True)
     polys = _layers_to_polygons(sp.layers)
     UM = 1e-6
     # The rapidpassives label position (Dout/2 + width, ±(width/2 + spacing/2))
@@ -124,7 +106,10 @@ def build_spiral_spec() -> dict:
 
 
 def build_symmetric_spec() -> dict:
-    si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3)
+    # via_merge=True produces a single bbox via per cluster (instead of N×M
+    # sub-µm vias from the default via_grid that wouldn't fit through the
+    # via_extent window with default params anyway).
+    si = SymmetricInductor(Dout=100, N=2, sides=8, width=6, spacing=3, via_merge=True)
     polys = _layers_to_polygons(si.layers)
     UM = 1e-6
     # rapidpassives places SymmetricInductor terminals at the BOTTOM:

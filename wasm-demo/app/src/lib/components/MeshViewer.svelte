@@ -692,6 +692,12 @@
 			if (name && !name.startsWith('_mat_')) add(tag, 'dielectric');
 		}
 		items.sort((a, b) => a.rank - b.rank);
+		const tcounts = new Map<number, number>();
+		for (const t of mesh!.tri_phys) tcounts.set(t, (tcounts.get(t) ?? 0) + 1);
+		console.log('[MV] legend:', items.map(i => `${i.name}(${i.kind})`).join(', '));
+		console.log('[MV] phys_names:', JSON.stringify([...mesh!.phys_names.entries()]));
+		console.log('[MV] phys_dim:', JSON.stringify([...mesh!.phys_dim.entries()]));
+		console.log('[MV] tri_phys counts:', JSON.stringify([...tcounts.entries()]));
 		return items;
 	});
 </script>
