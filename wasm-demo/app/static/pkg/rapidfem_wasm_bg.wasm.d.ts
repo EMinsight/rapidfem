@@ -2,7 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const init: () => void;
-export const run_sweep: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const mesh_from_spec: (a: number, b: number) => [number, number, number];
 export const solve_from_spec: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

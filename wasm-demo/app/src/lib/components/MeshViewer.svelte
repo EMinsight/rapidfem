@@ -2,24 +2,38 @@
 	import { onMount } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setPointCloud, render3D, fitCamera, setTagVisible,
+		setPointCloud, setPointPhase, setPointLogRange,
+		render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
+	import { viz_load_mesh, viz_sample } from '$lib/wasm';
 
 	let {
-		mesh = null,
-		mode = 'geometry',
+		mesh = null as MeshData | null,
+		show_geometry = true,
+		show_wireframe = false,
+		show_field = false,
 		field = null,
-		point_density = 5
+		point_density = 5,
+		animate_field = false,
+		anim_speed = 1
 	}: {
 		mesh?: MeshData | null;
-		mode?: 'geometry' | 'mesh' | 'both' | 'field';
+		show_geometry?: boolean;
+		show_wireframe?: boolean;
+		show_field?: boolean;
 		field?: Float32Array | null;
-		/** Volumetric point-cloud density. 1 ≈ 3k pts total, 10 ≈ 500k.
-		 *  Each tet gets samples proportional to its share of total volume. */
+		/** Volumetric point-cloud density. Total count scales with the
+		 *  simulation bbox volume (not tet count) — refining the mesh doesn't
+		 *  change the cloud density. 1 ≈ 5k pts, 10 ≈ 50k. */
 		point_density?: number;
+		/** When true, animate the wave: shader's phase uniform updates at
+		 *  ω·t each frame so |E(t)| varies in time. */
+		animate_field?: boolean;
+		/** Animation rate scale (1 ≈ 1 cycle per second). */
+		anim_speed?: number;
 	} = $props();
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
@@ -119,18 +133,6 @@
 		if (name === 'p1' || name === 'p2' || /^p\d+$/.test(name)) return 'port';
 		return 'conductor';
 	}
-
-	// Visual extrusion thickness per layer name (Sky130 PDK), in METERS.
-	// Vias are exaggerated ~5× so the sub-µm connector posts are actually
-	// visible at the design's overall ~100 µm scale (otherwise they're
-	// 1/500 of the view height — sub-pixel). Real PDK values shown beside.
-	const LAYER_THICKNESS_M: Record<string, number> = {
-		met5: 1.26e-6, met4: 0.65e-6, met3: 0.85e-6,
-		met2: 0.36e-6, met1: 0.36e-6,
-		via5: 1.00e-6, via4: 1.00e-6, via3: 1.50e-6,        // real: 0.2/0.2/0.5 µm
-		via2: 1.50e-6, via1: 1.20e-6, mcon: 1.20e-6,        // real: 0.5/0.27/0.34 µm
-		li1:  0.10e-6
-	};
 
 	function color_for(kind: Kind, name: string): [number, number, number] {
 		if (kind === 'dielectric') {
@@ -250,18 +252,16 @@
 	}
 
 	function rebuild() {
-		if (!gl_state || !mesh) return;
+		if (!gl_state) return;
 		clearMeshes(gl_state);
+		if (!mesh) return;  // cleared above so the old geometry doesn't linger
 
-		// Field mode: hide solid surfaces, show wireframe only — point cloud
-		// fills the volume against a clean mesh skeleton instead of being
-		// occluded by the geometry.
-		// Field mode: hide solid surfaces, show wireframe + (when field data
-		// is available) the volumetric point cloud. With no field results yet
-		// the user still sees the mesh skeleton — useful preview before Run.
-		const useField = mode === 'field' && field != null;
-		const showFaces = mode === 'geometry' || mode === 'both';
-		const showWire = mode === 'mesh' || mode === 'both' || mode === 'field';
+		// Three independent toggles — geometry, wireframe, field — composed
+		// freely. The field cloud only renders when both `show_field` and
+		// actual field data are present.
+		const useField = show_field && field != null;
+		const showFaces = show_geometry;
+		const showWire = show_wireframe;
 
 		setBBox(gl_state, mesh.bbox.min, mesh.bbox.max);
 		field_norm = null;
@@ -278,15 +278,13 @@
 				if (!arr) { arr = []; by_surf.set(tag, arr); }
 				arr.push(mesh.tris[i * 3], mesh.tris[i * 3 + 1], mesh.tris[i * 3 + 2]);
 			}
-			console.log('[rebuild] by_surf tags:', [...by_surf.entries()].map(([t, idx]) => `${t}:${idx.length/3}`).join(', '));
 			for (const [tag, idx] of by_surf.entries()) {
 				const name = mesh.phys_names.get(tag) ?? '';
 				const kind = classify(name);
-				console.log(`[rebuild] tag=${tag} name=${name} kind=${kind} ntri=${idx.length/3}`);
 				if (!kind) continue;
 				push_group(idx, kind, name, tag);
 			}
-			// 2) Implicit volume hulls (substrate/oxide/air)
+			// 2) Implicit volume hulls (substrate/oxide/air, PML, …)
 			const vol_b = build_volume_boundaries(mesh);
 			for (const [vtag, idx] of vol_b.entries()) {
 				const name = mesh.phys_names.get(vtag) ?? '';
@@ -317,61 +315,10 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
 		}
 
-		// Volumetric field point cloud: fixed samples per tet (mesh refinement
-		// already concentrates tets where the field varies, so per-tet sampling
-		// gives more points where it matters). Density slider scales the
-		// per-tet sample count.
-		if (useField && field) {
-			const DECADES = 6;
-			const SAMPLES_PER_TET = Math.max(1, Math.round(point_density * 10));   // 10..100
-			field_range = null;
-			const ntets = mesh.tets.length / 4;
-			const tet_field = new Float32Array(ntets);
-			let max_v = 0;
-			for (let t = 0; t < ntets; t++) {
-				const v = mesh.tets;
-				const f = (
-					field[v[t * 4]] + field[v[t * 4 + 1]] +
-					field[v[t * 4 + 2]] + field[v[t * 4 + 3]]
-				) / 4;
-				tet_field[t] = f;
-				if (f > max_v) max_v = f;
-			}
-			const log_max = Math.log10(max_v + 1e-30);
-			const log_floor = log_max - DECADES;
-			field_range = { min: Math.pow(10, log_floor), max: max_v, decades: DECADES };
-
-			const total_pts = ntets * SAMPLES_PER_TET;
-			const positions = new Float32Array(total_pts * 3);
-			const scalars = new Float32Array(total_pts);
-			let p = 0;
-			for (let t = 0; t < ntets; t++) {
-				const f = tet_field[t];
-				const norm = f > 0
-					? Math.max(0, Math.min(1, (Math.log10(f) - log_floor) / (log_max - log_floor)))
-					: 0;
-				const v = mesh.tets;
-				const n0 = v[t * 4] * 3, n1 = v[t * 4 + 1] * 3,
-				      n2 = v[t * 4 + 2] * 3, n3 = v[t * 4 + 3] * 3;
-				const x0 = mesh.nodes[n0], y0 = mesh.nodes[n0 + 1], z0 = mesh.nodes[n0 + 2];
-				const x1 = mesh.nodes[n1], y1 = mesh.nodes[n1 + 1], z1 = mesh.nodes[n1 + 2];
-				const x2 = mesh.nodes[n2], y2 = mesh.nodes[n2 + 1], z2 = mesh.nodes[n2 + 2];
-				const x3 = mesh.nodes[n3], y3 = mesh.nodes[n3 + 1], z3 = mesh.nodes[n3 + 2];
-				for (let s = 0; s < SAMPLES_PER_TET; s++) {
-					let r1 = Math.random(), r2 = Math.random(), r3 = Math.random();
-					if (r1 + r2 > 1) { r1 = 1 - r1; r2 = 1 - r2; }
-					if (r2 + r3 > 1) { const t1 = r3; r3 = 1 - r1 - r2; r2 = 1 - t1; }
-					else if (r1 + r2 + r3 > 1) { const t1 = r3; r3 = r1 + r2 + r3 - 1; r1 = 1 - r2 - t1; }
-					const r0 = 1 - r1 - r2 - r3;
-					positions[p * 3 + 0] = r0 * x0 + r1 * x1 + r2 * x2 + r3 * x3;
-					positions[p * 3 + 1] = r0 * y0 + r1 * y1 + r2 * y2 + r3 * y3;
-					positions[p * 3 + 2] = r0 * z0 + r1 * z1 + r2 * z2 + r3 * z3;
-					scalars[p] = norm;
-					p++;
-				}
-			}
-			setPointCloud(gl_state, positions, scalars);
-		} else {
+		// Field point cloud is sampled asynchronously in the worker (see the
+		// dedicated `$effect` below). rebuild() just clears any stale cloud
+		// here; the worker call repopulates it.
+		if (!useField) {
 			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
 			field_range = null;
 		}
@@ -387,89 +334,18 @@
 	let field_norm: Float32Array | null = null;
 	let in_field_mode = false;
 
-	/** Extrude the flat 2D triangulation `idx` by `thickness` in z, returning
-	 *  a new index list that draws the conductor as a real 3D box (top +
-	 *  bottom + side walls). The original mesh.nodes positions are reused
-	 *  for the planar tris; side walls use offset copies of edge endpoints.
-	 *  Returns flat positions + normals f64 arrays (instead of indices,
-	 *  because side-wall verts are duplicated). */
-	function extrude_2d_idx(
-		idx: number[],
-		thickness: number
-	): { pos: Float64Array; ntri: number } {
-		if (!mesh) return { pos: new Float64Array(0), ntri: 0 };
-		const half = thickness / 2;
-		const ntri = idx.length / 3;
-		// Boundary edges: appear in exactly one triangle
-		const edge_count = new Map<bigint, { a: number; b: number; count: number }>();
-		for (let t = 0; t < ntri; t++) {
-			const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
-			for (const [u, v] of [[a, b], [b, c], [c, a]] as [number, number][]) {
-				const lo = u < v ? u : v;
-				const hi = u < v ? v : u;
-				const k = (BigInt(lo) << 32n) | BigInt(hi);
-				const e = edge_count.get(k);
-				if (e) e.count++;
-				else edge_count.set(k, { a: u, b: v, count: 1 });
-			}
-		}
-		const boundary: { a: number; b: number }[] = [];
-		for (const e of edge_count.values()) if (e.count === 1) boundary.push({ a: e.a, b: e.b });
-
-		const total_tris = 2 * ntri + 2 * boundary.length;
-		const pos = new Float64Array(total_tris * 9);
-		let p = 0;
-		const at = (i: number, dz: number) => {
-			const ni = i * 3;
-			pos[p++] = mesh!.nodes[ni];
-			pos[p++] = mesh!.nodes[ni + 1];
-			pos[p++] = mesh!.nodes[ni + 2] + dz;
-		};
-		// Top face (z + half)
-		for (let t = 0; t < ntri; t++) {
-			at(idx[t * 3], +half); at(idx[t * 3 + 1], +half); at(idx[t * 3 + 2], +half);
-		}
-		// Bottom face (z - half), reversed winding so outward normal points -Z
-		for (let t = 0; t < ntri; t++) {
-			at(idx[t * 3], -half); at(idx[t * 3 + 2], -half); at(idx[t * 3 + 1], -half);
-		}
-		// Side walls — two triangles per boundary edge
-		for (const e of boundary) {
-			at(e.a, -half); at(e.b, -half); at(e.b, +half);
-			at(e.a, -half); at(e.b, +half); at(e.a, +half);
-		}
-		return { pos, ntri: total_tris };
-	}
-
 	function push_group(idx: number[], kind: Kind, name: string, tag: number) {
 		if (!gl_state || !mesh) return;
 		if (idx.length === 0) return;
 
-		// Conductors with a known PDK thickness get visually extruded into
-		// 3D-looking bars instead of paper-thin sheets. FEM mesh data is
-		// untouched; this only affects rendering.
-		const ext_thickness = (kind === 'conductor' || kind === 'gnd')
-			? (LAYER_THICKNESS_M[name] ?? 0)
-			: 0;
-		console.log(`[push_group] name=${name} kind=${kind} ext_thickness=${ext_thickness} ntri_in=${idx.length/3}`);
-
-		let pos64: Float64Array;
-		let ntri: number;
-		if (ext_thickness > 0) {
-			const ext = extrude_2d_idx(idx, ext_thickness);
-			pos64 = ext.pos;
-			ntri = ext.ntri;
-			console.log(`  -> extruded to ntri=${ntri}`);
-		} else {
-			ntri = idx.length / 3;
-			pos64 = new Float64Array(ntri * 9);
-			for (let t = 0; t < ntri; t++) {
-				for (let v = 0; v < 3; v++) {
-					const ni = idx[t * 3 + v] * 3;
-					pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
-					pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
-					pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
-				}
+		const ntri = idx.length / 3;
+		const pos64 = new Float64Array(ntri * 9);
+		for (let t = 0; t < ntri; t++) {
+			for (let v = 0; v < 3; v++) {
+				const ni = idx[t * 3 + v] * 3;
+				pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
+				pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
+				pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
 			}
 		}
 		const norm64 = new Float64Array(ntri * 9);
@@ -631,9 +507,9 @@
 		};
 	});
 
-	// React to mesh / mode / field / density changes
+	// React to mesh / toggles / field / density changes
 	$effect(() => {
-		mesh; mode; field; point_density;
+		mesh; show_geometry; show_wireframe; show_field; field; point_density;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
 		render_frame();
@@ -643,6 +519,62 @@
 	// Refit camera only when mesh changes
 	$effect(() => {
 		if (mesh && mounted) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+	});
+
+	// Upload mesh to the worker's viz cache once per mesh change. The worker
+	// then holds the nodes+tets+CDF and `viz_sample` only does the cheap
+	// random-sampling pass per density tick.
+	let viz_mesh_ready_for: MeshData | null = $state(null);
+	$effect(() => {
+		const m = mesh;
+		if (!m) { viz_mesh_ready_for = null; return; }
+		viz_mesh_ready_for = null;
+		viz_load_mesh(m).then(() => { viz_mesh_ready_for = m; }).catch((e) => console.error('viz_load_mesh', e));
+	});
+
+	// Async point-cloud sampling: re-runs whenever `show_field`, `field`, or
+	// `point_density` change. Old samples are replaced atomically when the
+	// worker returns. A monotonically-increasing token guards against
+	// out-of-order responses (e.g. user drags slider faster than the worker
+	// can answer).
+	let viz_sample_token = 0;
+	$effect(() => {
+		const ready = viz_mesh_ready_for;
+		const f = field;
+		const dens = point_density;
+		const want = show_field;
+		if (!gl_state || !ready || !want || !f) return;
+		const total_pts = Math.max(500, Math.round(dens * 25000));
+		const my_token = ++viz_sample_token;
+		viz_sample(f, total_pts).then((r) => {
+			if (my_token !== viz_sample_token || !gl_state) return;
+			field_range = r.field_range;
+			setPointLogRange(gl_state, r.log_floor, r.log_range);
+			setPointCloud(gl_state, r.positions, r.abc);
+			render_frame();
+		}).catch((e) => console.error('viz_sample', e));
+	});
+
+	// Wave animation: while `show_field` is on AND the `animate_field` prop is
+	// true, drive the shader's phase uniform at 2π·anim_speed·t. (Real ω is
+	// way too fast for 60 fps — we show a slowed-down phase rotation.)
+	let anim_raf: number | null = null;
+	$effect(() => {
+		const want = show_field && animate_field;
+		if (anim_raf != null) { cancelAnimationFrame(anim_raf); anim_raf = null; }
+		if (!want || !gl_state) {
+			if (gl_state) { setPointPhase(gl_state, 0); render_frame(); }
+			return;
+		}
+		const t0 = performance.now();
+		const tick = () => {
+			if (!gl_state) return;
+			const t = (performance.now() - t0) * 0.001;
+			setPointPhase(gl_state, t * 2 * Math.PI * anim_speed);
+			render_frame();
+			anim_raf = requestAnimationFrame(tick);
+		};
+		anim_raf = requestAnimationFrame(tick);
 	});
 
 	function fmt_eng(v: number): string {
@@ -712,7 +644,7 @@
 	></canvas>
 
 	<div class="overlay-stack">
-		{#if tag_legend.length > 0 && mode !== 'field'}
+		{#if tag_legend.length > 0 && show_geometry}
 			<div class="overlay-panel">
 				<div class="op-title">Layers</div>
 				<div class="op-body">
@@ -731,7 +663,7 @@
 			</div>
 		{/if}
 
-		{#if mode === 'field' && field_range}
+		{#if show_field && field_range}
 			<div class="overlay-panel cb-panel">
 				<div class="op-title">|E| · V/m</div>
 				<div class="cb-body">
@@ -768,13 +700,7 @@
 				<path d="M13.66 10a6 6 0 1 1-1.41-6.24L15.3 6.7" />
 			</svg>
 		</button>
-		<button class="tb" onclick={flip_z}>
-			<span class="tip">Flip Z<kbd>Z</kbd></span>
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<path d="M3 4h10" /><path d="M8 4v8" /><path d="M5 9l3 3 3-3" />
-			</svg>
-		</button>
-		<button class="tb" onclick={save_png}>
+<button class="tb" onclick={save_png}>
 			<span class="tip">Save PNG<kbd>Ctrl+S</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
 				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
@@ -782,7 +708,7 @@
 		</button>
 	</div>
 
-	{#if mode === 'field' && field_range}
+	{#if show_field && field_range}
 		<div class="colorbar">
 			<div class="cb-title">|E| (V/m) · log scale</div>
 			<div class="cb-body">

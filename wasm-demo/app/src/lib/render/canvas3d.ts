@@ -66,9 +66,15 @@ export interface GLState {
 	uPointMVP: WebGLUniformLocation;
 	uPointZFlip: WebGLUniformLocation;
 	uPointScale: WebGLUniformLocation;
+	uPointPhase: WebGLUniformLocation;
+	uPointLogFloor: WebGLUniformLocation;
+	uPointLogRange: WebGLUniformLocation;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
 	pointCloud: { vao: WebGLVertexArrayObject; buffers: WebGLBuffer[]; count: number } | null;
+	pointPhase: number;
+	pointLogFloor: number;
+	pointLogRange: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -149,18 +155,29 @@ void main() { fragColor = vec4(uColor, 1.0); }`;
 const POINT_VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
-layout(location=1) in float aScalar;       // 0..1 normalized field magnitude
+layout(location=1) in vec3 aABC;           // (A, B, C) phasor terms
 uniform mat4 uMVP;
 uniform float uZFlip;
 uniform float uPointScale;                 // base size in pixels at unit clip-w
+uniform float uPhase;                      // current ωt in radians
+uniform float uLogFloor;                   // log10 of lowest |E| shown
+uniform float uLogRange;                   // log10(max) - log10(floor) (>0)
 out float vScalar;
 void main() {
 	vec3 pos = aPos;
 	pos.z *= uZFlip;
 	gl_Position = uMVP * vec4(pos, 1.0);
-	vScalar = aScalar;
+
+	// |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
+	float c = cos(uPhase);
+	float s = sin(uPhase);
+	float e2 = aABC.x * c * c + aABC.y * s * s - 2.0 * aABC.z * c * s;
+	float mag = sqrt(max(e2, 0.0));
+	float norm = (log(max(mag, 1e-30)) / 2.302585093 - uLogFloor) / max(uLogRange, 1e-9);
+	vScalar = clamp(norm, 0.0, 1.0);
+
 	float w = max(gl_Position.w, 1e-6);
-	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * aScalar), 4.0, 96.0);
+	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * vScalar), 4.0, 96.0);
 }`;
 
 const POINT_FS = `#version 300 es
@@ -322,9 +339,15 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		uPointMVP: gl.getUniformLocation(pointProgram, 'uMVP')!,
 		uPointZFlip: gl.getUniformLocation(pointProgram, 'uZFlip')!,
 		uPointScale: gl.getUniformLocation(pointProgram, 'uPointScale')!,
+		uPointPhase: gl.getUniformLocation(pointProgram, 'uPhase')!,
+		uPointLogFloor: gl.getUniformLocation(pointProgram, 'uLogFloor')!,
+		uPointLogRange: gl.getUniformLocation(pointProgram, 'uLogRange')!,
 		meshes: [],
 		lineMeshes: [],
 		pointCloud: null,
+		pointPhase: 0,
+		pointLogFloor: -30,
+		pointLogRange: 6,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -363,8 +386,9 @@ export function clearMeshes(state: GLState): void {
 }
 
 /** Replace the volumetric point cloud. positions: [x,y,z,...] in METERS,
- *  scalars: 0..1 normalized field magnitude, one per point. */
-export function setPointCloud(state: GLState, positions: Float32Array, scalars: Float32Array): void {
+ *  abc: [A,B,C, ...] per point — phasor terms the GPU shader composites
+ *  with the current phase uniform to render the wave animation. */
+export function setPointCloud(state: GLState, positions: Float32Array, abc: Float32Array): void {
 	const { gl } = state;
 	if (state.pointCloud) {
 		gl.deleteVertexArray(state.pointCloud.vao);
@@ -381,13 +405,24 @@ export function setPointCloud(state: GLState, positions: Float32Array, scalars: 
 	gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
 	gl.enableVertexAttribArray(0);
 	gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-	const scaBuf = gl.createBuffer()!;
-	gl.bindBuffer(gl.ARRAY_BUFFER, scaBuf);
-	gl.bufferData(gl.ARRAY_BUFFER, scalars, gl.STATIC_DRAW);
+	const abcBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, abcBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, abc, gl.STATIC_DRAW);
 	gl.enableVertexAttribArray(1);
-	gl.vertexAttribPointer(1, 1, gl.FLOAT, false, 0, 0);
+	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 	gl.bindVertexArray(null);
-	state.pointCloud = { vao, buffers: [posBuf, scaBuf], count: positions.length / 3 };
+	state.pointCloud = { vao, buffers: [posBuf, abcBuf], count: positions.length / 3 };
+}
+
+/** Update the field log-range (after a new sample). */
+export function setPointLogRange(state: GLState, log_floor: number, log_range: number): void {
+	state.pointLogFloor = log_floor;
+	state.pointLogRange = log_range;
+}
+
+/** Update the time phase (call from requestAnimationFrame for the wave anim). */
+export function setPointPhase(state: GLState, phase: number): void {
+	state.pointPhase = phase;
 }
 
 /** Add a triangle group with a single color. positions and normals must
@@ -557,6 +592,9 @@ export function render3D(
 		// Base size in pixels at unit clip-w, scaled by scene XY extent.
 		// 0.4 makes individual sprites ~visible at default zoom.
 		gl.uniform1f(state.uPointScale, xy * 0.4);
+		gl.uniform1f(state.uPointPhase, state.pointPhase);
+		gl.uniform1f(state.uPointLogFloor, state.pointLogFloor);
+		gl.uniform1f(state.uPointLogRange, state.pointLogRange);
 		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);

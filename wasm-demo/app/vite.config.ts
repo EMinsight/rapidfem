@@ -5,10 +5,12 @@ export default defineConfig({
 	plugins: [
 		sveltekit(),
 		{
-			name: 'no-cache-static-assets',
+			// /pkg/ holds the WASM bundle, regenerated on every build —
+			// browsers cache static assets aggressively in dev otherwise.
+			name: 'no-cache-pkg',
 			configureServer(server) {
 				server.middlewares.use((req, res, next) => {
-					if (req.url?.startsWith('/examples/') || req.url?.startsWith('/pkg/')) {
+					if (req.url?.startsWith('/pkg/')) {
 						res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 						res.setHeader('Pragma', 'no-cache');
 						res.setHeader('Expires', '0');

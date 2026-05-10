@@ -149,6 +149,49 @@ impl Simulation {
             .collect()
     }
 
+    /// Per-node phasor terms `(A, B, C)` for animated `|E(t)|²` rendering:
+    ///
+    ///   A = |Re(E)|² = Re_x² + Re_y² + Re_z²
+    ///   B = |Im(E)|² = Im_x² + Im_y² + Im_z²
+    ///   C = Re(E) · Im(E)   (real dot product)
+    ///
+    /// Then `|E(x,t)|² = A·cos²(ωt) + B·sin²(ωt) − 2·C·sin(ωt)·cos(ωt)`,
+    /// which lets the viewer's shader modulate one uniform (phase) and
+    /// render a propagating wave without any new field evaluations.
+    pub fn nodal_field_phasor_terms(&self, solution: &[C64]) -> Vec<[f32; 3]> {
+        let n_nodes = self.mesh.n_nodes();
+        let mut sum = vec![[0.0f64; 3]; n_nodes];
+        let mut count = vec![0u32; n_nodes];
+        for ti in 0..self.mesh.n_tets() {
+            let tet = &self.mesh.tets[ti];
+            let mut cx = 0.0; let mut cy = 0.0; let mut cz = 0.0;
+            for k in 0..4 {
+                let p = self.mesh.nodes[tet[k]];
+                cx += p[0]; cy += p[1]; cz += p[2];
+            }
+            cx /= 4.0; cy /= 4.0; cz /= 4.0;
+            let (ex, ey, ez) = crate::interp::eval_field_in_tet(
+                &self.mesh, &self.basis, solution, ti, cx, cy, cz,
+            );
+            let a = ex.re * ex.re + ey.re * ey.re + ez.re * ez.re;
+            let b = ex.im * ex.im + ey.im * ey.im + ez.im * ez.im;
+            let c = ex.re * ex.im + ey.re * ey.im + ez.re * ez.im;
+            for k in 0..4 {
+                sum[tet[k]][0] += a;
+                sum[tet[k]][1] += b;
+                sum[tet[k]][2] += c;
+                count[tet[k]] += 1;
+            }
+        }
+        sum.into_iter().zip(count.into_iter()).map(|(s, c)| {
+            if c == 0 { [0.0, 0.0, 0.0] }
+            else {
+                let inv = 1.0 / c as f64;
+                [(s[0] * inv) as f32, (s[1] * inv) as f32, (s[2] * inv) as f32]
+            }
+        }).collect()
+    }
+
     /// Run a frequency sweep and extract S-parameters.
     pub fn run_sweep(&self) -> SweepResult {
         let frequencies = self.frequencies();

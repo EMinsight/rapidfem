@@ -3,25 +3,20 @@
 
 export function init(): void;
 
-/**
- * Run a frequency sweep on an in-memory mesh + TOML config.
- * Returns SweepResultJs as a JS object.
- */
-export function run_sweep(mesh_bytes: Uint8Array, config_toml: string): any;
+export function mesh_from_spec(spec_json: string): any;
 
 /**
- * Mesh from a `MeshSpec` JSON, build the FEM config from a TOML string,
- * and run a single sweep — all client-side, no `.msh` round-trip.
- * `spec_json`: serialized `rapidfem_mesher::MeshSpec`.
+ * Mesh from a `MeshSpec` JSON, build the FEM config internally, and run
+ * a sweep — all client-side, no `.msh` round-trip.
  */
-export function solve_from_spec(spec_json: string, config_toml: string): any;
+export function solve_from_spec(spec_json: string, options_json: string): any;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly init: () => void;
-    readonly run_sweep: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly mesh_from_spec: (a: number, b: number) => [number, number, number];
     readonly solve_from_spec: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

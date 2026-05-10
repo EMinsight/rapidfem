@@ -2,17 +2,17 @@
 	import '$lib/components/fields.css';
 	import { untrack } from 'svelte';
 	import { EXAMPLES, type DemoExample } from '$lib/examples';
-	import { run_streaming_sweep, abort_solver, type SMatrix } from '$lib/wasm';
+	import { run_streaming_sweep_spec, mesh_spec, abort_solver, type SMatrix } from '$lib/wasm';
 	import ParamSidebar from '$lib/components/ParamSidebar.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import StatusPanel from '$lib/components/StatusPanel.svelte';
 	import ExampleSelect from '$lib/components/ExampleSelect.svelte';
 	import Select from '$lib/components/Select.svelte';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
-	import { parse_msh, type MeshData } from '$lib/msh';
+	import { type MeshData } from '$lib/msh';
 	import { L_eq_pH, Q_factor, find_srf } from '$lib/sparams';
 
-	let selected_id = $state('spiral');
+	let selected_id = $state('microstrip');
 	let example = $derived<DemoExample>(EXAMPLES[selected_id]);
 
 	let running = $state(false);
@@ -24,8 +24,12 @@
 	let smats = $state<SMatrix[]>([]);
 
 	let mesh_data = $state<MeshData | null>(null);
-	type Display = 'geometry' | 'mesh' | 'both' | 'field' | 'plots';
-	let display = $state<Display>('geometry');
+	type Display = 'view3d' | 'plots';
+	let display = $state<Display>('view3d');
+	// Three independent layer toggles inside the 3D view.
+	let show_geometry = $state(true);
+	let show_wireframe = $state(false);
+	let show_field = $state(false);
 	let viewer: MeshViewer | undefined = $state();
 	// Field viz: which freq + excitation to show
 	let field_freq_idx = $state(0);
@@ -34,10 +38,12 @@
 	let active_field = $derived<Float32Array | null>(
 		field_results[field_freq_idx]?.fields[field_exc_idx] ?? null
 	);
-	// Volumetric point cloud density — points per simulation volume.
-	// 1 = sparse (~3k pts), 10 = dense (~500k pts). The MeshViewer scales
-	// per-tet sample count proportional to each tet's share of total volume.
+	// Volumetric point cloud density — total point count scales with
+	// simulation volume and density slider, NOT with tet count.
 	let field_density = $state(5);
+	// Wave animation toggle + speed (1 ≈ 1 cycle per second).
+	let animate_field = $state(false);
+	let anim_speed = $state(0.5);
 
 	// Resizable sidebar
 	let sidebar_width = $state(280);
@@ -56,13 +62,12 @@
 
 	function on_keydown(e: KeyboardEvent) {
 		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-		if (display === 'plots') return; // Viewer shortcuts only when viewer active
+		if (display !== 'view3d') return; // Viewer shortcuts only when viewer active
 		switch (e.key) {
 			case 'f': case 'F': viewer?.fit_view(); break;
 			case '+': case '=': viewer?.zoom_in(); break;
 			case '-': case '_': viewer?.zoom_out(); break;
 			case 'r': case 'R': viewer?.rotate_90(); break;
-			case 'z': case 'Z': viewer?.flip_z(); break;
 			case 's': case 'S':
 				if (e.ctrlKey || e.metaKey) {
 					e.preventDefault();
@@ -78,9 +83,7 @@
 	// Reads from `display` are untracked so view-tab switches don't retrigger
 	// this and wipe an in-flight sweep's progress/log.
 	$effect(() => {
-		// Cache-bust the .msh fetch — browsers cache static assets aggressively
-		// in dev and we regenerate these whenever the bridge changes.
-		const url = example.msh_url + '?v=' + Date.now();
+		const ex = example;
 		untrack(() => {
 			smats = [];
 			freqs = [];
@@ -90,14 +93,16 @@
 			log_lines = [];
 			status = 'idle';
 			progress = 0;
-			if (display === 'field') display = 'geometry';
+			show_field = false;
 		});
+		// Mesh in WASM up-front so the viewer has something to show before
+		// the user clicks Run.
+		const built = ex.build_spec();
 		(async () => {
 			try {
-				const t = await fetch(url, { cache: 'no-store' }).then((r) => r.text());
-				mesh_data = parse_msh(t);
+				mesh_data = await mesh_spec(built.spec);
 			} catch (e) {
-				console.error('mesh parse failed', e);
+				console.error('mesh_spec failed', e);
 				mesh_data = null;
 			}
 		})();
@@ -116,32 +121,26 @@
 		smats = [];
 		freqs = [];
 		field_results = [];
-		display = 'plots';
 		abort_controller = new AbortController();
 
 		try {
 			const ex = example;
-			const [mesh_resp, toml_resp] = await Promise.all([
-				fetch(ex.msh_url),
-				fetch(ex.toml_url)
-			]);
-			const mesh_bytes = new Uint8Array(await mesh_resp.arrayBuffer());
-			const config_toml = await toml_resp.text();
 			log(`${ex.label} · ${ex.frequencies_hz.length} freqs`);
-
 			const t_start = performance.now();
-			await run_streaming_sweep({
-				mesh_bytes,
-				config_toml,
+			const on_point_cb = (k: number, total: number, point: any) => {
+				freqs = [...freqs, point.freq_hz];
+				smats = [...smats, point.S];
+				field_results = [...field_results, { freq_hz: point.freq_hz, fields: point.fields }];
+				progress = (k + 1) / total;
+			};
+			const built = ex.build_spec();
+			await run_streaming_sweep_spec({
+				spec: built.spec,
+				materials: built.materials,
 				frequencies_hz: ex.frequencies_hz,
 				abort_signal: abort_controller.signal,
 				on_status: (m) => (status = m),
-				on_point: (k, total, point) => {
-					freqs = [...freqs, point.freq_hz];
-					smats = [...smats, point.S];
-					field_results = [...field_results, { freq_hz: point.freq_hz, fields: point.fields }];
-					progress = (k + 1) / total;
-				}
+				on_point: on_point_cb
 			});
 			const dt_total = (performance.now() - t_start) / 1000;
 			log(`done in ${dt_total.toFixed(1)}s`);
@@ -230,12 +229,25 @@
 		></div>
 		<main class="results-area">
 			<div class="view-tabs">
-				<button class="vt" class:active={display === 'geometry'} onclick={() => (display = 'geometry')}>Geometry</button>
-				<button class="vt" class:active={display === 'mesh'} onclick={() => (display = 'mesh')}>Mesh</button>
-				<button class="vt" class:active={display === 'both'} onclick={() => (display = 'both')}>Both</button>
-				<button class="vt" class:active={display === 'field'} onclick={() => (display = 'field')}>Field</button>
+				<button class="vt" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D View</button>
 				<button class="vt" class:active={display === 'plots'} onclick={() => (display = 'plots')}>Plots</button>
-				{#if display === 'field' && field_results.length > 0}
+				{#if display === 'view3d'}
+					<div class="layer-toggles">
+						<label class="lt">
+							<input type="checkbox" bind:checked={show_geometry} />
+							<span>Geometry</span>
+						</label>
+						<label class="lt">
+							<input type="checkbox" bind:checked={show_wireframe} />
+							<span>Wireframe</span>
+						</label>
+						<label class="lt" class:disabled={field_results.length === 0}>
+							<input type="checkbox" bind:checked={show_field} disabled={field_results.length === 0} />
+							<span>Field</span>
+						</label>
+					</div>
+				{/if}
+				{#if display === 'view3d' && show_field && field_results.length > 0}
 					<div class="field-controls">
 						<label>
 							<span>freq</span>
@@ -259,8 +271,18 @@
 						</label>
 						<label>
 							<span>density</span>
-							<input type="range" min="1" max="10" step="1" bind:value={field_density} />
+							<input type="range" min="1" max="20" step="1" bind:value={field_density} />
 						</label>
+						<label class="lt">
+							<input type="checkbox" bind:checked={animate_field} />
+							<span>Wave</span>
+						</label>
+						{#if animate_field}
+							<label>
+								<span>speed</span>
+								<input type="range" min="0.05" max="2" step="0.05" bind:value={anim_speed} />
+							</label>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -271,9 +293,13 @@
 					<MeshViewer
 						bind:this={viewer}
 						mesh={mesh_data}
-						mode={display === 'field' ? 'field' : display}
-						field={display === 'field' ? active_field : null}
+						{show_geometry}
+						{show_wireframe}
+						{show_field}
+						field={show_field ? active_field : null}
 						point_density={field_density}
+						{animate_field}
+						{anim_speed}
 					/>
 				{/if}
 			</div>
@@ -394,6 +420,47 @@
 	.vt:disabled:hover { color: var(--text-dim); }
 	.vt.active {
 		color: var(--accent);
+	}
+	.layer-toggles {
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		padding: 0 12px;
+		border-left: 1px solid var(--border);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-muted);
+	}
+	.lt {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		cursor: pointer;
+	}
+	.lt.disabled { opacity: 0.4; cursor: not-allowed; }
+	.lt input[type='checkbox'] {
+		appearance: none;
+		width: 12px;
+		height: 12px;
+		border: 1px solid var(--input-border);
+		background: var(--input-bg);
+		cursor: pointer;
+		position: relative;
+	}
+	.lt input[type='checkbox']:checked {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.lt input[type='checkbox']:checked::after {
+		content: '';
+		position: absolute;
+		left: 3px; top: 0px;
+		width: 4px; height: 7px;
+		border: solid var(--bg);
+		border-width: 0 1.5px 1.5px 0;
+		transform: rotate(45deg);
 	}
 	.field-controls {
 		display: flex;

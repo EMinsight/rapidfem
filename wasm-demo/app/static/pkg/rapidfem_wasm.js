@@ -5,18 +5,13 @@ export function init() {
 }
 
 /**
- * Run a frequency sweep on an in-memory mesh + TOML config.
- * Returns SweepResultJs as a JS object.
- * @param {Uint8Array} mesh_bytes
- * @param {string} config_toml
+ * @param {string} spec_json
  * @returns {any}
  */
-export function run_sweep(mesh_bytes, config_toml) {
-    const ptr0 = passArray8ToWasm0(mesh_bytes, wasm.__wbindgen_malloc);
+export function mesh_from_spec(spec_json) {
+    const ptr0 = passStringToWasm0(spec_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(config_toml, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.run_sweep(ptr0, len0, ptr1, len1);
+    const ret = wasm.mesh_from_spec(ptr0, len0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -24,17 +19,16 @@ export function run_sweep(mesh_bytes, config_toml) {
 }
 
 /**
- * Mesh from a `MeshSpec` JSON, build the FEM config from a TOML string,
- * and run a single sweep — all client-side, no `.msh` round-trip.
- * `spec_json`: serialized `rapidfem_mesher::MeshSpec`.
+ * Mesh from a `MeshSpec` JSON, build the FEM config internally, and run
+ * a sweep — all client-side, no `.msh` round-trip.
  * @param {string} spec_json
- * @param {string} config_toml
+ * @param {string} options_json
  * @returns {any}
  */
-export function solve_from_spec(spec_json, config_toml) {
+export function solve_from_spec(spec_json, options_json) {
     const ptr0 = passStringToWasm0(spec_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(config_toml, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const ptr1 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.solve_from_spec(ptr0, len0, ptr1, len1);
     if (ret[2]) {
@@ -178,13 +172,6 @@ function getUint8ArrayMemory0() {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
-}
-
-function passArray8ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 1, 1) >>> 0;
-    getUint8ArrayMemory0().set(arg, ptr / 1);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

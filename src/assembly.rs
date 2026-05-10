@@ -269,7 +269,6 @@ pub fn assemble_and_solve_with_pml(
                 faer::c64 { re: bvec[d].re, im: bvec[d].im }
             });
             faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
-
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
             for (fi, &d) in free_dofs.iter().enumerate() {
                 let v = x_mat[(fi, 0)];
