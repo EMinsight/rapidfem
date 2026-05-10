@@ -78,7 +78,9 @@
 	// Reads from `display` are untracked so view-tab switches don't retrigger
 	// this and wipe an in-flight sweep's progress/log.
 	$effect(() => {
-		const url = example.msh_url;
+		// Cache-bust the .msh fetch — browsers cache static assets aggressively
+		// in dev and we regenerate these whenever the bridge changes.
+		const url = example.msh_url + '?v=' + Date.now();
 		untrack(() => {
 			smats = [];
 			freqs = [];
