@@ -81,12 +81,16 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
     )
     air.material = "air"
 
-    # ── Metal/via polygons as 3D extrusions ────────────────────────────────
-    # Each polygon becomes a real 3D conductor at its layer's (z, thickness).
-    # Faces of these volumes get re-tagged with the layer name AFTER the
-    # global fragment, so the PEC BC matches a SURFACE physical group.
+    # ── Metal/via polygons as 2D PEC plates ────────────────────────────────
+    # 3D extrusion of complex spiral polygons triggers cascades of
+    # BOPAlgo_AlertNotSplittableEdge / TooSmallEdge / AcquiredSelfIntersection
+    # in OCC during fragment with the dielectric box (reentrant boundaries
+    # of the spiral × big oxide volume → degenerate boolean leftovers).
+    # 2D plates fragment cleanly with 3D dielectrics — single intersection
+    # per layer instead of N side-face splits — and PEC on 2D surface groups
+    # is the physically correct thin-conductor approximation anyway.
     import numpy as np
-    conductors: list = []   # (volume_obj, layer_name)
+    conductors: list = []   # (plate_obj, layer_name)
     metal_maxh = spec["maxh"] / 3.0
     for poly in spec["polygons"]:
         layer = _layer_by_name(stack, poly["layer"])
@@ -94,13 +98,17 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
             continue
         pts = [(poly["xy"][i], poly["xy"][i + 1]) for i in range(0, len(poly["xy"]), 2)]
         arr = np.asarray(pts, dtype=np.float64)
-        vol = g._extrude_polygon(arr, z=layer["z"], thickness=layer["thickness"])
-        vol.name = layer["name"]
-        # Refine ONLY metal layers — vias are already sub-µm; refining them
-        # would push gmsh's adaptive size-field down to nm and explode tet count.
+        # Vias plot at their z mid-plane — visually distinct between the
+        # adjacent metals, electrically a thin PEC bridge between them.
+        if layer["type"] == "via":
+            z = layer["z"] + layer["thickness"] / 2
+        else:
+            z = layer["z"] + layer["thickness"] / 2
+        plate = g._plate_polygon(arr, z=z)
+        plate.name = layer["name"]
         if layer["type"] == "metal":
-            vol.maxh = metal_maxh
-        conductors.append((vol, layer["name"]))
+            plate.maxh = metal_maxh
+        conductors.append((plate, layer["name"]))
 
     # ── Ports: extension pad (3D, on the trace metal) + ground patch (2D)
     #          + port plate (vertical 2D, between gnd and trace bottom)
@@ -117,20 +125,25 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
         gnd_pad_size = 4 * size
         cxp, cyp = port["x"], port["y"]
 
-        # Extension pad as 3D box welded onto the trace's z extent
-        ext = g.box(size, size, layer["thickness"],
-                    position=(cxp - size / 2, cyp - size / 2, z_metal_bot))
+        # Extension pad as 2D plate at the trace's z mid-plane — same
+        # thin-conductor approximation we use for the trace itself, fragments
+        # cleanly with the surrounding dielectric.
+        z_metal_mid = layer["z"] + layer["thickness"] / 2
+        ext = g.xy_plate(size, size,
+                         position=(cxp - size / 2, cyp - size / 2, z_metal_mid))
         ext.name = layer["name"]
         ext.maxh = metal_maxh
         # Ground pad: thin plate at top of gnd layer
         gnd_pad = g.xy_plate(gnd_pad_size, gnd_pad_size,
                               position=(cxp - gnd_pad_size / 2, cyp - gnd_pad_size / 2, z_gnd_top))
         gnd_pad.name = f"{port['name']}_gnd"
-        # Vertical port plate
+        # Vertical port plate spans gnd_top → trace mid-plane (so its top
+        # edge lands on the 2D extension pad, not midair).
+        z_metal_mid = layer["z"] + layer["thickness"] / 2
         port_plate = g.plate(
             p0=(cxp - size / 2, cyp - size / 2, z_gnd_top),
             width=(size, 0, 0),
-            height=(0, 0, z_metal_bot - z_gnd_top),
+            height=(0, 0, z_metal_mid - z_gnd_top),
         )
         port_plate.name = port["name"]
         port_objs += [ext, gnd_pad, port_plate]
@@ -139,15 +152,8 @@ def build_from_spec(spec: dict[str, Any]) -> rapidfem.SimulationBuilder:
     # ── Single batched conformal fragment ────────────────────────────────
     g.fragment(sub_box, ox_box, *(c[0] for c in conductors), *port_objs)
 
-    # ── Tag the boundary faces of every conductor volume with its layer
-    #    name. The PEC BC matches a SURFACE physical group, so a 3D volume
-    #    named "met5" alone wouldn't propagate to the FEM BC — we explicitly
-    #    name each face. After fragment, vol._entity.tag is up-to-date.
-    for vol, layer_name in conductors:
-        try:
-            vol.faces.name = layer_name
-        except Exception as e:
-            print(f"warn: could not tag faces of {layer_name}: {e}")
+    # 2D plates already ARE faces — they go directly into the (2, layer_name)
+    # physical group via their .name attribute, no boundary-face walk needed.
 
     # ABC on outer faces of air
     air.faces.where(lambda c, _, h=air_top_z + air_h: abs(c[2] - h) < 1e-12).name = "abc"
