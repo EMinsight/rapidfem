@@ -26,11 +26,23 @@
 		if (!container) return;
 		const ro = new ResizeObserver(() => {
 			if (!Plotly) return;
-			const plots = container!.querySelectorAll('.plot-grid > div');
-			for (const div of plots) Plotly.Plots?.resize(div);
+			// Plotly's `Plots.resize` reads each div's clientRect and reflows
+			// the SVG to match. Observe every plot-cell directly so changes
+			// from drag-resizing the viewer pane reach the plot.
+			const cells = container!.querySelectorAll('.plot-cell');
+			for (const div of cells) Plotly.Plots?.resize(div as HTMLDivElement);
 		});
 		ro.observe(container);
-		return () => ro.disconnect();
+		const cells = container.querySelectorAll('.plot-cell');
+		for (const c of cells) ro.observe(c);
+		const onWindowResize = () => {
+			if (!Plotly) return;
+			for (const c of container!.querySelectorAll('.plot-cell')) {
+				Plotly.Plots?.resize(c as HTMLDivElement);
+			}
+		};
+		window.addEventListener('resize', onWindowResize);
+		return () => { ro.disconnect(); window.removeEventListener('resize', onWindowResize); };
 	});
 
 	$effect(() => {
@@ -71,14 +83,23 @@
 				tickfont: { size: 10 }
 			},
 			autosize: true,
-			showlegend: false
+			showlegend: true,
+			legend: {
+				orientation: 'h',
+				x: 0,
+				xanchor: 'left',
+				y: 1.02,
+				yanchor: 'bottom',
+				font: { size: 10, color: plotColors.text },
+				bgcolor: 'rgba(0,0,0,0)',
+			},
 		};
 		const cfg = { responsive: true, displayModeBar: false };
 		const tr = (y: (number | null)[], ci: number, name?: string) => ({
 			x: fHz, y, type: 'scatter' as const, mode: 'lines+markers' as const,
 			line: { color: plotColors.cycle[ci % plotColors.cycle.length], width: 2 },
 			marker: { color: plotColors.cycle[ci % plotColors.cycle.length], size: 5 },
-			...(name ? { name, showlegend: true } : {})
+			name: name ?? '', showlegend: !!name,
 		});
 
 		const yax = (title: string, ...datasets: (number | null)[][]): any => {

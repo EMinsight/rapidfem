@@ -39,7 +39,7 @@
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
 	let field_density = $state(3);
-	let field_scale_mode = $state<'log' | 'lin'>('log');
+	let field_scale_mode = $state<'log' | 'lin'>('lin');
 	let field_abc = $derived<Float32Array | null>(
 		fields_raw && fields_raw[field_freq_idx] && fields_raw[field_freq_idx][field_port_idx]
 			? new Float32Array(fields_raw[field_freq_idx][field_port_idx] as number[])
@@ -525,20 +525,8 @@
 				<div class="pane-inner">
 					<div class="toolbar">
 						<button class="primary" onclick={() => notebook?.run_all_cells()} title="Run all cells (Ctrl+Shift+Enter)">Run All</button>
-						<span class="sep"></span>
 						<button class="primary" onclick={() => notebook?.run_current_cell()} title="Run current cell (Shift+Enter)">Run Cell</button>
-						<span class="sep"></span>
-						<button class="primary subtle" onclick={() => notebook?.add_cell()} title="Add cell below">+ Cell</button>
-						<span class="sep"></span>
 						<button class="primary subtle" onclick={on_reset_kernel} title="Wipe namespace + gmsh state">Restart Kernel</button>
-						<span class="spacer"></span>
-						{#if last_solve_stats}
-							<span class="stat">{last_solve_stats.n_freq} freq · {last_solve_stats.n_dofs.toLocaleString()} dofs · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
-						{:else if last_mesh_stats}
-							<span class="stat">{last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
-						{:else if last_geom_stats}
-							<span class="stat">{last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
-						{/if}
 					</div>
 					<div class="editor-wrap">
 						<Notebook
@@ -607,6 +595,7 @@
 						<span class="nav-sep"></span>
 						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
 						{#if display === 'view3d'}
+							<span class="tab-spacer"></span>
 							<span class="nav-sep"></span>
 							<button class="tab-btn small" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
 							<span class="nav-sep"></span>

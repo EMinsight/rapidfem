@@ -18,7 +18,7 @@
 		show_field = false,
 		field = null,
 		point_density = 5,
-		scale_mode = 'log',
+		scale_mode = 'lin',
 		animate_field = false,
 		anim_speed = 1
 	}: {

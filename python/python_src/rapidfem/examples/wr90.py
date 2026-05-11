@@ -16,7 +16,7 @@ import rapidfem
 
 A, B, L = 22.86e-3, 10.16e-3, 30.0e-3        # WR-90 width, height, length [m]
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 21) # 21-point sweep, single-mode band
-MAXH = 5.0e-3                                # max tet edge length [m]
+MAXH = 3.0e-3                                # max tet edge length [m]
 
 
 # %% Geometry + Materials
