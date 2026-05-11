@@ -678,3 +678,38 @@ def register(app: Flask) -> None:
         except OSError as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         return jsonify({"ok": True, "path": rel, "size": target.stat().st_size})
+
+    @app.delete("/api/files/<path:rel>")
+    def api_files_delete(rel: str):
+        target = _safe_path(rel)
+        if target is None or not target.is_file():
+            return jsonify({"ok": False, "error": "not found"}), 404
+        try:
+            target.unlink()
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        # Drop the kernel so a future file at the same path starts fresh.
+        try:
+            from rapidfem.ui.kernel import drop_kernel
+            drop_kernel(str(target))
+        except Exception:
+            pass
+        return jsonify({"ok": True, "path": rel})
+
+    @app.post("/api/files/rename")
+    def api_files_rename():
+        body = request.get_json(silent=True) or {}
+        old_rel = body.get("from", "")
+        new_rel = body.get("to", "")
+        old = _safe_path(old_rel)
+        new = _safe_path(new_rel)
+        if old is None or new is None or not old.is_file():
+            return jsonify({"ok": False, "error": "invalid path"}), 400
+        if new.exists():
+            return jsonify({"ok": False, "error": "destination exists"}), 409
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": True, "from": old_rel, "to": new_rel})

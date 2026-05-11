@@ -1,16 +1,18 @@
 <script lang="ts">
-	import { listFiles, listExamples, type FileEntry } from '$lib/api';
+	import { listFiles, listExamples, deleteFile, renameFile, type FileEntry } from '$lib/api';
 
 	let {
 		active_path = $bindable<string | null>(null),
 		onOpen,
 		onNew,
 		onOpenExample,
+		onClosed,
 	}: {
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
 		onOpenExample?: (name: string) => void;
+		onClosed?: (path: string) => void;
 	} = $props();
 
 	let files = $state<FileEntry[]>([]);
@@ -41,6 +43,37 @@
 	function nice_path(p: string): string {
 		return p.replace(/\\/g, '/');
 	}
+
+	async function on_delete(e: MouseEvent, path: string) {
+		e.stopPropagation();
+		if (!confirm(`Delete ${path}?`)) return;
+		try {
+			await deleteFile(path);
+			if (active_path === path) {
+				active_path = null;
+				onClosed?.(path);
+			}
+			await refresh();
+		} catch (err) {
+			error = String(err);
+		}
+	}
+
+	async function on_rename(e: MouseEvent, path: string) {
+		e.stopPropagation();
+		const next = prompt('Rename to:', path);
+		if (!next || next === path) return;
+		try {
+			await renameFile(path, next);
+			if (active_path === path) {
+				active_path = next;
+				onOpen(next);
+			}
+			await refresh();
+		} catch (err) {
+			error = String(err);
+		}
+	}
 </script>
 
 <div class="browser">
@@ -67,14 +100,23 @@
 	<div class="list">
 		<div class="section">Workdir</div>
 		{#each files as f (f.path)}
-			<button
-				class:active={f.path === active_path}
-				class="item"
-				onclick={() => onOpen(f.path)}
-				title={`${f.path}  ·  ${f.size} bytes`}
-			>
-				<span class="name">{nice_path(f.path)}</span>
-			</button>
+			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+			<div class="item-row" class:active={f.path === active_path} ondblclick={(e) => on_rename(e, f.path)}>
+				<button
+					class="item"
+					onclick={() => onOpen(f.path)}
+					title={`${f.path}  ·  ${f.size} bytes  ·  double-click row to rename`}
+				>
+					<span class="name">{nice_path(f.path)}</span>
+				</button>
+				<button class="row-act" onclick={(e) => on_delete(e, f.path)} title="Delete" aria-label="Delete">
+					<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+						<polyline points="3,5 13,5" />
+						<path d="M6 5V3h4v2" />
+						<path d="M5 5l1 8h4l1-8" />
+					</svg>
+				</button>
+			</div>
 		{/each}
 		{#if !files.length && !loading}
 			<div class="empty">No .py files yet.</div>
@@ -178,13 +220,35 @@
 		background: var(--bg-panel);
 		color: var(--text);
 	}
-	.item.active {
-		background: var(--accent-dim);
-		color: var(--accent);
-		border-left: 2px solid var(--accent);
-		padding-left: calc(var(--space-lg) - 2px);
+	.item-row {
+		display: flex;
+		align-items: center;
+		position: relative;
 	}
-	.item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+	.item-row.active {
+		background: var(--accent-dim);
+		border-left: 2px solid var(--accent);
+	}
+	.item-row.active .item { color: var(--accent); padding-left: calc(var(--space-lg) - 2px); }
+	.item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; flex: 1; }
+	.item-row .item { flex: 1; }
+	.row-act {
+		display: none;
+		width: 18px;
+		height: 18px;
+		padding: 0;
+		margin-right: var(--space-md);
+		background: transparent;
+		border: 0;
+		color: var(--text-dim);
+		cursor: pointer;
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: normal;
+		flex-shrink: 0;
+	}
+	.row-act:hover { color: var(--accent); }
+	.item-row:hover .row-act { display: inline-flex; align-items: center; justify-content: center; }
 	.empty { color: var(--text-dim); padding: var(--space-md) var(--space-lg); font-style: italic; font-size: var(--fs-xs); }
 	.error { color: var(--accent); padding: var(--space-md) var(--space-lg); font-size: var(--fs-xs); }
 </style>

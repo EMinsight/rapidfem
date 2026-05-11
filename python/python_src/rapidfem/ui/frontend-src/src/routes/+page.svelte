@@ -298,15 +298,39 @@
 	async function open_example(name: string) {
 		try {
 			const content = await readExample(name);
-			// Examples open read-only-ish: copy into workdir on first edit
-			// (TODO). For now, just load contents and treat as untitled.
-			code = content;
-			active_path = null;
-			dirty = false;
-			clear_stale_results();
-			mesh_data = null;
+			// Copy example into the workdir under the same name so edits
+			// persist. If the file already exists, append a numeric suffix
+			// to avoid clobbering the user's prior work.
+			let target = name;
+			try {
+				let i = 1;
+				while (true) {
+					try {
+						await readFile(target);
+						// File exists — try next variant.
+						target = name.replace(/\.py$/, `_${i}.py`);
+						i++;
+					} catch (e) {
+						if (String(e).includes('HTTP 404')) break;  // free slot
+						throw e;
+					}
+					if (i > 99) break;
+				}
+			} catch {}
+			await writeFile(target, content);
+			await open_file(target);
 		} catch (e) {
 			log_lines = [...log_lines, `[example ${name}] ${e}`];
+		}
+	}
+
+	function on_file_closed(path: string) {
+		if (active_path === path) {
+			active_path = null;
+			code = '';
+			localStorage.removeItem('rapidfem.active_path');
+			clear_stale_results();
+			mesh_data = null;
 		}
 	}
 
@@ -497,6 +521,7 @@
 						onOpen={open_file}
 						onNew={new_file}
 						onOpenExample={open_example}
+						onClosed={on_file_closed}
 					/>
 				</div>
 			{/if}
@@ -572,7 +597,7 @@
 								{#each log_lines as line}
 									<div class="line">{line}</div>
 								{:else}
-									<div class="empty">No output yet — Ctrl+S to run, or Generate Mesh / Run Simulation.</div>
+									<div class="empty">No output yet — Shift+Enter to run a cell, or hit Run All.</div>
 								{/each}
 							</div>
 						{/if}

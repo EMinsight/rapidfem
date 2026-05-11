@@ -217,6 +217,15 @@ export async function writeFile(path: string, content: string): Promise<void> {
 	if (!res.ok) throw new Error(`writeFile ${path}: HTTP ${res.status}`);
 }
 
+export async function deleteFile(path: string): Promise<void> {
+	const res = await fetch(api_base() + `/api/files/${encodeURI(path)}`, { method: 'DELETE' });
+	if (!res.ok) throw new Error(`deleteFile ${path}: HTTP ${res.status}`);
+}
+
+export async function renameFile(from: string, to: string): Promise<void> {
+	return post_json('/api/files/rename', { from, to });
+}
+
 export async function health(): Promise<{ ok: boolean; workdir: string; frontend_bundled: boolean }> {
 	return get_json('/api/health');
 }
