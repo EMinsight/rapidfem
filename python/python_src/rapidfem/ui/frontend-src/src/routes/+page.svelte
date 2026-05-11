@@ -282,6 +282,14 @@
 			clear_stale_results();
 			mesh_data = null;
 		} catch (e) {
+			// 404 typically means a stale localStorage pointer to a file that
+			// has been deleted (e.g. the old welcome.py). Clear it silently
+			// rather than nag the user with a log line every reload.
+			const msg = String(e);
+			if (msg.includes('HTTP 404')) {
+				localStorage.removeItem('rapidfem.active_path');
+				return;
+			}
 			log_lines = [...log_lines, `[open ${path}] ${e}`];
 		}
 	}
