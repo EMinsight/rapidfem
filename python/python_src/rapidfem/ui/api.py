@@ -77,23 +77,36 @@ def _capture_native_streams(stage: str):
     lines_err: list[str] = []
 
     def reader(fd: int, kind: str, accum: list[str]) -> None:
-        # UTF-8 decoding — Rust eprintln + gmsh both write UTF-8 (em-dash,
-        # etc.). Default Windows cp1252 would mangle them. readline() in a
-        # loop streams each line to the bus as the solver flushes it.
+        # Use raw os.read so Python's TextIOWrapper / BufferedReader don't
+        # batch multiple lines before delivering them. Each os.read call
+        # returns as soon as the pipe has any bytes, so lines from Rust
+        # `eprintln!` stream out at solver speed, not at chunk-boundary.
+        buf = b""
         try:
-            f = os.fdopen(fd, "r", buffering=1, encoding="utf-8", errors="replace")
             while True:
-                line = f.readline()
-                if not line:
-                    break
-                s = line.rstrip()
-                if not s:
-                    continue
-                accum.append(s)
-                BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
-            f.close()
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break  # EOF — pipe writer closed
+                buf += chunk
+                while b"\n" in buf:
+                    raw, _, buf = buf.partition(b"\n")
+                    s = raw.rstrip(b"\r").decode("utf-8", errors="replace")
+                    if not s:
+                        continue
+                    accum.append(s)
+                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
+            if buf:
+                tail = buf.decode("utf-8", errors="replace").rstrip()
+                if tail:
+                    accum.append(tail)
+                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": tail, "t": time.time()})
         except Exception:
             pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     t_out = threading.Thread(target=reader, args=(out_r, "stdout", lines_out), daemon=True)
     t_err = threading.Thread(target=reader, args=(err_r, "stderr", lines_err), daemon=True)
