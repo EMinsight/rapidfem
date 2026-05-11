@@ -19,6 +19,16 @@
 	let code = $state('');
 	let dirty = $state(false);
 	let log_lines = $state<string[]>([]);
+	let output_body_el: HTMLElement | undefined = $state();
+	$effect(() => {
+		// Auto-scroll to bottom when new lines arrive (unless user has
+		// scrolled up: bail when they're more than ~80px from the bottom).
+		const n = log_lines.length;
+		if (!output_body_el || n === 0) return;
+		const el = output_body_el;
+		const at_bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		if (at_bottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
+	});
 
 	let mesh_data = $state<MeshData | null>(null);
 	let wireframe = $state<import('$lib/api').GeometryPayload | null>(null);
@@ -593,7 +603,7 @@
 							{/if}
 						</div>
 						{#if !output_collapsed}
-							<div class="output-body">
+							<div class="output-body" bind:this={output_body_el}>
 								{#each log_lines as line}
 									<div class="line">{line}</div>
 								{:else}
@@ -1091,13 +1101,14 @@
 		font-weight: 600;
 	}
 	.output-count {
-		background: var(--accent-dim);
-		color: var(--accent);
+		background: var(--bg-panel);
+		color: var(--text-dim);
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
 		padding: 1px 6px;
 		min-width: 18px;
 		text-align: center;
+		border: 1px solid var(--border-subtle);
 	}
 	.output-head .spacer { flex: 1; }
 	.output-body {

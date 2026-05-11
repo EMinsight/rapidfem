@@ -233,22 +233,25 @@
 	.item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; flex: 1; }
 	.item-row .item { flex: 1; }
 	.row-act {
-		display: none;
-		width: 18px;
-		height: 18px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
 		padding: 0;
 		margin-right: var(--space-md);
 		background: transparent;
 		border: 0;
-		color: var(--text-dim);
+		color: transparent;
 		cursor: pointer;
 		text-transform: none;
 		letter-spacing: 0;
 		font-weight: normal;
 		flex-shrink: 0;
+		transition: color var(--transition);
 	}
-	.row-act:hover { color: var(--accent); }
-	.item-row:hover .row-act { display: inline-flex; align-items: center; justify-content: center; }
+	.item-row:hover .row-act { color: var(--text-dim); }
+	.row-act:hover { color: var(--text-muted); }
 	.empty { color: var(--text-dim); padding: var(--space-md) var(--space-lg); font-style: italic; font-size: var(--fs-xs); }
 	.error { color: var(--accent); padding: var(--space-md) var(--space-lg); font-size: var(--fs-xs); }
 </style>
