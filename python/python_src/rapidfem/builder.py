@@ -175,6 +175,35 @@ class SimulationBuilder:
         )
         return self
 
+    def pml(self, name: str, *,
+            direction: Sequence[float],
+            inner_face: float,
+            thickness: float,
+            er_base: float = 1.0,
+            ur_base: float = 1.0,
+            exponent: float = 1.5,
+            delta_max: float = 8.0) -> "SimulationBuilder":
+        """Perfectly Matched Layer absorbing boundary, applied to a *volume*
+        whose `name` was set on the geometry (e.g. ``shell.name = "pml_top"``).
+
+        ``direction`` is the outward-pointing axis the PML attenuates along
+        (use a unit vector like (0, 0, 1) for +z). ``inner_face`` is the
+        coordinate of the PML's inner boundary along that axis;
+        ``thickness`` extends outward from there. The remaining knobs match
+        the TOML ``[[pml]]`` schema."""
+        tag = self._tag(name)
+        d = ", ".join(_f64(v) for v in direction)
+        self._materials.append(
+            f'[[pml]]\nvolume_tag = {tag}\ndirection = [{d}]\n'
+            f'inner_face = {_f64(inner_face)}\n'
+            f'thickness = {_f64(thickness)}\n'
+            f'er_base = {_f64(er_base)}\n'
+            f'ur_base = {_f64(ur_base)}\n'
+            f'exponent = {_f64(exponent)}\n'
+            f'delta_max = {_f64(delta_max)}\n'
+        )
+        return self
+
     def abc(self, name: str, *, order: int = 1, abctype: str = "B") -> "SimulationBuilder":
         tag = self._tag(name)
         self._ports.append(
