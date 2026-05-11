@@ -25,6 +25,7 @@
 	let fields_raw = $state<(number[] | null)[][] | null>(null);
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
+	let field_density = $state(5);
 	let field_abc = $derived<Float32Array | null>(
 		fields_raw && fields_raw[field_freq_idx] && fields_raw[field_freq_idx][field_port_idx]
 			? new Float32Array(fields_raw[field_freq_idx][field_port_idx] as number[])
@@ -570,6 +571,7 @@
 								{show_wireframe}
 								{show_field}
 								field={show_field ? field_abc : null}
+								point_density={field_density}
 							/>
 						{:else}
 							<ResultsPanel {freqs} {smats} metrics={[]} />
@@ -579,8 +581,13 @@
 						<div class="field-controls">
 							<label class="field-ctrl">
 								<span class="lbl">Freq</span>
-								<input type="range" min="0" max={freqs.length - 1} step="1" bind:value={field_freq_idx} />
+								<input class="slider" type="range" min="0" max={freqs.length - 1} step="1" bind:value={field_freq_idx} />
 								<span class="val">{(freqs[field_freq_idx] / 1e9).toFixed(2)} GHz</span>
+							</label>
+							<label class="field-ctrl">
+								<span class="lbl">Density</span>
+								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
+								<span class="val">{(field_density * 25).toLocaleString()}k pts</span>
 							</label>
 							{#if fields_raw[field_freq_idx] && fields_raw[field_freq_idx].length > 1}
 								<label class="field-ctrl">
@@ -858,13 +865,57 @@
 		color: var(--accent);
 		min-width: 80px;
 	}
-	.field-ctrl input[type="range"] {
-		width: 200px;
-		accent-color: var(--accent);
-	}
 	.field-ctrl select {
 		width: auto;
+		height: 22px;
+		padding: 0 var(--space-md);
 	}
+
+	/* Range slider — flat, themed, no native rounded thumb. */
+	.slider {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 160px;
+		height: 18px;
+		background: transparent;
+		cursor: pointer;
+		padding: 0;
+		margin: 0;
+	}
+	.slider:focus { outline: none; }
+	.slider::-webkit-slider-runnable-track {
+		height: 2px;
+		background: var(--border);
+		border: 0;
+	}
+	.slider::-moz-range-track {
+		height: 2px;
+		background: var(--border);
+		border: 0;
+	}
+	.slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 10px;
+		height: 14px;
+		margin-top: -6px;
+		background: var(--accent);
+		border: 0;
+		border-radius: 0;
+		cursor: grab;
+	}
+	.slider::-moz-range-thumb {
+		width: 10px;
+		height: 14px;
+		background: var(--accent);
+		border: 0;
+		border-radius: 0;
+		cursor: grab;
+	}
+	.slider:hover::-webkit-slider-thumb { background: var(--accent-hover); }
+	.slider:hover::-moz-range-thumb { background: var(--accent-hover); }
+	.slider:active::-webkit-slider-thumb { cursor: grabbing; }
+	.slider:active::-moz-range-thumb { cursor: grabbing; }
 
 	.viewer-slot {
 		flex: 1;
