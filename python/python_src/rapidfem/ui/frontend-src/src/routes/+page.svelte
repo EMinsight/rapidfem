@@ -75,99 +75,108 @@
 		} catch {}
 	}
 
-	// Drag-to-collapse: track accumulated drag while a pane is collapsed.
-	// Crossing a threshold re-expands; collapsing back happens when an
-	// expanded pane is dragged below its minimum width.
-	const COLLAPSE_MIN = 100;       // narrower than this → snap collapsed
-	const EXPAND_THRESHOLD = 50;    // drag accumulated past this → re-expand
-	let files_drag_accum = 0;
-	let editor_drag_accum = 0;
-	let viewer_drag_accum = 0;
-	let output_drag_accum = 0;
+	// Drag-to-collapse uses an unclamped tracker per axis so dragging past
+	// the rendered min/max still accumulates and crosses the snap threshold.
+	const COLLAPSE_AT = 100;     // tracker < this → snap collapsed
+	const EXPAND_AT  = 60;       // tracker > this on a collapsed pane → expand
+	let files_track = 220;
+	let editor_track = 0;
+	let output_track = 140;
 
-	function on_files_drag_start() { files_drag_accum = 0; }
+	function on_files_drag_start() {
+		files_track = files_collapsed ? 0 : files_w;
+	}
 	function on_files_resize(dx: number) {
+		files_track += dx;
 		if (files_collapsed) {
-			files_drag_accum += dx;
-			if (files_drag_accum > EXPAND_THRESHOLD) {
+			if (files_track > EXPAND_AT) {
 				files_collapsed = false;
-				files_w = Math.max(files_w, 200);
-				files_drag_accum = 0;
+				files_w = Math.max(files_w, 220);
+				files_track = files_w;
 				save_layout();
 			}
 			return;
 		}
-		const next = files_w + dx;
-		if (next < COLLAPSE_MIN) {
+		if (files_track < COLLAPSE_AT) {
 			files_collapsed = true;
 			save_layout();
-		} else {
-			files_w = clamp(next, 140, 480);
-			save_layout();
+			return;
 		}
+		files_w = clamp(files_track, 140, 480);
+		save_layout();
 	}
 
-	function on_editor_drag_start() { editor_drag_accum = 0; viewer_drag_accum = 0; }
+	function on_editor_drag_start() {
+		// Tracker is positive when editor is expanding (and viewer shrinking).
+		editor_track = editor_collapsed ? -200 : (viewer_collapsed ? 99999 : editor_w);
+	}
 	function on_editor_resize(dx: number) {
 		if (!main_el) return;
+		editor_track += dx;
+		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
+		const totalAvail = main_el.clientWidth - filesPx - 8;
+
 		if (editor_collapsed) {
-			editor_drag_accum += dx;
-			if (editor_drag_accum > EXPAND_THRESHOLD) {
+			// Drag right past the strip → re-expand.
+			if (editor_track > -200 + EXPAND_AT) {
 				editor_collapsed = false;
 				editor_w = Math.max(editor_w, 320);
-				editor_drag_accum = 0;
+				editor_track = editor_w;
 				save_layout();
 			}
 			return;
 		}
 		if (viewer_collapsed) {
-			viewer_drag_accum -= dx; // dragging left re-expands viewer
-			if (viewer_drag_accum > EXPAND_THRESHOLD) {
+			// Drag left past the right strip → re-expand viewer.
+			if (editor_track < totalAvail - COLLAPSED_W - EXPAND_AT) {
 				viewer_collapsed = false;
-				viewer_drag_accum = 0;
+				editor_track = editor_w;
 				save_layout();
 			}
 			return;
 		}
-		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
-		const totalAvail = main_el.clientWidth - filesPx - 8;
-		const next = editor_w + dx;
-		const viewerNext = totalAvail - next;
-		if (next < COLLAPSE_MIN) {
+
+		// Both panes visible. tracker is the requested editor width.
+		const viewerNext = totalAvail - editor_track;
+		if (editor_track < COLLAPSE_AT) {
 			editor_collapsed = true;
 			save_layout();
-		} else if (viewerNext < COLLAPSE_MIN) {
-			viewer_collapsed = true;
-			editor_w = clamp(next, 240, totalAvail - COLLAPSED_W);
-			save_layout();
-		} else {
-			editor_w = clamp(next, 240, totalAvail - 240);
-			save_layout();
+			return;
 		}
+		if (viewerNext < COLLAPSE_AT) {
+			viewer_collapsed = true;
+			editor_w = clamp(editor_track, 240, totalAvail - COLLAPSED_W);
+			save_layout();
+			return;
+		}
+		editor_w = clamp(editor_track, 240, totalAvail - 240);
+		save_layout();
 	}
 
-	function on_output_drag_start() { output_drag_accum = 0; }
+	function on_output_drag_start() {
+		output_track = output_collapsed ? 0 : output_h;
+	}
 	function on_output_resize(dy: number) {
 		if (!editor_pane_el) return;
+		// dy positive = mouse moves down = output shrinks.
+		output_track -= dy;
 		if (output_collapsed) {
-			output_drag_accum -= dy; // dragging up re-expands output
-			if (output_drag_accum > EXPAND_THRESHOLD) {
+			if (output_track > EXPAND_AT) {
 				output_collapsed = false;
-				output_h = Math.max(output_h, 120);
-				output_drag_accum = 0;
+				output_h = Math.max(output_h, 140);
+				output_track = output_h;
 				save_layout();
 			}
 			return;
 		}
-		const next = output_h - dy;
-		if (next < 50) {
+		if (output_track < 40) {
 			output_collapsed = true;
 			save_layout();
-		} else {
-			const maxH = editor_pane_el.clientHeight - 100;
-			output_h = clamp(next, 60, maxH);
-			save_layout();
+			return;
 		}
+		const maxH = editor_pane_el.clientHeight - 100;
+		output_h = clamp(output_track, 60, maxH);
+		save_layout();
 	}
 
 	function init_editor_w() {
