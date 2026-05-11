@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
 		setPointCloud, setPointPhase, setPointLogRange,
@@ -44,15 +44,18 @@
 	let mounted = false;
 	let needs_rebuild = true;
 	let cursor_world = $state({ x: 0, y: 0 });
-	let visible_tags = $state(new Set<number>());
+	// Stored as "hidden" so that newly-built meshes (e.g. wireframe after the
+	// user toggles Mesh on) default to visible without losing the explicit
+	// hides the user picked from the legend.
+	let hidden_tags = $state(new Set<number>());
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
-		const next = new Set(visible_tags);
+		const next = new Set(hidden_tags);
 		if (next.has(tag)) next.delete(tag); else next.add(tag);
-		visible_tags = next;
-		setTagVisible(gl_state, tag, next.has(tag));
+		hidden_tags = next;
+		setTagVisible(gl_state, tag, !next.has(tag));
 		render_frame();
 	}
 	let is_dragging = false;
@@ -145,9 +148,9 @@
 			return hex('#5a6470');
 		}
 		if (kind === 'gnd') return hex('#5aad78');
-		// Ports get a vivid sky-blue so they don't clash with the warm
-		// conductor / accent palette used elsewhere.
-		if (kind === 'port') return hex('#5cc4ff');
+		// Ports use a deep lava-red — readable against the warm conductor
+		// palette while still keeping them distinctly "hot".
+		if (kind === 'port') return hex('#e6452f');
 		// Per-layer conductor coloring so a multi-layer design (met5 + met4
 		// + via4 + ...) is visually distinguishable instead of one orange
 		// blob. Specific metal/via names get fixed hues; anything else
@@ -328,20 +331,21 @@
 			field_range = null;
 		}
 
-		// Preserve the user's per-tag hide/show decisions across rebuilds.
-		// New tags default to visible; tags that disappeared (e.g. mesh
-		// switched from geometry to tet view) are dropped from the set.
+		// Re-apply the user's explicit hides to the freshly-built meshes.
+		// untrack() so reading hidden_tags here doesn't make the parent
+		// rebuild $effect depend on it (which would loop when we write below).
 		const all_tags = new Set<number>();
 		for (const m of gl_state.meshes) all_tags.add(m.tag);
+		for (const m of gl_state.lineMeshes) all_tags.add(m.tag);
+		const cur = untrack(() => hidden_tags);
 		const next = new Set<number>();
-		const prior = visible_tags;
-		const had_prior = prior.size > 0;
-		for (const t of all_tags) {
-			if (!had_prior || prior.has(t)) next.add(t);
-		}
-		visible_tags = next;
-		// Sync GL visibility flags to the (possibly preserved) set.
-		for (const m of gl_state.meshes) setTagVisible(gl_state, m.tag, next.has(m.tag));
+		for (const t of cur) if (all_tags.has(t)) next.add(t);
+		// Only assign when something actually dropped out so we don't
+		// thrash state with structurally-equal new Sets.
+		if (next.size !== cur.size) hidden_tags = next;
+		const eff = next.size !== cur.size ? next : cur;
+		for (const m of gl_state.meshes) setTagVisible(gl_state, m.tag, !eff.has(m.tag));
+		for (const m of gl_state.lineMeshes) setTagVisible(gl_state, m.tag, !eff.has(m.tag));
 
 		needs_rebuild = false;
 	}
@@ -666,7 +670,7 @@
 					{#each tag_legend as l}
 						<button
 							class="legend-item"
-							class:hidden={!visible_tags.has(l.tag)}
+							class:hidden={hidden_tags.has(l.tag)}
 							onclick={() => toggle_tag(l.tag)}
 							title="Click to toggle"
 						>

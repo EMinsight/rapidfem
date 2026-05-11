@@ -140,7 +140,7 @@
 		padding: 4px var(--space-lg);
 		cursor: pointer;
 		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
+		font-size: var(--fs-sm);
 		text-transform: none;
 		letter-spacing: 0;
 		font-weight: 400;

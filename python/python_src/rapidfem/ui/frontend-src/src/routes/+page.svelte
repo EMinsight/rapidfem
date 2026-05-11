@@ -738,9 +738,9 @@
 		font-size: var(--fs-xs);
 	}
 	.toolbar button.primary {
-		height: 24px;
+		height: 26px;
 		padding: 0 var(--space-lg);
-		font-size: var(--fs-xs);
+		font-size: var(--fs-sm);
 		letter-spacing: 0.5px;
 	}
 	.toolbar button.primary:disabled {
@@ -914,7 +914,7 @@
 		overflow: auto;
 		padding: var(--space-sm) var(--space-lg);
 		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		background: var(--bg-inset);
 	}
