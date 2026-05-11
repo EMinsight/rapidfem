@@ -102,8 +102,10 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
     try:
         from flask_sock import Sock
         from rapidfem.ui.bus import BUS
+        from rapidfem.ui.kernel_ws import register_kernel_ws
 
         sock = Sock(app)
+        register_kernel_ws(sock)
 
         @sock.route("/ws")
         def _ws(ws):  # pragma: no cover — exercised end-to-end

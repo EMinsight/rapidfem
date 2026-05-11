@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import {
-		runCell, resetKernel, readFile, writeFile, readExample,
-		subscribeBus, meshPayloadToMeshData, sparamsToSMatrices, health,
-		type CellResponse, type SMatrix, type BusEvent,
+		readFile, writeFile, readExample,
+		meshPayloadToMeshData, sparamsToSMatrices, health,
+		type MeshPayload, type GeometryPayload, type SMatrix,
 	} from '$lib/api';
+	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -54,7 +55,6 @@
 	let show_wireframe = $state(false);
 	let show_field = $state(false);
 	let viewer: ReturnType<typeof MeshViewer> | undefined = $state();
-	let unsub_bus: (() => void) | null = null;
 
 	function on_keydown(e: KeyboardEvent) {
 		// Skip when typing in editor / inputs.
@@ -251,34 +251,11 @@
 		} catch {
 			status = 'backend unreachable';
 		}
-		unsub_bus = subscribeBus((e: BusEvent) => {
-			if (e.kind === 'stage_start') {
-				status = `${e.stage}…`;
-				log_lines = [...log_lines, `─── ${(e.stage as string).toUpperCase()} ───`];
-			} else if (e.kind === 'stage_end') {
-				status = e.ok ? `${e.stage} ok` : `${e.stage} failed`;
-				const extra: string[] = [];
-				if (typeof e.solve_time_s === 'number') extra.push(`${(e.solve_time_s as number).toFixed(2)}s`);
-				if (typeof e.n_freq === 'number') extra.push(`${e.n_freq} freq`);
-				if (e.stats && typeof e.stats === 'object') {
-					const st = e.stats as Record<string, unknown>;
-					if (typeof st.n_tets === 'number') extra.push(`${st.n_tets.toLocaleString()} tets`);
-					if (typeof st.mesh_time_s === 'number') extra.push(`${(st.mesh_time_s as number).toFixed(2)}s`);
-				}
-				const tail = extra.length ? `  (${extra.join(' · ')})` : '';
-				log_lines = [...log_lines, `↳ ${e.stage} ${e.ok ? 'ok' : 'failed'}${tail}`];
-			} else if (e.kind === 'log') {
-				const stream = (e.stream as string) ?? 'log';
-				const prefix = stream === 'stderr' ? '!' : ' ';
-				const next = [...log_lines, `${prefix} ${e.line as string}`];
-				log_lines = next.length > 2000 ? next.slice(-2000) : next;
-			}
-		});
+		// Logs + display events flow through KernelClient now (single channel).
 		const last = localStorage.getItem('rapidfem.active_path');
 		if (last) await open_file(last);
 	});
 
-	onDestroy(() => unsub_bus?.());
 
 	let notebook: ReturnType<typeof Notebook> | undefined = $state();
 	let dirty_save_t: ReturnType<typeof setTimeout> | null = null;
@@ -366,74 +343,69 @@
 		show_field = false;
 	}
 
-	// Notebook → backend cell exec. Returns 'ok' or 'error' for the cell UI.
+	// Notebook → backend cell exec. Uses the single WS kernel channel —
+	// streams logs + display events in order, returns final ok/error.
 	async function on_run_cell(cell_source: string, reset_first: boolean): Promise<'ok' | 'error'> {
-		if (reset_first) {
-			clear_stale_results();
-			try {
-				await resetKernel(active_path ?? '<unnamed>');
-			} catch {}
-		}
-		try {
-			const r: CellResponse = await runCell(active_path ?? '<unnamed>', cell_source, false);
-			if (!r.ok && r.error) {
-				log_lines = [...log_lines, `[cell] ${r.error.type}: ${r.error.message}`];
-				return 'error';
-			}
-			// Geometry capture → 3D viewer (wireframe before g.mesh, tris after)
-			const geo = r.captures.find((c) => c.kind === 'geometry');
-			if (geo?.payload) {
-				last_geom_stats = {
-					n_entities: geo.payload.stats.n_entities,
-					n_triangles: geo.payload.stats.n_triangles ?? 0,
-				};
-				if (geo.payload.wireframe) {
-					wireframe = geo.payload;
-					mesh_data = null;
-				} else {
+		if (reset_first) clear_stale_results();
+		const cell_id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+		log_lines = [...log_lines, `─── CELL ───`];
+		const r = await get_kernel().execute({
+			cell_id,
+			file: active_path ?? '<unnamed>',
+			code: cell_source,
+			reset: reset_first,
+			onStream: (stream, line) => {
+				const prefix = stream === 'stderr' ? '!' : ' ';
+				const next = [...log_lines, `${prefix} ${line}`];
+				log_lines = next.length > 2000 ? next.slice(-2000) : next;
+			},
+			onDisplay: (kind, payload) => {
+				if (kind === 'geometry') {
+					const p = payload as GeometryPayload;
+					last_geom_stats = {
+						n_entities: p.stats.n_entities,
+						n_triangles: p.stats.n_triangles ?? 0,
+					};
+					if (p.wireframe) {
+						wireframe = p;
+						mesh_data = null;
+					} else {
+						wireframe = null;
+						mesh_data = geometryToMeshData(p);
+					}
+				} else if (kind === 'mesh') {
+					const m = payload as MeshPayload;
 					wireframe = null;
-					mesh_data = geometryToMeshData(geo.payload);
+					mesh_data = meshPayloadToMeshData(m);
+					last_mesh_stats = {
+						n_tets: m.stats.n_tets,
+						n_tris: m.stats.n_tris,
+						mesh_time_s: m.stats.mesh_time_s,
+					};
+				} else if (kind === 'result') {
+					const res = payload as SolveResultPayload;
+					freqs = res.frequencies;
+					smats = sparamsToSMatrices(res.sparams);
+					fields_raw = res.fields ?? null;
+					field_freq_idx = 0;
+					field_port_idx = 0;
+					last_solve_stats = {
+						n_freq: res.n_freq,
+						n_dofs: res.n_dofs,
+						solve_time_s: res.solve_time_s,
+					};
 				}
-			}
-			// Simulation mesh → 3D viewer (drops any prior wireframe)
-			if (r.mesh) {
-				wireframe = null;
-				mesh_data = meshPayloadToMeshData(r.mesh);
-				last_mesh_stats = {
-					n_tets: r.mesh.stats.n_tets,
-					n_tris: r.mesh.stats.n_tris,
-					mesh_time_s: r.mesh.stats.mesh_time_s,
-				};
-			}
-			// SweepResult → S-params + fields
-			if (r.result) {
-				freqs = r.result.frequencies;
-				smats = sparamsToSMatrices(r.result.sparams);
-				fields_raw = r.result.fields ?? null;
-				field_freq_idx = 0;
-				field_port_idx = 0;
-				last_solve_stats = {
-					n_freq: r.result.n_freq,
-					n_dofs: r.result.n_dofs,
-					solve_time_s: r.result.solve_time_s,
-				};
-			}
-			return 'ok';
-		} catch (e) {
-			log_lines = [...log_lines, `[cell] ${e}`];
-			return 'error';
-		}
+			},
+		});
+		log_lines = [...log_lines, `↳ cell ${r.ok ? 'ok' : 'failed'}`];
+		return r.ok ? 'ok' : 'error';
 	}
 
-	async function on_reset_kernel() {
+	function on_reset_kernel() {
 		clear_stale_results();
 		mesh_data = null;
-		try {
-			await resetKernel(active_path ?? '<unnamed>');
-			log_lines = [...log_lines, `[kernel] reset`];
-		} catch (e) {
-			log_lines = [...log_lines, `[kernel reset] ${e}`];
-		}
+		get_kernel().reset(active_path ?? '<unnamed>');
+		log_lines = [...log_lines, `[kernel] reset`];
 	}
 
 	// Debounced save on edits. No auto-exec — Shift+Enter / Run All does that.

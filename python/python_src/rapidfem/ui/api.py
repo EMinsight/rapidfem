@@ -49,13 +49,16 @@ if _WIN:
 
 
 @contextmanager
-def _capture_native_streams(stage: str):
+def _capture_streams(on_line=None, stage: str = "cell"):
     """OS-level fd capture so Rust eprintln! and gmsh output reach the UI.
 
-    On Windows Rust's stderr uses GetStdHandle(STD_ERROR_HANDLE) directly,
-    not the C-runtime fd 2, so we also have to call SetStdHandle alongside
-    the POSIX-style dup2 to actually redirect it.
+    ``on_line(kind, text)`` is called per line as soon as the pipe delivers
+    it. If ``None``, lines are published to the global BUS (back-compat for
+    the legacy HTTP endpoints).
     """
+    if on_line is None:
+        def on_line(kind, line):  # noqa: E306
+            BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": line, "t": time.time()})
     sys.stdout.flush(); sys.stderr.flush()
     out_r, out_w = os.pipe()
     err_r, err_w = os.pipe()
@@ -78,16 +81,12 @@ def _capture_native_streams(stage: str):
     lines_err: list[str] = []
 
     def reader(fd: int, kind: str, accum: list[str]) -> None:
-        # Use raw os.read so Python's TextIOWrapper / BufferedReader don't
-        # batch multiple lines before delivering them. Each os.read call
-        # returns as soon as the pipe has any bytes, so lines from Rust
-        # `eprintln!` stream out at solver speed, not at chunk-boundary.
         buf = b""
         try:
             while True:
                 chunk = os.read(fd, 4096)
                 if not chunk:
-                    break  # EOF — pipe writer closed
+                    break
                 buf += chunk
                 while b"\n" in buf:
                     raw, _, buf = buf.partition(b"\n")
@@ -95,12 +94,18 @@ def _capture_native_streams(stage: str):
                     if not s:
                         continue
                     accum.append(s)
-                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
+                    try:
+                        on_line(kind, s)
+                    except Exception:
+                        pass
             if buf:
                 tail = buf.decode("utf-8", errors="replace").rstrip()
                 if tail:
                     accum.append(tail)
-                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": tail, "t": time.time()})
+                    try:
+                        on_line(kind, tail)
+                    except Exception:
+                        pass
         except Exception:
             pass
         finally:
@@ -148,6 +153,108 @@ def _capture_native_streams(stage: str):
         os.close(saved_err)
         t_out.join(timeout=1.0)
         t_err.join(timeout=1.0)
+
+
+# Legacy alias — old HTTP endpoints pass only the stage as positional arg.
+def _capture_native_streams(stage: str):
+    return _capture_streams(on_line=None, stage=stage)
+
+
+def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
+    """Render captured Geometry/Builder/Simulation/Result into a flat list
+    of display events (`{kind, payload, name}`) for the WS kernel protocol.
+    """
+    from rapidfem.ui.serialize import geometry_to_payload, mesh_to_payload
+    import numpy as np
+
+    out: list[dict[str, Any]] = []
+    last_sim = None
+    last_result = None
+    last_geo = None
+
+    for item in captures:
+        if item.kind == "geometry":
+            last_geo = item.obj
+            try:
+                p = geometry_to_payload(item.obj)
+            except Exception as e:  # noqa: BLE001
+                out.append({"kind": "error", "name": item.name, "error": _format_exception(e)})
+                continue
+            if p.get("kind") == "mesh":
+                out.append({"kind": "mesh", "name": item.name, "payload": p})
+            else:
+                out.append({"kind": "geometry", "name": item.name, "payload": p})
+        elif item.kind == "simulation":
+            last_sim = item.obj
+        elif item.kind == "result":
+            last_result = item.obj
+
+    # Pair sim+result into mesh+field displays.
+    if last_sim is not None:
+        try:
+            mesh_payload = mesh_to_payload(last_geo, maxh=0.0)
+        except Exception:
+            try:
+                nodes_np = np.asarray(last_sim.mesh_nodes)
+                mesh_payload = {
+                    "kind": "mesh",
+                    "nodes": nodes_np.ravel().tolist(),
+                    "tets": np.asarray(last_sim.mesh_tets).ravel().tolist(),
+                    "tris": [], "tri_phys": [], "tet_phys": [1] * int(last_sim.mesh_tets.shape[0]),
+                    "phys_names": {"1": "mesh"}, "phys_dim": {"1": 3}, "name_to_tag": {"mesh": 1},
+                    "bbox": _bbox_for_nodes(nodes_np),
+                    "stats": {"n_nodes": int(nodes_np.shape[0]),
+                              "n_tets": int(last_sim.mesh_tets.shape[0]),
+                              "n_tris": 0, "mesh_time_s": 0.0, "msh_bytes": 0},
+                }
+            except Exception:
+                mesh_payload = None
+        if mesh_payload is not None:
+            out.append({"kind": "mesh", "name": "simulation", "payload": mesh_payload})
+
+    if last_sim is not None and last_result is not None:
+        try:
+            s = last_result.sparams
+            n_freq, n_p, _ = s.shape
+            sparams_payload = []
+            for fi in range(n_freq):
+                f_mat = []
+                for r in range(n_p):
+                    row = []
+                    for c in range(n_p):
+                        v = s[fi, r, c]
+                        row.append([float(v.real), float(v.imag)])
+                    f_mat.append(row)
+                sparams_payload.append(f_mat)
+            fields_payload = []
+            for fi in range(n_freq):
+                per_freq = []
+                for pi in range(n_p):
+                    E = last_sim.field_at_nodes(last_result, fi, pi)
+                    if E is None:
+                        per_freq.append(None)
+                        continue
+                    re = np.asarray(E.real); im = np.asarray(E.imag)
+                    A = np.sum(re * re, axis=1)
+                    B = np.sum(im * im, axis=1)
+                    C = np.sum(re * im, axis=1)
+                    per_freq.append(np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist())
+                fields_payload.append(per_freq)
+            out.append({
+                "kind": "result", "name": "result",
+                "payload": {
+                    "frequencies": last_result.frequencies.tolist(),
+                    "sparams": sparams_payload,
+                    "n_driven": n_p, "n_freq": n_freq,
+                    "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
+                    "solve_time_s": last_result.solve_time_s,
+                    "fields": fields_payload,
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            out.append({"kind": "error", "name": "result", "error": _format_exception(e)})
+
+    return out
 
 
 def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
