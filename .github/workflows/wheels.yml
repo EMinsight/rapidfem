@@ -1,0 +1,111 @@
+name: Build wheels
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'python/**'
+      - '.github/workflows/wheels.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-frontend:
+    name: Build SvelteKit frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: python/python_src/rapidfem/ui/frontend-src/package-lock.json
+      - name: Install + build frontend
+        working-directory: python/python_src/rapidfem/ui/frontend-src
+        run: |
+          npm ci
+          npm run build
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: python/python_src/rapidfem/ui/frontend/dist
+          if-no-files-found: error
+
+  build-wheels:
+    name: Wheels — ${{ matrix.os }} / py${{ matrix.python-version }}
+    needs: build-frontend
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10']  # abi3 wheel covers >=3.10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: python/python_src/rapidfem/ui/frontend/dist
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'python/Cargo.toml') }}
+
+      - name: Install maturin
+        run: pip install --upgrade pip maturin
+
+      - name: Build wheel (abi3)
+        working-directory: python
+        run: maturin build --release --strip --out dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: python/dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    name: Source distribution
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: python/python_src/rapidfem/ui/frontend/dist
+      - run: pip install --upgrade pip maturin
+      - name: Build sdist
+        working-directory: python
+        run: maturin sdist --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist/*.tar.gz
+          if-no-files-found: error

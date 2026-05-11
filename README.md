@@ -139,13 +139,6 @@ analytical solutions and external reference solvers.
 cargo test --release
 ```
 
-## Deprecated: standalone Rust CLI
-
-The legacy `rapidfem config.toml` Rust CLI still exists in `src/main.rs` but
-is no longer the recommended entry point. The Python API (`rapidfem.Geometry`,
-`rapidfem.SimulationBuilder`) is now the only documented surface — it covers
-everything the TOML CLI did, plus geometry, scripting, and the UI.
-
 ## License
 
 GPL-2.0.

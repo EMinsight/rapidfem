@@ -6,6 +6,19 @@ Quick start::
     sim = rapidfem.Simulation.from_files("mesh.msh", "config.toml")
     result = sim.run_sweep()
     print(result.frequencies.shape, result.sparams.shape)
+
+Solver backend
+--------------
+The PyPI wheel defaults to the pure-Rust ``faer`` LU solver (no native
+dependencies). To opt in to MKL PARDISO (faster on large complex-symmetric
+problems), set the env var **before** importing rapidfem::
+
+    import os
+    os.environ["RAPIDFEM_SOLVER"] = "pardiso"   # or "auto"
+    import rapidfem
+
+PARDISO additionally requires ``mkl_rt`` on the system PATH — see the
+README for install options.
 """
 from rapidfem._native import Simulation, SweepResult, Eigenmode, RadiationPattern
 from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollection, EdgeCollection

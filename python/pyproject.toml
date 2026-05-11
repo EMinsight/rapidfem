@@ -4,18 +4,53 @@ build-backend = "maturin"
 
 [project]
 name = "rapidfem"
-version = "0.1.0"
-description = "Frequency-domain electromagnetic FEM solver in Rust, exposed to Python via PyO3."
+version = "0.2.0"
+description = "Frequency-domain electromagnetic FEM solver in Rust, with a Python API and an optional local web UI."
+readme = "../README.md"
+license = { text = "GPL-2.0" }
 requires-python = ">=3.10"
+authors = [
+    { name = "Milan Rother", email = "sporkhomat@gmail.com" },
+]
+keywords = ["fem", "electromagnetic", "microwave", "antenna", "simulation", "maxwell"]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
     "numpy>=1.26",
+    "gmsh>=4.11",
 ]
+
+[project.optional-dependencies]
+ui = [
+    "flask>=3.0",
+    "flask-sock>=0.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/milanofthe/rapidfem"
+Repository = "https://github.com/milanofthe/rapidfem"
+Issues = "https://github.com/milanofthe/rapidfem/issues"
+
+[project.scripts]
+rapidfem = "rapidfem._cli:main"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "rapidfem._native"
 python-source = "python_src"
+include = [
+    { path = "python_src/rapidfem/ui/frontend/dist/**/*", format = ["sdist", "wheel"] },
+]

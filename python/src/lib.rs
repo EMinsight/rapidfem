@@ -305,6 +305,14 @@ fn flatten_2d_complex<'py>(grid: &[Vec<Complex64>], py: Python<'py>) -> Bound<'p
 #[pymodule]
 #[pyo3(name = "_native")]
 fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Default the Python wheel to pure-Rust faer. PARDISO needs MKL on PATH,
+    // which a typical pip install user does not have. Power users opt in with
+    // `os.environ["RAPIDFEM_SOLVER"] = "pardiso"` before importing rapidfem.
+    if std::env::var_os("RAPIDFEM_SOLVER").is_none() {
+        #[allow(unused_unsafe)]
+        unsafe { std::env::set_var("RAPIDFEM_SOLVER", "faer"); }
+    }
+
     m.add_class::<PySimulation>()?;
     m.add_class::<PySweepResult>()?;
     m.add_class::<PyEigenmode>()?;

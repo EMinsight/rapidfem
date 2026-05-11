@@ -26,6 +26,8 @@ python/dist/
 python/*.egg-info/
 .maturin/
 
-# WASM
-wasm-demo/target/
-wasm-demo/pkg/
+# Frontend build output (locally built; in CI built fresh into the wheel)
+python/python_src/rapidfem/ui/frontend/dist/
+python/python_src/rapidfem/ui/frontend-src/node_modules/
+python/python_src/rapidfem/ui/frontend-src/.svelte-kit/
+python/python_src/rapidfem/ui/frontend-src/build/
