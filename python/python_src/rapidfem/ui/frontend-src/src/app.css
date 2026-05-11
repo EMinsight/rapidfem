@@ -6,10 +6,11 @@
  * Component <style> blocks use these vars.
  */
 :root {
-	--bg: #1c1c21;
+	--bg: #131316;
+	--bg-mid: #1a1a1f;
 	--bg-surface: #232329;
 	--bg-panel: #2a2a31;
-	--bg-inset: #18181d;
+	--bg-inset: #131316;
 	--text: #e2ddd5;
 	--text-muted: #9a96a0;
 	--text-dim: #8a8790;
@@ -19,7 +20,7 @@
 	--accent-dim: #d9513c33;
 	--border: #35353d;
 	--border-subtle: #2d2d34;
-	--input-bg: #18181d;
+	--input-bg: #131316;
 	--input-border: #3a3a42;
 	--input-hover: #4a4a52;
 	--input-focus: #d9513c;

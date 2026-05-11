@@ -263,12 +263,17 @@
 	async function open_file(path: string) {
 		try {
 			const content = await readFile(path);
+			const prev_path = active_path;
 			code = content;
 			active_path = path;
 			dirty = false;
 			localStorage.setItem('rapidfem.active_path', path);
 			clear_stale_results();
 			mesh_data = null;
+			log_lines = [];
+			if (prev_path !== path) {
+				try { get_kernel().reset(path); } catch {}
+			}
 		} catch (e) {
 			// 404 typically means a stale localStorage pointer to a file that
 			// has been deleted (e.g. the old welcome.py). Clear it silently
@@ -475,7 +480,7 @@
 
 <div class="app">
 	<header>
-		<span class="brand">rapidfem</span>
+		<span class="brand"><img src="/favicon.svg" alt="rapidfem" class="logo" /></span>
 		<span class="nav-sep"></span>
 		{#if active_path}
 			<span class="active-file has-tip">
@@ -701,12 +706,14 @@
 		flex-shrink: 0;
 	}
 	header .brand {
-		color: var(--accent);
-		font-family: var(--font-mono);
-		font-weight: 700;
-		letter-spacing: 0.5px;
-		text-transform: uppercase;
-		font-size: var(--fs-xs);
+		display: inline-flex;
+		align-items: center;
+		text-decoration: none;
+	}
+	header .brand .logo {
+		height: 22px;
+		width: auto;
+		display: block;
 	}
 	header .nav-sep {
 		width: 1px;
@@ -1058,7 +1065,7 @@
 	.output {
 		display: flex;
 		flex-direction: column;
-		background: var(--bg-inset);
+		background: var(--bg-mid);
 		border-top: 1px solid var(--border);
 		flex-shrink: 0;
 		min-height: 28px;

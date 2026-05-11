@@ -9,10 +9,11 @@
 // --- Palette ---
 
 export const palette = {
-	bg:           '#1c1c21',
+	bg:           '#131316',
+	bgMid:        '#1a1a1f',
 	bgSurface:    '#232329',
 	bgPanel:      '#2a2a31',
-	bgInset:      '#18181d',
+	bgInset:      '#131316',
 
 	text:         '#e2ddd5',
 	textMuted:    '#9a96a0',
@@ -22,11 +23,12 @@ export const palette = {
 	accentHover:  '#e5634f',
 	accentSecondary: '#e8944a',
 	accentDim:    '#d9513c33',
+	accentPurple: '#a78bd9',
 
 	border:       '#35353d',
 	borderSubtle: '#2d2d34',
 
-	inputBg:      '#18181d',
+	inputBg:      '#131316',
 	inputBorder:  '#3a3a42',
 	inputHover:   '#4a4a52',
 	inputFocus:   '#d9513c',
@@ -71,7 +73,7 @@ export const plotColors = {
 	/** Trace color cycle for simulation plots */
 	cycle: ['#d9513c', '#e8944a', '#6bbf8a', '#7b5e8a', '#4a9ec2', '#c4c46b'] as string[],
 	/** Plot area background */
-	bg: '#18181d',
+	bg: '#131316',
 	/** Grid lines */
 	grid: '#2a2a32',
 	/** Axis lines */
@@ -103,6 +105,7 @@ export const typeScale = {
 export function toCSSVars(): string {
 	return `
 		--bg: ${palette.bg};
+		--bg-mid: ${palette.bgMid};
 		--bg-surface: ${palette.bgSurface};
 		--bg-panel: ${palette.bgPanel};
 		--bg-inset: ${palette.bgInset};

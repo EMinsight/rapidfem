@@ -77,7 +77,7 @@
 	let last_set_value = '';
 
 	const editorTheme = EditorView.theme({
-		'&': { fontSize: '12px', color: palette.text, backgroundColor: palette.bgInset, fontFamily: fonts.mono },
+		'&': { fontSize: '12px', color: palette.text, backgroundColor: palette.bgMid, fontFamily: fonts.mono },
 		'.cm-scroller': { fontFamily: fonts.mono, lineHeight: '1.55' },
 		'.cm-content': { caretColor: palette.accent, padding: '6px 0' },
 		'&.cm-focused': { outline: 'none' },
@@ -86,7 +86,7 @@
 		'.cm-gutters': { backgroundColor: palette.bgSurface, color: palette.textDim, borderRight: `1px solid ${palette.borderSubtle}`, fontFamily: fonts.mono, fontSize: '10px' },
 		'.cm-lineNumbers .cm-gutterElement': { padding: '0 8px 0 10px', minWidth: '32px', color: palette.textDim },
 		'.cm-activeLineGutter': { backgroundColor: 'transparent', color: palette.accent },
-		'.cm-activeLine': { backgroundColor: palette.bgSurface },
+		'.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.025)' },
 		'.cm-matchingBracket, .cm-nonmatchingBracket': { backgroundColor: palette.accentDim, outline: `1px solid ${palette.accent}`, color: palette.text },
 	}, { dark: true });
 
@@ -101,6 +101,7 @@
 		{ tag: [t.comment, t.lineComment, t.blockComment], color: palette.textDim, fontStyle: 'italic' },
 		{ tag: t.function(t.variableName), color: '#4a9ec2' },
 		{ tag: t.function(t.definition(t.variableName)), color: '#4a9ec2', fontWeight: '500' },
+		{ tag: t.function(t.propertyName), color: palette.accentPurple, fontWeight: '500' },
 		{ tag: t.definition(t.variableName), color: palette.text, fontWeight: '500' },
 		{ tag: t.className, color: '#e8944a', fontWeight: '500' },
 		{ tag: [t.typeName, t.namespace], color: '#e8944a' },
@@ -108,7 +109,7 @@
 		{ tag: [t.punctuation, t.separator], color: palette.textMuted },
 		{ tag: [t.brace, t.bracket, t.paren], color: palette.textMuted },
 		{ tag: t.variableName, color: palette.text },
-		{ tag: t.propertyName, color: palette.text },
+		{ tag: t.propertyName, color: palette.accentPurple },
 		{ tag: [t.self, t.special(t.variableName)], color: palette.accent, fontStyle: 'italic' },
 		{ tag: t.meta, color: palette.accentSecondary },
 		{ tag: t.invalid, color: palette.accent, textDecoration: 'underline wavy' },
@@ -224,7 +225,7 @@
 <style>
 	.cell {
 		border: 1px solid var(--border-subtle);
-		background: var(--bg-inset);
+		background: var(--bg-mid);
 		margin: 0 0 var(--space-md) 0;
 		transition: border-color var(--transition);
 	}
@@ -271,7 +272,7 @@
 	}
 	.status.ok { color: var(--accent); }
 	.status.err { color: var(--accent); text-decoration: underline; }
-	.cell-body { background: var(--bg-inset); }
+	.cell-body { background: var(--bg-mid); }
 
 	.cell.markdown { border: 0; background: transparent; }
 	.cell.markdown .cell-head { background: transparent; border: 0; height: 18px; padding-left: 0; }
