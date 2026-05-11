@@ -366,6 +366,9 @@ export function disposeGL(state: GLState): void {
 	gl.deleteProgram(state.lineProgram);
 }
 
+/** Drop surface and line meshes. The point cloud has its own lifecycle
+ *  (setPointCloud manages its GL buffers) and survives a rebuild so the
+ *  field viz stays visible when the user toggles Geometry / Mesh layers. */
 export function clearMeshes(state: GLState): void {
 	const { gl } = state;
 	for (const m of state.meshes) {
@@ -378,11 +381,6 @@ export function clearMeshes(state: GLState): void {
 		for (const b of m.buffers) gl.deleteBuffer(b);
 	}
 	state.lineMeshes = [];
-	if (state.pointCloud) {
-		gl.deleteVertexArray(state.pointCloud.vao);
-		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
-		state.pointCloud = null;
-	}
 }
 
 /** Replace the volumetric point cloud. positions: [x,y,z,...] in METERS,
