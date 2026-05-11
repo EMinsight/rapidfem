@@ -477,10 +477,13 @@
 	<header>
 		<span class="brand">rapidfem</span>
 		<span class="nav-sep"></span>
-		<span class="workdir">{workdir}</span>
 		{#if active_path}
-			<span class="path-sep">/</span>
-			<span class="active-file">{active_path}{dirty ? ' •' : ''}</span>
+			<span class="active-file has-tip">
+				{active_path}{dirty ? ' •' : ''}
+				<span class="tip right">{workdir}</span>
+			</span>
+		{:else}
+			<span class="workdir-only">{workdir}</span>
 		{/if}
 		<span class="status">{status}</span>
 	</header>
@@ -524,9 +527,18 @@
 			{:else}
 				<div class="pane-inner">
 					<div class="toolbar">
-						<button class="primary" onclick={() => notebook?.run_all_cells()} title="Run all cells (Ctrl+Shift+Enter)">Run All</button>
-						<button class="primary" onclick={() => notebook?.run_current_cell()} title="Run current cell (Shift+Enter)">Run Cell</button>
-						<button class="primary subtle" onclick={on_reset_kernel} title="Wipe namespace + gmsh state">Restart Kernel</button>
+						<button class="primary has-tip" onclick={() => notebook?.run_all_cells()}>
+							Run All
+							<span class="tip">Run all cells<kbd>Ctrl+Shift+Enter</kbd></span>
+						</button>
+						<button class="primary has-tip" onclick={() => notebook?.run_current_cell()}>
+							Run Cell
+							<span class="tip">Run current cell<kbd>Shift+Enter</kbd></span>
+						</button>
+						<button class="primary subtle has-tip" onclick={on_reset_kernel}>
+							Restart Kernel
+							<span class="tip">Wipe namespace + gmsh state</span>
+						</button>
 					</div>
 					<div class="editor-wrap">
 						<Notebook
@@ -597,11 +609,20 @@
 						{#if display === 'view3d'}
 							<span class="tab-spacer"></span>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
+							<button class="tab-btn small has-tip" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)}>
+								Geometry
+								<span class="tip left">Toggle surfaces<kbd>G</kbd></span>
+							</button>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small" class:active={show_wireframe} disabled={!mesh_data || mesh_data.tets.length === 0} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
+							<button class="tab-btn small has-tip" class:active={show_wireframe} disabled={!mesh_data || mesh_data.tets.length === 0} onclick={() => (show_wireframe = !show_wireframe)}>
+								Mesh
+								<span class="tip left">Toggle tet wireframe<kbd>M</kbd></span>
+							</button>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (E)">Field</button>
+							<button class="tab-btn small has-tip" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)}>
+								Field
+								<span class="tip left">Toggle field cloud<kbd>E</kbd></span>
+							</button>
 						{/if}
 					</nav>
 					<div class="viewer-slot">
@@ -693,18 +714,18 @@
 		background: var(--border);
 		flex-shrink: 0;
 	}
-	header .path-sep {
+	header .active-file {
+		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		cursor: default;
+	}
+	header .workdir-only {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
+		font-style: italic;
 	}
-	header .workdir,
-	header .active-file {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-	}
-	header .active-file { color: var(--text); }
 	header .status {
 		margin-left: auto;
 		color: var(--text-muted);

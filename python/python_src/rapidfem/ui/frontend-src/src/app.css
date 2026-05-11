@@ -123,3 +123,45 @@ label {
 ::-webkit-scrollbar-thumb {
 	background: var(--border);
 }
+
+/* ── Hover tooltips (rapidpassives pattern) ──────────────────────────────
+ * Mark a hoverable element with `.has-tip` and put a `<span class="tip">…</span>`
+ * inside. Use `<kbd>` for keyboard hints in the accent color. */
+.has-tip { position: relative; }
+.has-tip > .tip {
+	display: none;
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	white-space: nowrap;
+	font-size: var(--fs-xs);
+	font-family: var(--font-mono);
+	font-weight: 400;
+	color: var(--text-muted);
+	background: var(--bg-surface);
+	border: 1px solid var(--border);
+	padding: 3px 8px;
+	pointer-events: none;
+	z-index: 100;
+	letter-spacing: 0;
+	text-transform: none;
+}
+.has-tip > .tip kbd {
+	margin-left: 6px;
+	color: var(--accent);
+	font-family: var(--font-mono);
+	font-weight: 600;
+	font-size: var(--fs-xs);
+	background: transparent;
+	border: 0;
+	padding: 0;
+}
+.has-tip:hover > .tip {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.has-tip > .tip.left { left: auto; right: 0; transform: none; }
+.has-tip > .tip.right { left: 0; transform: none; }
+.has-tip > .tip.up { top: auto; bottom: calc(100% + 6px); }
