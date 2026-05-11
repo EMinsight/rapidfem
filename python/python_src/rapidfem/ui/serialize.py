@@ -107,16 +107,91 @@ def geometry_to_payload(g: Any, *, target_tris: int = 4000) -> dict:
     nudges the mesh size to land near a desired triangle budget.
     """
     gmsh.model.occ.synchronize()
-    # If the user already meshed (explicit g.mesh()), gmsh state holds a full
-    # 3D tet mesh — return that. Otherwise emit a non-meshed OCC wireframe so
-    # the Geometry cell never triggers gmsh.mesh.generate().
-    existing_node_tags, _, _ = gmsh.model.mesh.getNodes()
-    if len(existing_node_tags) > 0:
+    # Use a Python-side flag on the Geometry to discriminate: if the user
+    # has explicitly called g.mesh(), render the FEM tet mesh; otherwise
+    # render filled OCC surfaces (coarse preview, isolated from FEM mesh
+    # because g.mesh() will mesh.clear() before its own generate(3) call).
+    if getattr(g, "_last_mesh", None) is not None:
         try:
             return mesh_to_payload(g, maxh=0.0)
         except Exception:
             pass
-    return _wireframe_payload(g)
+    return _surface_preview(g)
+
+
+def _surface_preview(g: Any) -> dict:
+    """Coarse OCC-surface tessellation for the Geometry cell — filled, colored
+    per named face. Quick (~50ms) and gets wiped by `g.mesh()` before any FEM
+    mesh is generated, so it never pollutes the user's discretization."""
+    gmsh.model.occ.synchronize()
+    diag = _bbox_diag()
+    maxh = max(diag / 10.0, 1e-6)
+    try:
+        gmsh.model.mesh.clear()
+    except Exception:
+        pass
+    gmsh.option.setNumber("Mesh.MeshSizeMax", maxh)
+    gmsh.option.setNumber("Mesh.MeshSizeMin", 0.0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+    gmsh.option.setNumber("Mesh.SaveAll", 1)
+    try:
+        gmsh.model.mesh.generate(2)
+    except Exception:
+        # Preview meshing failed — fall back to wireframe.
+        return _wireframe_payload(g)
+
+    # Process named faces first so they claim their surfaces, then 3-D
+    # volumes pick up whatever remains. Untracked surfaces get a neutral
+    # color so the user still sees the shape.
+    raw_ents = list(getattr(g, "_entities", []))
+    raw_ents.sort(key=lambda e: (0 if e.dim == 2 else 1, 0 if e.name else 1))
+
+    entities: list[dict] = []
+    seen_surface_tags: set[int] = set()
+    for ent in raw_ents:
+        if ent.dim not in (2, 3):
+            continue
+        name = ent.name or f"_{ 'face' if ent.dim == 2 else 'volume' }_{ent.tag}"
+        surface_dim_tags: list[tuple[int, int]] = []
+        if ent.dim == 3:
+            for d, t in gmsh.model.getBoundary([(3, ent.tag)], oriented=False):
+                if d == 2 and t not in seen_surface_tags:
+                    surface_dim_tags.append((2, t))
+                    seen_surface_tags.add(t)
+        else:
+            if ent.tag in seen_surface_tags:
+                continue
+            surface_dim_tags.append((2, ent.tag))
+            seen_surface_tags.add(ent.tag)
+        pos: list[float] = []
+        nor: list[float] = []
+        for dt in surface_dim_tags:
+            p, n = _surface_triangulation(dt)
+            pos.extend(p); nor.extend(n)
+        if not pos:
+            continue
+        entities.append({
+            "name": name,
+            "tag": int(ent.tag),
+            "dim": int(ent.dim),
+            "color": _color_from_name(name),
+            "positions": pos,
+            "normals": nor,
+            "material": ent.material,
+        })
+
+    return {
+        "kind": "geometry",
+        "bbox": _global_bbox(),
+        "entities": entities,
+        "stats": {
+            "n_entities": len(entities),
+            "n_triangles": sum(len(e["positions"]) // 9 for e in entities),
+            "maxh": maxh,
+        },
+    }
 
 
 def _wireframe_payload(g: Any) -> dict:
