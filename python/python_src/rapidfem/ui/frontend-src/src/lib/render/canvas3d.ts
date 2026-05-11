@@ -69,12 +69,14 @@ export interface GLState {
 	uPointPhase: WebGLUniformLocation;
 	uPointLogFloor: WebGLUniformLocation;
 	uPointLogRange: WebGLUniformLocation;
+	uPointLogScale: WebGLUniformLocation;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
 	pointCloud: { vao: WebGLVertexArrayObject; buffers: WebGLBuffer[]; count: number } | null;
 	pointPhase: number;
 	pointLogFloor: number;
 	pointLogRange: number;
+	pointLogScale: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -160,8 +162,9 @@ uniform mat4 uMVP;
 uniform float uZFlip;
 uniform float uPointScale;                 // base size in pixels at unit clip-w
 uniform float uPhase;                      // current ωt in radians
-uniform float uLogFloor;                   // log10 of lowest |E| shown
-uniform float uLogRange;                   // log10(max) - log10(floor) (>0)
+uniform float uLogFloor;                   // log10(min |E|) (log mode) or |E|min (lin mode)
+uniform float uLogRange;                   // log10(max/min) (log mode) or (|E|max - |E|min) (lin mode)
+uniform float uLogScale;                   // 1.0 = log color mapping, 0.0 = linear
 out float vScalar;
 void main() {
 	vec3 pos = aPos;
@@ -173,7 +176,9 @@ void main() {
 	float s = sin(uPhase);
 	float e2 = aABC.x * c * c + aABC.y * s * s - 2.0 * aABC.z * c * s;
 	float mag = sqrt(max(e2, 0.0));
-	float norm = (log(max(mag, 1e-30)) / 2.302585093 - uLogFloor) / max(uLogRange, 1e-9);
+	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uLogFloor) / max(uLogRange, 1e-9);
+	float norm_lin = (mag - uLogFloor) / max(uLogRange, 1e-9);
+	float norm = mix(norm_lin, norm_log, uLogScale);
 	vScalar = clamp(norm, 0.0, 1.0);
 
 	float w = max(gl_Position.w, 1e-6);
@@ -342,12 +347,14 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		uPointPhase: gl.getUniformLocation(pointProgram, 'uPhase')!,
 		uPointLogFloor: gl.getUniformLocation(pointProgram, 'uLogFloor')!,
 		uPointLogRange: gl.getUniformLocation(pointProgram, 'uLogRange')!,
+		uPointLogScale: gl.getUniformLocation(pointProgram, 'uLogScale')!,
 		meshes: [],
 		lineMeshes: [],
 		pointCloud: null,
 		pointPhase: 0,
 		pointLogFloor: -30,
 		pointLogRange: 6,
+		pointLogScale: 1,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -416,6 +423,17 @@ export function setPointCloud(state: GLState, positions: Float32Array, abc: Floa
 export function setPointLogRange(state: GLState, log_floor: number, log_range: number): void {
 	state.pointLogFloor = log_floor;
 	state.pointLogRange = log_range;
+}
+
+/** Color-mapping mode for the field point cloud. */
+export function setPointScaleMode(state: GLState, mode: 'log' | 'lin'): void {
+	state.pointLogScale = mode === 'log' ? 1 : 0;
+}
+
+/** Linear-mode range. floor=|E|min, range=|E|max−|E|min. */
+export function setPointLinRange(state: GLState, lin_floor: number, lin_range: number): void {
+	state.pointLogFloor = lin_floor;
+	state.pointLogRange = lin_range;
 }
 
 /** Update the time phase (call from requestAnimationFrame for the wave anim). */
@@ -593,6 +611,7 @@ export function render3D(
 		gl.uniform1f(state.uPointPhase, state.pointPhase);
 		gl.uniform1f(state.uPointLogFloor, state.pointLogFloor);
 		gl.uniform1f(state.uPointLogRange, state.pointLogRange);
+		gl.uniform1f(state.uPointLogScale, state.pointLogScale);
 		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);

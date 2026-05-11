@@ -11,6 +11,7 @@
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
+	import Select from '$lib/components/Select.svelte';
 
 	let status = $state('idle');
 	let workdir = $state('');
@@ -25,7 +26,8 @@
 	let fields_raw = $state<(number[] | null)[][] | null>(null);
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
-	let field_density = $state(5);
+	let field_density = $state(3);
+	let field_scale_mode = $state<'log' | 'lin'>('log');
 	let field_abc = $derived<Float32Array | null>(
 		fields_raw && fields_raw[field_freq_idx] && fields_raw[field_freq_idx][field_port_idx]
 			? new Float32Array(fields_raw[field_freq_idx][field_port_idx] as number[])
@@ -572,6 +574,7 @@
 								{show_field}
 								field={show_field ? field_abc : null}
 								point_density={field_density}
+								scale_mode={field_scale_mode}
 							/>
 						{:else}
 							<ResultsPanel {freqs} {smats} metrics={[]} />
@@ -587,17 +590,23 @@
 							<label class="field-ctrl">
 								<span class="lbl">Density</span>
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
-								<span class="val">{(field_density * 25).toLocaleString()}k pts</span>
+								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
+							<div class="field-ctrl">
+								<span class="lbl">Scale</span>
+								<div class="seg">
+									<button class:active={field_scale_mode === 'log'} onclick={() => (field_scale_mode = 'log')}>Log</button>
+									<button class:active={field_scale_mode === 'lin'} onclick={() => (field_scale_mode = 'lin')}>Lin</button>
+								</div>
+							</div>
 							{#if fields_raw[field_freq_idx] && fields_raw[field_freq_idx].length > 1}
-								<label class="field-ctrl">
+								<div class="field-ctrl">
 									<span class="lbl">Excitation</span>
-									<select bind:value={field_port_idx}>
-										{#each fields_raw[field_freq_idx] as _f, pi}
-											<option value={pi}>Port {pi + 1}</option>
-										{/each}
-									</select>
-								</label>
+									<Select
+										bind:value={field_port_idx}
+										options={fields_raw[field_freq_idx].map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
+									/>
+								</div>
 							{/if}
 						</div>
 					{/if}
@@ -869,6 +878,32 @@
 		width: auto;
 		height: 22px;
 		padding: 0 var(--space-md);
+	}
+
+	.seg {
+		display: inline-flex;
+		border: 1px solid var(--input-border);
+		height: 22px;
+	}
+	.seg button {
+		background: var(--input-bg);
+		color: var(--text-muted);
+		border: 0;
+		border-right: 1px solid var(--input-border);
+		padding: 0 var(--space-md);
+		font-size: var(--fs-xs);
+		font-family: var(--font-mono);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		font-weight: 600;
+		cursor: pointer;
+		transition: color var(--transition), background var(--transition);
+	}
+	.seg button:last-child { border-right: 0; }
+	.seg button:hover { color: var(--text); }
+	.seg button.active {
+		color: var(--accent);
+		background: var(--accent-dim);
 	}
 
 	/* Range slider — flat, themed, no native rounded thumb. */

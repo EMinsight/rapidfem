@@ -2,7 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setPointCloud, setPointPhase, setPointLogRange,
+		setPointCloud, setPointPhase, setPointLogRange, setPointLinRange, setPointScaleMode,
 		render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
@@ -17,6 +17,7 @@
 		show_field = false,
 		field = null,
 		point_density = 5,
+		scale_mode = 'log',
 		animate_field = false,
 		anim_speed = 1
 	}: {
@@ -25,14 +26,11 @@
 		show_wireframe?: boolean;
 		show_field?: boolean;
 		field?: Float32Array | null;
-		/** Volumetric point-cloud density. Total count scales with the
-		 *  simulation bbox volume (not tet count) — refining the mesh doesn't
-		 *  change the cloud density. 1 ≈ 5k pts, 10 ≈ 50k. */
+		/** Volumetric point-cloud density. 1 → 50k pts, 10 → 500k pts. */
 		point_density?: number;
-		/** When true, animate the wave: shader's phase uniform updates at
-		 *  ω·t each frame so |E(t)| varies in time. */
+		/** Color-mapping mode for the field magnitude. */
+		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
-		/** Animation rate scale (1 ≈ 1 cycle per second). */
 		anim_speed?: number;
 	} = $props();
 
@@ -563,15 +561,34 @@
 		const dens = point_density;
 		const want = show_field;
 		if (!gl_state || !ready || !want || !f) return;
-		const total_pts = Math.max(500, Math.round(dens * 25000));
+		const total_pts = Math.max(500, Math.round(dens * 50000));
 		const my_token = ++viz_sample_token;
 		viz_sample(f, total_pts).then((r) => {
 			if (my_token !== viz_sample_token || !gl_state) return;
 			field_range = r.field_range;
-			setPointLogRange(gl_state, r.log_floor, r.log_range);
+			last_range = r;
+			apply_scale_mode(gl_state, scale_mode, r);
 			setPointCloud(gl_state, r.positions, r.abc);
 			render_frame();
 		}).catch((e) => console.error('viz_sample', e));
+	});
+
+	// Reapply colormap range without resampling when the user flips Lin/Log.
+	let last_range: { log_floor: number; log_range: number; field_range: { min: number; max: number } } | null = null;
+	function apply_scale_mode(
+		gl: GLState,
+		mode: 'log' | 'lin',
+		r: { log_floor: number; log_range: number; field_range: { min: number; max: number } },
+	) {
+		setPointScaleMode(gl, mode);
+		if (mode === 'log') setPointLogRange(gl, r.log_floor, r.log_range);
+		else setPointLinRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
+	}
+	$effect(() => {
+		const mode = scale_mode;
+		if (!gl_state || !last_range) return;
+		apply_scale_mode(gl_state, mode, last_range);
+		render_frame();
 	});
 
 	// Wave animation: while `show_field` is on AND the `animate_field` prop is
