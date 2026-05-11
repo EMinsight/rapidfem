@@ -318,7 +318,9 @@
 				const a = mesh.tris[i * 3], b = mesh.tris[i * 3 + 1], c = mesh.tris[i * 3 + 2];
 				add_edge(a, b); add_edge(b, c); add_edge(c, a);
 			}
-			addLineMesh(gl_state, Float32Array.from(edges), hex(palette.textDim), -1);
+			// Mesh wireframe: a dimmer grey than the new text-dim palette
+			// value so it reads as structure on the dark canvas, not as text.
+			addLineMesh(gl_state, Float32Array.from(edges), hex('#3a3a44'), -1);
 		}
 
 		// Field point cloud is sampled asynchronously in the worker (see the
