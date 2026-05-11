@@ -1,3 +1,3 @@
-// SPA — Flask handles routing on the server side, this is a single-page bundle.
+// SPA-only: Flask serves the fallback at /, no prerendering needed.
 export const ssr = false;
-export const prerender = true;
+export const prerender = false;

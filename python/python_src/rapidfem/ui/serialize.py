@@ -106,17 +106,31 @@ def geometry_to_payload(g: Any, *, target_tris: int = 4000) -> dict:
     every save (``rapidfem serve`` calls this on Ctrl+S). ``target_tris``
     nudges the mesh size to land near a desired triangle budget.
     """
+    gmsh.model.occ.synchronize()
     diag = _bbox_diag()
     maxh = diag / max(math.sqrt(target_tris / 6.0), 4.0)
-    _ensure_surface_mesh(maxh)
+    # If user already meshed (e.g. via builder.from_geometry), reuse that
+    # mesh's surface — re-meshing on top would duplicate physical groups.
+    existing_node_tags, _, _ = gmsh.model.mesh.getNodes()
+    if len(existing_node_tags) == 0:
+        _ensure_surface_mesh(maxh)
 
-    # Group OCC surfaces by their owning named entity. If an entity is a
-    # volume (dim=3), collect its boundary faces; if a surface, take itself.
+    # Group OCC surfaces by their owning named entity. Process 2-D faces
+    # FIRST so named ports/PEC/etc. claim their surfaces before the parent
+    # volume sweeps up everything else.
+    raw_ents = list(getattr(g, "_entities", []))
+    def _ent_sort_key(e):
+        # Named 2-D faces first, then unnamed 2-D, then 3-D volumes.
+        dim_rank = 0 if e.dim == 2 else 1 if e.dim == 3 else 2
+        name_rank = 0 if e.name else 1
+        return (dim_rank, name_rank)
+    raw_ents.sort(key=_ent_sort_key)
+
     entities: list[dict] = []
     seen_surface_tags: set[int] = set()
 
-    for ent in getattr(g, "_entities", []):
-        name = ent.name or f"_entity_{ent.dim}_{ent.tag}"
+    for ent in raw_ents:
+        name = ent.name or f"_{ 'face' if ent.dim == 2 else 'volume' }_{ent.tag}"
         surface_dim_tags: list[tuple[int, int]] = []
         if ent.dim == 3:
             for d, t in gmsh.model.getBoundary([(3, ent.tag)], oriented=False):
@@ -195,7 +209,24 @@ def mesh_to_payload(g: Any, *, maxh: float) -> dict:
     """
     import time
     t0 = time.perf_counter()
-    mesh_bytes, name_to_tag = g.mesh(maxh=maxh)
+    # If the user already triggered meshing (e.g. via builder.from_geometry()
+    # in the same script), gmsh holds the mesh + physical groups — calling
+    # g.mesh() again collides on duplicate physical tags. Skip the re-mesh in
+    # that case; otherwise generate now.
+    name_to_tag: dict[str, int] = {}
+    msh_bytes_len = 0
+    existing_node_tags, _, _ = gmsh.model.mesh.getNodes()
+    if len(existing_node_tags) == 0:
+        mesh_bytes_local, name_to_tag = g.mesh(maxh=maxh)
+        msh_bytes_len = len(mesh_bytes_local)
+    else:
+        # Recover name_to_tag from gmsh's physical groups (drop "_mat_" prefix).
+        for dim, ptag in gmsh.model.getPhysicalGroups():
+            n = gmsh.model.getPhysicalName(dim, ptag) or ""
+            if n.startswith("_mat_"):
+                n = n[len("_mat_"):]
+            if n:
+                name_to_tag[n] = ptag
     t_mesh = time.perf_counter() - t0
 
     # ── Nodes ────────────────────────────────────────────────────────────
@@ -279,6 +310,6 @@ def mesh_to_payload(g: Any, *, maxh: float) -> dict:
             "n_tets": len(tet_phys),
             "n_tris": len(tri_phys),
             "mesh_time_s": t_mesh,
-            "msh_bytes": len(mesh_bytes),
+            "msh_bytes": msh_bytes_len,
         },
     }

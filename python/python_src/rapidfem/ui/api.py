@@ -33,8 +33,20 @@ def _format_exception(exc: BaseException) -> dict[str, str]:
     }
 
 
+def _reset_gmsh() -> None:
+    """Wipe gmsh model state so a fresh Geometry() doesn't collide with the
+    last request's leftover model. Safe to call even if gmsh isn't initialized."""
+    try:
+        import gmsh
+        if gmsh.isInitialized():
+            gmsh.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _exec_user_code(code: str, workdir: Path) -> dict[str, Any]:
     """Run a piece of user code with capture active. Returns the response payload."""
+    _reset_gmsh()
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     namespace: dict[str, Any] = {
@@ -97,6 +109,7 @@ def _exec_for_pipeline(code: str, workdir: Path) -> tuple[dict[str, Any], list]:
     minus the rendered "captures" — those are returned alongside as raw objects
     so /api/mesh and /api/solve can act on them.
     """
+    _reset_gmsh()
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
     namespace: dict[str, Any] = {

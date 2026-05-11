@@ -129,6 +129,18 @@ def run(app: Flask, host: str = "127.0.0.1", port: int = 5174, open_browser: boo
     print(f"rapidfem serve — listening on {url}")
     if app.config["RAPIDFEM_FRONTEND_DIST"] is None:
         print("rapidfem serve — WARNING: no frontend bundle found (run scripts/build_frontend).")
+
+    # gmsh.initialize installs a SIGINT handler, which only the main thread
+    # can do. Eagerly init here so Geometry() calls from worker request
+    # threads skip the init via gmsh.isInitialized().
+    try:
+        import gmsh
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)
+    except Exception as e:  # noqa: BLE001
+        print(f"rapidfem serve — gmsh pre-init failed: {e}")
+
     if open_browser and not os.environ.get("RAPIDFEM_NO_BROWSER"):
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     app.run(host=host, port=port, debug=app.config["RAPIDFEM_DEBUG"], use_reloader=False)
