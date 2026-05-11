@@ -85,22 +85,32 @@
 		source = t;
 	}
 
-	async function run_cell(c: Cell, reset: boolean = false) {
+	async function run_cell(c: Cell, opts: { reset?: boolean; advance?: boolean } = {}) {
 		c.status = 'running';
 		cells = [...cells];
 		try {
-			const result = await onRunCell(c.text, reset);
+			const result = await onRunCell(c.text, !!opts.reset);
 			c.status = result;
 		} catch {
 			c.status = 'error';
 		}
 		cells = [...cells];
+		// Jupyter-style: after running a cell, move the focus to the next
+		// cell (or insert a fresh one at the bottom).
+		if (opts.advance !== false) {
+			const i = cells.findIndex((x) => x.id === c.id);
+			if (i >= 0 && i < cells.length - 1) {
+				focused_id = cells[i + 1].id;
+			} else if (i === cells.length - 1) {
+				add_cell_after(c.id);
+			}
+		}
 	}
 
 	async function run_all() {
 		let first = true;
 		for (const c of cells) {
-			await run_cell(c, first);
+			await run_cell(c, { reset: first, advance: false });
 			first = false;
 			if (c.status === 'error') break;
 		}
@@ -108,7 +118,7 @@
 
 	async function run_focused() {
 		const c = cells.find((c) => c.id === focused_id);
-		if (c) await run_cell(c, false);
+		if (c) await run_cell(c, { advance: true });
 	}
 
 	function add_cell_after(id: number) {
@@ -142,7 +152,7 @@
 			bind:source={cell.text}
 			status={cell.status}
 			focused={cell.id === focused_id}
-			onRun={() => { focused_id = cell.id; void run_cell(cell, false); }}
+			onRun={() => { focused_id = cell.id; void run_cell(cell, { advance: true }); }}
 			onRunAllBelow={() => { focused_id = cell.id; void run_all(); }}
 			onFocus={() => { focused_id = cell.id; }}
 		/>

@@ -117,6 +117,14 @@
 		last_set_value = source;
 	});
 
+	// Auto-focus the editor when this cell becomes the focused one
+	// (e.g. after a Run-cell advance, or when the Notebook adds a new cell).
+	let was_focused = false;
+	$effect(() => {
+		if (focused && !was_focused && view) view.focus();
+		was_focused = focused;
+	});
+
 	export function focus() { view?.focus(); }
 </script>
 
@@ -185,7 +193,7 @@
 		font-weight: 700;
 		margin-left: auto;
 	}
-	.status.ok { color: #5aad78; }
-	.status.err { color: var(--accent); }
+	.status.ok { color: var(--accent); }
+	.status.err { color: var(--accent); text-decoration: underline; }
 	.cell-body { background: var(--bg-inset); }
 </style>
