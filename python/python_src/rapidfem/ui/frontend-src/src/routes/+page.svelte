@@ -738,10 +738,12 @@
 		font-size: var(--fs-xs);
 	}
 	.toolbar button.primary {
-		height: 26px;
+		height: 24px;
 		padding: 0 var(--space-lg);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		font-weight: 600;
 	}
 	.toolbar button.primary:disabled {
 		background: var(--bg-panel);
@@ -903,7 +905,7 @@
 		background: var(--accent-dim);
 		color: var(--accent);
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--fs-xs);
 		padding: 1px 6px;
 		min-width: 18px;
 		text-align: center;
