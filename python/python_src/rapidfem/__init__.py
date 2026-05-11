@@ -25,10 +25,27 @@ from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollect
 from rapidfem.builder import SimulationBuilder
 from rapidfem import io  # registers .to_network/.to_touchstone/.to_hdf5 on SweepResult
 from rapidfem import rfic  # RFIC builder helpers (Stack, microstrip, via, gsg_port, ...)
+from rapidfem import _show_capture
+
+
+def show(obj, name: str = "default"):
+    """Send a Geometry, SimulationBuilder, Simulation, or SweepResult to the UI.
+
+    In a normal Python run this is a print-only no-op — scripts work the
+    same on the command line. When ``rapidfem serve`` executes the script
+    it activates a capture slot, and the object is forwarded to the viewer.
+    """
+    kind = _show_capture.classify(obj)
+    if _show_capture.is_capturing():
+        _show_capture.capture(name=name, obj=obj, kind=kind)
+    else:
+        print(f"rapidfem.show({name}={type(obj).__name__}) [kind={kind}] — run via `rapidfem serve` to see it in the UI.")
+    return obj
+
 
 __all__ = [
     "Simulation", "SweepResult", "Eigenmode", "RadiationPattern",
     "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
-    "SimulationBuilder", "io", "rfic",
+    "SimulationBuilder", "io", "rfic", "show",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
