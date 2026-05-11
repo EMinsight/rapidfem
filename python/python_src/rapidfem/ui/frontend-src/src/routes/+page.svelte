@@ -22,6 +22,14 @@
 	let mesh_data = $state<MeshData | null>(null);
 	let smats = $state<SMatrix[]>([]);
 	let freqs = $state<number[]>([]);
+	let fields_raw = $state<(number[] | null)[][] | null>(null);
+	let field_freq_idx = $state(0);
+	let field_port_idx = $state(0);
+	let field_abc = $derived<Float32Array | null>(
+		fields_raw && fields_raw[field_freq_idx] && fields_raw[field_freq_idx][field_port_idx]
+			? new Float32Array(fields_raw[field_freq_idx][field_port_idx] as number[])
+			: null,
+	);
 
 	let geom_busy = $state(false);
 	let mesh_busy = $state(false);
@@ -320,13 +328,20 @@
 	async function on_solve() {
 		if (solve_busy) return;
 		solve_busy = true;
-		display = 'plots';
 		try {
 			const r = await solve(code);
 			append_log('solve', r);
 			if (r.ok && r.result) {
 				freqs = r.result.frequencies;
 				smats = sparamsToSMatrices(r.result.sparams);
+				fields_raw = r.result.fields ?? null;
+				field_freq_idx = 0;
+				field_port_idx = 0;
+				if (r.mesh) {
+					// Replace viewer mesh with the one the solver actually used,
+					// so field indices line up with mesh.nodes 1:1.
+					mesh_data = meshPayloadToMeshData(r.mesh);
+				}
 				last_solve_stats = {
 					n_freq: r.result.n_freq,
 					n_dofs: r.result.n_dofs,
@@ -521,11 +536,36 @@
 					</nav>
 					<div class="viewer-slot">
 						{#if display === 'view3d'}
-							<MeshViewer mesh={mesh_data} {show_geometry} {show_wireframe} {show_field} />
+							<MeshViewer
+								mesh={mesh_data}
+								{show_geometry}
+								{show_wireframe}
+								{show_field}
+								field={show_field ? field_abc : null}
+							/>
 						{:else}
 							<ResultsPanel {freqs} {smats} metrics={[]} />
 						{/if}
 					</div>
+					{#if display === 'view3d' && show_field && fields_raw && freqs.length}
+						<div class="field-controls">
+							<label class="field-ctrl">
+								<span class="lbl">Freq</span>
+								<input type="range" min="0" max={freqs.length - 1} step="1" bind:value={field_freq_idx} />
+								<span class="val">{(freqs[field_freq_idx] / 1e9).toFixed(2)} GHz</span>
+							</label>
+							{#if fields_raw[field_freq_idx] && fields_raw[field_freq_idx].length > 1}
+								<label class="field-ctrl">
+									<span class="lbl">Excitation</span>
+									<select bind:value={field_port_idx}>
+										{#each fields_raw[field_freq_idx] as _f, pi}
+											<option value={pi}>Port {pi + 1}</option>
+										{/each}
+									</select>
+								</label>
+							{/if}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</section>
@@ -761,6 +801,40 @@
 	.layer-toggle:hover { color: var(--text-muted); }
 	.layer-toggle.active { color: var(--accent); }
 	.layer-toggle:disabled { color: var(--text-dim); cursor: default; opacity: 0.5; }
+
+	.field-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xl);
+		padding: var(--space-sm) var(--space-lg);
+		background: var(--bg-surface);
+		border-top: 1px solid var(--border-subtle);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		flex-shrink: 0;
+	}
+	.field-ctrl {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+	}
+	.field-ctrl .lbl {
+		color: var(--text-dim);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		min-width: 36px;
+	}
+	.field-ctrl .val {
+		color: var(--accent);
+		min-width: 80px;
+	}
+	.field-ctrl input[type="range"] {
+		width: 200px;
+		accent-color: var(--accent);
+	}
+	.field-ctrl select {
+		width: auto;
+	}
 
 	.viewer-slot {
 		flex: 1;

@@ -202,6 +202,7 @@ def register(app: Flask) -> None:
         body = request.get_json(silent=True) or {}
         code = body.get("code", "")
         builder_name = body.get("builder_name")  # optional; None → first builder
+        include_fields = bool(body.get("include_fields", True))
         if not isinstance(code, str):
             return jsonify({"ok": False, "error": {"type": "ValueError", "message": "code must be string", "traceback": ""}}), 400
 
@@ -222,6 +223,7 @@ def register(app: Flask) -> None:
 
             try:
                 import time
+                import numpy as np
                 t0 = time.perf_counter()
                 sim = cap.obj.build()
                 result = sim.run_sweep()
@@ -239,11 +241,43 @@ def register(app: Flask) -> None:
                             row.append([float(v.real), float(v.imag)])
                         f_mat.append(row)
                     sparams_payload.append(f_mat)
+
+                # ── Nodal field as A/B/C phasor terms ─────────────────────
+                # |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
+                # with A = |E_re|², B = |E_im|², C = E_re · E_im
+                fields_payload = None
+                if include_fields:
+                    n_nodes = sim.mesh_nodes.shape[0]
+                    fields_payload = []
+                    for fi in range(n_freq):
+                        per_freq = []
+                        for pi in range(n_p):
+                            E = sim.field_at_nodes(result, fi, pi)
+                            if E is None:
+                                per_freq.append(None)
+                                continue
+                            re = np.asarray(E.real)
+                            im = np.asarray(E.imag)
+                            A = np.sum(re * re, axis=1)
+                            B = np.sum(im * im, axis=1)
+                            C = np.sum(re * im, axis=1)
+                            abc = np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
+                            per_freq.append(abc)
+                        fields_payload.append(per_freq)
+
+                # ── Mesh that the solver actually used ────────────────────
+                from rapidfem.ui.serialize import mesh_to_payload
+                mesh_payload = None
+                try:
+                    cap_geo = _find_capture(captures, "geometry", None)
+                    if cap_geo is not None:
+                        mesh_payload = mesh_to_payload(cap_geo.obj, maxh=0.0)
+                except Exception:
+                    mesh_payload = None
             except Exception as e:  # noqa: BLE001
                 return jsonify({**shell, "ok": False, "error": _format_exception(e)}), 200
 
         BUS.publish({"kind": "stage_end", "stage": "solve", "ok": True, "solve_time_s": t_solve, "n_freq": n_freq, "n_driven": n_p})
-        # Continued below.
         return jsonify({
             **shell,
             "result": {
@@ -254,7 +288,9 @@ def register(app: Flask) -> None:
                 "n_dofs": sim.n_dofs,
                 "n_tets": sim.n_tets,
                 "solve_time_s": t_solve,
+                "fields": fields_payload,
             },
+            "mesh": mesh_payload,
             "name": cap.name,
         }), 200
 

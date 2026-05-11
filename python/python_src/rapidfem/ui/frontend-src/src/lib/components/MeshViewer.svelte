@@ -129,8 +129,11 @@
 	function classify(name: string): Kind | null {
 		if (name === 'abc' || name.startsWith('_mat_')) return null;
 		if (name === 'substrate' || name === 'oxide' || name === 'air') return 'dielectric';
-		if (name.endsWith('_gnd') || name === 'gnd') return 'gnd';
-		if (name === 'p1' || name === 'p2' || /^p\d+$/.test(name)) return 'port';
+		if (name.endsWith('_gnd') || name === 'gnd' || name === 'ground') return 'gnd';
+		if (
+			name === 'p1' || name === 'p2' || /^p\d+$/.test(name) ||
+			name.startsWith('port') || name.endsWith('_port')
+		) return 'port';
 		return 'conductor';
 	}
 
@@ -142,7 +145,9 @@
 			return hex('#5a6470');
 		}
 		if (kind === 'gnd') return hex('#5aad78');
-		if (kind === 'port') return hex(palette.accent);
+		// Ports get a vivid sky-blue so they don't clash with the warm
+		// conductor / accent palette used elsewhere.
+		if (kind === 'port') return hex('#5cc4ff');
 		// Per-layer conductor coloring so a multi-layer design (met5 + met4
 		// + via4 + ...) is visually distinguishable instead of one orange
 		// blob. Specific metal/via names get fixed hues; anything else
@@ -323,10 +328,20 @@
 			field_range = null;
 		}
 
-		// Reset visibility tracking after rebuild — everything visible by default
-		const tags = new Set<number>();
-		for (const m of gl_state.meshes) tags.add(m.tag);
-		visible_tags = tags;
+		// Preserve the user's per-tag hide/show decisions across rebuilds.
+		// New tags default to visible; tags that disappeared (e.g. mesh
+		// switched from geometry to tet view) are dropped from the set.
+		const all_tags = new Set<number>();
+		for (const m of gl_state.meshes) all_tags.add(m.tag);
+		const next = new Set<number>();
+		const prior = visible_tags;
+		const had_prior = prior.size > 0;
+		for (const t of all_tags) {
+			if (!had_prior || prior.has(t)) next.add(t);
+		}
+		visible_tags = next;
+		// Sync GL visibility flags to the (possibly preserved) set.
+		for (const m of gl_state.meshes) setTagVisible(gl_state, m.tag, next.has(m.tag));
 
 		needs_rebuild = false;
 	}
@@ -646,7 +661,7 @@
 	<div class="overlay-stack">
 		{#if tag_legend.length > 0 && show_geometry}
 			<div class="overlay-panel">
-				<div class="op-title">Layers</div>
+				<div class="op-title">Geometry</div>
 				<div class="op-body">
 					{#each tag_legend as l}
 						<button

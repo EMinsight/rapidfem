@@ -110,7 +110,10 @@ export interface SolveResponse {
 		n_dofs: number;
 		n_tets: number;
 		solve_time_s: number;
+		/** Per-(freq, port) flat [A0,B0,C0, A1,B1,C1, …] node phasor terms. */
+		fields?: (number[] | null)[][];
 	};
+	mesh?: MeshPayload;
 	name?: string;
 }
 
@@ -255,30 +258,4 @@ export function sparamsToSMatrices(s: number[][][][]): SMatrix[] {
 	);
 }
 
-// ── Field-viz stubs ───────────────────────────────────────────────────────
-// The legacy WASM-side field point-cloud sampler is gone. Components still
-// reference these symbols; they're inert until field data flows through
-// /api/solve in a future iteration.
-
-export async function viz_load_mesh(_m: MeshData): Promise<void> {
-	return;
-}
-
-export async function viz_sample(
-	_field_abc: Float32Array,
-	_n: number,
-): Promise<{
-	positions: Float32Array;
-	abc: Float32Array;
-	log_floor: number;
-	log_range: number;
-	field_range: { min: number; max: number; decades: number };
-}> {
-	return {
-		positions: new Float32Array(0),
-		abc: new Float32Array(0),
-		log_floor: 0,
-		log_range: 1,
-		field_range: { min: 0, max: 1, decades: 0 },
-	};
-}
+export { viz_load_mesh, viz_sample } from './viz';
