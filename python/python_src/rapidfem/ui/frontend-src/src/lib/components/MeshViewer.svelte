@@ -148,9 +148,9 @@
 			return hex('#5a6470');
 		}
 		if (kind === 'gnd') return hex('#5aad78');
-		// Ports use a deep lava-red — readable against the warm conductor
-		// palette while still keeping them distinctly "hot".
-		if (kind === 'port') return hex('#e6452f');
+		// Ports use the brand lava accent so they read as the primary
+		// excitation surfaces in the geometry.
+		if (kind === 'port') return hex(palette.accent);
 		// Per-layer conductor coloring so a multi-layer design (met5 + met4
 		// + via4 + ...) is visually distinguishable instead of one orange
 		// blob. Specific metal/via names get fixed hues; anything else
