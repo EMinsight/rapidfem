@@ -24,11 +24,15 @@ PATCH_W, PATCH_L = 38 * mm, 29 * mm
 FEED_X, FEED_Y = 0.0, -PATCH_L / 2
 FEED_WIDTH = 1.5 * mm
 
-# Air padding around the antenna (ABC truncates this volume)
+# Air padding around the antenna (ABC truncates this volume).
+# A half-wavelength of headroom in z keeps the ABC far enough from the
+# patch for clean far-field calculation (λ/2 ≈ 62 mm at 2.4 GHz).
 PAD_XY = 25 * mm
-PAD_Z = 25 * mm
+PAD_Z = 60 * mm
 
-# Frequency
+# Frequency sweep around the design point — 21 pts across 2.0–2.8 GHz
+# shows the |S11| dip at resonance.
+FREQUENCIES = np.linspace(2.0e9, 2.8e9, 21)
 F0 = 2.4e9
 
 # Mesh density
@@ -88,7 +92,7 @@ rapidfem.show(g)
 sim = (
     rapidfem.SimulationBuilder()
     .mesh_from(g)
-    .frequencies([F0])
+    .frequencies(FREQUENCIES)
     .pec("ground_pec", "patch_pec")
     .lumped_port("feed", direction=(0, 0, 1), z0=50.0)
     .abc("abc", order=1)
@@ -100,11 +104,17 @@ result = sim.run_sweep()
 rapidfem.show(sim)
 rapidfem.show(result)
 
-s11 = abs(result.sparams[0, 0, 0])
 print(f"DOFs: {sim.n_dofs}, tets: {sim.n_tets}")
-print(f"|S11| @ {F0/1e9:.2f} GHz: {s11:.4f}")
 
-pattern = sim.compute_farfield(result, freq_idx=0, port_idx=0, n_theta=91, n_phi=72)
+# Locate the resonance — frequency with the smallest |S11|.
+mags = [abs(result.sparams[i, 0, 0]) for i in range(len(FREQUENCIES))]
+fi_min = int(min(range(len(mags)), key=lambda i: mags[i]))
+print(f"|S11| min: {mags[fi_min]:.4f} @ {FREQUENCIES[fi_min]/1e9:.3f} GHz")
+
+# Far-field pattern at the design frequency F0 (closest sample point).
+fi0 = int(min(range(len(FREQUENCIES)), key=lambda i: abs(FREQUENCIES[i] - F0)))
+pattern = sim.compute_farfield(result, freq_idx=fi0, port_idx=0, n_theta=91, n_phi=72)
 if pattern is not None:
-    print(f"Peak directivity: {pattern.peak_directivity_dbi:.2f} dBi")
-    print(f"Peak gain:        {pattern.peak_gain_dbi:.2f} dBi")
+    print(f"Far-field @ {FREQUENCIES[fi0]/1e9:.2f} GHz: "
+          f"D = {pattern.peak_directivity_dbi:.2f} dBi, "
+          f"G = {pattern.peak_gain_dbi:.2f} dBi")

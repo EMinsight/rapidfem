@@ -27,7 +27,7 @@ L = INPUT_LEN + (len(APERTURES) - 1) * SPACING + 2 * IRIS_T + OUTPUT_LEN
 # Sweep across the X-band single-mode region
 FREQUENCIES = np.linspace(8.2e9, 12.4e9, 41)
 
-MAXH = 4.0e-3
+MAXH = 3.0e-3
 
 
 # %% Geometry + Materials

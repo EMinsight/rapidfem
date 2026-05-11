@@ -22,7 +22,7 @@ RI_2, RO_2 = 0.99e-3, 3.45e-3
 L1, L2 = 15.0e-3, 15.0e-3
 
 FREQUENCIES = np.linspace(1.0e9, 10.0e9, 31)
-MAXH = 1.5e-3
+MAXH = 1.0e-3
 
 
 # %% Geometry + Materials
