@@ -613,8 +613,14 @@ export function fitCamera(min: [number, number, number], max: [number, number, n
 	const cx = (min[0] + max[0]) / 2;
 	const cy = (min[1] + max[1]) / 2;
 	const cz = (min[2] + max[2]) / 2;
-	const xy = Math.max(max[0] - min[0], max[1] - min[1], 1e-9);
-	const halfFov = Math.PI / 12; // half of 30°
-	const distance = (xy / 2) / Math.tan(halfFov) * 1.1;
+	const dx = max[0] - min[0];
+	const dy = max[1] - min[1];
+	const dz = max[2] - min[2];
+	// Use the bbox diagonal so all three extents fit, not just xy. The 0.6
+	// factor approximates the silhouette extent at a 45° viewing angle (the
+	// projected bbox onto the camera plane is < the full diagonal).
+	const diag = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-9);
+	const halfFov = Math.PI / 12; // half of the 30° perspective FOV
+	const distance = (diag * 0.6) / Math.tan(halfFov) * 1.05;
 	return { theta: Math.PI / 4, phi: Math.PI / 4, distance, target: [cx, cy, cz] };
 }

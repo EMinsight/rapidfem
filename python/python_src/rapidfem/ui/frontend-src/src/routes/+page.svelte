@@ -10,6 +10,7 @@
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
+	import Resizer from '$lib/components/Resizer.svelte';
 
 	let status = $state('idle');
 	let workdir = $state('');
@@ -36,7 +37,72 @@
 	let unsub_bus: (() => void) | null = null;
 	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
 
+	// ── Layout: pane widths + collapse state ─────────────────────────────────
+	const COLLAPSED_W = 32;
+	let files_w = $state(220);
+	let editor_w = $state(0);  // computed once on mount as ratio of remaining
+	let files_collapsed = $state(false);
+	let editor_collapsed = $state(false);
+	let viewer_collapsed = $state(false);
+	let main_el: HTMLElement | undefined = $state();
+	let editor_pane_el: HTMLElement | undefined = $state();
+
+	let output_h = $state(140);
+	let output_collapsed = $state(false);
+
+	function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+	function load_layout() {
+		try {
+			const raw = localStorage.getItem('rapidfem.layout');
+			if (!raw) return;
+			const s = JSON.parse(raw);
+			if (typeof s.files_w === 'number') files_w = s.files_w;
+			if (typeof s.editor_w === 'number') editor_w = s.editor_w;
+			if (typeof s.files_collapsed === 'boolean') files_collapsed = s.files_collapsed;
+			if (typeof s.editor_collapsed === 'boolean') editor_collapsed = s.editor_collapsed;
+			if (typeof s.viewer_collapsed === 'boolean') viewer_collapsed = s.viewer_collapsed;
+			if (typeof s.output_h === 'number') output_h = s.output_h;
+			if (typeof s.output_collapsed === 'boolean') output_collapsed = s.output_collapsed;
+		} catch {}
+	}
+	function save_layout() {
+		try {
+			localStorage.setItem('rapidfem.layout', JSON.stringify({
+				files_w, editor_w, files_collapsed, editor_collapsed, viewer_collapsed,
+				output_h, output_collapsed,
+			}));
+		} catch {}
+	}
+
+	function on_files_resize(dx: number) {
+		if (files_collapsed) return;
+		files_w = clamp(files_w + dx, 140, 480);
+		save_layout();
+	}
+	function on_editor_resize(dx: number) {
+		if (editor_collapsed || viewer_collapsed) return;
+		if (!main_el) return;
+		editor_w = clamp(editor_w + dx, 240, main_el.clientWidth - files_w - 280);
+		save_layout();
+	}
+	function on_output_resize(dy: number) {
+		if (!editor_pane_el || output_collapsed) return;
+		const maxH = editor_pane_el.clientHeight - 100;
+		output_h = clamp(output_h - dy, 60, maxH);
+		save_layout();
+	}
+
+	function init_editor_w() {
+		if (!main_el) return;
+		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
+		const avail = main_el.clientWidth - filesPx - 8;  // minus 2 × 4px resizer
+		if (editor_w === 0) editor_w = Math.round(avail / 2);
+	}
+
 	onMount(async () => {
+		load_layout();
+		init_editor_w();
 		try {
 			const h = await health();
 			workdir = h.workdir;
@@ -232,89 +298,149 @@
 		<span class="status">{status}</span>
 	</header>
 
-	<main>
-		<aside class="files-pane">
-			<FileBrowser bind:active_path={active_path} onOpen={open_file} onNew={new_file} />
-		</aside>
-
-		<aside class="editor-pane">
-			<div class="toolbar">
-				<span class="hint">Ctrl+S → geometry preview</span>
-				<button class="primary" onclick={on_mesh} disabled={mesh_busy}>
-					{mesh_busy ? 'meshing…' : 'Generate Mesh'}
+	<main bind:this={main_el}>
+		<aside class="pane files-pane" style:flex="0 0 {files_collapsed ? COLLAPSED_W : files_w}px">
+			{#if files_collapsed}
+				<button class="collapsed-strip" onclick={() => { files_collapsed = false; save_layout(); }} aria-label="Expand files">
+					<span class="strip-label">Files</span>
 				</button>
-				<button class="primary" onclick={on_solve} disabled={solve_busy}>
-					{solve_busy ? 'solving…' : 'Run Simulation'}
-				</button>
-				<span class="spacer"></span>
-				{#if last_solve_stats}
-					<span class="stat">{last_solve_stats.n_freq} freq · {last_solve_stats.n_dofs.toLocaleString()} dofs · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
-				{:else if last_mesh_stats}
-					<span class="stat">{last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
-				{:else if last_geom_stats}
-					<span class="stat">{last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
-				{/if}
-			</div>
-			<div class="editor-wrap">
-				<CodeEditor bind:value={code} onSave={on_save} />
-			</div>
-		</aside>
-
-		<section class="viewer-pane">
-			<nav class="tabs">
-				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
-				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
-				{#if display === 'view3d'}
-					<span class="tab-spacer"></span>
-					<div class="layer-toggles">
-						<button
-							class="layer-toggle"
-							class:active={show_geometry}
-							onclick={() => (show_geometry = !show_geometry)}
-							title="Geometry surfaces">Geometry</button>
-						<button
-							class="layer-toggle"
-							class:active={show_wireframe}
-							onclick={() => (show_wireframe = !show_wireframe)}
-							title="Mesh wireframe">Mesh</button>
-						<button
-							class="layer-toggle"
-							class:active={show_field}
-							disabled={!last_solve_stats}
-							onclick={() => (show_field = !show_field)}
-							title="Field cloud (after a solve)">Field</button>
-					</div>
-				{/if}
-			</nav>
-			<div class="viewer-slot">
-				{#if display === 'view3d'}
-					<MeshViewer
-						mesh={mesh_data}
-						{show_geometry}
-						{show_wireframe}
-						{show_field}
+			{:else}
+				<div class="pane-inner">
+					<FileBrowser
+						bind:active_path={active_path}
+						onOpen={open_file}
+						onNew={new_file}
+						onCollapse={() => { files_collapsed = true; save_layout(); }}
 					/>
-				{:else}
-					<ResultsPanel {freqs} {smats} metrics={[]} />
-				{/if}
-			</div>
+				</div>
+			{/if}
+		</aside>
+
+		{#if !files_collapsed}
+			<Resizer onDelta={on_files_resize} />
+		{/if}
+
+		<aside class="pane editor-pane" bind:this={editor_pane_el} style:flex={editor_collapsed ? `0 0 ${COLLAPSED_W}px` : (viewer_collapsed ? '1 1 0' : `0 0 ${editor_w}px`)}>
+			{#if editor_collapsed}
+				<button class="collapsed-strip" onclick={() => { editor_collapsed = false; save_layout(); }} aria-label="Expand editor">
+					<span class="strip-label">Editor</span>
+				</button>
+			{:else}
+				<div class="pane-inner">
+					<div class="toolbar">
+						<button class="tb collapse" onclick={() => { editor_collapsed = true; save_layout(); }} aria-label="Collapse" title="Collapse editor">
+							<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+								<polyline points="10,3 5,8 10,13" />
+							</svg>
+						</button>
+						<span class="hint">Ctrl+S → preview</span>
+						<button class="primary" onclick={on_mesh} disabled={mesh_busy}>
+							{mesh_busy ? 'meshing…' : 'Generate Mesh'}
+						</button>
+						<button class="primary" onclick={on_solve} disabled={solve_busy}>
+							{solve_busy ? 'solving…' : 'Run Simulation'}
+						</button>
+						<span class="spacer"></span>
+						{#if last_solve_stats}
+							<span class="stat">{last_solve_stats.n_freq} freq · {last_solve_stats.n_dofs.toLocaleString()} dofs · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
+						{:else if last_mesh_stats}
+							<span class="stat">{last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
+						{:else if last_geom_stats}
+							<span class="stat">{last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
+						{/if}
+					</div>
+					<div class="editor-wrap">
+						<CodeEditor bind:value={code} onSave={on_save} />
+					</div>
+					{#if !output_collapsed}
+						<Resizer vertical onDelta={on_output_resize} />
+					{/if}
+					<div class="output" style:height={output_collapsed ? '28px' : `${output_h}px`}>
+						<div class="output-head">
+							<span class="output-title">Output</span>
+							{#if log_lines.length}
+								<span class="output-count">{log_lines.length}</span>
+							{/if}
+							<span class="spacer"></span>
+							{#if log_lines.length}
+								<button class="tb" onclick={() => (log_lines = [])} title="Clear" aria-label="Clear">
+									<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+										<polyline points="3,5 13,5" />
+										<path d="M6 5V3h4v2" />
+										<path d="M5 5l1 8h4l1-8" />
+									</svg>
+								</button>
+							{/if}
+							<button class="tb" onclick={() => { output_collapsed = !output_collapsed; save_layout(); }} title={output_collapsed ? 'Expand' : 'Collapse'} aria-label="Toggle output">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+									{#if output_collapsed}
+										<polyline points="3,10 8,5 13,10" />
+									{:else}
+										<polyline points="3,6 8,11 13,6" />
+									{/if}
+								</svg>
+							</button>
+						</div>
+						{#if !output_collapsed}
+							<div class="output-body">
+								{#each log_lines as line}
+									<div class="line">{line}</div>
+								{:else}
+									<div class="empty">No output yet — Ctrl+S to run, or Generate Mesh / Run Simulation.</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</aside>
+
+		{#if !editor_collapsed && !viewer_collapsed}
+			<Resizer onDelta={on_editor_resize} />
+		{/if}
+
+		<section class="pane viewer-pane" style:flex={viewer_collapsed ? `0 0 ${COLLAPSED_W}px` : '1 1 0'}>
+			{#if viewer_collapsed}
+				<button class="collapsed-strip" onclick={() => { viewer_collapsed = false; save_layout(); }} aria-label="Expand viewer">
+					<span class="strip-label">Viewer</span>
+				</button>
+			{:else}
+				<div class="pane-inner">
+					<nav class="tabs">
+						<button class="tb collapse" onclick={() => { viewer_collapsed = true; save_layout(); }} aria-label="Collapse" title="Collapse viewer">
+							<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+								<polyline points="6,3 11,8 6,13" />
+							</svg>
+						</button>
+						<button class="tab-btn" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
+						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
+						{#if display === 'view3d'}
+							<span class="tab-spacer"></span>
+							<div class="layer-toggles">
+								<button class="layer-toggle" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces">Geometry</button>
+								<button class="layer-toggle" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe">Mesh</button>
+								<button class="layer-toggle" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (after a solve)">Field</button>
+							</div>
+						{/if}
+					</nav>
+					<div class="viewer-slot">
+						{#if display === 'view3d'}
+							<MeshViewer mesh={mesh_data} {show_geometry} {show_wireframe} {show_field} />
+						{:else}
+							<ResultsPanel {freqs} {smats} metrics={[]} />
+						{/if}
+					</div>
+				</div>
+			{/if}
 		</section>
 	</main>
 
-	<footer class="log">
-		<div class="log-title">Output</div>
-		<div class="log-body">
-			{#each log_lines as line}
-				<div class="line">{line}</div>
-			{/each}
-		</div>
-	</footer>
 </div>
 
 <style>
 	.app {
-		display: grid;
-		grid-template-rows: 36px 1fr 160px;
+		display: flex;
+		flex-direction: column;
 		height: 100vh;
 		background: var(--bg);
 		color: var(--text);
@@ -367,34 +493,67 @@
 	}
 
 	main {
-		display: grid;
-		grid-template-columns: 220px 1fr 1fr;
+		display: flex;
+		flex-direction: row;
+		flex: 1;
 		min-height: 0;
+		overflow: hidden;
 	}
 
-	.files-pane {
-		border-right: 1px solid var(--border);
-		min-height: 0;
-		background: var(--bg-surface);
-	}
-
-	.editor-pane {
+	.pane {
 		display: flex;
 		flex-direction: column;
-		border-right: 1px solid var(--border);
 		min-width: 0;
 		min-height: 0;
+		overflow: hidden;
 		background: var(--bg);
 	}
+	.pane-inner {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.collapsed-strip {
+		flex: 1;
+		display: flex;
+		align-items: flex-start;
+		justify-content: center;
+		padding: var(--space-lg) 0;
+		background: var(--bg-surface);
+		border: 0;
+		border-right: 1px solid var(--border);
+		cursor: pointer;
+		color: var(--text-muted);
+		transition: color var(--transition), background var(--transition);
+		width: 100%;
+	}
+	.collapsed-strip:hover { color: var(--accent); background: var(--bg-panel); }
+	.strip-label {
+		writing-mode: vertical-rl;
+		transform: rotate(180deg);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		letter-spacing: 1px;
+		text-transform: uppercase;
+		font-weight: 600;
+	}
+
+	.files-pane { background: var(--bg-surface); }
+	.editor-pane { background: var(--bg); }
+	.viewer-pane { background: var(--canvas-bg); }
 
 	.toolbar {
 		display: flex;
 		align-items: center;
 		gap: var(--space-md);
-		padding: var(--space-md) var(--space-lg);
+		padding: 0 var(--space-lg);
 		background: var(--bg-surface);
 		border-bottom: 1px solid var(--border);
-		min-height: 38px;
+		height: 36px;
+		flex-shrink: 0;
 	}
 	.toolbar .hint {
 		color: var(--text-dim);
@@ -408,7 +567,8 @@
 		font-size: var(--fs-xs);
 	}
 	.toolbar button.primary {
-		padding: 4px 10px;
+		height: 22px;
+		padding: 0 var(--space-md);
 		font-size: var(--fs-xs);
 		letter-spacing: 0.5px;
 	}
@@ -424,14 +584,6 @@
 		overflow: hidden;
 	}
 
-	.viewer-pane {
-		display: flex;
-		flex-direction: column;
-		min-height: 0;
-		min-width: 0;
-		background: var(--canvas-bg);
-	}
-
 	.tabs {
 		display: flex;
 		gap: 0;
@@ -442,11 +594,11 @@
 		flex-shrink: 0;
 		align-items: stretch;
 	}
-	.tabs button {
+	.tabs .tab-btn {
 		background: transparent;
 		color: var(--text-dim);
 		border: 0;
-		padding: 0 var(--space-xl);
+		padding: 0 var(--space-lg);
 		cursor: pointer;
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
@@ -455,8 +607,26 @@
 		text-transform: uppercase;
 		transition: color var(--transition);
 	}
-	.tabs button:hover { color: var(--text-muted); }
-	.tabs button.active { color: var(--accent); }
+	.tabs .tab-btn:hover { color: var(--text-muted); }
+	.tabs .tab-btn.active { color: var(--accent); }
+
+	.tb.collapse {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+		cursor: pointer;
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: normal;
+		transition: background var(--transition), border-color var(--transition), color var(--transition);
+	}
+	.tb.collapse:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
 
 	.tab-spacer { flex: 1; }
 
@@ -497,28 +667,52 @@
 	}
 	.viewer-slot > :global(*) { flex: 1; min-height: 0; }
 
-	footer.log {
+	.output {
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-inset);
 		border-top: 1px solid var(--border);
-		min-height: 0;
+		flex-shrink: 0;
+		min-height: 28px;
+		overflow: hidden;
 	}
-	.log-title {
-		padding: var(--space-sm) var(--space-lg);
+	.output-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+		padding: 0 var(--space-lg);
+		height: 28px;
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+	.output-title {
 		color: var(--text-muted);
+		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
-		border-bottom: 1px solid var(--border-subtle);
+		font-weight: 600;
 	}
-	.log-body {
+	.output-count {
+		background: var(--accent-dim);
+		color: var(--accent);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		padding: 1px 6px;
+		min-width: 18px;
+		text-align: center;
+	}
+	.output-head .spacer { flex: 1; }
+	.output-body {
 		flex: 1;
 		overflow: auto;
 		padding: var(--space-sm) var(--space-lg);
 		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
+		background: var(--bg-inset);
 	}
-	.log-body .line { white-space: pre; }
+	.output-body .line { white-space: pre-wrap; word-break: break-word; padding: 1px 0; }
+	.output-body .empty { color: var(--text-dim); font-style: italic; }
 </style>
