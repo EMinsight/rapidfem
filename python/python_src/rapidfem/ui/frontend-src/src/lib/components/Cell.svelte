@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { EditorState, type Extension } from '@codemirror/state';
 	import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
@@ -12,6 +12,7 @@
 		index,
 		source = $bindable<string>(''),
 		status = 'idle' as 'idle' | 'running' | 'ok' | 'error',
+		kind = 'code' as 'code' | 'markdown',
 		onRun,
 		onRunAllBelow,
 		onFocus,
@@ -20,11 +21,56 @@
 		index: number;
 		source: string;
 		status?: 'idle' | 'running' | 'ok' | 'error';
+		kind?: 'code' | 'markdown';
 		onRun: () => void;
 		onRunAllBelow?: () => void;
 		onFocus?: () => void;
 		focused?: boolean;
 	} = $props();
+
+	let edit_mode = $state(false);
+
+	// Minimal markdown rendering: strip leading "# " from each line (Python
+	// comment hash) and translate #/##/### headings + **bold**/*italic*/`code`.
+	function render_md(text: string): string {
+		const lines = text.split('\n').map((l) => l.replace(/^\s*#\s?/, ''));
+		const blocks: string[] = [];
+		let para: string[] = [];
+		const flush_para = () => {
+			if (!para.length) return;
+			blocks.push('<p>' + inline(para.join(' ')) + '</p>');
+			para = [];
+		};
+		for (const l of lines) {
+			const t = l.trim();
+			if (!t) { flush_para(); continue; }
+			let m;
+			if ((m = t.match(/^(#{1,4})\s+(.*)$/))) {
+				flush_para();
+				const lvl = m[1].length;
+				blocks.push(`<h${lvl}>${inline(m[2])}</h${lvl}>`);
+			} else if (/^[-*]\s+/.test(t)) {
+				flush_para();
+				blocks.push('<li>' + inline(t.replace(/^[-*]\s+/, '')) + '</li>');
+			} else {
+				para.push(t);
+			}
+		}
+		flush_para();
+		// Wrap consecutive <li> in <ul>
+		return blocks.join('\n')
+			.replace(/(?:<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`);
+	}
+	function inline(s: string): string {
+		// Escape first, then re-introduce intended tags
+		const esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		return esc
+			.replace(/`([^`]+)`/g, '<code>$1</code>')
+			.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+			.replace(/\b_([^_]+)_\b/g, '<em>$1</em>');
+	}
+
+	const rendered_md = $derived(kind === 'markdown' ? render_md(source) : '');
 
 	let host: HTMLDivElement | undefined = $state();
 	let view: EditorView | null = null;
@@ -101,10 +147,17 @@
 		return new EditorView({ state: EditorState.create({ doc: initial, extensions }), parent: host! });
 	}
 
-	onMount(() => {
+	$effect(() => {
+		// Build (or rebuild) the CodeMirror editor when we enter code/edit mode.
+		const want_editor = kind === 'code' || edit_mode;
 		if (!host) return;
-		view = build(source);
-		last_set_value = source;
+		if (want_editor && !view) {
+			view = build(source);
+			last_set_value = source;
+		} else if (!want_editor && view) {
+			view.destroy();
+			view = null;
+		}
 	});
 	onDestroy(() => view?.destroy());
 
@@ -128,21 +181,36 @@
 	export function focus() { view?.focus(); }
 </script>
 
-<div class="cell" class:focused>
+<div class="cell" class:focused class:markdown={kind === 'markdown'}>
 	<div class="cell-head">
-		<button class="run" onclick={onRun} disabled={status === 'running'} title="Run cell (Shift+Enter)">
-			{#if status === 'running'}
-				<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 6"><animateTransform attributeName="transform" type="rotate" from="0 6 6" to="360 6 6" dur="0.9s" repeatCount="indefinite"/></circle></svg>
-			{:else}
-				<svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor"/></svg>
+		{#if kind === 'code'}
+			<button class="run" onclick={onRun} disabled={status === 'running'} title="Run cell (Shift+Enter)">
+				{#if status === 'running'}
+					<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 6"><animateTransform attributeName="transform" type="rotate" from="0 6 6" to="360 6 6" dur="0.9s" repeatCount="indefinite"/></circle></svg>
+				{:else}
+					<svg width="10" height="10" viewBox="0 0 10 10"><polygon points="2,1 9,5 2,9" fill="currentColor"/></svg>
+				{/if}
+			</button>
+			<span class="idx">In [{index + 1}]</span>
+			<span class="status" class:ok={status === 'ok'} class:err={status === 'error'}>
+				{#if status === 'ok'}✓{:else if status === 'error'}!{/if}
+			</span>
+		{:else}
+			<span class="kind-tag">MD</span>
+			<span class="idx">Markdown</span>
+			{#if edit_mode}
+				<button class="md-toggle" onclick={() => (edit_mode = false)} title="Stop editing">Done</button>
 			{/if}
-		</button>
-		<span class="idx">In [{index + 1}]</span>
-		<span class="status" class:ok={status === 'ok'} class:err={status === 'error'}>
-			{#if status === 'ok'}✓{:else if status === 'error'}!{/if}
-		</span>
+		{/if}
 	</div>
-	<div class="cell-body" bind:this={host} onfocus={onFocus} onclick={onFocus}></div>
+	{#if kind === 'markdown' && !edit_mode}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="md-rendered" ondblclick={() => { edit_mode = true; onFocus?.(); }} onclick={onFocus} title="Double-click to edit">
+			{@html rendered_md}
+		</div>
+	{:else}
+		<div class="cell-body" bind:this={host} onfocus={onFocus} onclick={onFocus}></div>
+	{/if}
 </div>
 
 <style>
@@ -196,4 +264,60 @@
 	.status.ok { color: var(--accent); }
 	.status.err { color: var(--accent); text-decoration: underline; }
 	.cell-body { background: var(--bg-inset); }
+
+	.cell.markdown { border: 0; background: transparent; }
+	.cell.markdown .cell-head { background: transparent; border: 0; height: 18px; padding-left: 0; }
+	.kind-tag {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		color: var(--text-dim);
+		background: var(--bg-surface);
+		padding: 1px 5px;
+		border: 1px solid var(--border-subtle);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.md-toggle {
+		margin-left: auto;
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+		padding: 0 var(--space-md);
+		height: 18px;
+		font-size: var(--fs-xs);
+		font-family: var(--font-mono);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		cursor: pointer;
+	}
+	.md-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+	.md-rendered {
+		padding: var(--space-sm) var(--space-md) var(--space-lg);
+		color: var(--text);
+		font-family: var(--font-body);
+		font-size: var(--fs-sm);
+		line-height: 1.55;
+		cursor: text;
+	}
+	.md-rendered :global(h1) {
+		font-size: 22px; font-weight: 600; color: var(--accent);
+		margin: 0 0 var(--space-md); border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px;
+	}
+	.md-rendered :global(h2) { font-size: 18px; font-weight: 600; color: var(--text); margin: var(--space-md) 0 var(--space-sm); }
+	.md-rendered :global(h3) { font-size: 15px; font-weight: 600; color: var(--text); margin: var(--space-md) 0 var(--space-sm); }
+	.md-rendered :global(h4) { font-size: 13px; font-weight: 600; color: var(--text-muted); margin: var(--space-md) 0 var(--space-sm); }
+	.md-rendered :global(p) { margin: 0 0 var(--space-sm); color: var(--text-muted); }
+	.md-rendered :global(ul) { margin: 0 0 var(--space-sm) var(--space-lg); padding: 0; color: var(--text-muted); }
+	.md-rendered :global(li) { margin-bottom: 2px; }
+	.md-rendered :global(code) {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		background: var(--bg-surface);
+		padding: 0 4px;
+		border: 1px solid var(--border-subtle);
+		color: var(--accent-secondary);
+	}
+	.md-rendered :global(strong) { color: var(--text); }
+	.md-rendered :global(em) { font-style: italic; color: var(--text); }
 </style>
