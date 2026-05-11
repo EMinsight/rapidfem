@@ -35,13 +35,25 @@ def _format_exception(exc: BaseException) -> dict[str, str]:
     }
 
 
+_WIN = sys.platform == "win32"
+if _WIN:
+    import ctypes
+    import msvcrt
+    _STD_OUTPUT_HANDLE = -11
+    _STD_ERROR_HANDLE = -12
+    _GetStdHandle = ctypes.windll.kernel32.GetStdHandle
+    _GetStdHandle.restype = ctypes.c_void_p
+    _SetStdHandle = ctypes.windll.kernel32.SetStdHandle
+    _SetStdHandle.argtypes = [ctypes.c_int, ctypes.c_void_p]
+
+
 @contextmanager
 def _capture_native_streams(stage: str):
     """OS-level fd capture so Rust eprintln! and gmsh output reach the UI.
 
-    Forks fd 1/2 through a pipe → reader thread that streams each line to
-    the WebSocket bus and accumulates them for the final response. Restores
-    the original fds on exit. Safe across exceptions.
+    On Windows Rust's stderr uses GetStdHandle(STD_ERROR_HANDLE) directly,
+    not the C-runtime fd 2, so we also have to call SetStdHandle alongside
+    the POSIX-style dup2 to actually redirect it.
     """
     sys.stdout.flush(); sys.stderr.flush()
     out_r, out_w = os.pipe()
@@ -50,6 +62,14 @@ def _capture_native_streams(stage: str):
     saved_err = os.dup(2)
     os.dup2(out_w, 1)
     os.dup2(err_w, 2)
+
+    saved_win_out = saved_win_err = None
+    if _WIN:
+        saved_win_out = _GetStdHandle(_STD_OUTPUT_HANDLE)
+        saved_win_err = _GetStdHandle(_STD_ERROR_HANDLE)
+        _SetStdHandle(_STD_OUTPUT_HANDLE, msvcrt.get_osfhandle(1))
+        _SetStdHandle(_STD_ERROR_HANDLE, msvcrt.get_osfhandle(2))
+
     os.close(out_w)
     os.close(err_w)
 
@@ -57,14 +77,21 @@ def _capture_native_streams(stage: str):
     lines_err: list[str] = []
 
     def reader(fd: int, kind: str, accum: list[str]) -> None:
+        # UTF-8 decoding — Rust eprintln + gmsh both write UTF-8 (em-dash,
+        # etc.). Default Windows cp1252 would mangle them. readline() in a
+        # loop streams each line to the bus as the solver flushes it.
         try:
-            with os.fdopen(fd, "r", buffering=1, errors="replace") as f:
-                for line in f:
-                    s = line.rstrip()
-                    if not s:
-                        continue
-                    accum.append(s)
-                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
+            f = os.fdopen(fd, "r", buffering=1, encoding="utf-8", errors="replace")
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                s = line.rstrip()
+                if not s:
+                    continue
+                accum.append(s)
+                BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
+            f.close()
         except Exception:
             pass
 
@@ -78,6 +105,9 @@ def _capture_native_streams(stage: str):
         sys.stdout.flush(); sys.stderr.flush()
         os.dup2(saved_out, 1)
         os.dup2(saved_err, 2)
+        if _WIN and saved_win_out is not None and saved_win_err is not None:
+            _SetStdHandle(_STD_OUTPUT_HANDLE, saved_win_out)
+            _SetStdHandle(_STD_ERROR_HANDLE, saved_win_err)
         os.close(saved_out)
         os.close(saved_err)
         t_out.join(timeout=1.0)
