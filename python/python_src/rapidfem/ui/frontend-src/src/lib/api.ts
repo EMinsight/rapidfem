@@ -62,16 +62,20 @@ export interface GeometryEntity {
 	tag: number;
 	dim: number;
 	color: [number, number, number];
-	positions: number[];  // flat xyz, 3 verts × 3 floats per tri
-	normals: number[];
+	// Triangle mode (after g.mesh()): flat xyz, 3 verts × 3 floats per tri.
+	positions?: number[];
+	normals?: number[];
+	// Wireframe mode (before g.mesh()): flat xyz pairs, 2 verts per segment.
+	lines?: number[];
 	material: string | null;
 }
 
 export interface GeometryPayload {
 	kind: 'geometry';
+	wireframe?: boolean;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 	entities: GeometryEntity[];
-	stats: { n_entities: number; n_triangles: number; maxh: number };
+	stats: { n_entities: number; n_segments?: number; n_triangles?: number; maxh: number };
 }
 
 export interface MeshPayload {

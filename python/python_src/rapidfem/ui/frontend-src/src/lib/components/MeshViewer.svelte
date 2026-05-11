@@ -12,6 +12,7 @@
 
 	let {
 		mesh = null as MeshData | null,
+		wireframe = null as { entities: Array<{ name: string; color: [number, number, number]; lines: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null,
 		show_geometry = true,
 		show_wireframe = false,
 		show_field = false,
@@ -22,13 +23,12 @@
 		anim_speed = 1
 	}: {
 		mesh?: MeshData | null;
+		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
 		show_geometry?: boolean;
 		show_wireframe?: boolean;
 		show_field?: boolean;
 		field?: Float32Array | null;
-		/** Volumetric point-cloud density. 1 → 50k pts, 10 → 500k pts. */
 		point_density?: number;
-		/** Color-mapping mode for the field magnitude. */
 		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
 		anim_speed?: number;
@@ -260,7 +260,25 @@
 	function rebuild() {
 		if (!gl_state) return;
 		clearMeshes(gl_state);
-		if (!mesh) return;  // cleared above so the old geometry doesn't linger
+		// Wireframe-only view (geometry shown before any g.mesh() call).
+		if (!mesh && wireframe && wireframe.entities.length > 0) {
+			setBBox(gl_state, wireframe.bbox.min, wireframe.bbox.max);
+			field_norm = null;
+			in_field_mode = false;
+			for (const e of wireframe.entities) {
+				if (!e.lines || e.lines.length === 0) continue;
+				const c = e.color as [number, number, number];
+				addLineMesh(gl_state, Float32Array.from(e.lines), c, e.tag);
+			}
+			// preserve hidden_tags semantics
+			const all_tags = new Set<number>();
+			for (const m of gl_state.lineMeshes) all_tags.add(m.tag);
+			const cur = untrack(() => hidden_tags);
+			for (const m of gl_state.lineMeshes) setTagVisible(gl_state, m.tag, !cur.has(m.tag));
+			needs_rebuild = false;
+			return;
+		}
+		if (!mesh) return;
 
 		// Three independent toggles — geometry, wireframe, field — composed
 		// freely. The field cloud only renders when both `show_field` and
@@ -528,16 +546,18 @@
 
 	// React to mesh / toggles / field / density changes
 	$effect(() => {
-		mesh; show_geometry; show_wireframe; show_field; field; point_density;
+		mesh; wireframe; show_geometry; show_wireframe; show_field; field; point_density;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
 		render_frame();
 	});
 
 
-	// Refit camera only when mesh changes
+	// Refit camera when the visible payload changes (mesh OR wireframe).
 	$effect(() => {
-		if (mesh && mounted) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		if (!mounted) return;
+		if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		else if (wireframe) camera = fitCamera(wireframe.bbox.min, wireframe.bbox.max);
 	});
 
 	// Upload mesh to the worker's viz cache once per mesh change. The worker
@@ -647,6 +667,21 @@
 	});
 
 	const tag_legend = $derived.by(() => {
+		// Wireframe mode: emit one legend item per OCC entity.
+		if (!mesh && wireframe) {
+			const items: { name: string; color: string; kind: Kind; rank: number; tag: number }[] = [];
+			for (const e of wireframe.entities) {
+				const k = classify(e.name) ?? 'conductor';
+				const c = e.color;
+				items.push({
+					name: e.name,
+					color: `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`,
+					kind: k, rank: k === 'conductor' ? 0 : k === 'port' ? 1 : k === 'gnd' ? 2 : 3,
+					tag: e.tag,
+				});
+			}
+			return items;
+		}
 		if (!mesh) return [] as { name: string; color: string; kind: Kind; rank: number; tag: number }[];
 		const seen = new Set<number>();
 		const items: { name: string; color: string; kind: Kind; rank: number; tag: number }[] = [];

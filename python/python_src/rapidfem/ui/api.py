@@ -462,10 +462,12 @@ def register(app: Flask) -> None:
         result_payload: dict[str, Any] | None = None
         last_sim = None
         last_result = None
+        last_geo = None
 
         for item in captures:
             entry: dict[str, Any] = {"name": item.name, "kind": item.kind}
             if item.kind == "geometry":
+                last_geo = item.obj
                 try:
                     entry["payload"] = geometry_to_payload(item.obj)
                 except Exception as e:  # noqa: BLE001
@@ -474,25 +476,33 @@ def register(app: Flask) -> None:
                 pass
             elif item.kind == "simulation":
                 last_sim = item.obj
-                if mesh_payload is None:
-                    try:
-                        from rapidfem.ui.serialize import _bbox_diag  # noqa
-                        mesh_payload = {
-                            "kind": "mesh",
-                            "nodes": np.asarray(item.obj.mesh_nodes).ravel().tolist(),
-                            "tets": np.asarray(item.obj.mesh_tets).ravel().tolist(),
-                            "tris": [], "tri_phys": [], "tet_phys": [],
-                            "phys_names": {}, "phys_dim": {}, "name_to_tag": {},
-                            "bbox": _bbox_for_nodes(np.asarray(item.obj.mesh_nodes)),
-                            "stats": {"n_nodes": int(item.obj.mesh_nodes.shape[0]),
-                                       "n_tets": int(item.obj.mesh_tets.shape[0]),
-                                       "n_tris": 0, "mesh_time_s": 0.0, "msh_bytes": 0},
-                        }
-                    except Exception:
-                        pass
             elif item.kind == "result":
                 last_result = item.obj
             rendered.append(entry)
+
+        # If a Simulation was shown, prefer the full gmsh-state mesh
+        # (named physical groups, surface tris, dielectric volumes) over
+        # the bare nodes/tets we'd get from sim.mesh_nodes.
+        if last_sim is not None:
+            try:
+                mesh_payload = mesh_to_payload(last_geo, maxh=0.0)
+            except Exception:
+                # Fallback: nodes+tets from the simulation directly.
+                try:
+                    nodes_np = np.asarray(last_sim.mesh_nodes)
+                    mesh_payload = {
+                        "kind": "mesh",
+                        "nodes": nodes_np.ravel().tolist(),
+                        "tets": np.asarray(last_sim.mesh_tets).ravel().tolist(),
+                        "tris": [], "tri_phys": [], "tet_phys": [1] * int(last_sim.mesh_tets.shape[0]),
+                        "phys_names": {"1": "mesh"}, "phys_dim": {"1": 3}, "name_to_tag": {"mesh": 1},
+                        "bbox": _bbox_for_nodes(nodes_np),
+                        "stats": {"n_nodes": int(nodes_np.shape[0]),
+                                  "n_tets": int(last_sim.mesh_tets.shape[0]),
+                                  "n_tris": 0, "mesh_time_s": 0.0, "msh_bytes": 0},
+                    }
+                except Exception:
+                    mesh_payload = None
 
         # Combine Simulation + SweepResult into full payload with mesh + fields.
         if last_sim is not None and last_result is not None:

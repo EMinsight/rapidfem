@@ -38,7 +38,6 @@ g = rapidfem.Geometry()
 # Air-filled rectangular waveguide section, centered on the x/y axes.
 air = g.box(A, B, L, position=(-A / 2, -B / 2, 0))
 air.material = "air"
-air.maxh = MAXH
 
 # Name the two faces at z = 0 and z = L as ports; everything else is PEC.
 air.faces.min(axis="z").name = "port_in"

@@ -21,6 +21,7 @@
 	let log_lines = $state<string[]>([]);
 
 	let mesh_data = $state<MeshData | null>(null);
+	let wireframe = $state<import('$lib/api').GeometryPayload | null>(null);
 	let smats = $state<SMatrix[]>([]);
 	let freqs = $state<number[]>([]);
 	let fields_raw = $state<(number[] | null)[][] | null>(null);
@@ -345,17 +346,24 @@
 				log_lines = [...log_lines, `[cell] ${r.error.type}: ${r.error.message}`];
 				return 'error';
 			}
-			// Geometry capture → 3D viewer
+			// Geometry capture → 3D viewer (wireframe before g.mesh, tris after)
 			const geo = r.captures.find((c) => c.kind === 'geometry');
 			if (geo?.payload) {
 				last_geom_stats = {
 					n_entities: geo.payload.stats.n_entities,
-					n_triangles: geo.payload.stats.n_triangles,
+					n_triangles: geo.payload.stats.n_triangles ?? 0,
 				};
-				mesh_data = geometryToMeshData(geo.payload);
+				if (geo.payload.wireframe) {
+					wireframe = geo.payload;
+					mesh_data = null;
+				} else {
+					wireframe = null;
+					mesh_data = geometryToMeshData(geo.payload);
+				}
 			}
-			// Simulation mesh → 3D viewer
+			// Simulation mesh → 3D viewer (drops any prior wireframe)
 			if (r.mesh) {
+				wireframe = null;
 				mesh_data = meshPayloadToMeshData(r.mesh);
 				last_mesh_stats = {
 					n_tets: r.mesh.stats.n_tets,
@@ -605,6 +613,7 @@
 							<MeshViewer
 								bind:this={viewer}
 								mesh={mesh_data}
+								wireframe={wireframe}
 								{show_geometry}
 								{show_wireframe}
 								{show_field}

@@ -753,6 +753,13 @@ class Geometry:
         `name_to_tag` maps each user-supplied name to its physical-group tag.
         """
         gmsh.model.occ.synchronize()
+        # Wipe any prior mesh state (preview meshes, stale fields from a
+        # previous g.mesh() call). Without this, generate(3) reuses the
+        # old 1D/2D meshes and the user's new maxh is partially ignored.
+        try:
+            gmsh.model.mesh.clear()
+        except Exception:
+            pass
 
         # ── Per-entity mesh size: gmsh Distance + Threshold background fields ──
         threshold_field_ids: list[int] = []

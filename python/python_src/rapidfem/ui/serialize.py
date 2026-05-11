@@ -107,97 +107,113 @@ def geometry_to_payload(g: Any, *, target_tris: int = 4000) -> dict:
     nudges the mesh size to land near a desired triangle budget.
     """
     gmsh.model.occ.synchronize()
-    diag = _bbox_diag()
-    maxh = diag / max(math.sqrt(target_tris / 6.0), 4.0)
-    # If the user already meshed (explicit g.mesh() or via builder.from_geometry),
-    # the gmsh state holds a full 3D tet mesh — return that as a Mesh payload
-    # so the viewer can render the actual FEM discretization, not a coarse
-    # preview tessellation.
+    # If the user already meshed (explicit g.mesh()), gmsh state holds a full
+    # 3D tet mesh — return that. Otherwise emit a non-meshed OCC wireframe so
+    # the Geometry cell never triggers gmsh.mesh.generate().
     existing_node_tags, _, _ = gmsh.model.mesh.getNodes()
     if len(existing_node_tags) > 0:
         try:
             return mesh_to_payload(g, maxh=0.0)
         except Exception:
-            pass  # fall through to coarse preview if extraction fails
-    _ensure_surface_mesh(maxh)
+            pass
+    return _wireframe_payload(g)
 
-    # Group OCC surfaces by their owning named entity. Process 2-D faces
-    # FIRST so named ports/PEC/etc. claim their surfaces before the parent
-    # volume sweeps up everything else.
+
+def _wireframe_payload(g: Any) -> dict:
+    """OCC wireframe — no meshing. Samples each boundary curve in parametric
+    space and emits the resulting polylines per named entity. Renders the
+    geometric outlines (filling will appear once the user runs g.mesh())."""
+    gmsh.model.occ.synchronize()
+    SAMPLES = 24  # points per curve
+
+    def sample_curve(tag: int) -> list[float]:
+        """Return flat xyz pairs for a curve, as line segments (2 verts each)."""
+        try:
+            u0, u1 = gmsh.model.getParametrizationBounds(1, tag)
+        except Exception:
+            return []
+        u0 = float(u0[0] if hasattr(u0, "__len__") else u0)
+        u1 = float(u1[0] if hasattr(u1, "__len__") else u1)
+        if u0 == u1:
+            return []
+        params = [u0 + (u1 - u0) * (i / (SAMPLES - 1)) for i in range(SAMPLES)]
+        try:
+            xyz = gmsh.model.getValue(1, tag, params)
+        except Exception:
+            return []
+        # xyz is a flat list [x0,y0,z0, x1,y1,z1, ...] of SAMPLES points.
+        out: list[float] = []
+        for i in range(SAMPLES - 1):
+            out.extend([xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2],
+                        xyz[3 * (i + 1)], xyz[3 * (i + 1) + 1], xyz[3 * (i + 1) + 2]])
+        return out
+
+    def curves_of(dim: int, tag: int) -> list[int]:
+        if dim == 1:
+            return [tag]
+        try:
+            bnd = gmsh.model.getBoundary([(dim, tag)], oriented=False, recursive=False)
+        except Exception:
+            return []
+        out: list[int] = []
+        if dim == 2:
+            for d, t in bnd:
+                if d == 1:
+                    out.append(abs(int(t)))
+        elif dim == 3:
+            for d, t in bnd:
+                if d == 2:
+                    sub = gmsh.model.getBoundary([(2, abs(int(t)))], oriented=False, recursive=False)
+                    for dd, tt in sub:
+                        if dd == 1:
+                            out.append(abs(int(tt)))
+        # Deduplicate while preserving order
+        seen: set[int] = set()
+        dedup: list[int] = []
+        for t in out:
+            if t in seen:
+                continue
+            seen.add(t)
+            dedup.append(t)
+        return dedup
+
     raw_ents = list(getattr(g, "_entities", []))
-    def _ent_sort_key(e):
-        # Named 2-D faces first, then unnamed 2-D, then 3-D volumes.
-        dim_rank = 0 if e.dim == 2 else 1 if e.dim == 3 else 2
-        name_rank = 0 if e.name else 1
-        return (dim_rank, name_rank)
-    raw_ents.sort(key=_ent_sort_key)
+    def _key(e):
+        return (0 if e.dim == 2 else 1, 0 if e.name else 1)
+    raw_ents.sort(key=_key)
 
     entities: list[dict] = []
-    seen_surface_tags: set[int] = set()
-
+    seen_curves: set[int] = set()
     for ent in raw_ents:
-        name = ent.name or f"_{ 'face' if ent.dim == 2 else 'volume' }_{ent.tag}"
-        surface_dim_tags: list[tuple[int, int]] = []
-        if ent.dim == 3:
-            for d, t in gmsh.model.getBoundary([(3, ent.tag)], oriented=False):
-                if d == 2 and t not in seen_surface_tags:
-                    surface_dim_tags.append((2, t))
-                    seen_surface_tags.add(t)
-        elif ent.dim == 2:
-            if ent.tag not in seen_surface_tags:
-                surface_dim_tags.append((2, ent.tag))
-                seen_surface_tags.add(ent.tag)
-        else:
+        if ent.dim not in (2, 3):
             continue
-
-        pos: list[float] = []
-        nor: list[float] = []
-        for dt in surface_dim_tags:
-            p, n = _surface_triangulation(dt)
-            pos.extend(p)
-            nor.extend(n)
-
-        if not pos:
+        name = ent.name or f"_{ 'face' if ent.dim == 2 else 'volume' }_{ent.tag}"
+        lines: list[float] = []
+        for ctag in curves_of(ent.dim, ent.tag):
+            if ctag in seen_curves:
+                continue
+            seen_curves.add(ctag)
+            lines.extend(sample_curve(ctag))
+        if not lines:
             continue
         entities.append({
             "name": name,
             "tag": int(ent.tag),
             "dim": int(ent.dim),
             "color": _color_from_name(name),
-            "positions": pos,
-            "normals": nor,
+            "lines": lines,
             "material": ent.material,
-        })
-
-    # Also collect untracked surfaces (anything the user didn't name) so the
-    # viewer still shows the full shape.
-    untracked_pos: list[float] = []
-    untracked_nor: list[float] = []
-    for d, t in gmsh.model.getEntities(2):
-        if t in seen_surface_tags:
-            continue
-        p, n = _surface_triangulation((d, t))
-        untracked_pos.extend(p)
-        untracked_nor.extend(n)
-    if untracked_pos:
-        entities.append({
-            "name": "_untracked",
-            "tag": 0,
-            "dim": 2,
-            "color": [0.55, 0.55, 0.55],
-            "positions": untracked_pos,
-            "normals": untracked_nor,
-            "material": None,
         })
 
     return {
         "kind": "geometry",
+        "wireframe": True,
         "bbox": _global_bbox(),
         "entities": entities,
         "stats": {
             "n_entities": len(entities),
-            "n_triangles": sum(len(e["positions"]) // 9 for e in entities),
-            "maxh": maxh,
+            "n_segments": sum(len(e["lines"]) // 6 for e in entities),
+            "maxh": 0.0,
         },
     }
 
