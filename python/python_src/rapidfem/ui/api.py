@@ -5,10 +5,12 @@ Registered onto the Flask app by ``rapidfem.ui.server.create_app``.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import threading
+import time
 import traceback
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,55 @@ def _format_exception(exc: BaseException) -> dict[str, str]:
     }
 
 
+@contextmanager
+def _capture_native_streams(stage: str):
+    """OS-level fd capture so Rust eprintln! and gmsh output reach the UI.
+
+    Forks fd 1/2 through a pipe → reader thread that streams each line to
+    the WebSocket bus and accumulates them for the final response. Restores
+    the original fds on exit. Safe across exceptions.
+    """
+    sys.stdout.flush(); sys.stderr.flush()
+    out_r, out_w = os.pipe()
+    err_r, err_w = os.pipe()
+    saved_out = os.dup(1)
+    saved_err = os.dup(2)
+    os.dup2(out_w, 1)
+    os.dup2(err_w, 2)
+    os.close(out_w)
+    os.close(err_w)
+
+    lines_out: list[str] = []
+    lines_err: list[str] = []
+
+    def reader(fd: int, kind: str, accum: list[str]) -> None:
+        try:
+            with os.fdopen(fd, "r", buffering=1, errors="replace") as f:
+                for line in f:
+                    s = line.rstrip()
+                    if not s:
+                        continue
+                    accum.append(s)
+                    BUS.publish({"kind": "log", "stage": stage, "stream": kind, "line": s, "t": time.time()})
+        except Exception:
+            pass
+
+    t_out = threading.Thread(target=reader, args=(out_r, "stdout", lines_out), daemon=True)
+    t_err = threading.Thread(target=reader, args=(err_r, "stderr", lines_err), daemon=True)
+    t_out.start()
+    t_err.start()
+    try:
+        yield lines_out, lines_err
+    finally:
+        sys.stdout.flush(); sys.stderr.flush()
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        os.close(saved_out)
+        os.close(saved_err)
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
+
+
 def _reset_gmsh() -> None:
     """Wipe gmsh model state so a fresh Geometry() doesn't collide with the
     last request's leftover model. Safe to call even if gmsh isn't initialized."""
@@ -44,11 +95,9 @@ def _reset_gmsh() -> None:
         pass
 
 
-def _exec_user_code(code: str, workdir: Path) -> dict[str, Any]:
+def _exec_user_code(code: str, workdir: Path, stage: str = "run") -> dict[str, Any]:
     """Run a piece of user code with capture active. Returns the response payload."""
     _reset_gmsh()
-    stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
     namespace: dict[str, Any] = {
         "__name__": "__rapidfem_user__",
         "__file__": str(workdir / "<editor>"),
@@ -56,26 +105,26 @@ def _exec_user_code(code: str, workdir: Path) -> dict[str, Any]:
     }
 
     _show_capture.start_capture()
+    err_state: BaseException | None = None
     try:
-        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-            compiled = compile(code, "<editor>", "exec")
-            exec(compiled, namespace)
-    except SystemExit as e:
-        return {
-            "ok": False,
-            "error": _format_exception(e),
-            "stdout": stdout_buf.getvalue(),
-            "stderr": stderr_buf.getvalue(),
-            "captures": [],
-        }
-    except BaseException as e:  # noqa: BLE001 — surface everything from user code
-        return {
-            "ok": False,
-            "error": _format_exception(e),
-            "stdout": stdout_buf.getvalue(),
-            "stderr": stderr_buf.getvalue(),
-            "captures": [c.name for c in _show_capture.get_captured()],
-        }
+        with _capture_native_streams(stage) as (lines_out, lines_err):
+            try:
+                compiled = compile(code, "<editor>", "exec")
+                exec(compiled, namespace)
+            except SystemExit as e:
+                err_state = e
+            except BaseException as e:  # noqa: BLE001 — surface everything
+                err_state = e
+        stdout_text = "\n".join(lines_out)
+        stderr_text = "\n".join(lines_err)
+        if err_state is not None:
+            return {
+                "ok": False,
+                "error": _format_exception(err_state),
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+                "captures": [c.name for c in _show_capture.get_captured()],
+            }
     finally:
         captured = _show_capture.stop_capture()
 
@@ -96,44 +145,43 @@ def _exec_user_code(code: str, workdir: Path) -> dict[str, Any]:
 
     return {
         "ok": True,
-        "stdout": stdout_buf.getvalue(),
-        "stderr": stderr_buf.getvalue(),
+        "stdout": stdout_text,
+        "stderr": stderr_text,
         "captures": rendered,
     }
 
 
-def _exec_for_pipeline(code: str, workdir: Path) -> tuple[dict[str, Any], list]:
-    """Run user code with capture, return (response-shell, raw captures).
-
-    The shell is the standard /api/run-style payload (ok/error/stdout/stderr),
-    minus the rendered "captures" — those are returned alongside as raw objects
-    so /api/mesh and /api/solve can act on them.
-    """
+def _exec_for_pipeline(code: str, workdir: Path, stage: str = "pipeline") -> tuple[dict[str, Any], list]:
+    """Run user code with capture, return (response-shell, raw captures)."""
     _reset_gmsh()
-    stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
     namespace: dict[str, Any] = {
         "__name__": "__rapidfem_user__",
         "__file__": str(workdir / "<editor>"),
         "rapidfem": rapidfem,
     }
     _show_capture.start_capture()
+    err: BaseException | None = None
     try:
-        with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-            exec(compile(code, "<editor>", "exec"), namespace)
-    except BaseException as e:  # noqa: BLE001
+        with _capture_native_streams(stage) as (lines_out, lines_err):
+            try:
+                exec(compile(code, "<editor>", "exec"), namespace)
+            except BaseException as e:  # noqa: BLE001
+                err = e
+    finally:
         captured = _show_capture.stop_capture()
+    stdout_text = "\n".join(lines_out)
+    stderr_text = "\n".join(lines_err)
+    if err is not None:
         return {
             "ok": False,
-            "error": _format_exception(e),
-            "stdout": stdout_buf.getvalue(),
-            "stderr": stderr_buf.getvalue(),
+            "error": _format_exception(err),
+            "stdout": stdout_text,
+            "stderr": stderr_text,
         }, captured
-    captured = _show_capture.stop_capture()
     return {
         "ok": True,
-        "stdout": stdout_buf.getvalue(),
-        "stderr": stderr_buf.getvalue(),
+        "stdout": stdout_text,
+        "stderr": stderr_text,
     }, captured
 
 
@@ -172,7 +220,7 @@ def register(app: Flask) -> None:
 
         BUS.publish({"kind": "stage_start", "stage": "mesh"})
         with _pipeline_lock:
-            shell, captures = _exec_for_pipeline(code, workdir)
+            shell, captures = _exec_for_pipeline(code, workdir, stage="mesh")
             if not shell["ok"]:
                 BUS.publish({"kind": "stage_end", "stage": "mesh", "ok": False})
                 return jsonify(shell), 200
@@ -190,7 +238,11 @@ def register(app: Flask) -> None:
                 from rapidfem.ui.serialize import _bbox_diag
                 maxh = _bbox_diag() / 20.0
             try:
-                payload = mesh_to_payload(cap.obj, maxh=maxh)
+                with _capture_native_streams("mesh") as (m_out, m_err):
+                    payload = mesh_to_payload(cap.obj, maxh=maxh)
+                if m_out or m_err:
+                    if m_out: shell["stdout"] = (shell["stdout"] + "\n" + "\n".join(m_out)).strip()
+                    if m_err: shell["stderr"] = (shell["stderr"] + "\n" + "\n".join(m_err)).strip()
             except Exception as e:  # noqa: BLE001
                 return jsonify({**shell, "ok": False, "error": _format_exception(e)}), 200
 
@@ -208,7 +260,7 @@ def register(app: Flask) -> None:
 
         BUS.publish({"kind": "stage_start", "stage": "solve"})
         with _pipeline_lock:
-            shell, captures = _exec_for_pipeline(code, workdir)
+            shell, captures = _exec_for_pipeline(code, workdir, stage="solve")
             if not shell["ok"]:
                 BUS.publish({"kind": "stage_end", "stage": "solve", "ok": False})
                 return jsonify(shell), 200
@@ -225,9 +277,19 @@ def register(app: Flask) -> None:
                 import time
                 import numpy as np
                 t0 = time.perf_counter()
-                sim = cap.obj.build()
-                result = sim.run_sweep()
+                with _capture_native_streams("solve") as (solver_out, solver_err):
+                    sim = cap.obj.build()
+                    result = sim.run_sweep()
                 t_solve = time.perf_counter() - t0
+                # Fold the solver's native-stream output into the response so
+                # the user sees PARDISO/faer timings, frequency breakdown, etc.
+                if solver_out or solver_err:
+                    extra_out = "\n".join(solver_out)
+                    extra_err = "\n".join(solver_err)
+                    if extra_out:
+                        shell["stdout"] = (shell["stdout"] + "\n" + extra_out).strip()
+                    if extra_err:
+                        shell["stderr"] = (shell["stderr"] + "\n" + extra_err).strip()
                 freqs = result.frequencies.tolist()
                 s = result.sparams
                 n_freq, n_p, _ = s.shape

@@ -245,8 +245,27 @@
 			status = 'backend unreachable';
 		}
 		unsub_bus = subscribeBus((e: BusEvent) => {
-			if (e.kind === 'stage_start') status = `${e.stage}…`;
-			else if (e.kind === 'stage_end') status = e.ok ? `${e.stage} ok` : `${e.stage} failed`;
+			if (e.kind === 'stage_start') {
+				status = `${e.stage}…`;
+				log_lines = [...log_lines, `─── ${(e.stage as string).toUpperCase()} ───`];
+			} else if (e.kind === 'stage_end') {
+				status = e.ok ? `${e.stage} ok` : `${e.stage} failed`;
+				const extra: string[] = [];
+				if (typeof e.solve_time_s === 'number') extra.push(`${(e.solve_time_s as number).toFixed(2)}s`);
+				if (typeof e.n_freq === 'number') extra.push(`${e.n_freq} freq`);
+				if (e.stats && typeof e.stats === 'object') {
+					const st = e.stats as Record<string, unknown>;
+					if (typeof st.n_tets === 'number') extra.push(`${st.n_tets.toLocaleString()} tets`);
+					if (typeof st.mesh_time_s === 'number') extra.push(`${(st.mesh_time_s as number).toFixed(2)}s`);
+				}
+				const tail = extra.length ? `  (${extra.join(' · ')})` : '';
+				log_lines = [...log_lines, `↳ ${e.stage} ${e.ok ? 'ok' : 'failed'}${tail}`];
+			} else if (e.kind === 'log') {
+				const stream = (e.stream as string) ?? 'log';
+				const prefix = stream === 'stderr' ? '!' : ' ';
+				const next = [...log_lines, `${prefix} ${e.line as string}`];
+				log_lines = next.length > 2000 ? next.slice(-2000) : next;
+			}
 		});
 		const last = localStorage.getItem('rapidfem.active_path');
 		if (last) await open_file(last);
@@ -280,8 +299,8 @@
 	}
 
 	function append_log(label: string, r: RunResponse | MeshResponse | SolveResponse) {
-		if (r.stdout) log_lines = [...log_lines, ...r.stdout.split('\n').filter(Boolean).map((l) => `[${label}] ${l}`)];
-		if (r.stderr) log_lines = [...log_lines, ...r.stderr.split('\n').filter(Boolean).map((l) => `[${label} err] ${l}`)];
+		// Live native-stream lines already arrive via the bus. Only surface
+		// the error here so we don't double-log normal output.
 		if (!r.ok && r.error) log_lines = [...log_lines, `[${label}] ${r.error.type}: ${r.error.message}`];
 	}
 
