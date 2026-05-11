@@ -1,527 +1,312 @@
 <script lang="ts">
-	import '$lib/components/fields.css';
-	import { untrack } from 'svelte';
-	import { EXAMPLES, type DemoExample } from '$lib/examples';
-	import { run_streaming_sweep_spec, mesh_spec, abort_solver, type SMatrix } from '$lib/wasm';
-	import ParamSidebar from '$lib/components/ParamSidebar.svelte';
-	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
-	import StatusPanel from '$lib/components/StatusPanel.svelte';
-	import ExampleSelect from '$lib/components/ExampleSelect.svelte';
-	import Select from '$lib/components/Select.svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { runCode, meshGeometry, solve, listFiles, readFile, writeFile, subscribeBus, meshPayloadToMeshData, sparamsToSMatrices, health, type RunResponse, type MeshResponse, type SolveResponse, type SMatrix, type BusEvent } from '$lib/api';
+	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
-	import { type MeshData } from '$lib/msh';
-	import { L_eq_pH, Q_factor, find_srf } from '$lib/sparams';
+	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
+	import CodeEditor from '$lib/components/CodeEditor.svelte';
+	import FileBrowser from '$lib/components/FileBrowser.svelte';
 
-	let selected_id = $state('microstrip');
-	let example = $derived<DemoExample>(EXAMPLES[selected_id]);
-
-	let running = $state(false);
 	let status = $state('idle');
-	let progress = $state(0);
+	let workdir = $state('');
+	let active_path = $state<string | null>(null);
+	let code = $state(
+		'import rapidfem\n\n' +
+		'g = rapidfem.Geometry()\n' +
+		'g.box(60e-3, 60e-3, 1.6e-3)\n' +
+		'rapidfem.show(g)\n',
+	);
 	let log_lines = $state<string[]>([]);
 
-	let freqs = $state<number[]>([]);
-	let smats = $state<SMatrix[]>([]);
-
 	let mesh_data = $state<MeshData | null>(null);
-	type Display = 'view3d' | 'plots';
-	let display = $state<Display>('view3d');
-	// Three independent layer toggles inside the 3D view.
-	let show_geometry = $state(true);
-	let show_wireframe = $state(false);
-	let show_field = $state(false);
-	let viewer: MeshViewer | undefined = $state();
-	// Field viz: which freq + excitation to show
-	let field_freq_idx = $state(0);
-	let field_exc_idx = $state(0);
-	let field_results = $state<{ freq_hz: number; fields: Float32Array[] }[]>([]);
-	let active_field = $derived<Float32Array | null>(
-		field_results[field_freq_idx]?.fields[field_exc_idx] ?? null
-	);
-	// Volumetric point cloud density — total point count scales with
-	// simulation volume and density slider, NOT with tet count.
-	let field_density = $state(5);
-	// Wave animation toggle + speed (1 ≈ 1 cycle per second).
-	let animate_field = $state(false);
-	let anim_speed = $state(0.5);
+	let smats = $state<SMatrix[]>([]);
+	let freqs = $state<number[]>([]);
 
-	// Resizable sidebar
-	let sidebar_width = $state(280);
-	let dragging_sidebar = false;
-	function on_sidebar_drag_start(e: PointerEvent) {
-		dragging_sidebar = true;
-		(e.target as HTMLElement).setPointerCapture(e.pointerId);
-	}
-	function on_sidebar_drag(e: PointerEvent) {
-		if (!dragging_sidebar) return;
-		sidebar_width = Math.max(240, Math.min(500, e.clientX));
-	}
-	function on_sidebar_drag_end() {
-		dragging_sidebar = false;
-	}
+	// Independent busy flags per stage so the user can see which one is live.
+	let geom_busy = $state(false);
+	let mesh_busy = $state(false);
+	let solve_busy = $state(false);
+	let last_geom_stats = $state<{ n_entities: number; n_triangles: number } | null>(null);
+	let last_mesh_stats = $state<{ n_tets: number; n_tris: number; mesh_time_s: number } | null>(null);
+	let last_solve_stats = $state<{ n_freq: number; n_dofs: number; solve_time_s: number } | null>(null);
 
-	function on_keydown(e: KeyboardEvent) {
-		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-		if (display !== 'view3d') return; // Viewer shortcuts only when viewer active
-		switch (e.key) {
-			case 'f': case 'F': viewer?.fit_view(); break;
-			case '+': case '=': viewer?.zoom_in(); break;
-			case '-': case '_': viewer?.zoom_out(); break;
-			case 'r': case 'R': viewer?.rotate_90(); break;
-			case 's': case 'S':
-				if (e.ctrlKey || e.metaKey) {
-					e.preventDefault();
-					viewer?.save_png();
-				}
-				break;
+	let display = $state<'view3d' | 'plots'>('view3d');
+	let unsub_bus: (() => void) | null = null;
+	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
+	let dirty = $state(false);  // editor diverged from disk
+
+	onMount(async () => {
+		try {
+			const h = await health();
+			workdir = h.workdir;
+		} catch (e) {
+			status = 'backend unreachable';
 		}
-	}
-
-	let abort_controller: AbortController | null = null;
-
-	// Reload mesh + reset all sweep results when the EXAMPLE changes.
-	// Reads from `display` are untracked so view-tab switches don't retrigger
-	// this and wipe an in-flight sweep's progress/log.
-	$effect(() => {
-		const ex = example;
-		untrack(() => {
-			smats = [];
-			freqs = [];
-			field_results = [];
-			field_freq_idx = 0;
-			field_exc_idx = 0;
-			log_lines = [];
-			status = 'idle';
-			progress = 0;
-			show_field = false;
+		unsub_bus = subscribeBus((e: BusEvent) => {
+			if (e.kind === 'stage_start') status = `${e.stage}…`;
+			else if (e.kind === 'stage_end') status = e.ok ? `${e.stage} ok` : `${e.stage} failed`;
 		});
-		// Mesh in WASM up-front so the viewer has something to show before
-		// the user clicks Run.
-		const built = ex.build_spec();
-		(async () => {
-			try {
-				mesh_data = await mesh_spec(built.spec);
-			} catch (e) {
-				console.error('mesh_spec failed', e);
-				mesh_data = null;
-			}
-		})();
+		// Restore last-opened file if any.
+		const last = localStorage.getItem('rapidfem.active_path');
+		if (last) await open_file(last);
 	});
 
-	function log(msg: string) {
-		log_lines = [...log_lines, msg];
+	onDestroy(() => unsub_bus?.());
+
+	function append_log(label: string, r: RunResponse | MeshResponse | SolveResponse) {
+		if (r.stdout) log_lines = [...log_lines, ...r.stdout.split('\n').filter(Boolean).map((l) => `[${label}] ${l}`)];
+		if (r.stderr) log_lines = [...log_lines, ...r.stderr.split('\n').filter(Boolean).map((l) => `[${label} err] ${l}`)];
+		if (!r.ok && r.error) log_lines = [...log_lines, `[${label}] ${r.error.type}: ${r.error.message}`];
 	}
 
-	async function run() {
-		if (running) return;
-		running = true;
-		status = 'loading mesh…';
-		progress = 0;
-		log_lines = [];
-		smats = [];
-		freqs = [];
-		field_results = [];
-		abort_controller = new AbortController();
-
+	async function open_file(path: string) {
 		try {
-			const ex = example;
-			log(`${ex.label} · ${ex.frequencies_hz.length} freqs`);
-			const t_start = performance.now();
-			const on_point_cb = (k: number, total: number, point: any) => {
-				freqs = [...freqs, point.freq_hz];
-				smats = [...smats, point.S];
-				field_results = [...field_results, { freq_hz: point.freq_hz, fields: point.fields }];
-				progress = (k + 1) / total;
-			};
-			const built = ex.build_spec();
-			await run_streaming_sweep_spec({
-				spec: built.spec,
-				materials: built.materials,
-				frequencies_hz: ex.frequencies_hz,
-				abort_signal: abort_controller.signal,
-				on_status: (m) => (status = m),
-				on_point: on_point_cb
-			});
-			const dt_total = (performance.now() - t_start) / 1000;
-			log(`done in ${dt_total.toFixed(1)}s`);
-
-			if (smats.length > 0) {
-				const m = example.metrics;
-				if (m.includes('L_eq')) {
-					const L0 = L_eq_pH(smats[0], freqs[0]);
-					log(`L_eq(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${L0.toFixed(1)} pH`);
-					const fSRF = find_srf(freqs, smats);
-					if (fSRF != null) log(`SRF ≈ ${(fSRF / 1e9).toFixed(1)} GHz`);
-				}
-				if (m.includes('Q')) {
-					const Q0 = Q_factor(smats[0]);
-					log(`Q(${(freqs[0] / 1e9).toFixed(1)} GHz) = ${Q0.toFixed(1)}`);
-				}
-			}
-			status = 'done';
+			const content = await readFile(path);
+			code = content;
+			active_path = path;
+			dirty = false;
+			localStorage.setItem('rapidfem.active_path', path);
+			// Refresh the geometry view to match the file we just opened.
+			await run_geometry();
 		} catch (e) {
-			status = 'failed';
-			log(`error: ${e}`);
-			console.error(e);
-		} finally {
-			running = false;
-			abort_controller = null;
+			log_lines = [...log_lines, `[open ${path}] ${e}`];
 		}
 	}
 
-	function abort() {
-		abort_controller?.abort();
-		abort_solver();   // terminates the worker so the in-flight LU stops immediately
-		status = 'aborted';
-		running = false;
+	async function new_file() {
+		const name = prompt('New file name (e.g. patch.py):');
+		if (!name) return;
+		const path = name.endsWith('.py') ? name : `${name}.py`;
+		try {
+			await writeFile(path, '# new rapidfem script\nimport rapidfem\n\n');
+			await open_file(path);
+		} catch (e) {
+			log_lines = [...log_lines, `[new ${path}] ${e}`];
+		}
+	}
+
+	async function on_save(text: string) {
+		code = text;
+		dirty = false;
+		// Persist to disk when there is an active file.
+		if (active_path) {
+			try {
+				await writeFile(active_path, text);
+			} catch (e) {
+				log_lines = [...log_lines, `[save] ${e}`];
+			}
+		}
+		// Auto-update geometry view, debounced so a fast Ctrl+S burst coalesces.
+		if (geom_debounce) clearTimeout(geom_debounce);
+		geom_debounce = setTimeout(() => {
+			geom_debounce = null;
+			void run_geometry();
+		}, 200);
+	}
+
+	async function run_geometry() {
+		if (geom_busy) return;
+		geom_busy = true;
+		try {
+			const r = await runCode(code);
+			append_log('run', r);
+			if (r.ok) {
+				const geo = r.captures.find((c) => c.kind === 'geometry');
+				if (geo?.payload) {
+					last_geom_stats = {
+						n_entities: geo.payload.stats.n_entities,
+						n_triangles: geo.payload.stats.n_triangles,
+					};
+					// Project the geometry payload into the viewer's MeshData
+					// shape: every entity contributes its own surface tris.
+					mesh_data = geometryToMeshData(geo.payload);
+				}
+			}
+		} catch (e) {
+			log_lines = [...log_lines, `[run] ${e}`];
+		} finally {
+			geom_busy = false;
+		}
+	}
+
+	async function on_mesh() {
+		if (mesh_busy) return;
+		mesh_busy = true;
+		try {
+			const r = await meshGeometry(code);
+			append_log('mesh', r);
+			if (r.ok && r.mesh) {
+				mesh_data = meshPayloadToMeshData(r.mesh);
+				last_mesh_stats = {
+					n_tets: r.mesh.stats.n_tets,
+					n_tris: r.mesh.stats.n_tris,
+					mesh_time_s: r.mesh.stats.mesh_time_s,
+				};
+			}
+		} catch (e) {
+			log_lines = [...log_lines, `[mesh] ${e}`];
+		} finally {
+			mesh_busy = false;
+		}
+	}
+
+	async function on_solve() {
+		if (solve_busy) return;
+		solve_busy = true;
+		display = 'plots';
+		try {
+			const r = await solve(code);
+			append_log('solve', r);
+			if (r.ok && r.result) {
+				freqs = r.result.frequencies;
+				smats = sparamsToSMatrices(r.result.sparams);
+				last_solve_stats = {
+					n_freq: r.result.n_freq,
+					n_dofs: r.result.n_dofs,
+					solve_time_s: r.result.solve_time_s,
+				};
+			}
+		} catch (e) {
+			log_lines = [...log_lines, `[solve] ${e}`];
+		} finally {
+			solve_busy = false;
+		}
+	}
+
+	// Track unsaved edits.
+	$effect(() => {
+		if (code) dirty = true;
+	});
+
+	// Build a MeshData-equivalent from a geometry payload (per-entity surface
+	// tris). The MeshViewer is happy with tris+phys-names — tets stay empty.
+	function geometryToMeshData(p: import('$lib/api').GeometryPayload): MeshData {
+		// Concatenate positions across entities; assign each a synthetic phys
+		// tag so the viewer's per-tag color toggle still works.
+		let total_tris = 0;
+		const phys_names = new Map<number, string>();
+		const phys_dim = new Map<number, number>();
+		for (let i = 0; i < p.entities.length; i++) total_tris += p.entities[i].positions.length / 9;
+
+		const nodes_flat: number[] = [];
+		const tris_flat: number[] = [];
+		const tri_phys_flat: number[] = [];
+		let next_node = 0;
+		p.entities.forEach((ent, i) => {
+			const tag = i + 1;
+			phys_names.set(tag, ent.name);
+			phys_dim.set(tag, ent.dim);
+			// positions stored flat: 9 floats per triangle.
+			const n_tri = ent.positions.length / 9;
+			for (let t = 0; t < n_tri; t++) {
+				for (let v = 0; v < 3; v++) {
+					nodes_flat.push(
+						ent.positions[t * 9 + v * 3 + 0],
+						ent.positions[t * 9 + v * 3 + 1],
+						ent.positions[t * 9 + v * 3 + 2],
+					);
+					tris_flat.push(next_node);
+					next_node++;
+				}
+				tri_phys_flat.push(tag);
+			}
+		});
+		return {
+			nodes: new Float64Array(nodes_flat),
+			tris: new Uint32Array(tris_flat),
+			tri_phys: new Int32Array(tri_phys_flat),
+			tets: new Uint32Array(0),
+			tet_phys: new Int32Array(0),
+			phys_names,
+			phys_dim,
+			bbox: { min: [...p.bbox.min] as [number, number, number], max: [...p.bbox.max] as [number, number, number] },
+		};
 	}
 </script>
 
 <svelte:head>
-	<title>rapidfem — in-browser FEM</title>
-	<meta name="description" content="WebAssembly-powered FEM EM solver. Solve Sky130 microstrip and spiral inductor S-parameters and L_eq(f) in your browser, with no backend." />
+	<title>rapidfem</title>
 </svelte:head>
-
-<svelte:window onkeydown={on_keydown} />
 
 <div class="app">
 	<header>
-		<a class="brand" href="/">
-			<span class="brand-text">rapidfem</span>
-		</a>
-		<span class="nav-sep"></span>
-		<nav class="tabs">
-			<a class="tab active" href="/">Demo</a>
-			<a class="tab" href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
-		</nav>
+		<span class="brand">rapidfem</span>
+		<span class="workdir">{workdir}</span>
+		{#if active_path}
+			<span class="active-file">{active_path}{dirty ? ' •' : ''}</span>
+		{/if}
+		<span class="status">{status}</span>
 	</header>
 
-	<div class="body">
-		<aside class="sidebar" style="width: {sidebar_width}px; min-width: {sidebar_width}px;">
-			<ParamSidebar>
-				<div class="param-section">
-					<h4>Example</h4>
-					<ExampleSelect bind:value={selected_id} />
-					<div class="desc">{example.description}</div>
-				</div>
-
-				<div class="param-section">
-					<h4>Frequencies</h4>
-					<div class="freq-list">
-						{#each example.frequencies_hz as f}
-							<span class="freq-chip">{(f / 1e9).toFixed(f >= 1e9 ? 1 : 2)} GHz</span>
-						{/each}
-					</div>
-				</div>
-
-				<StatusPanel {running} {status} {progress} {log_lines} onrun={run} onabort={abort} />
-			</ParamSidebar>
+	<main>
+		<aside class="files-pane">
+			<FileBrowser bind:active_path={active_path} onOpen={open_file} onNew={new_file} />
+		</aside>
+		<aside class="editor-pane">
+			<div class="toolbar">
+				<span class="hint">Ctrl+S → geometry preview</span>
+				<button onclick={on_mesh} disabled={mesh_busy} title="Run gmsh + show full tet mesh">
+					{mesh_busy ? 'meshing…' : 'Generate Mesh'}
+				</button>
+				<button onclick={on_solve} disabled={solve_busy} title="Run FEM frequency sweep">
+					{solve_busy ? 'solving…' : 'Run Simulation'}
+				</button>
+				<span class="spacer"></span>
+				{#if last_mesh_stats}
+					<span class="stat">mesh: {last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
+				{:else if last_geom_stats}
+					<span class="stat">geom: {last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
+				{/if}
+				{#if last_solve_stats}
+					<span class="stat">solve: {last_solve_stats.n_freq} freq · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
+				{/if}
+			</div>
+			<div class="editor-wrap">
+				<CodeEditor bind:value={code} onSave={on_save} />
+			</div>
 		</aside>
 
-		<div
-			class="resize-handle-v"
-			onpointerdown={on_sidebar_drag_start}
-			onpointermove={on_sidebar_drag}
-			onpointerup={on_sidebar_drag_end}
-			role="separator"
-			aria-label="Resize sidebar"
-			tabindex="-1"
-		></div>
-		<main class="results-area">
-			<div class="view-tabs">
-				<button class="vt" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D View</button>
-				<button class="vt" class:active={display === 'plots'} onclick={() => (display = 'plots')}>Plots</button>
-				{#if display === 'view3d'}
-					<div class="layer-toggles">
-						<label class="lt">
-							<input type="checkbox" bind:checked={show_geometry} />
-							<span>Geometry</span>
-						</label>
-						<label class="lt">
-							<input type="checkbox" bind:checked={show_wireframe} />
-							<span>Wireframe</span>
-						</label>
-						<label class="lt" class:disabled={field_results.length === 0}>
-							<input type="checkbox" bind:checked={show_field} disabled={field_results.length === 0} />
-							<span>Field</span>
-						</label>
-					</div>
-				{/if}
-				{#if display === 'view3d' && show_field && field_results.length > 0}
-					<div class="field-controls">
-						<label>
-							<span>freq</span>
-							<Select
-								bind:value={field_freq_idx}
-								options={field_results.map((r, i) => ({
-									value: i,
-									label: `${(r.freq_hz / 1e9).toFixed(2)} GHz`
-								}))}
-							/>
-						</label>
-						<label>
-							<span>exc</span>
-							<Select
-								bind:value={field_exc_idx}
-								options={(field_results[0]?.fields ?? []).map((_, i) => ({
-									value: i,
-									label: `port ${i + 1}`
-								}))}
-							/>
-						</label>
-						<label>
-							<span>density</span>
-							<input type="range" min="1" max="20" step="1" bind:value={field_density} />
-						</label>
-						<label class="lt">
-							<input type="checkbox" bind:checked={animate_field} />
-							<span>Wave</span>
-						</label>
-						{#if animate_field}
-							<label>
-								<span>speed</span>
-								<input type="range" min="0.05" max="2" step="0.05" bind:value={anim_speed} />
-							</label>
-						{/if}
-					</div>
-				{/if}
-			</div>
-			<div class="view-body">
-				{#if display === 'plots'}
-					<ResultsPanel {freqs} {smats} metrics={example.metrics} />
-				{:else}
-					<MeshViewer
-						bind:this={viewer}
-						mesh={mesh_data}
-						{show_geometry}
-						{show_wireframe}
-						{show_field}
-						field={show_field ? active_field : null}
-						point_density={field_density}
-						{animate_field}
-						{anim_speed}
-					/>
-				{/if}
-			</div>
-		</main>
-	</div>
+		<section class="viewer-pane">
+			<nav class="tabs">
+				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
+				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-params</button>
+			</nav>
+			{#if display === 'view3d'}
+				<MeshViewer mesh={mesh_data} show_geometry={true} show_wireframe={false} show_field={false} />
+			{:else}
+				<ResultsPanel {freqs} {smats} metrics={[]} />
+			{/if}
+		</section>
+	</main>
+
+	<footer class="log">
+		{#each log_lines as line}
+			<div class="line">{line}</div>
+		{/each}
+	</footer>
 </div>
 
 <style>
-	.app {
-		display: flex;
-		flex-direction: column;
-		height: 100vh;
-		background: var(--bg);
-	}
-	header {
-		display: flex;
-		align-items: center;
-		padding: 0 16px;
-		height: 36px;
-		background: var(--bg-surface);
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
-		gap: 12px;
-	}
-	.brand {
-		text-decoration: none;
-		display: flex;
-		align-items: center;
-	}
-	.brand-text {
-		font-family: var(--font-mono);
-		font-size: var(--fs-md);
-		font-weight: 600;
-		color: var(--text);
-		letter-spacing: -0.01em;
-	}
-	.tabs {
-		display: flex;
-		gap: 0;
-		height: 100%;
-	}
-	.tab {
-		display: flex;
-		align-items: center;
-		padding: 0 14px;
-		font-size: var(--fs-xs);
-		font-weight: 600;
-		font-family: var(--font-mono);
-		letter-spacing: 0.5px;
-		color: var(--text-dim);
-		text-decoration: none;
-		text-transform: uppercase;
-		transition: color var(--transition);
-	}
-	.tab:hover { color: var(--text-muted); }
-	.tab.active { color: var(--accent); }
-	.nav-sep {
-		width: 1px;
-		height: 100%;
-		background: var(--border);
-		flex-shrink: 0;
-	}
-
-	.body {
-		display: flex;
-		flex: 1;
-		min-height: 0;
-	}
-	.sidebar {
-		flex-shrink: 0;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-		background: var(--bg);
-	}
-	.resize-handle-v {
-		width: 2px;
-		cursor: col-resize;
-		background: var(--border);
-		flex-shrink: 0;
-		transition: background var(--transition);
-	}
-	.resize-handle-v:hover, .resize-handle-v:active { background: var(--accent); }
-	.results-area {
-		flex: 1;
-		min-width: 0;
-		min-height: 0;
-		background: var(--bg);
-		display: flex;
-		flex-direction: column;
-	}
-	.view-tabs {
-		display: flex;
-		gap: 0;
-		height: 32px;
-		background: var(--bg-surface);
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
-	}
-	.vt {
-		display: flex;
-		align-items: center;
-		padding: 0 14px;
-		font-size: var(--fs-xs);
-		font-weight: 600;
-		font-family: var(--font-mono);
-		letter-spacing: 0.5px;
-		color: var(--text-dim);
-		text-transform: uppercase;
-		background: transparent;
-		border: 0;
-		border-right: 1px solid var(--border);
-		cursor: pointer;
-		transition: color var(--transition);
-	}
-	.vt:hover { color: var(--text-muted); }
-	.vt:disabled { color: var(--text-dim); cursor: not-allowed; }
-	.vt:disabled:hover { color: var(--text-dim); }
-	.vt.active {
-		color: var(--accent);
-	}
-	.layer-toggles {
-		display: flex;
-		align-items: center;
-		gap: 14px;
-		padding: 0 12px;
-		border-left: 1px solid var(--border);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--text-muted);
-	}
-	.lt {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		cursor: pointer;
-	}
-	.lt.disabled { opacity: 0.4; cursor: not-allowed; }
-	.lt input[type='checkbox'] {
-		appearance: none;
-		width: 12px;
-		height: 12px;
-		border: 1px solid var(--input-border);
-		background: var(--input-bg);
-		cursor: pointer;
-		position: relative;
-	}
-	.lt input[type='checkbox']:checked {
-		background: var(--accent);
-		border-color: var(--accent);
-	}
-	.lt input[type='checkbox']:checked::after {
-		content: '';
-		position: absolute;
-		left: 3px; top: 0px;
-		width: 4px; height: 7px;
-		border: solid var(--bg);
-		border-width: 0 1.5px 1.5px 0;
-		transform: rotate(45deg);
-	}
-	.field-controls {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		margin-left: auto;
-		padding-right: 12px;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-	}
-	.field-controls label {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-	}
-	.field-controls input[type='range'] {
-		appearance: none;
-		width: 100px;
-		height: 2px;
-		background: var(--input-border);
-		outline: none;
-	}
-	.field-controls input[type='range']::-webkit-slider-thumb {
-		appearance: none;
-		width: 10px;
-		height: 14px;
-		background: var(--accent);
-		cursor: pointer;
-	}
-	.field-controls input[type='range']::-moz-range-thumb {
-		width: 10px;
-		height: 14px;
-		background: var(--accent);
-		border: 0;
-		cursor: pointer;
-	}
-	.view-body {
-		flex: 1;
-		min-height: 0;
-	}
-	.desc {
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		line-height: 1.45;
-		padding-top: 6px;
-		font-family: var(--font-body);
-	}
-	.freq-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 3px;
-	}
-	.freq-chip {
-		background: var(--bg-inset);
-		border: 1px solid var(--border-subtle);
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		padding: 2px 6px;
-	}
+	.app { display: grid; grid-template-rows: 36px 1fr 140px; height: 100vh; font: 13px/1.4 system-ui, sans-serif; }
+	header { display: flex; align-items: center; gap: 16px; padding: 0 12px; border-bottom: 1px solid #2a2a2a; background: #1a1a1a; color: #ddd; }
+	.brand { font-weight: 600; }
+	.workdir { color: #888; font-family: monospace; }
+	.active-file { color: #ccc; font-family: monospace; }
+	.status { margin-left: auto; color: #aaa; }
+	.hint { color: #666; font-size: 11px; align-self: center; margin-right: 6px; }
+	.stat { color: #88c; font-size: 11px; align-self: center; }
+	.spacer { flex: 1; }
+	main { display: grid; grid-template-columns: 200px 1fr 1fr; min-height: 0; }
+	.files-pane { border-right: 1px solid #2a2a2a; min-height: 0; }
+	.editor-pane { display: flex; flex-direction: column; border-right: 1px solid #2a2a2a; min-width: 0; }
+	.toolbar { display: flex; gap: 8px; padding: 6px 8px; background: #161616; border-bottom: 1px solid #2a2a2a; align-items: center; }
+	.toolbar button { background: #2a2a2a; color: #ddd; border: 1px solid #3a3a3a; padding: 4px 10px; cursor: pointer; }
+	.toolbar button:disabled { opacity: 0.5; cursor: default; }
+	.editor-wrap { flex: 1; min-height: 0; }
+	.viewer-pane { display: flex; flex-direction: column; min-height: 0; }
+	.tabs { display: flex; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #2a2a2a; background: #161616; }
+	.tabs button { background: transparent; color: #aaa; border: 0; padding: 4px 10px; cursor: pointer; }
+	.tabs button.active { color: #e8e8e8; border-bottom: 2px solid #5a8; }
+	footer.log { background: #0a0a0a; color: #aaa; border-top: 1px solid #2a2a2a; padding: 6px 10px; overflow: auto; font: 12px ui-monospace, Consolas, monospace; }
+	footer.log .line { white-space: pre; }
 </style>

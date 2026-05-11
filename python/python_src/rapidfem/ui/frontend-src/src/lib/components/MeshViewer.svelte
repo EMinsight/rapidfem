@@ -8,7 +8,7 @@
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
-	import { viz_load_mesh, viz_sample } from '$lib/wasm';
+	import { viz_load_mesh, viz_sample } from '$lib/api';
 
 	let {
 		mesh = null as MeshData | null,

@@ -4,10 +4,15 @@ import adapter from '@sveltejs/adapter-static';
 const config = {
 	kit: {
 		adapter: adapter({
-			fallback: '404.html'
+			// Write the build directly into the python package's frontend/dist/
+			// so `pip install -e` (and the in-CI maturin step) can ship it
+			// via importlib.resources without an extra copy step.
+			pages: '../frontend/dist',
+			assets: '../frontend/dist',
+			fallback: 'index.html',
 		}),
-		// Demo is fully client-side; SSR not needed.
-		prerender: { entries: ['/'] },
+		// SPA-style: every route resolves to fallback at runtime, no server.
+		prerender: { entries: [] },
 	},
 	vitePlugin: {
 		dynamicCompileOptions: ({ filename }) =>

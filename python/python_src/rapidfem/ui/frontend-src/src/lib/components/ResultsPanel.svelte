@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { plotColors, fonts } from '$lib/theme';
-	import type { SMatrix } from '$lib/wasm';
+	import type { SMatrix } from '$lib/api';
 	import { L_eq_pH, find_srf, sToZ, Z0_TL } from '$lib/sparams';
 	import type { Metric } from '$lib/examples';
 

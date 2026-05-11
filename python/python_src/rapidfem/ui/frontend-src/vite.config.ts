@@ -2,32 +2,16 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-	plugins: [
-		sveltekit(),
-		{
-			// /pkg/ holds the WASM bundle, regenerated on every build —
-			// browsers cache static assets aggressively in dev otherwise.
-			name: 'no-cache-pkg',
-			configureServer(server) {
-				server.middlewares.use((req, res, next) => {
-					if (req.url?.startsWith('/pkg/')) {
-						res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-						res.setHeader('Pragma', 'no-cache');
-						res.setHeader('Expires', '0');
-					}
-					next();
-				});
-			}
-		}
-	],
-	resolve: {
-		alias: {
-			$wasm: new URL('../pkg', import.meta.url).pathname
-		}
-	},
+	plugins: [sveltekit()],
 	server: {
-		fs: {
-			allow: ['..', '../..', '../../..']
-		}
-	}
+		port: 5173,
+		proxy: {
+			// Forward API + WS to the Flask backend started by `rapidfem serve`.
+			'/api': 'http://127.0.0.1:5174',
+			'/ws': {
+				target: 'ws://127.0.0.1:5174',
+				ws: true,
+			},
+		},
+	},
 });

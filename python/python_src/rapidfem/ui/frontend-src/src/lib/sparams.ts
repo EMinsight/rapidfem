@@ -1,6 +1,6 @@
 /** 2x2 complex matrix utilities + S→Z→Y conversion + L_eq extraction. */
 
-import type { SMatrix } from './wasm';
+import type { SMatrix } from './api';
 
 export type C = { re: number; im: number };
 

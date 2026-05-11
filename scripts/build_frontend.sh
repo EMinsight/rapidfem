@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the SvelteKit frontend and place dist/ under
-# python/python_src/rapidfem/ui/frontend/dist so that maturin develop /
-# rapidfem serve can find it via importlib.resources.
+# Build the SvelteKit frontend. adapter-static writes directly into
+# python/python_src/rapidfem/ui/frontend/dist via svelte.config.js so
+# importlib.resources can find it.
 
 set -euo pipefail
 
@@ -21,14 +21,5 @@ if [[ ! -d node_modules ]]; then
 fi
 echo ">> npm run build"
 npm run build
-
-# svelte.config.js (adapter-static) will be configured in P4.7 to output
-# directly into ../frontend/dist. Until then, copy from the default build dir.
-if [[ -d "$src/build" ]]; then
-    rm -rf "$dest"
-    mkdir -p "$dest"
-    cp -R "$src/build/." "$dest/"
-    echo ">> Copied $src/build -> $dest"
-fi
 
 echo "Frontend built at: $dest"

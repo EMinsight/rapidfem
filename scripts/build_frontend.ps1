@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
-# Build the SvelteKit frontend and place the dist/ under
-# python/python_src/rapidfem/ui/frontend/dist so that maturin develop /
-# rapidfem serve can find it via importlib.resources.
+# Build the SvelteKit frontend. adapter-static writes directly into
+# python/python_src/rapidfem/ui/frontend/dist via svelte.config.js so
+# importlib.resources can find it.
 
 $ErrorActionPreference = "Stop"
 
@@ -26,16 +26,6 @@ try {
 }
 finally {
     Pop-Location
-}
-
-# svelte.config.js (adapter-static) will be configured in P4.7 to output
-# directly into ../frontend/dist. Until then, copy from the default build dir.
-$built = Join-Path $src "build"
-if (Test-Path $built) {
-    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-    New-Item -ItemType Directory -Path $dest -Force | Out-Null
-    Copy-Item -Path (Join-Path $built "*") -Destination $dest -Recurse -Force
-    Write-Host ">> Copied $built -> $dest"
 }
 
 Write-Host "Frontend built at: $dest"
