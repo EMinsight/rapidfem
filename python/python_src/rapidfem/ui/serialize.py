@@ -109,11 +109,17 @@ def geometry_to_payload(g: Any, *, target_tris: int = 4000) -> dict:
     gmsh.model.occ.synchronize()
     diag = _bbox_diag()
     maxh = diag / max(math.sqrt(target_tris / 6.0), 4.0)
-    # If user already meshed (e.g. via builder.from_geometry), reuse that
-    # mesh's surface — re-meshing on top would duplicate physical groups.
+    # If the user already meshed (explicit g.mesh() or via builder.from_geometry),
+    # the gmsh state holds a full 3D tet mesh — return that as a Mesh payload
+    # so the viewer can render the actual FEM discretization, not a coarse
+    # preview tessellation.
     existing_node_tags, _, _ = gmsh.model.mesh.getNodes()
-    if len(existing_node_tags) == 0:
-        _ensure_surface_mesh(maxh)
+    if len(existing_node_tags) > 0:
+        try:
+            return mesh_to_payload(g, maxh=0.0)
+        except Exception:
+            pass  # fall through to coarse preview if extraction fails
+    _ensure_surface_mesh(maxh)
 
     # Group OCC surfaces by their owning named entity. Process 2-D faces
     # FIRST so named ports/PEC/etc. claim their surfaces before the parent

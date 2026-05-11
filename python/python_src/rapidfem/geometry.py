@@ -835,6 +835,7 @@ class Geometry:
             except OSError:
                 pass
 
+        self._last_mesh = (mesh_bytes, name_to_tag)
         return mesh_bytes, name_to_tag
 
 

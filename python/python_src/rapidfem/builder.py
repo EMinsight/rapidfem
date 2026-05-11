@@ -55,6 +55,20 @@ class SimulationBuilder:
         mesh_bytes, name_to_tag = geometry.mesh(maxh=maxh)
         return self.mesh(mesh_bytes, name_to_tag)
 
+    def mesh_from(self, geometry) -> "SimulationBuilder":
+        """Use an already-meshed Geometry. Requires `geometry.mesh(maxh)` to
+        have been called first; reads the cached .msh bytes + name→tag map
+        without re-meshing.
+        """
+        cached = getattr(geometry, "_last_mesh", None)
+        if cached is None:
+            raise ValueError(
+                "geometry has no mesh yet — call g.mesh(maxh=...) first, "
+                "or use builder.from_geometry(g, maxh=...) to mesh + store in one go."
+            )
+        mesh_bytes, name_to_tag = cached
+        return self.mesh(mesh_bytes, name_to_tag)
+
     # ── Frequencies ────────────────────────────────────────────────────────
 
     def frequencies(self, values: Iterable[float]) -> "SimulationBuilder":

@@ -32,10 +32,17 @@ for face in air.faces:
 
 rapidfem.show(g)
 
+# %% Mesh
+# Generate the tet mesh on the OCC geometry. show(g) now picks up the
+# meshed state and renders the FEM discretization instead of the coarse
+# OCC preview tessellation.
+g.mesh(maxh=5e-3)
+rapidfem.show(g)
+
 # %% Builder
 builder = (
     rapidfem.SimulationBuilder()
-    .from_geometry(g, maxh=5e-3)
+    .mesh_from(g)
     .frequencies(np.linspace(8.0e9, 12.0e9, 21))
     .rect_waveguide("port_in")
     .rect_waveguide("port_out")
