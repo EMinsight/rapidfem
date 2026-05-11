@@ -25,7 +25,7 @@
 		{
 			'&': {
 				height: '100%',
-				fontSize: '13px',
+				fontSize: '12px',
 				color: palette.text,
 				backgroundColor: palette.bgInset,
 				fontFamily: fonts.mono,

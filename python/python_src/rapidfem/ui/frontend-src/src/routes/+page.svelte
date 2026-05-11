@@ -42,8 +42,33 @@
 	let show_geometry = $state(true);
 	let show_wireframe = $state(false);
 	let show_field = $state(false);
+	let viewer: ReturnType<typeof MeshViewer> | undefined = $state();
 	let unsub_bus: (() => void) | null = null;
 	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
+
+	function on_keydown(e: KeyboardEvent) {
+		// Skip when typing in editor / inputs.
+		const tag = (e.target as HTMLElement | null)?.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		if ((e.target as HTMLElement | null)?.closest?.('.cm-editor')) return;
+		if (display !== 'view3d') return;
+		switch (e.key) {
+			case 'f': case 'F': viewer?.fit_view(); e.preventDefault(); break;
+			case '+': case '=': viewer?.zoom_in(); e.preventDefault(); break;
+			case '-': case '_': viewer?.zoom_out(); e.preventDefault(); break;
+			case 'r': case 'R':
+				if (!e.ctrlKey && !e.metaKey) { viewer?.rotate_90(); e.preventDefault(); }
+				break;
+			case 'z': case 'Z':
+				if (!e.ctrlKey && !e.metaKey) { viewer?.flip_z(); e.preventDefault(); }
+				break;
+			case 'g': case 'G': show_geometry = !show_geometry; e.preventDefault(); break;
+			case 'm': case 'M': show_wireframe = !show_wireframe; e.preventDefault(); break;
+			case 'e': case 'E':
+				if (last_solve_stats) { show_field = !show_field; e.preventDefault(); }
+				break;
+		}
+	}
 
 	// ── Layout: pane widths + collapse state ─────────────────────────────────
 	const COLLAPSED_W = 32;
@@ -400,6 +425,8 @@
 	<title>rapidfem</title>
 </svelte:head>
 
+<svelte:window onkeydown={on_keydown} />
+
 <div class="app">
 	<header>
 		<span class="brand">rapidfem</span>
@@ -528,15 +555,16 @@
 						{#if display === 'view3d'}
 							<span class="tab-spacer"></span>
 							<div class="layer-toggles">
-								<button class="layer-toggle" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces">Geometry</button>
-								<button class="layer-toggle" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe">Mesh</button>
-								<button class="layer-toggle" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (after a solve)">Field</button>
+								<button class="layer-toggle" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
+								<button class="layer-toggle" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
+								<button class="layer-toggle" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (E)">Field</button>
 							</div>
 						{/if}
 					</nav>
 					<div class="viewer-slot">
 						{#if display === 'view3d'}
 							<MeshViewer
+								bind:this={viewer}
 								mesh={mesh_data}
 								{show_geometry}
 								{show_wireframe}
@@ -710,8 +738,8 @@
 		font-size: var(--fs-xs);
 	}
 	.toolbar button.primary {
-		height: 22px;
-		padding: 0 var(--space-md);
+		height: 24px;
+		padding: 0 var(--space-lg);
 		font-size: var(--fs-xs);
 		letter-spacing: 0.5px;
 	}
