@@ -63,7 +63,17 @@ impl PySimulation {
     /// (float64 array, shape `[n_freq]`) and S-parameters (complex128 array,
     /// shape `[n_freq, n_driven, n_driven]`).
     fn run_sweep(&self) -> PySweepResult {
-        PySweepResult { inner: self.inner.run_sweep() }
+        // Release the GIL so log-streaming reader threads + WS workers run
+        // during the (potentially long) sweep. `Python::allow_threads`
+        // wants `Send`, but Simulation is `unsendable` (Box<dyn Port> is
+        // not Send). Drop down to PyO3's ffi — same effect, no Send bound.
+        let inner = unsafe {
+            let save = pyo3::ffi::PyEval_SaveThread();
+            let r = self.inner.run_sweep();
+            pyo3::ffi::PyEval_RestoreThread(save);
+            r
+        };
+        PySweepResult { inner }
     }
 
     /// Number of tetrahedra in the mesh.

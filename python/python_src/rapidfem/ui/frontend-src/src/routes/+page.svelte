@@ -328,6 +328,16 @@
 		}
 	}
 
+	function clear_stale_results() {
+		// Re-running the geometry or remeshing invalidates the prior solve
+		// (DOF ordering, field magnitudes, S-params all tied to the old mesh).
+		fields_raw = null;
+		smats = [];
+		freqs = [];
+		last_solve_stats = null;
+		show_field = false;
+	}
+
 	async function run_geometry() {
 		if (geom_busy) return;
 		geom_busy = true;
@@ -341,6 +351,8 @@
 						n_entities: geo.payload.stats.n_entities,
 						n_triangles: geo.payload.stats.n_triangles,
 					};
+					last_mesh_stats = null;
+					clear_stale_results();
 					mesh_data = geometryToMeshData(geo.payload);
 				}
 			}
@@ -358,6 +370,7 @@
 			const r = await meshGeometry(code);
 			append_log('mesh', r);
 			if (r.ok && r.mesh) {
+				clear_stale_results();
 				mesh_data = meshPayloadToMeshData(r.mesh);
 				last_mesh_stats = {
 					n_tets: r.mesh.stats.n_tets,
@@ -573,14 +586,15 @@
 				<div class="pane-inner">
 					<nav class="tabs">
 						<button class="tab-btn" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
+						<span class="nav-sep"></span>
 						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
 						{#if display === 'view3d'}
-							<span class="tab-spacer"></span>
-							<div class="layer-toggles">
-								<button class="layer-toggle" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
-								<button class="layer-toggle" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
-								<button class="layer-toggle" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (E)">Field</button>
-							</div>
+							<span class="nav-sep"></span>
+							<button class="tab-btn small" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
+							<span class="nav-sep"></span>
+							<button class="tab-btn small" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
+							<span class="nav-sep"></span>
+							<button class="tab-btn small" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (E)">Field</button>
 						{/if}
 					</nav>
 					<div class="viewer-slot">
@@ -816,8 +830,16 @@
 		text-transform: uppercase;
 		transition: color var(--transition);
 	}
-	.tabs .tab-btn:hover { color: var(--text-muted); }
+	.tabs .tab-btn:hover { color: var(--text); }
 	.tabs .tab-btn.active { color: var(--accent); }
+	.tabs .tab-btn.small { padding: 0 var(--space-md); }
+	.tabs .tab-btn:disabled { color: var(--text-dim); cursor: default; opacity: 0.5; }
+	.tabs .nav-sep {
+		width: 1px;
+		height: 100%;
+		background: var(--border);
+		flex-shrink: 0;
+	}
 
 	.tb {
 		display: inline-flex;
