@@ -75,10 +75,13 @@
 		} catch {}
 	}
 
-	// Drag-to-collapse uses an unclamped tracker per axis so dragging past
-	// the rendered min/max still accumulates and crosses the snap threshold.
-	const COLLAPSE_AT = 100;     // tracker < this → snap collapsed
-	const EXPAND_AT  = 60;       // tracker > this on a collapsed pane → expand
+	// Drag-to-collapse: per-axis tracker accumulates raw drag (unclamped).
+	// On drag start the tracker is initialized from the current rendered
+	// width so the first move continues smoothly. The tracker is reset
+	// defensively at the start of every drag so stale values from earlier
+	// drags can never sabotage threshold detection.
+	const COLLAPSE_AT = 80;
+	const EXPAND_AT  = 50;
 	let files_track = 220;
 	let editor_track = 0;
 	let output_track = 140;
@@ -99,6 +102,7 @@
 		}
 		if (files_track < COLLAPSE_AT) {
 			files_collapsed = true;
+			files_track = 0;
 			save_layout();
 			return;
 		}
@@ -106,19 +110,25 @@
 		save_layout();
 	}
 
+	function avail_for_editor_viewer(): number {
+		if (!main_el) return 0;
+		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
+		return main_el.clientWidth - filesPx - 8;
+	}
+
 	function on_editor_drag_start() {
-		// Tracker is positive when editor is expanding (and viewer shrinking).
-		editor_track = editor_collapsed ? -200 : (viewer_collapsed ? 99999 : editor_w);
+		const avail = avail_for_editor_viewer();
+		if (editor_collapsed)       editor_track = COLLAPSED_W;
+		else if (viewer_collapsed)  editor_track = Math.max(avail - COLLAPSED_W, 240);
+		else                         editor_track = editor_w;
 	}
 	function on_editor_resize(dx: number) {
 		if (!main_el) return;
 		editor_track += dx;
-		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
-		const totalAvail = main_el.clientWidth - filesPx - 8;
+		const totalAvail = avail_for_editor_viewer();
 
 		if (editor_collapsed) {
-			// Drag right past the strip → re-expand.
-			if (editor_track > -200 + EXPAND_AT) {
+			if (editor_track > COLLAPSED_W + EXPAND_AT) {
 				editor_collapsed = false;
 				editor_w = Math.max(editor_w, 320);
 				editor_track = editor_w;
@@ -127,25 +137,27 @@
 			return;
 		}
 		if (viewer_collapsed) {
-			// Drag left past the right strip → re-expand viewer.
+			// editor occupies (totalAvail - COLLAPSED_W); drag left to re-expand viewer.
 			if (editor_track < totalAvail - COLLAPSED_W - EXPAND_AT) {
 				viewer_collapsed = false;
+				editor_w = clamp(editor_track, 240, totalAvail - 240);
 				editor_track = editor_w;
 				save_layout();
 			}
 			return;
 		}
 
-		// Both panes visible. tracker is the requested editor width.
 		const viewerNext = totalAvail - editor_track;
 		if (editor_track < COLLAPSE_AT) {
 			editor_collapsed = true;
+			editor_track = COLLAPSED_W;
 			save_layout();
 			return;
 		}
 		if (viewerNext < COLLAPSE_AT) {
 			viewer_collapsed = true;
 			editor_w = clamp(editor_track, 240, totalAvail - COLLAPSED_W);
+			editor_track = totalAvail - COLLAPSED_W;
 			save_layout();
 			return;
 		}
@@ -154,14 +166,14 @@
 	}
 
 	function on_output_drag_start() {
-		output_track = output_collapsed ? 0 : output_h;
+		output_track = output_collapsed ? 24 : output_h;
 	}
 	function on_output_resize(dy: number) {
 		if (!editor_pane_el) return;
 		// dy positive = mouse moves down = output shrinks.
 		output_track -= dy;
 		if (output_collapsed) {
-			if (output_track > EXPAND_AT) {
+			if (output_track > 24 + EXPAND_AT) {
 				output_collapsed = false;
 				output_h = Math.max(output_h, 140);
 				output_track = output_h;
@@ -171,6 +183,7 @@
 		}
 		if (output_track < 40) {
 			output_collapsed = true;
+			output_track = 24;
 			save_layout();
 			return;
 		}
@@ -387,9 +400,14 @@
 	<main bind:this={main_el}>
 		<aside class="pane files-pane" style:flex="0 0 {files_collapsed ? COLLAPSED_W : files_w}px">
 			{#if files_collapsed}
-				<div class="collapsed-strip" aria-label="Files (drag to expand)">
+				<button
+					class="collapsed-strip"
+					title="Click or drag to expand"
+					aria-label="Expand files"
+					onclick={() => { files_collapsed = false; files_w = Math.max(files_w, 220); files_track = files_w; save_layout(); }}
+				>
 					<span class="strip-label">Files</span>
-				</div>
+				</button>
 			{:else}
 				<div class="pane-inner">
 					<FileBrowser
@@ -405,9 +423,14 @@
 
 		<aside class="pane editor-pane" bind:this={editor_pane_el} style:flex={editor_collapsed ? `0 0 ${COLLAPSED_W}px` : (viewer_collapsed ? '1 1 0' : `0 0 ${editor_w}px`)}>
 			{#if editor_collapsed}
-				<div class="collapsed-strip" aria-label="Editor (drag to expand)">
+				<button
+					class="collapsed-strip"
+					title="Click or drag to expand"
+					aria-label="Expand editor"
+					onclick={() => { editor_collapsed = false; editor_w = Math.max(editor_w, 320); editor_track = editor_w; save_layout(); }}
+				>
 					<span class="strip-label">Editor</span>
-				</div>
+				</button>
 			{:else}
 				<div class="pane-inner">
 					<div class="toolbar">
@@ -431,8 +454,16 @@
 						<CodeEditor bind:value={code} onSave={on_save} />
 					</div>
 					<Resizer vertical onStart={on_output_drag_start} onDelta={on_output_resize} />
-					<div class="output" style:height={output_collapsed ? '24px' : `${output_h}px`}>
-						<div class="output-head">
+					<div
+						class="output"
+						class:collapsed={output_collapsed}
+						style:height={output_collapsed ? '24px' : `${output_h}px`}
+					>
+						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+						<div
+							class="output-head"
+							onclick={output_collapsed ? () => { output_collapsed = false; output_h = Math.max(output_h, 140); output_track = output_h; save_layout(); } : undefined}
+						>
 							<span class="output-title">Output</span>
 							{#if log_lines.length}
 								<span class="output-count">{log_lines.length}</span>
@@ -466,9 +497,14 @@
 
 		<section class="pane viewer-pane" style:flex={viewer_collapsed ? `0 0 ${COLLAPSED_W}px` : '1 1 0'}>
 			{#if viewer_collapsed}
-				<div class="collapsed-strip" aria-label="Viewer (drag to expand)">
+				<button
+					class="collapsed-strip"
+					title="Click or drag to expand"
+					aria-label="Expand viewer"
+					onclick={() => { viewer_collapsed = false; editor_track = editor_w; save_layout(); }}
+				>
 					<span class="strip-label">Viewer</span>
-				</div>
+				</button>
 			{:else}
 				<div class="pane-inner">
 					<nav class="tabs">
@@ -584,10 +620,20 @@
 		padding: var(--space-lg) 0;
 		background: var(--bg-surface);
 		color: var(--text-muted);
-		transition: color var(--transition), background var(--transition);
+		border: 0;
 		width: 100%;
-		cursor: default;
+		cursor: pointer;
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: normal;
+		transition: color var(--transition), background var(--transition);
 	}
+	.collapsed-strip:hover {
+		background: var(--bg-panel);
+		color: var(--accent);
+	}
+	.output.collapsed .output-head { cursor: pointer; }
+	.output.collapsed .output-head:hover { background: var(--bg-panel); }
 	.strip-label {
 		writing-mode: vertical-rl;
 		transform: rotate(180deg);
