@@ -66,16 +66,76 @@
 </div>
 
 <style>
-	.browser { display: flex; flex-direction: column; height: 100%; background: #131313; color: #ccc; font-size: 12px; }
-	.head { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
-	.head .title { flex: 1; color: #aaa; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
-	.head button { background: transparent; border: 1px solid #333; color: #ccc; padding: 2px 6px; cursor: pointer; font-size: 12px; }
+	.browser {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		background: var(--bg-surface);
+		color: var(--text);
+	}
+	.head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-md) var(--space-lg);
+		min-height: 38px;
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-surface);
+	}
+	.head .title {
+		flex: 1;
+		color: var(--text-muted);
+		text-transform: uppercase;
+		font-size: var(--fs-xs);
+		letter-spacing: 0.5px;
+		font-weight: 600;
+	}
+	.head button {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+		padding: 0;
+		width: 22px;
+		height: 22px;
+		cursor: pointer;
+		font-size: var(--fs-md);
+		line-height: 1;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+	.head button:hover {
+		background: var(--bg-panel);
+		color: var(--text);
+		border-color: var(--input-hover);
+	}
 	.head button:disabled { opacity: 0.4; cursor: default; }
-	.list { flex: 1; overflow: auto; padding: 2px 0; }
-	.item { display: block; width: 100%; text-align: left; background: transparent; border: 0; color: #ccc; padding: 3px 10px; cursor: pointer; font: 12px ui-monospace, Consolas, monospace; }
-	.item:hover { background: #1f1f1f; }
-	.item.active { background: #243a36; color: #fff; }
+	.list { flex: 1; overflow: auto; padding: var(--space-sm) 0; }
+	.item {
+		display: block;
+		width: 100%;
+		text-align: left;
+		background: transparent;
+		border: 0;
+		color: var(--text-muted);
+		padding: 4px var(--space-lg);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: 400;
+	}
+	.item:hover {
+		background: var(--bg-panel);
+		color: var(--text);
+	}
+	.item.active {
+		background: var(--accent-dim);
+		color: var(--accent);
+		border-left: 2px solid var(--accent);
+		padding-left: calc(var(--space-lg) - 2px);
+	}
 	.item .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
-	.empty { color: #666; padding: 8px 10px; font-style: italic; }
-	.error { color: #d77; padding: 6px 10px; }
+	.empty { color: var(--text-dim); padding: var(--space-md) var(--space-lg); font-style: italic; font-size: var(--fs-xs); }
+	.error { color: var(--accent); padding: var(--space-md) var(--space-lg); font-size: var(--fs-xs); }
 </style>

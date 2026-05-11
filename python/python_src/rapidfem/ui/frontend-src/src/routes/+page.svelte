@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { runCode, meshGeometry, solve, listFiles, readFile, writeFile, subscribeBus, meshPayloadToMeshData, sparamsToSMatrices, health, type RunResponse, type MeshResponse, type SolveResponse, type SMatrix, type BusEvent } from '$lib/api';
+	import {
+		runCode, meshGeometry, solve, readFile, writeFile,
+		subscribeBus, meshPayloadToMeshData, sparamsToSMatrices, health,
+		type RunResponse, type MeshResponse, type SolveResponse, type SMatrix, type BusEvent,
+	} from '$lib/api';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -10,19 +14,14 @@
 	let status = $state('idle');
 	let workdir = $state('');
 	let active_path = $state<string | null>(null);
-	let code = $state(
-		'import rapidfem\n\n' +
-		'g = rapidfem.Geometry()\n' +
-		'g.box(60e-3, 60e-3, 1.6e-3)\n' +
-		'rapidfem.show(g)\n',
-	);
+	let code = $state('');
+	let dirty = $state(false);
 	let log_lines = $state<string[]>([]);
 
 	let mesh_data = $state<MeshData | null>(null);
 	let smats = $state<SMatrix[]>([]);
 	let freqs = $state<number[]>([]);
 
-	// Independent busy flags per stage so the user can see which one is live.
 	let geom_busy = $state(false);
 	let mesh_busy = $state(false);
 	let solve_busy = $state(false);
@@ -33,31 +32,23 @@
 	let display = $state<'view3d' | 'plots'>('view3d');
 	let unsub_bus: (() => void) | null = null;
 	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
-	let dirty = $state(false);  // editor diverged from disk
 
 	onMount(async () => {
 		try {
 			const h = await health();
 			workdir = h.workdir;
-		} catch (e) {
+		} catch {
 			status = 'backend unreachable';
 		}
 		unsub_bus = subscribeBus((e: BusEvent) => {
 			if (e.kind === 'stage_start') status = `${e.stage}…`;
 			else if (e.kind === 'stage_end') status = e.ok ? `${e.stage} ok` : `${e.stage} failed`;
 		});
-		// Restore last-opened file if any.
 		const last = localStorage.getItem('rapidfem.active_path');
 		if (last) await open_file(last);
 	});
 
 	onDestroy(() => unsub_bus?.());
-
-	function append_log(label: string, r: RunResponse | MeshResponse | SolveResponse) {
-		if (r.stdout) log_lines = [...log_lines, ...r.stdout.split('\n').filter(Boolean).map((l) => `[${label}] ${l}`)];
-		if (r.stderr) log_lines = [...log_lines, ...r.stderr.split('\n').filter(Boolean).map((l) => `[${label} err] ${l}`)];
-		if (!r.ok && r.error) log_lines = [...log_lines, `[${label}] ${r.error.type}: ${r.error.message}`];
-	}
 
 	async function open_file(path: string) {
 		try {
@@ -66,7 +57,6 @@
 			active_path = path;
 			dirty = false;
 			localStorage.setItem('rapidfem.active_path', path);
-			// Refresh the geometry view to match the file we just opened.
 			await run_geometry();
 		} catch (e) {
 			log_lines = [...log_lines, `[open ${path}] ${e}`];
@@ -85,10 +75,15 @@
 		}
 	}
 
+	function append_log(label: string, r: RunResponse | MeshResponse | SolveResponse) {
+		if (r.stdout) log_lines = [...log_lines, ...r.stdout.split('\n').filter(Boolean).map((l) => `[${label}] ${l}`)];
+		if (r.stderr) log_lines = [...log_lines, ...r.stderr.split('\n').filter(Boolean).map((l) => `[${label} err] ${l}`)];
+		if (!r.ok && r.error) log_lines = [...log_lines, `[${label}] ${r.error.type}: ${r.error.message}`];
+	}
+
 	async function on_save(text: string) {
 		code = text;
 		dirty = false;
-		// Persist to disk when there is an active file.
 		if (active_path) {
 			try {
 				await writeFile(active_path, text);
@@ -96,12 +91,18 @@
 				log_lines = [...log_lines, `[save] ${e}`];
 			}
 		}
-		// Auto-update geometry view, debounced so a fast Ctrl+S burst coalesces.
 		if (geom_debounce) clearTimeout(geom_debounce);
 		geom_debounce = setTimeout(() => {
 			geom_debounce = null;
 			void run_geometry();
 		}, 200);
+	}
+
+	function on_change(text: string) {
+		if (text !== code) {
+			code = text;
+			dirty = !!active_path;
+		}
 	}
 
 	async function run_geometry() {
@@ -117,8 +118,6 @@
 						n_entities: geo.payload.stats.n_entities,
 						n_triangles: geo.payload.stats.n_triangles,
 					};
-					// Project the geometry payload into the viewer's MeshData
-					// shape: every entity contributes its own surface tris.
 					mesh_data = geometryToMeshData(geo.payload);
 				}
 			}
@@ -173,21 +172,9 @@
 		}
 	}
 
-	// Track unsaved edits.
-	$effect(() => {
-		if (code) dirty = true;
-	});
-
-	// Build a MeshData-equivalent from a geometry payload (per-entity surface
-	// tris). The MeshViewer is happy with tris+phys-names — tets stay empty.
 	function geometryToMeshData(p: import('$lib/api').GeometryPayload): MeshData {
-		// Concatenate positions across entities; assign each a synthetic phys
-		// tag so the viewer's per-tag color toggle still works.
-		let total_tris = 0;
 		const phys_names = new Map<number, string>();
 		const phys_dim = new Map<number, number>();
-		for (let i = 0; i < p.entities.length; i++) total_tris += p.entities[i].positions.length / 9;
-
 		const nodes_flat: number[] = [];
 		const tris_flat: number[] = [];
 		const tri_phys_flat: number[] = [];
@@ -196,7 +183,6 @@
 			const tag = i + 1;
 			phys_names.set(tag, ent.name);
 			phys_dim.set(tag, ent.dim);
-			// positions stored flat: 9 floats per triangle.
 			const n_tri = ent.positions.length / 9;
 			for (let t = 0; t < n_tri; t++) {
 				for (let v = 0; v < 3; v++) {
@@ -219,7 +205,10 @@
 			tet_phys: new Int32Array(0),
 			phys_names,
 			phys_dim,
-			bbox: { min: [...p.bbox.min] as [number, number, number], max: [...p.bbox.max] as [number, number, number] },
+			bbox: {
+				min: [...p.bbox.min] as [number, number, number],
+				max: [...p.bbox.max] as [number, number, number],
+			},
 		};
 	}
 </script>
@@ -231,8 +220,10 @@
 <div class="app">
 	<header>
 		<span class="brand">rapidfem</span>
+		<span class="sep">/</span>
 		<span class="workdir">{workdir}</span>
 		{#if active_path}
+			<span class="sep">/</span>
 			<span class="active-file">{active_path}{dirty ? ' •' : ''}</span>
 		{/if}
 		<span class="status">{status}</span>
@@ -242,23 +233,23 @@
 		<aside class="files-pane">
 			<FileBrowser bind:active_path={active_path} onOpen={open_file} onNew={new_file} />
 		</aside>
+
 		<aside class="editor-pane">
 			<div class="toolbar">
 				<span class="hint">Ctrl+S → geometry preview</span>
-				<button onclick={on_mesh} disabled={mesh_busy} title="Run gmsh + show full tet mesh">
+				<button class="primary" onclick={on_mesh} disabled={mesh_busy}>
 					{mesh_busy ? 'meshing…' : 'Generate Mesh'}
 				</button>
-				<button onclick={on_solve} disabled={solve_busy} title="Run FEM frequency sweep">
+				<button class="primary" onclick={on_solve} disabled={solve_busy}>
 					{solve_busy ? 'solving…' : 'Run Simulation'}
 				</button>
 				<span class="spacer"></span>
-				{#if last_mesh_stats}
-					<span class="stat">mesh: {last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
-				{:else if last_geom_stats}
-					<span class="stat">geom: {last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
-				{/if}
 				{#if last_solve_stats}
-					<span class="stat">solve: {last_solve_stats.n_freq} freq · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
+					<span class="stat">{last_solve_stats.n_freq} freq · {last_solve_stats.n_dofs.toLocaleString()} dofs · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
+				{:else if last_mesh_stats}
+					<span class="stat">{last_mesh_stats.n_tets.toLocaleString()} tets · {last_mesh_stats.mesh_time_s.toFixed(2)}s</span>
+				{:else if last_geom_stats}
+					<span class="stat">{last_geom_stats.n_entities} ent · {last_geom_stats.n_triangles.toLocaleString()} tris</span>
 				{/if}
 			</div>
 			<div class="editor-wrap">
@@ -268,45 +259,197 @@
 
 		<section class="viewer-pane">
 			<nav class="tabs">
-				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
-				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-params</button>
+				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D View</button>
+				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Parameters</button>
 			</nav>
-			{#if display === 'view3d'}
-				<MeshViewer mesh={mesh_data} show_geometry={true} show_wireframe={false} show_field={false} />
-			{:else}
-				<ResultsPanel {freqs} {smats} metrics={[]} />
-			{/if}
+			<div class="viewer-slot">
+				{#if display === 'view3d'}
+					<MeshViewer mesh={mesh_data} show_geometry={true} show_wireframe={false} show_field={false} />
+				{:else}
+					<ResultsPanel {freqs} {smats} metrics={[]} />
+				{/if}
+			</div>
 		</section>
 	</main>
 
 	<footer class="log">
-		{#each log_lines as line}
-			<div class="line">{line}</div>
-		{/each}
+		<div class="log-title">Output</div>
+		<div class="log-body">
+			{#each log_lines as line}
+				<div class="line">{line}</div>
+			{/each}
+		</div>
 	</footer>
 </div>
 
 <style>
-	.app { display: grid; grid-template-rows: 36px 1fr 140px; height: 100vh; font: 13px/1.4 system-ui, sans-serif; }
-	header { display: flex; align-items: center; gap: 16px; padding: 0 12px; border-bottom: 1px solid #2a2a2a; background: #1a1a1a; color: #ddd; }
-	.brand { font-weight: 600; }
-	.workdir { color: #888; font-family: monospace; }
-	.active-file { color: #ccc; font-family: monospace; }
-	.status { margin-left: auto; color: #aaa; }
-	.hint { color: #666; font-size: 11px; align-self: center; margin-right: 6px; }
-	.stat { color: #88c; font-size: 11px; align-self: center; }
-	.spacer { flex: 1; }
-	main { display: grid; grid-template-columns: 200px 1fr 1fr; min-height: 0; }
-	.files-pane { border-right: 1px solid #2a2a2a; min-height: 0; }
-	.editor-pane { display: flex; flex-direction: column; border-right: 1px solid #2a2a2a; min-width: 0; }
-	.toolbar { display: flex; gap: 8px; padding: 6px 8px; background: #161616; border-bottom: 1px solid #2a2a2a; align-items: center; }
-	.toolbar button { background: #2a2a2a; color: #ddd; border: 1px solid #3a3a3a; padding: 4px 10px; cursor: pointer; }
-	.toolbar button:disabled { opacity: 0.5; cursor: default; }
-	.editor-wrap { flex: 1; min-height: 0; }
-	.viewer-pane { display: flex; flex-direction: column; min-height: 0; }
-	.tabs { display: flex; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #2a2a2a; background: #161616; }
-	.tabs button { background: transparent; color: #aaa; border: 0; padding: 4px 10px; cursor: pointer; }
-	.tabs button.active { color: #e8e8e8; border-bottom: 2px solid #5a8; }
-	footer.log { background: #0a0a0a; color: #aaa; border-top: 1px solid #2a2a2a; padding: 6px 10px; overflow: auto; font: 12px ui-monospace, Consolas, monospace; }
-	footer.log .line { white-space: pre; }
+	.app {
+		display: grid;
+		grid-template-rows: 36px 1fr 160px;
+		height: 100vh;
+		background: var(--bg);
+		color: var(--text);
+		font-family: var(--font-body);
+	}
+
+	header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+		padding: 0 var(--space-xl);
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-surface);
+		font-size: var(--fs-sm);
+	}
+	header .brand {
+		color: var(--accent);
+		font-weight: 700;
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		font-size: var(--fs-sm);
+	}
+	header .sep { color: var(--text-dim); }
+	header .workdir,
+	header .active-file {
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
+	header .active-file { color: var(--text); }
+	header .status {
+		margin-left: auto;
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+
+	main {
+		display: grid;
+		grid-template-columns: 220px 1fr 1fr;
+		min-height: 0;
+	}
+
+	.files-pane {
+		border-right: 1px solid var(--border);
+		min-height: 0;
+		background: var(--bg-surface);
+	}
+
+	.editor-pane {
+		display: flex;
+		flex-direction: column;
+		border-right: 1px solid var(--border);
+		min-width: 0;
+		min-height: 0;
+		background: var(--bg);
+	}
+
+	.toolbar {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+		padding: var(--space-md) var(--space-lg);
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border);
+		min-height: 38px;
+	}
+	.toolbar .hint {
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
+	.toolbar .spacer { flex: 1; }
+	.toolbar .stat {
+		color: var(--text-muted);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
+	.toolbar button.primary {
+		padding: 4px 10px;
+		font-size: var(--fs-xs);
+		letter-spacing: 0.5px;
+	}
+	.toolbar button.primary:disabled {
+		background: var(--bg-panel);
+		color: var(--text-dim);
+		cursor: default;
+	}
+
+	.editor-wrap {
+		flex: 1;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.viewer-pane {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		min-width: 0;
+		background: var(--canvas-bg);
+	}
+
+	.tabs {
+		display: flex;
+		gap: 0;
+		padding: 0;
+		border-bottom: 1px solid var(--border);
+		background: var(--bg-surface);
+		min-height: 38px;
+		align-items: stretch;
+	}
+	.tabs button {
+		background: transparent;
+		color: var(--text-muted);
+		border: 0;
+		border-bottom: 2px solid transparent;
+		padding: 0 var(--space-xl);
+		cursor: pointer;
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		font-weight: 600;
+		font-family: var(--font-body);
+	}
+	.tabs button:hover { color: var(--text); background: transparent; }
+	.tabs button.active {
+		color: var(--accent);
+		border-bottom-color: var(--accent);
+		background: transparent;
+	}
+
+	.viewer-slot {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.viewer-slot > :global(*) { flex: 1; min-height: 0; }
+
+	footer.log {
+		display: flex;
+		flex-direction: column;
+		background: var(--bg-inset);
+		border-top: 1px solid var(--border);
+		min-height: 0;
+	}
+	.log-title {
+		padding: var(--space-sm) var(--space-lg);
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.log-body {
+		flex: 1;
+		overflow: auto;
+		padding: var(--space-sm) var(--space-lg);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text-muted);
+	}
+	.log-body .line { white-space: pre; }
 </style>
