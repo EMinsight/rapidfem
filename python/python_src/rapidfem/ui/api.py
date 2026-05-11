@@ -19,6 +19,7 @@ from flask import Flask, jsonify, request
 import rapidfem
 from rapidfem import _show_capture
 from rapidfem.ui.bus import BUS
+from rapidfem.ui.kernel import Kernel, get_kernel, reset_kernel
 
 
 # Long-running operations (mesh, solve) hold this lock so the gmsh model
@@ -125,6 +126,15 @@ def _capture_native_streams(stage: str):
         os.close(saved_err)
         t_out.join(timeout=1.0)
         t_err.join(timeout=1.0)
+
+
+def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
+    """Bounding box from a (n_nodes, 3) array."""
+    if nodes_np is None or len(nodes_np) == 0:
+        return {"min": [-1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0]}
+    mn = nodes_np.min(axis=0).tolist()
+    mx = nodes_np.max(axis=0).tolist()
+    return {"min": mn, "max": mx}
 
 
 def _reset_gmsh() -> None:
@@ -439,6 +449,177 @@ def register(app: Flask) -> None:
         except (OSError, UnicodeDecodeError) as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         return jsonify({"ok": True, "path": rel, "content": content})
+
+    # ── Notebook cell execution ───────────────────────────────────────────
+
+    def _serialize_captures(captures: list) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+        """Render captured Geometry/Builder/Simulation/Result objects."""
+        from rapidfem.ui.serialize import geometry_to_payload, mesh_to_payload
+        import numpy as np
+
+        rendered: list[dict[str, Any]] = []
+        mesh_payload: dict[str, Any] | None = None
+        result_payload: dict[str, Any] | None = None
+        last_sim = None
+        last_result = None
+
+        for item in captures:
+            entry: dict[str, Any] = {"name": item.name, "kind": item.kind}
+            if item.kind == "geometry":
+                try:
+                    entry["payload"] = geometry_to_payload(item.obj)
+                except Exception as e:  # noqa: BLE001
+                    entry["error"] = _format_exception(e)
+            elif item.kind == "builder":
+                pass
+            elif item.kind == "simulation":
+                last_sim = item.obj
+                if mesh_payload is None:
+                    try:
+                        from rapidfem.ui.serialize import _bbox_diag  # noqa
+                        mesh_payload = {
+                            "kind": "mesh",
+                            "nodes": np.asarray(item.obj.mesh_nodes).ravel().tolist(),
+                            "tets": np.asarray(item.obj.mesh_tets).ravel().tolist(),
+                            "tris": [], "tri_phys": [], "tet_phys": [],
+                            "phys_names": {}, "phys_dim": {}, "name_to_tag": {},
+                            "bbox": _bbox_for_nodes(np.asarray(item.obj.mesh_nodes)),
+                            "stats": {"n_nodes": int(item.obj.mesh_nodes.shape[0]),
+                                       "n_tets": int(item.obj.mesh_tets.shape[0]),
+                                       "n_tris": 0, "mesh_time_s": 0.0, "msh_bytes": 0},
+                        }
+                    except Exception:
+                        pass
+            elif item.kind == "result":
+                last_result = item.obj
+            rendered.append(entry)
+
+        # Combine Simulation + SweepResult into full payload with mesh + fields.
+        if last_sim is not None and last_result is not None:
+            try:
+                s = last_result.sparams
+                n_freq, n_p, _ = s.shape
+                sparams_payload = []
+                for fi in range(n_freq):
+                    f_mat = []
+                    for r in range(n_p):
+                        row = []
+                        for c in range(n_p):
+                            v = s[fi, r, c]
+                            row.append([float(v.real), float(v.imag)])
+                        f_mat.append(row)
+                    sparams_payload.append(f_mat)
+                fields_payload = []
+                for fi in range(n_freq):
+                    per_freq = []
+                    for pi in range(n_p):
+                        E = last_sim.field_at_nodes(last_result, fi, pi)
+                        if E is None:
+                            per_freq.append(None)
+                            continue
+                        re = np.asarray(E.real); im = np.asarray(E.imag)
+                        A = np.sum(re * re, axis=1)
+                        B = np.sum(im * im, axis=1)
+                        C = np.sum(re * im, axis=1)
+                        per_freq.append(np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist())
+                    fields_payload.append(per_freq)
+                result_payload = {
+                    "frequencies": last_result.frequencies.tolist(),
+                    "sparams": sparams_payload,
+                    "n_driven": n_p, "n_freq": n_freq,
+                    "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
+                    "solve_time_s": last_result.solve_time_s,
+                    "fields": fields_payload,
+                }
+            except Exception as e:  # noqa: BLE001
+                result_payload = {"error": _format_exception(e)}
+
+        return rendered, mesh_payload, result_payload
+
+    @app.post("/api/cell/run")
+    def api_cell_run():
+        body = request.get_json(silent=True) or {}
+        file_path = body.get("file", "<unnamed>")
+        code = body.get("code", "")
+        reset_first = bool(body.get("reset", False))
+        if not isinstance(code, str):
+            return jsonify({"ok": False, "error": {"type": "ValueError", "message": "code must be string", "traceback": ""}}), 400
+
+        kernel = get_kernel(file_path)
+        if reset_first:
+            kernel.reset()
+
+        BUS.publish({"kind": "stage_start", "stage": "cell", "file": file_path})
+        err: BaseException | None = None
+        with _pipeline_lock, kernel.lock:
+            _show_capture.start_capture()
+            try:
+                with _capture_native_streams("cell") as (lines_out, lines_err):
+                    try:
+                        exec(compile(code, file_path or "<cell>", "exec"), kernel.namespace)
+                    except BaseException as e:  # noqa: BLE001
+                        err = e
+            finally:
+                captured = _show_capture.stop_capture()
+
+        stdout_text = "\n".join(lines_out)
+        stderr_text = "\n".join(lines_err)
+
+        if err is not None:
+            BUS.publish({"kind": "stage_end", "stage": "cell", "ok": False})
+            return jsonify({
+                "ok": False,
+                "error": _format_exception(err),
+                "stdout": stdout_text,
+                "stderr": stderr_text,
+                "captures": [], "mesh": None, "result": None,
+            }), 200
+
+        rendered, mesh_payload, result_payload = _serialize_captures(captured)
+        BUS.publish({"kind": "stage_end", "stage": "cell", "ok": True})
+        return jsonify({
+            "ok": True,
+            "stdout": stdout_text, "stderr": stderr_text,
+            "captures": rendered, "mesh": mesh_payload, "result": result_payload,
+        }), 200
+
+    @app.post("/api/cell/reset")
+    def api_cell_reset():
+        body = request.get_json(silent=True) or {}
+        file_path = body.get("file", "")
+        reset_kernel(file_path)
+        return jsonify({"ok": True})
+
+    # ── Examples (shipped with the package) ───────────────────────────────
+
+    @app.get("/api/examples")
+    def api_examples_list():
+        from importlib import resources
+        try:
+            root = resources.files("rapidfem.examples")
+        except (ModuleNotFoundError, FileNotFoundError):
+            return jsonify({"examples": []})
+        items: list[dict[str, Any]] = []
+        for entry in root.iterdir():  # type: ignore[attr-defined]
+            if not entry.is_file():
+                continue
+            name = entry.name
+            if not name.endswith(".py") or name.startswith("_"):
+                continue
+            items.append({"name": name})
+        items.sort(key=lambda i: i["name"])
+        return jsonify({"examples": items})
+
+    @app.get("/api/examples/<name>")
+    def api_examples_get(name: str):
+        if not name.endswith(".py") or "/" in name or "\\" in name or ".." in name:
+            return jsonify({"ok": False, "error": "invalid"}), 400
+        from importlib import resources
+        try:
+            content = (resources.files("rapidfem.examples") / name).read_text(encoding="utf-8")
+        except Exception:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        return jsonify({"ok": True, "name": name, "content": content})
 
     @app.put("/api/files/<path:rel>")
     def api_files_put(rel: str):

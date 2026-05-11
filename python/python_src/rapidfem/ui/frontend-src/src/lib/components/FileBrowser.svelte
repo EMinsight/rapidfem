@@ -1,17 +1,20 @@
 <script lang="ts">
-	import { listFiles, type FileEntry } from '$lib/api';
+	import { listFiles, listExamples, type FileEntry } from '$lib/api';
 
 	let {
 		active_path = $bindable<string | null>(null),
 		onOpen,
 		onNew,
+		onOpenExample,
 	}: {
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
+		onOpenExample?: (name: string) => void;
 	} = $props();
 
 	let files = $state<FileEntry[]>([]);
+	let examples = $state<{ name: string }[]>([]);
 	let workdir = $state('');
 	let error = $state<string | null>(null);
 	let loading = $state(false);
@@ -19,9 +22,10 @@
 	async function refresh() {
 		loading = true;
 		try {
-			const r = await listFiles();
+			const [r, ex] = await Promise.all([listFiles(), listExamples()]);
 			workdir = r.workdir;
 			files = r.files;
+			examples = ex.examples;
 			error = null;
 		} catch (e) {
 			error = String(e);
@@ -61,6 +65,7 @@
 		<div class="error">{error}</div>
 	{/if}
 	<div class="list">
+		<div class="section">Workdir</div>
 		{#each files as f (f.path)}
 			<button
 				class:active={f.path === active_path}
@@ -72,7 +77,20 @@
 			</button>
 		{/each}
 		{#if !files.length && !loading}
-			<div class="empty">No .py files in workdir.</div>
+			<div class="empty">No .py files yet.</div>
+		{/if}
+
+		{#if examples.length}
+			<div class="section">Examples</div>
+			{#each examples as e (e.name)}
+				<button
+					class="item example"
+					onclick={() => onOpenExample?.(e.name)}
+					title={`Bundled example — ${e.name}`}
+				>
+					<span class="name">{e.name}</span>
+				</button>
+			{/each}
 		{/if}
 	</div>
 </div>
@@ -130,6 +148,17 @@
 	}
 	.tb svg { display: block; }
 	.list { flex: 1; overflow: auto; padding: var(--space-sm) 0; }
+	.section {
+		padding: var(--space-md) var(--space-lg) var(--space-xs);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		font-weight: 600;
+	}
+	.item.example { color: var(--text-dim); font-style: italic; }
+	.item.example:hover { background: var(--bg-panel); color: var(--accent-secondary); }
 	.item {
 		display: block;
 		width: 100%;

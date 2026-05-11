@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import {
-		runCode, meshGeometry, solve, readFile, writeFile,
+		runCell, resetKernel, readFile, writeFile, readExample,
 		subscribeBus, meshPayloadToMeshData, sparamsToSMatrices, health,
-		type RunResponse, type MeshResponse, type SolveResponse, type SMatrix, type BusEvent,
+		type CellResponse, type SMatrix, type BusEvent,
 	} from '$lib/api';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
-	import CodeEditor from '$lib/components/CodeEditor.svelte';
+	import Notebook from '$lib/components/Notebook.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
 	import Select from '$lib/components/Select.svelte';
@@ -34,9 +34,6 @@
 			: null,
 	);
 
-	let geom_busy = $state(false);
-	let mesh_busy = $state(false);
-	let solve_busy = $state(false);
 	let last_geom_stats = $state<{ n_entities: number; n_triangles: number } | null>(null);
 	let last_mesh_stats = $state<{ n_tets: number; n_tris: number; mesh_time_s: number } | null>(null);
 	let last_solve_stats = $state<{ n_freq: number; n_dofs: number; solve_time_s: number } | null>(null);
@@ -47,7 +44,6 @@
 	let show_field = $state(false);
 	let viewer: ReturnType<typeof MeshViewer> | undefined = $state();
 	let unsub_bus: (() => void) | null = null;
-	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
 
 	function on_keydown(e: KeyboardEvent) {
 		// Skip when typing in editor / inputs.
@@ -273,6 +269,9 @@
 
 	onDestroy(() => unsub_bus?.());
 
+	let notebook: ReturnType<typeof Notebook> | undefined = $state();
+	let dirty_save_t: ReturnType<typeof setTimeout> | null = null;
+
 	async function open_file(path: string) {
 		try {
 			const content = await readFile(path);
@@ -280,9 +279,25 @@
 			active_path = path;
 			dirty = false;
 			localStorage.setItem('rapidfem.active_path', path);
-			await run_geometry();
+			clear_stale_results();
+			mesh_data = null;
 		} catch (e) {
 			log_lines = [...log_lines, `[open ${path}] ${e}`];
+		}
+	}
+
+	async function open_example(name: string) {
+		try {
+			const content = await readExample(name);
+			// Examples open read-only-ish: copy into workdir on first edit
+			// (TODO). For now, just load contents and treat as untitled.
+			code = content;
+			active_path = null;
+			dirty = false;
+			clear_stale_results();
+			mesh_data = null;
+		} catch (e) {
+			log_lines = [...log_lines, `[example ${name}] ${e}`];
 		}
 	}
 
@@ -291,86 +306,48 @@
 		if (!name) return;
 		const path = name.endsWith('.py') ? name : `${name}.py`;
 		try {
-			await writeFile(path, '# new rapidfem script\nimport rapidfem\n\n');
+			await writeFile(path, '# %% New rapidfem notebook\nimport rapidfem\n\n');
 			await open_file(path);
 		} catch (e) {
 			log_lines = [...log_lines, `[new ${path}] ${e}`];
 		}
 	}
 
-	function append_log(label: string, r: RunResponse | MeshResponse | SolveResponse) {
-		// Live native-stream lines already arrive via the bus. Only surface
-		// the error here so we don't double-log normal output.
-		if (!r.ok && r.error) log_lines = [...log_lines, `[${label}] ${r.error.type}: ${r.error.message}`];
-	}
-
-	async function on_save(text: string) {
-		code = text;
-		dirty = false;
-		if (active_path) {
-			try {
-				await writeFile(active_path, text);
-			} catch (e) {
-				log_lines = [...log_lines, `[save] ${e}`];
-			}
-		}
-		if (geom_debounce) clearTimeout(geom_debounce);
-		geom_debounce = setTimeout(() => {
-			geom_debounce = null;
-			void run_geometry();
-		}, 200);
-	}
-
-	function on_change(text: string) {
-		if (text !== code) {
-			code = text;
-			dirty = !!active_path;
-		}
-	}
-
 	function clear_stale_results() {
-		// Re-running the geometry or remeshing invalidates the prior solve
-		// (DOF ordering, field magnitudes, S-params all tied to the old mesh).
 		fields_raw = null;
 		smats = [];
 		freqs = [];
 		last_solve_stats = null;
+		last_mesh_stats = null;
+		last_geom_stats = null;
 		show_field = false;
 	}
 
-	async function run_geometry() {
-		if (geom_busy) return;
-		geom_busy = true;
-		try {
-			const r = await runCode(code);
-			append_log('run', r);
-			if (r.ok) {
-				const geo = r.captures.find((c) => c.kind === 'geometry');
-				if (geo?.payload) {
-					last_geom_stats = {
-						n_entities: geo.payload.stats.n_entities,
-						n_triangles: geo.payload.stats.n_triangles,
-					};
-					last_mesh_stats = null;
-					clear_stale_results();
-					mesh_data = geometryToMeshData(geo.payload);
-				}
-			}
-		} catch (e) {
-			log_lines = [...log_lines, `[run] ${e}`];
-		} finally {
-			geom_busy = false;
+	// Notebook → backend cell exec. Returns 'ok' or 'error' for the cell UI.
+	async function on_run_cell(cell_source: string, reset_first: boolean): Promise<'ok' | 'error'> {
+		if (reset_first) {
+			clear_stale_results();
+			try {
+				await resetKernel(active_path ?? '<unnamed>');
+			} catch {}
 		}
-	}
-
-	async function on_mesh() {
-		if (mesh_busy) return;
-		mesh_busy = true;
 		try {
-			const r = await meshGeometry(code);
-			append_log('mesh', r);
-			if (r.ok && r.mesh) {
-				clear_stale_results();
+			const r: CellResponse = await runCell(active_path ?? '<unnamed>', cell_source, false);
+			if (!r.ok && r.error) {
+				log_lines = [...log_lines, `[cell] ${r.error.type}: ${r.error.message}`];
+				return 'error';
+			}
+			// Geometry capture → 3D viewer
+			const geo = r.captures.find((c) => c.kind === 'geometry');
+			if (geo?.payload) {
+				last_geom_stats = {
+					n_entities: geo.payload.stats.n_entities,
+					n_triangles: geo.payload.stats.n_triangles,
+				};
+				mesh_data = geometryToMeshData(geo.payload);
+			}
+			// Simulation mesh → 3D viewer
+			if (r.mesh) {
 				mesh_data = meshPayloadToMeshData(r.mesh);
 				last_mesh_stats = {
 					n_tets: r.mesh.stats.n_tets,
@@ -378,42 +355,54 @@
 					mesh_time_s: r.mesh.stats.mesh_time_s,
 				};
 			}
-		} catch (e) {
-			log_lines = [...log_lines, `[mesh] ${e}`];
-		} finally {
-			mesh_busy = false;
-		}
-	}
-
-	async function on_solve() {
-		if (solve_busy) return;
-		solve_busy = true;
-		try {
-			const r = await solve(code);
-			append_log('solve', r);
-			if (r.ok && r.result) {
+			// SweepResult → S-params + fields
+			if (r.result) {
 				freqs = r.result.frequencies;
 				smats = sparamsToSMatrices(r.result.sparams);
 				fields_raw = r.result.fields ?? null;
 				field_freq_idx = 0;
 				field_port_idx = 0;
-				if (r.mesh) {
-					// Replace viewer mesh with the one the solver actually used,
-					// so field indices line up with mesh.nodes 1:1.
-					mesh_data = meshPayloadToMeshData(r.mesh);
-				}
 				last_solve_stats = {
 					n_freq: r.result.n_freq,
 					n_dofs: r.result.n_dofs,
 					solve_time_s: r.result.solve_time_s,
 				};
 			}
+			return 'ok';
 		} catch (e) {
-			log_lines = [...log_lines, `[solve] ${e}`];
-		} finally {
-			solve_busy = false;
+			log_lines = [...log_lines, `[cell] ${e}`];
+			return 'error';
 		}
 	}
+
+	async function on_reset_kernel() {
+		clear_stale_results();
+		mesh_data = null;
+		try {
+			await resetKernel(active_path ?? '<unnamed>');
+			log_lines = [...log_lines, `[kernel] reset`];
+		} catch (e) {
+			log_lines = [...log_lines, `[kernel reset] ${e}`];
+		}
+	}
+
+	// Debounced save on edits. No auto-exec — Shift+Enter / Run All does that.
+	$effect(() => {
+		const _ = code;  // track changes
+		if (!active_path) return;
+		dirty = true;
+		if (dirty_save_t) clearTimeout(dirty_save_t);
+		dirty_save_t = setTimeout(async () => {
+			dirty_save_t = null;
+			if (!active_path) return;
+			try {
+				await writeFile(active_path, code);
+				dirty = false;
+			} catch (e) {
+				log_lines = [...log_lines, `[save] ${e}`];
+			}
+		}, 600);
+	});
 
 	function geometryToMeshData(p: import('$lib/api').GeometryPayload): MeshData {
 		const phys_names = new Map<number, string>();
@@ -491,6 +480,7 @@
 						bind:active_path={active_path}
 						onOpen={open_file}
 						onNew={new_file}
+						onOpenExample={open_example}
 					/>
 				</div>
 			{/if}
@@ -511,13 +501,13 @@
 			{:else}
 				<div class="pane-inner">
 					<div class="toolbar">
-						<span class="hint">Ctrl+S → preview</span>
-						<button class="primary" onclick={on_mesh} disabled={mesh_busy}>
-							{mesh_busy ? 'meshing…' : 'Generate Mesh'}
-						</button>
-						<button class="primary" onclick={on_solve} disabled={solve_busy}>
-							{solve_busy ? 'solving…' : 'Run Simulation'}
-						</button>
+						<button class="primary" onclick={() => notebook?.run_all_cells()} title="Run all cells (Ctrl+Shift+Enter)">Run All</button>
+						<span class="sep"></span>
+						<button class="primary" onclick={() => notebook?.run_current_cell()} title="Run current cell (Shift+Enter)">Run Cell</button>
+						<span class="sep"></span>
+						<button class="primary subtle" onclick={() => notebook?.add_cell()} title="Add cell below">+ Cell</button>
+						<span class="sep"></span>
+						<button class="primary subtle" onclick={on_reset_kernel} title="Wipe namespace + gmsh state">Restart Kernel</button>
 						<span class="spacer"></span>
 						{#if last_solve_stats}
 							<span class="stat">{last_solve_stats.n_freq} freq · {last_solve_stats.n_dofs.toLocaleString()} dofs · {last_solve_stats.solve_time_s.toFixed(2)}s</span>
@@ -528,7 +518,12 @@
 						{/if}
 					</div>
 					<div class="editor-wrap">
-						<CodeEditor bind:value={code} onSave={on_save} />
+						<Notebook
+							bind:this={notebook}
+							bind:source={code}
+							file_path={active_path ?? '<unnamed>'}
+							onRunCell={on_run_cell}
+						/>
 					</div>
 					<Resizer vertical onStart={on_output_drag_start} onDelta={on_output_resize} />
 					<div
@@ -794,6 +789,22 @@
 		letter-spacing: 0.5px;
 		text-transform: uppercase;
 		font-weight: 600;
+	}
+	.toolbar button.primary.subtle {
+		background: transparent;
+		color: var(--text-muted);
+		border: 1px solid var(--border);
+	}
+	.toolbar button.primary.subtle:hover {
+		background: var(--bg-panel);
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.toolbar .sep {
+		width: 1px;
+		height: 16px;
+		background: var(--border);
+		align-self: center;
 	}
 	.toolbar button.primary:disabled {
 		background: var(--bg-panel);

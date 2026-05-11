@@ -105,7 +105,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         print(f"error: workdir is not a directory: {workdir}", file=sys.stderr)
         return 2
 
-    _maybe_write_welcome(workdir)
+    # Bundled examples are now exposed via /api/examples, so we no longer
+    # need to drop a welcome.py into the workdir on first start.
 
     app = create_app(workdir=workdir, debug=args.debug)
     run(app, host=args.host, port=args.port, open_browser=not args.no_browser)

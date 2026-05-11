@@ -147,6 +147,43 @@ export async function runCode(code: string): Promise<RunResponse> {
 	return post_json<RunResponse>('/api/run', { code });
 }
 
+export interface CellResponse {
+	ok: boolean;
+	error?: PythonError;
+	stdout: string;
+	stderr: string;
+	captures: RunResponse['captures'];
+	mesh?: MeshPayload | null;
+	result?: {
+		frequencies: number[];
+		sparams: number[][][][];
+		n_driven: number;
+		n_freq: number;
+		n_dofs: number;
+		n_tets: number;
+		solve_time_s: number;
+		fields?: (number[] | null)[][];
+	} | null;
+}
+
+export async function runCell(file: string, code: string, reset: boolean = false): Promise<CellResponse> {
+	return post_json<CellResponse>('/api/cell/run', { file, code, reset });
+}
+
+export async function resetKernel(file: string): Promise<{ ok: boolean }> {
+	return post_json<{ ok: boolean }>('/api/cell/reset', { file });
+}
+
+export async function listExamples(): Promise<{ examples: { name: string }[] }> {
+	return get_json<{ examples: { name: string }[] }>('/api/examples');
+}
+
+export async function readExample(name: string): Promise<string> {
+	const r = await get_json<{ ok: boolean; content?: string; error?: string }>(`/api/examples/${encodeURIComponent(name)}`);
+	if (!r.ok || r.content === undefined) throw new Error(r.error ?? 'example not found');
+	return r.content;
+}
+
 export async function meshGeometry(code: string, opts: { maxh?: number; geometry_name?: string } = {}): Promise<MeshResponse> {
 	return post_json<MeshResponse>('/api/mesh', { code, ...opts });
 }
