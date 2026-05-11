@@ -819,7 +819,7 @@
 	.tabs .tab-btn:hover { color: var(--text-muted); }
 	.tabs .tab-btn.active { color: var(--accent); }
 
-	.tb.collapse {
+	.tb {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -835,7 +835,15 @@
 		font-weight: normal;
 		transition: background var(--transition), border-color var(--transition), color var(--transition);
 	}
-	.tb.collapse:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
+	.tb:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
+	.tb:disabled {
+		opacity: 0.4;
+		cursor: default;
+		background: transparent;
+		border-color: var(--border);
+		color: var(--text-dim);
+	}
+	.tb svg { display: block; }
 
 	.tab-spacer { flex: 1; }
 
