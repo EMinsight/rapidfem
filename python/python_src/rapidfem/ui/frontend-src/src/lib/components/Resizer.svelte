@@ -1,13 +1,17 @@
 <script lang="ts">
 	let {
 		onDelta,
+		onStart,
+		onEnd,
 		vertical = false,
 	}: {
-		onDelta: (dx: number) => void;
+		onDelta: (d: number) => void;
+		onStart?: () => void;
+		onEnd?: () => void;
 		vertical?: boolean;
 	} = $props();
 
-	let dragging = false;
+	let dragging = $state(false);
 	let last = 0;
 
 	function on_down(e: PointerEvent) {
@@ -16,6 +20,7 @@
 		(e.target as HTMLElement).setPointerCapture(e.pointerId);
 		document.body.style.cursor = vertical ? 'row-resize' : 'col-resize';
 		document.body.style.userSelect = 'none';
+		onStart?.();
 	}
 
 	function on_move(e: PointerEvent) {
@@ -27,10 +32,12 @@
 	}
 
 	function on_up(e: PointerEvent) {
+		if (!dragging) return;
 		dragging = false;
 		(e.target as HTMLElement).releasePointerCapture(e.pointerId);
 		document.body.style.cursor = '';
 		document.body.style.userSelect = '';
+		onEnd?.();
 	}
 </script>
 
@@ -58,7 +65,6 @@
 	}
 	.resizer.vertical {
 		cursor: row-resize;
-		flex: 0 0 4px;
 	}
 	.resizer:hover,
 	.resizer.dragging {

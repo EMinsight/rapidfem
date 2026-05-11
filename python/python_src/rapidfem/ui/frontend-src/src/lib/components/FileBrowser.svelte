@@ -5,12 +5,10 @@
 		active_path = $bindable<string | null>(null),
 		onOpen,
 		onNew,
-		onCollapse,
 	}: {
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
-		onCollapse?: () => void;
 	} = $props();
 
 	let files = $state<FileEntry[]>([]);
@@ -43,13 +41,6 @@
 
 <div class="browser">
 	<div class="head">
-		{#if onCollapse}
-			<button class="tb" onclick={onCollapse} title="Collapse" aria-label="Collapse">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-					<polyline points="10,3 5,8 10,13" />
-				</svg>
-			</button>
-		{/if}
 		<span class="title">Files</span>
 		<button class="tb" onclick={onNew} title="New .py file" aria-label="New file">
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">

@@ -75,22 +75,99 @@
 		} catch {}
 	}
 
+	// Drag-to-collapse: track accumulated drag while a pane is collapsed.
+	// Crossing a threshold re-expands; collapsing back happens when an
+	// expanded pane is dragged below its minimum width.
+	const COLLAPSE_MIN = 100;       // narrower than this → snap collapsed
+	const EXPAND_THRESHOLD = 50;    // drag accumulated past this → re-expand
+	let files_drag_accum = 0;
+	let editor_drag_accum = 0;
+	let viewer_drag_accum = 0;
+	let output_drag_accum = 0;
+
+	function on_files_drag_start() { files_drag_accum = 0; }
 	function on_files_resize(dx: number) {
-		if (files_collapsed) return;
-		files_w = clamp(files_w + dx, 140, 480);
-		save_layout();
+		if (files_collapsed) {
+			files_drag_accum += dx;
+			if (files_drag_accum > EXPAND_THRESHOLD) {
+				files_collapsed = false;
+				files_w = Math.max(files_w, 200);
+				files_drag_accum = 0;
+				save_layout();
+			}
+			return;
+		}
+		const next = files_w + dx;
+		if (next < COLLAPSE_MIN) {
+			files_collapsed = true;
+			save_layout();
+		} else {
+			files_w = clamp(next, 140, 480);
+			save_layout();
+		}
 	}
+
+	function on_editor_drag_start() { editor_drag_accum = 0; viewer_drag_accum = 0; }
 	function on_editor_resize(dx: number) {
-		if (editor_collapsed || viewer_collapsed) return;
 		if (!main_el) return;
-		editor_w = clamp(editor_w + dx, 240, main_el.clientWidth - files_w - 280);
-		save_layout();
+		if (editor_collapsed) {
+			editor_drag_accum += dx;
+			if (editor_drag_accum > EXPAND_THRESHOLD) {
+				editor_collapsed = false;
+				editor_w = Math.max(editor_w, 320);
+				editor_drag_accum = 0;
+				save_layout();
+			}
+			return;
+		}
+		if (viewer_collapsed) {
+			viewer_drag_accum -= dx; // dragging left re-expands viewer
+			if (viewer_drag_accum > EXPAND_THRESHOLD) {
+				viewer_collapsed = false;
+				viewer_drag_accum = 0;
+				save_layout();
+			}
+			return;
+		}
+		const filesPx = files_collapsed ? COLLAPSED_W : files_w;
+		const totalAvail = main_el.clientWidth - filesPx - 8;
+		const next = editor_w + dx;
+		const viewerNext = totalAvail - next;
+		if (next < COLLAPSE_MIN) {
+			editor_collapsed = true;
+			save_layout();
+		} else if (viewerNext < COLLAPSE_MIN) {
+			viewer_collapsed = true;
+			editor_w = clamp(next, 240, totalAvail - COLLAPSED_W);
+			save_layout();
+		} else {
+			editor_w = clamp(next, 240, totalAvail - 240);
+			save_layout();
+		}
 	}
+
+	function on_output_drag_start() { output_drag_accum = 0; }
 	function on_output_resize(dy: number) {
-		if (!editor_pane_el || output_collapsed) return;
-		const maxH = editor_pane_el.clientHeight - 100;
-		output_h = clamp(output_h - dy, 60, maxH);
-		save_layout();
+		if (!editor_pane_el) return;
+		if (output_collapsed) {
+			output_drag_accum -= dy; // dragging up re-expands output
+			if (output_drag_accum > EXPAND_THRESHOLD) {
+				output_collapsed = false;
+				output_h = Math.max(output_h, 120);
+				output_drag_accum = 0;
+				save_layout();
+			}
+			return;
+		}
+		const next = output_h - dy;
+		if (next < 50) {
+			output_collapsed = true;
+			save_layout();
+		} else {
+			const maxH = editor_pane_el.clientHeight - 100;
+			output_h = clamp(next, 60, maxH);
+			save_layout();
+		}
 	}
 
 	function init_editor_w() {
@@ -301,38 +378,30 @@
 	<main bind:this={main_el}>
 		<aside class="pane files-pane" style:flex="0 0 {files_collapsed ? COLLAPSED_W : files_w}px">
 			{#if files_collapsed}
-				<button class="collapsed-strip" onclick={() => { files_collapsed = false; save_layout(); }} aria-label="Expand files">
+				<div class="collapsed-strip" aria-label="Files (drag to expand)">
 					<span class="strip-label">Files</span>
-				</button>
+				</div>
 			{:else}
 				<div class="pane-inner">
 					<FileBrowser
 						bind:active_path={active_path}
 						onOpen={open_file}
 						onNew={new_file}
-						onCollapse={() => { files_collapsed = true; save_layout(); }}
 					/>
 				</div>
 			{/if}
 		</aside>
 
-		{#if !files_collapsed}
-			<Resizer onDelta={on_files_resize} />
-		{/if}
+		<Resizer onStart={on_files_drag_start} onDelta={on_files_resize} />
 
 		<aside class="pane editor-pane" bind:this={editor_pane_el} style:flex={editor_collapsed ? `0 0 ${COLLAPSED_W}px` : (viewer_collapsed ? '1 1 0' : `0 0 ${editor_w}px`)}>
 			{#if editor_collapsed}
-				<button class="collapsed-strip" onclick={() => { editor_collapsed = false; save_layout(); }} aria-label="Expand editor">
+				<div class="collapsed-strip" aria-label="Editor (drag to expand)">
 					<span class="strip-label">Editor</span>
-				</button>
+				</div>
 			{:else}
 				<div class="pane-inner">
 					<div class="toolbar">
-						<button class="tb collapse" onclick={() => { editor_collapsed = true; save_layout(); }} aria-label="Collapse" title="Collapse editor">
-							<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-								<polyline points="10,3 5,8 10,13" />
-							</svg>
-						</button>
 						<span class="hint">Ctrl+S → preview</span>
 						<button class="primary" onclick={on_mesh} disabled={mesh_busy}>
 							{mesh_busy ? 'meshing…' : 'Generate Mesh'}
@@ -352,17 +421,15 @@
 					<div class="editor-wrap">
 						<CodeEditor bind:value={code} onSave={on_save} />
 					</div>
-					{#if !output_collapsed}
-						<Resizer vertical onDelta={on_output_resize} />
-					{/if}
-					<div class="output" style:height={output_collapsed ? '28px' : `${output_h}px`}>
+					<Resizer vertical onStart={on_output_drag_start} onDelta={on_output_resize} />
+					<div class="output" style:height={output_collapsed ? '24px' : `${output_h}px`}>
 						<div class="output-head">
 							<span class="output-title">Output</span>
 							{#if log_lines.length}
 								<span class="output-count">{log_lines.length}</span>
 							{/if}
 							<span class="spacer"></span>
-							{#if log_lines.length}
+							{#if log_lines.length && !output_collapsed}
 								<button class="tb" onclick={() => (log_lines = [])} title="Clear" aria-label="Clear">
 									<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
 										<polyline points="3,5 13,5" />
@@ -371,15 +438,6 @@
 									</svg>
 								</button>
 							{/if}
-							<button class="tb" onclick={() => { output_collapsed = !output_collapsed; save_layout(); }} title={output_collapsed ? 'Expand' : 'Collapse'} aria-label="Toggle output">
-								<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-									{#if output_collapsed}
-										<polyline points="3,10 8,5 13,10" />
-									{:else}
-										<polyline points="3,6 8,11 13,6" />
-									{/if}
-								</svg>
-							</button>
 						</div>
 						{#if !output_collapsed}
 							<div class="output-body">
@@ -395,23 +453,16 @@
 			{/if}
 		</aside>
 
-		{#if !editor_collapsed && !viewer_collapsed}
-			<Resizer onDelta={on_editor_resize} />
-		{/if}
+		<Resizer onStart={on_editor_drag_start} onDelta={on_editor_resize} />
 
 		<section class="pane viewer-pane" style:flex={viewer_collapsed ? `0 0 ${COLLAPSED_W}px` : '1 1 0'}>
 			{#if viewer_collapsed}
-				<button class="collapsed-strip" onclick={() => { viewer_collapsed = false; save_layout(); }} aria-label="Expand viewer">
+				<div class="collapsed-strip" aria-label="Viewer (drag to expand)">
 					<span class="strip-label">Viewer</span>
-				</button>
+				</div>
 			{:else}
 				<div class="pane-inner">
 					<nav class="tabs">
-						<button class="tb collapse" onclick={() => { viewer_collapsed = true; save_layout(); }} aria-label="Collapse" title="Collapse viewer">
-							<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-								<polyline points="6,3 11,8 6,13" />
-							</svg>
-						</button>
 						<button class="tab-btn" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
 						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
 						{#if display === 'view3d'}
@@ -523,14 +574,11 @@
 		justify-content: center;
 		padding: var(--space-lg) 0;
 		background: var(--bg-surface);
-		border: 0;
-		border-right: 1px solid var(--border);
-		cursor: pointer;
 		color: var(--text-muted);
 		transition: color var(--transition), background var(--transition);
 		width: 100%;
+		cursor: default;
 	}
-	.collapsed-strip:hover { color: var(--accent); background: var(--bg-panel); }
 	.strip-label {
 		writing-mode: vertical-rl;
 		transform: rotate(180deg);
