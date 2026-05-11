@@ -42,8 +42,20 @@
 <div class="browser">
 	<div class="head">
 		<span class="title">Files</span>
-		<button onclick={onNew} title="New .py file">＋</button>
-		<button onclick={refresh} title="Refresh" disabled={loading}>⟳</button>
+		<button class="tb" onclick={onNew} title="New .py file" aria-label="New file">
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+				<path d="M8 3v10" />
+				<path d="M3 8h10" />
+			</svg>
+		</button>
+		<button class="tb" onclick={refresh} title="Refresh" aria-label="Refresh" disabled={loading}>
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8" />
+				<polyline points="12.5,2 12.5,4.5 10,4.5" />
+				<path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.8" />
+				<polyline points="3.5,14 3.5,11.5 6,11.5" />
+			</svg>
+		</button>
 	</div>
 	{#if error}
 		<div class="error">{error}</div>
@@ -90,25 +102,32 @@
 		letter-spacing: 0.5px;
 		font-weight: 600;
 	}
-	.head button {
-		background: transparent;
+	.tb {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		background: var(--bg-surface);
 		border: 1px solid var(--border);
 		color: var(--text-muted);
-		padding: 0;
-		width: 22px;
-		height: 22px;
 		cursor: pointer;
-		font-size: var(--fs-md);
-		line-height: 1;
-		text-transform: none;
-		letter-spacing: 0;
+		transition: background var(--transition), border-color var(--transition), color var(--transition);
 	}
-	.head button:hover {
+	.tb:hover {
 		background: var(--bg-panel);
+		border-color: var(--accent);
 		color: var(--text);
-		border-color: var(--input-hover);
 	}
-	.head button:disabled { opacity: 0.4; cursor: default; }
+	.tb:disabled {
+		opacity: 0.4;
+		cursor: default;
+		background: var(--bg-surface);
+		border-color: var(--border);
+		color: var(--text-dim);
+	}
+	.tb svg { display: block; }
 	.list { flex: 1; overflow: auto; padding: var(--space-sm) 0; }
 	.item {
 		display: block;

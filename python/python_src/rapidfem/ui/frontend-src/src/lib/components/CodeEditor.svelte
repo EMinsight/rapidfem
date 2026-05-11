@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { EditorState, type Extension } from '@codemirror/state';
-	import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection, dropCursor } from '@codemirror/view';
+	import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 	import { python } from '@codemirror/lang-python';
-	import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+	import { bracketMatching, indentOnInput, syntaxHighlighting, HighlightStyle, indentUnit } from '@codemirror/language';
+	import { tags as t } from '@lezer/highlight';
+	import { palette, fonts } from '$lib/theme';
 
 	let {
 		value = $bindable<string>(''),
@@ -17,6 +19,100 @@
 	let host: HTMLDivElement | undefined = $state();
 	let view: EditorView | null = null;
 	let last_set_value = '';
+
+	// ── Theme: editor chrome ────────────────────────────────────────────────
+	const editorTheme = EditorView.theme(
+		{
+			'&': {
+				height: '100%',
+				fontSize: '13px',
+				color: palette.text,
+				backgroundColor: palette.bgInset,
+				fontFamily: fonts.mono,
+			},
+			'.cm-scroller': {
+				fontFamily: fonts.mono,
+				lineHeight: '1.55',
+			},
+			'.cm-content': {
+				caretColor: palette.accent,
+				padding: '8px 0',
+			},
+			'&.cm-focused': { outline: 'none' },
+			'.cm-cursor, .cm-dropCursor': { borderLeftColor: palette.accent, borderLeftWidth: '2px' },
+			'&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
+				background: palette.accentDim,
+			},
+			'.cm-gutters': {
+				backgroundColor: palette.bgSurface,
+				color: palette.textDim,
+				borderRight: `1px solid ${palette.borderSubtle}`,
+				fontFamily: fonts.mono,
+				fontSize: '11px',
+				userSelect: 'none',
+			},
+			'.cm-lineNumbers .cm-gutterElement': {
+				padding: '0 10px 0 12px',
+				minWidth: '36px',
+				color: palette.textDim,
+			},
+			'.cm-activeLineGutter': {
+				backgroundColor: 'transparent',
+				color: palette.accent,
+			},
+			'.cm-activeLine': {
+				backgroundColor: palette.bgSurface,
+			},
+			'.cm-matchingBracket, .cm-nonmatchingBracket': {
+				backgroundColor: palette.accentDim,
+				outline: `1px solid ${palette.accent}`,
+				color: palette.text,
+			},
+			'.cm-tooltip': {
+				backgroundColor: palette.bgSurface,
+				border: `1px solid ${palette.border}`,
+				color: palette.text,
+				fontFamily: fonts.mono,
+			},
+		},
+		{ dark: true },
+	);
+
+	// ── Theme: syntax colors ────────────────────────────────────────────────
+	const highlight = HighlightStyle.define([
+		// Keywords (def, class, if, for, import, return, …) + control flow
+		{ tag: t.keyword, color: palette.accent, fontWeight: '500' },
+		{ tag: [t.controlKeyword, t.moduleKeyword], color: palette.accent, fontWeight: '500' },
+		// Literals: numbers in the warm secondary; bool/None get the accent
+		{ tag: t.number, color: palette.accentSecondary },
+		{ tag: [t.bool, t.null, t.atom], color: palette.accent },
+		// Strings: cool green to read as data
+		{ tag: t.string, color: '#6bbf8a' },
+		{ tag: t.special(t.string), color: '#7bbf95' },
+		{ tag: t.escape, color: palette.accentSecondary },
+		// Comments: dimmed + italic
+		{ tag: [t.comment, t.lineComment, t.blockComment], color: palette.textDim, fontStyle: 'italic' },
+		{ tag: t.docComment, color: palette.textMuted, fontStyle: 'italic' },
+		// Function definitions + calls
+		{ tag: t.function(t.variableName), color: '#4a9ec2' },
+		{ tag: t.function(t.definition(t.variableName)), color: '#4a9ec2', fontWeight: '500' },
+		{ tag: t.definition(t.variableName), color: palette.text, fontWeight: '500' },
+		// Class names + types
+		{ tag: t.className, color: '#e8944a', fontWeight: '500' },
+		{ tag: [t.typeName, t.namespace], color: '#e8944a' },
+		// Operators, punctuation, separators
+		{ tag: t.operator, color: palette.textMuted },
+		{ tag: [t.punctuation, t.separator], color: palette.textMuted },
+		{ tag: [t.brace, t.bracket, t.paren], color: palette.textMuted },
+		// Variables fall back to body text
+		{ tag: t.variableName, color: palette.text },
+		{ tag: t.propertyName, color: palette.text },
+		{ tag: [t.self, t.special(t.variableName)], color: palette.accent, fontStyle: 'italic' },
+		// Decorators (@…)
+		{ tag: t.meta, color: palette.accentSecondary },
+		// Invalid / errors
+		{ tag: t.invalid, color: palette.accent, textDecoration: 'underline wavy' },
+	]);
 
 	function build(initial: string): EditorView {
 		const save_keymap = keymap.of([
@@ -31,14 +127,17 @@
 		]);
 		const extensions: Extension[] = [
 			lineNumbers(),
+			highlightActiveLine(),
+			highlightActiveLineGutter(),
 			history(),
 			drawSelection(),
 			dropCursor(),
 			indentOnInput(),
+			indentUnit.of('    '),
 			bracketMatching(),
-			highlightActiveLine(),
-			syntaxHighlighting(defaultHighlightStyle),
 			python(),
+			syntaxHighlighting(highlight),
+			editorTheme,
 			save_keymap,
 			keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
 			EditorView.updateListener.of((upd) => {
@@ -47,11 +146,6 @@
 					last_set_value = text;
 					value = text;
 				}
-			}),
-			EditorView.theme({
-				'&': { height: '100%', fontSize: '13px' },
-				'.cm-scroller': { fontFamily: 'ui-monospace, Consolas, Menlo, monospace' },
-				'&.cm-focused': { outline: 'none' },
 			}),
 		];
 		const state = EditorState.create({ doc: initial, extensions });
@@ -66,8 +160,6 @@
 
 	onDestroy(() => view?.destroy());
 
-	// Sync external changes to the editor without echoing them back as
-	// internal edits (the updateListener would otherwise loop).
 	$effect(() => {
 		if (!view) return;
 		if (value === last_set_value) return;
@@ -89,14 +181,7 @@
 	.editor {
 		height: 100%;
 		width: 100%;
-		background: #0e0e0e;
-		color: #e8e8e8;
+		background: var(--bg-inset);
 		overflow: hidden;
 	}
-	:global(.cm-editor) { height: 100%; }
-	:global(.cm-content) { caret-color: #e8e8e8; }
-	:global(.cm-gutters) { background: #141414; border-right: 1px solid #222; color: #555; }
-	:global(.cm-activeLine) { background: rgba(255,255,255,0.03); }
-	:global(.cm-activeLineGutter) { background: rgba(255,255,255,0.05); color: #aaa; }
-	:global(.cm-selectionBackground), :global(.cm-content ::selection) { background: rgba(90, 170, 130, 0.25) !important; }
 </style>

@@ -30,6 +30,9 @@
 	let last_solve_stats = $state<{ n_freq: number; n_dofs: number; solve_time_s: number } | null>(null);
 
 	let display = $state<'view3d' | 'plots'>('view3d');
+	let show_geometry = $state(true);
+	let show_wireframe = $state(false);
+	let show_field = $state(false);
 	let unsub_bus: (() => void) | null = null;
 	let geom_debounce: ReturnType<typeof setTimeout> | null = null;
 
@@ -220,10 +223,10 @@
 <div class="app">
 	<header>
 		<span class="brand">rapidfem</span>
-		<span class="sep">/</span>
+		<span class="nav-sep"></span>
 		<span class="workdir">{workdir}</span>
 		{#if active_path}
-			<span class="sep">/</span>
+			<span class="path-sep">/</span>
 			<span class="active-file">{active_path}{dirty ? ' •' : ''}</span>
 		{/if}
 		<span class="status">{status}</span>
@@ -259,12 +262,38 @@
 
 		<section class="viewer-pane">
 			<nav class="tabs">
-				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D View</button>
-				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Parameters</button>
+				<button class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
+				<button class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
+				{#if display === 'view3d'}
+					<span class="tab-spacer"></span>
+					<div class="layer-toggles">
+						<button
+							class="layer-toggle"
+							class:active={show_geometry}
+							onclick={() => (show_geometry = !show_geometry)}
+							title="Geometry surfaces">Geometry</button>
+						<button
+							class="layer-toggle"
+							class:active={show_wireframe}
+							onclick={() => (show_wireframe = !show_wireframe)}
+							title="Mesh wireframe">Mesh</button>
+						<button
+							class="layer-toggle"
+							class:active={show_field}
+							disabled={!last_solve_stats}
+							onclick={() => (show_field = !show_field)}
+							title="Field cloud (after a solve)">Field</button>
+					</div>
+				{/if}
 			</nav>
 			<div class="viewer-slot">
 				{#if display === 'view3d'}
-					<MeshViewer mesh={mesh_data} show_geometry={true} show_wireframe={false} show_field={false} />
+					<MeshViewer
+						mesh={mesh_data}
+						{show_geometry}
+						{show_wireframe}
+						{show_field}
+					/>
 				{:else}
 					<ResultsPanel {freqs} {smats} metrics={[]} />
 				{/if}
@@ -295,20 +324,32 @@
 	header {
 		display: flex;
 		align-items: center;
-		gap: var(--space-md);
 		padding: 0 var(--space-xl);
-		border-bottom: 1px solid var(--border);
+		gap: var(--space-md);
+		height: 36px;
 		background: var(--bg-surface);
-		font-size: var(--fs-sm);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
 	}
 	header .brand {
 		color: var(--accent);
+		font-family: var(--font-mono);
 		font-weight: 700;
 		letter-spacing: 0.5px;
 		text-transform: uppercase;
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 	}
-	header .sep { color: var(--text-dim); }
+	header .nav-sep {
+		width: 1px;
+		height: 100%;
+		background: var(--border);
+		flex-shrink: 0;
+	}
+	header .path-sep {
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
 	header .workdir,
 	header .active-file {
 		color: var(--text-muted);
@@ -397,28 +438,56 @@
 		padding: 0;
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-surface);
-		min-height: 38px;
+		height: 36px;
+		flex-shrink: 0;
 		align-items: stretch;
 	}
 	.tabs button {
 		background: transparent;
-		color: var(--text-muted);
+		color: var(--text-dim);
 		border: 0;
-		border-bottom: 2px solid transparent;
 		padding: 0 var(--space-xl);
 		cursor: pointer;
+		font-family: var(--font-mono);
 		font-size: var(--fs-xs);
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
 		font-weight: 600;
-		font-family: var(--font-body);
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		transition: color var(--transition);
 	}
-	.tabs button:hover { color: var(--text); background: transparent; }
-	.tabs button.active {
-		color: var(--accent);
-		border-bottom-color: var(--accent);
+	.tabs button:hover { color: var(--text-muted); }
+	.tabs button.active { color: var(--accent); }
+
+	.tab-spacer { flex: 1; }
+
+	.layer-toggles {
+		display: flex;
+		align-items: center;
+		gap: 0;
+		padding-right: var(--space-md);
+		border-left: 1px solid var(--border);
+		margin-left: 0;
+	}
+	.layer-toggle {
 		background: transparent;
+		color: var(--text-dim);
+		border: 0;
+		border-right: 1px solid var(--border-subtle);
+		padding: 0 var(--space-md);
+		height: 22px;
+		margin: 7px 0 7px var(--space-md);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		font-weight: 500;
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		transition: color var(--transition);
 	}
+	.layer-toggle:last-child { border-right: 0; }
+	.layer-toggle:hover { color: var(--text-muted); }
+	.layer-toggle.active { color: var(--accent); }
+	.layer-toggle:disabled { color: var(--text-dim); cursor: default; opacity: 0.5; }
 
 	.viewer-slot {
 		flex: 1;
