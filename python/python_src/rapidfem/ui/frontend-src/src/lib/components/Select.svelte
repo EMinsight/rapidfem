@@ -4,9 +4,11 @@
 	let {
 		value = $bindable<T>(),
 		options,
+		open_up = false,
 	}: {
 		value: T;
 		options: Array<{ value: T; label: string; description?: string }>;
+		open_up?: boolean;
 	} = $props();
 
 	let open = $state(false);
@@ -29,7 +31,7 @@
 		<svg width="8" height="5" viewBox="0 0 8 5" fill="currentColor"><path d="M0 0L4 5L8 0Z"/></svg>
 	</button>
 	{#if open}
-		<div class="menu">
+		<div class="menu" class:up={open_up}>
 			{#each options as o}
 				<button
 					class="option"
@@ -84,6 +86,10 @@
 		flex-direction: column;
 		max-height: 240px;
 		overflow: auto;
+	}
+	.menu.up {
+		top: auto;
+		bottom: calc(100% + 2px);
 	}
 	.option {
 		padding: 5px var(--space-md);

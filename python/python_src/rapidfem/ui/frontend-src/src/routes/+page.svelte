@@ -604,6 +604,7 @@
 									<span class="lbl">Excitation</span>
 									<Select
 										bind:value={field_port_idx}
+										open_up
 										options={fields_raw[field_freq_idx].map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
 									/>
 								</div>

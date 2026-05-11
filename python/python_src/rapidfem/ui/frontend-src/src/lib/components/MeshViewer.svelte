@@ -622,15 +622,24 @@
 		return prefix !== undefined ? `${mantissa} ${prefix}` : `${m.toFixed(1)}e${exp}`;
 	}
 
-	// Six logarithmic ticks for the colorbar (one per decade in our 6-decade range)
+	// Colorbar ticks. Log mode: one per decade. Lin mode: 5 evenly-spaced.
 	const colorbar_ticks = $derived.by(() => {
 		if (!field_range) return [] as { frac: number; label: string }[];
 		const out: { frac: number; label: string }[] = [];
-		const log_max = Math.log10(field_range.max);
-		const log_min = log_max - field_range.decades;
-		for (let i = 0; i <= field_range.decades; i++) {
-			const v = Math.pow(10, log_min + i);
-			out.push({ frac: i / field_range.decades, label: fmt_eng(v) });
+		if (scale_mode === 'log') {
+			const log_max = Math.log10(field_range.max);
+			const log_min = log_max - Math.max(field_range.decades, 0.5);
+			const n_dec = Math.max(1, Math.round(field_range.decades));
+			for (let i = 0; i <= n_dec; i++) {
+				const v = Math.pow(10, log_min + (log_max - log_min) * (i / n_dec));
+				out.push({ frac: i / n_dec, label: fmt_eng(v) });
+			}
+		} else {
+			const n = 4;
+			for (let i = 0; i <= n; i++) {
+				const v = field_range.min + (field_range.max - field_range.min) * (i / n);
+				out.push({ frac: i / n, label: fmt_eng(v) });
+			}
 		}
 		return out;
 	});
@@ -701,7 +710,7 @@
 
 		{#if show_field && field_range}
 			<div class="overlay-panel cb-panel">
-				<div class="op-title">|E| · V/m</div>
+				<div class="op-title">|E| · V/m <span class="cb-mode">({scale_mode})</span></div>
 				<div class="cb-body">
 					<div class="cb-gradient">
 						{#each colorbar_ticks as tk}

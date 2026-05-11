@@ -158,14 +158,15 @@ export async function viz_sample(
 	if (!isFinite(min_e2) || max_e2 === 0) {
 		min_e2 = 1; max_e2 = 1;
 	}
-	const log_max = Math.log10(max_e2);
-	const log_min = Math.log10(Math.max(min_e2, max_e2 * 1e-6));
-	const log_floor = log_min;
-	const log_range = Math.max(log_max - log_min, 1);
-	// |E| = sqrt(|E|²)
-	const e_min = Math.sqrt(Math.max(min_e2, 0));
+	// Shader works in log10(|E|), not log10(|E|²). Convert.
+	const e_min_raw = Math.sqrt(Math.max(min_e2, 0));
 	const e_max = Math.sqrt(max_e2);
-	const decades = Math.log10(e_max / Math.max(e_min, e_max * 1e-6));
+	const e_min = Math.max(e_min_raw, e_max * 1e-3);
+	const log_max = Math.log10(e_max);
+	const log_min = Math.log10(e_min);
+	const log_floor = log_min;
+	const log_range = Math.max(log_max - log_min, 0.5);
+	const decades = log_max - log_min;
 	return {
 		positions,
 		abc,
