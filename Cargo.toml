@@ -1,26 +1,17 @@
-[workspace]
-members = [
-    ".",
-    "crates/rapidfem-mesher",
-    "wasm-demo",
-]
+[package]
+name = "rapidfem"
+version = "0.1.0"
+edition = "2024"
+exclude = ["python", "target", "tests/validation"]
 
 [profile.release]
 opt-level = "z"
 lto = true
 
-[package]
-name = "rapidfem"
-version = "0.1.0"
-edition = "2024"
-
 [features]
 default = ["pardiso", "parallel", "vtk"]
-# PARDISO via dynamically loaded MKL — disabled for WASM (no libloading) or non-x86 hosts.
 pardiso = ["dep:libloading"]
-# rayon-based parallel assembly — disabled for WASM single-thread builds.
 parallel = ["dep:rayon"]
-# VTK field/error export — pulls in xz2/lzma-sys (C dep), disable for WASM.
 vtk = ["dep:vtkio"]
 
 [dependencies]
