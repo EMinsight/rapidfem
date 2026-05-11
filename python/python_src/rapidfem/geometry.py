@@ -753,11 +753,17 @@ class Geometry:
         `name_to_tag` maps each user-supplied name to its physical-group tag.
         """
         gmsh.model.occ.synchronize()
-        # Wipe any prior mesh state (preview meshes, stale fields from a
-        # previous g.mesh() call). Without this, generate(3) reuses the
-        # old 1D/2D meshes and the user's new maxh is partially ignored.
+        # Wipe any prior mesh state AND physical groups. Without the latter,
+        # re-running this cell hits "Physical surface 1 already exists".
+        # Without the former, gmsh reuses stale 1D/2D meshes and partially
+        # ignores the new maxh.
         try:
             gmsh.model.mesh.clear()
+        except Exception:
+            pass
+        try:
+            for dim, ptag in gmsh.model.getPhysicalGroups():
+                gmsh.model.removePhysicalGroups([(dim, ptag)])
         except Exception:
             pass
 

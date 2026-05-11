@@ -170,18 +170,26 @@
 		last_set_value = source;
 	});
 
-	// Auto-focus the editor when this cell becomes the focused one
+	let cell_root: HTMLElement | undefined = $state();
+
+	// Auto-focus + scroll-into-view when this cell becomes the focused one
 	// (e.g. after a Run-cell advance, or when the Notebook adds a new cell).
 	let was_focused = false;
 	$effect(() => {
-		if (focused && !was_focused && view) view.focus();
+		if (focused && !was_focused) {
+			view?.focus();
+			cell_root?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		}
 		was_focused = focused;
 	});
 
-	export function focus() { view?.focus(); }
+	export function focus() {
+		view?.focus();
+		cell_root?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	}
 </script>
 
-<div class="cell" class:focused class:markdown={kind === 'markdown'}>
+<div class="cell" class:focused class:markdown={kind === 'markdown'} bind:this={cell_root}>
 	<div class="cell-head">
 		{#if kind === 'code'}
 			<button class="run" onclick={onRun} disabled={status === 'running'} title="Run cell (Shift+Enter)">

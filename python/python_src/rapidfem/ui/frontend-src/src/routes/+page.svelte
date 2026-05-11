@@ -603,7 +603,7 @@
 							<span class="nav-sep"></span>
 							<button class="tab-btn small" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)} title="Geometry surfaces (G)">Geometry</button>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small" class:active={show_wireframe} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
+							<button class="tab-btn small" class:active={show_wireframe} disabled={!mesh_data || mesh_data.tets.length === 0} onclick={() => (show_wireframe = !show_wireframe)} title="Mesh wireframe (M)">Mesh</button>
 							<span class="nav-sep"></span>
 							<button class="tab-btn small" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)} title="Field cloud (E)">Field</button>
 						{/if}

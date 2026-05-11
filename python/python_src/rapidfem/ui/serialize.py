@@ -182,18 +182,30 @@ def _wireframe_payload(g: Any) -> dict:
         return (0 if e.dim == 2 else 1, 0 if e.name else 1)
     raw_ents.sort(key=_key)
 
+    # Cache sampled curves so we don't re-tessellate shared edges, but
+    # emit them under EACH entity that owns them — otherwise the first
+    # face claims everything and the rest of the legend is empty.
+    curve_cache: dict[int, list[float]] = {}
+    def sample_cached(tag: int) -> list[float]:
+        v = curve_cache.get(tag)
+        if v is None:
+            v = sample_curve(tag)
+            curve_cache[tag] = v
+        return v
+
     entities: list[dict] = []
-    seen_curves: set[int] = set()
+    seen_ents: set[tuple[int, int]] = set()
     for ent in raw_ents:
         if ent.dim not in (2, 3):
             continue
+        key = (ent.dim, ent.tag)
+        if key in seen_ents:
+            continue
+        seen_ents.add(key)
         name = ent.name or f"_{ 'face' if ent.dim == 2 else 'volume' }_{ent.tag}"
         lines: list[float] = []
         for ctag in curves_of(ent.dim, ent.tag):
-            if ctag in seen_curves:
-                continue
-            seen_curves.add(ctag)
-            lines.extend(sample_curve(ctag))
+            lines.extend(sample_cached(ctag))
         if not lines:
             continue
         entities.append({

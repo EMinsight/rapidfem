@@ -113,10 +113,32 @@ def _capture_native_streams(stage: str):
     t_err = threading.Thread(target=reader, args=(err_r, "stderr", lines_err), daemon=True)
     t_out.start()
     t_err.start()
+    # sys.stdout/stderr in Python wrap the C fd via a TextIOWrapper with a
+    # locale-derived encoding (cp1252 on Windows). User code printing a non-
+    # ASCII char (e.g. subscript) would crash on encode. Force UTF-8 for the
+    # duration of the cell so prints with Unicode work.
+    prior_out_enc = getattr(sys.stdout, "encoding", None)
+    prior_err_enc = getattr(sys.stderr, "encoding", None)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", write_through=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", write_through=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     try:
         yield lines_out, lines_err
     finally:
         sys.stdout.flush(); sys.stderr.flush()
+        try:
+            if prior_out_enc:
+                sys.stdout.reconfigure(encoding=prior_out_enc)  # type: ignore[attr-defined]
+            if prior_err_enc:
+                sys.stderr.reconfigure(encoding=prior_err_enc)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         os.dup2(saved_out, 1)
         os.dup2(saved_err, 2)
         if _WIN and saved_win_out is not None and saved_win_err is not None:
@@ -469,7 +491,17 @@ def register(app: Flask) -> None:
             if item.kind == "geometry":
                 last_geo = item.obj
                 try:
-                    entry["payload"] = geometry_to_payload(item.obj)
+                    out = geometry_to_payload(item.obj)
+                    # geometry_to_payload now returns mesh_to_payload when the
+                    # gmsh state already holds a tet mesh. Route those to the
+                    # dedicated mesh_payload slot — the frontend's geo-handler
+                    # only knows the OCC wireframe / triangle-entities format.
+                    if out.get("kind") == "mesh":
+                        if mesh_payload is None:
+                            mesh_payload = out
+                        entry["meshed"] = True
+                    else:
+                        entry["payload"] = out
                 except Exception as e:  # noqa: BLE001
                     entry["error"] = _format_exception(e)
             elif item.kind == "builder":

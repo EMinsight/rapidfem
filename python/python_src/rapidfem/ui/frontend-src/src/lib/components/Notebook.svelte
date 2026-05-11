@@ -85,29 +85,21 @@
 		source = t;
 	}
 
-	function is_md(c: Cell): boolean {
-		return !!c.marker && /\[markdown\]/i.test(c.marker);
-	}
-
 	async function run_cell(c: Cell, opts: { reset?: boolean; advance?: boolean } = {}) {
-		if (!is_md(c)) {
-			c.status = 'running';
-			cells = [...cells];
-			try {
-				const result = await onRunCell(c.text, !!opts.reset);
-				c.status = result;
-			} catch {
-				c.status = 'error';
-			}
-			cells = [...cells];
+		c.status = 'running';
+		cells = [...cells];
+		try {
+			const result = await onRunCell(c.text, !!opts.reset);
+			c.status = result;
+		} catch {
+			c.status = 'error';
 		}
-		// Jupyter-style: after running a cell, move the focus to the next
-		// cell (or insert a fresh one at the bottom).
+		cells = [...cells];
 		if (opts.advance !== false) {
 			const i = cells.findIndex((x) => x.id === c.id);
 			if (i >= 0 && i < cells.length - 1) {
 				focused_id = cells[i + 1].id;
-			} else if (i === cells.length - 1 && !is_md(c)) {
+			} else if (i === cells.length - 1) {
 				add_cell_after(c.id);
 			}
 		}
@@ -116,7 +108,6 @@
 	async function run_all() {
 		let first = true;
 		for (const c of cells) {
-			if (is_md(c)) continue;
 			await run_cell(c, { reset: first, advance: false });
 			first = false;
 			if (c.status === 'error') break;
@@ -153,12 +144,11 @@
 
 <div class="notebook">
 	{#each cells as cell (cell.id)}
-		{@const is_md = !!cell.marker && /\[markdown\]/i.test(cell.marker)}
 		<Cell
 			index={cells.indexOf(cell)}
 			bind:source={cell.text}
 			status={cell.status}
-			kind={is_md ? 'markdown' : 'code'}
+			kind="code"
 			focused={cell.id === focused_id}
 			onRun={() => { focused_id = cell.id; void run_cell(cell, { advance: true }); }}
 			onRunAllBelow={() => { focused_id = cell.id; void run_all(); }}
