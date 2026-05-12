@@ -24,6 +24,8 @@ python/python_src/rapidfem/_native.*
 python/python_src/rapidfem/rapidfem.*
 python/dist/
 python/*.egg-info/
+# Staged at build time from the repo root by CI / build scripts.
+python/README.md
 .maturin/
 
 # Frontend build output (locally built; in CI built fresh into the wheel)
