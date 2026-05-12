@@ -1065,10 +1065,22 @@ class Geometry:
             min_id = gmsh.model.mesh.field.add("Min")
             gmsh.model.mesh.field.setNumbers(min_id, "FieldsList", threshold_field_ids)
             gmsh.model.mesh.field.setAsBackgroundMesh(min_id)
-            # Disable competing default size sources so Field is authoritative
+            # When threshold fields are active the user explicitly cares about
+            # local size — keep `ExtendFromBoundary` off so global Max applies
+            # away from refined regions, but leave Curvature on (combined via
+            # Min) so curved features get resolved cleanly even if the user
+            # only set per-volume sizes.
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+        # Curvature-based sizing: gmsh disables this by default. Turning it
+        # on gives curved primitives (cylinder, sphere, cone, torus) a
+        # geometry-accurate facet count without the user having to refine
+        # those surfaces by hand. Value = target elements per 2π radians.
+        # 12 is a reasonable balance between fidelity and DoF count for
+        # second-kind Nédélec-2 (high-order absorbs some discretisation
+        # error already). User can override before calling .mesh().
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
 
         # Assign physical groups by name. Group entities of the same name+dim.
         by_dim_name: dict[tuple[int, str], list[int]] = {}
