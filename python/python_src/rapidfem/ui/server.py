@@ -100,6 +100,24 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
         pass
 
     try:
+        # simple_websocket (used by flask-sock under the hood) hard-codes
+        # `permessage-deflate` in its AcceptConnection event. The deflate
+        # frames it then sends have RSV1 set, but browsers and Python's
+        # `websockets` client reject them with "Invalid frame header" /
+        # "reserved bits must be 0" — confirmed via end-to-end smoke test.
+        # Locally we have zero bandwidth pressure; deflate is pure cost.
+        # Patch the event factory *before* importing flask-sock.
+        import simple_websocket.ws as _sw_ws
+        if not getattr(_sw_ws, "_rapidfem_no_deflate", False):
+            _orig_accept = _sw_ws.AcceptConnection
+
+            def _no_deflate_accept(*args, **kwargs):
+                kwargs["extensions"] = []
+                return _orig_accept(*args, **kwargs)
+
+            _sw_ws.AcceptConnection = _no_deflate_accept
+            _sw_ws._rapidfem_no_deflate = True
+
         from flask_sock import Sock
         from rapidfem.ui.bus import BUS
         from rapidfem.ui.kernel_ws import register_kernel_ws
