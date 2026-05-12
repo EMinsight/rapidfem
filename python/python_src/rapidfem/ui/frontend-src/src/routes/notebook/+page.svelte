@@ -14,6 +14,7 @@
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
 	import Select from '$lib/components/Select.svelte';
+	import { openPrompt } from '$lib/modals';
 
 	let status = $state('idle');
 	let workdir = $state('');
@@ -383,7 +384,16 @@
 	}
 
 	async function new_file() {
-		const name = prompt('New file name (e.g. patch.py):');
+		const name = await openPrompt({
+			title: 'New notebook',
+			label: 'File name',
+			placeholder: 'patch.py',
+			confirmLabel: 'Create',
+			validate: (v) => {
+				if (!v) return 'Name cannot be empty';
+				return null;
+			},
+		});
 		if (!name) return;
 		const path = name.endsWith('.py') ? name : `${name}.py`;
 		try {
