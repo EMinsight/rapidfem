@@ -104,3 +104,36 @@ jobs:
           name: sdist
           path: python/dist/*.tar.gz
           if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-wheels, build-sdist]
+    # Only fires on a published GitHub Release (any semver — major / minor /
+    # patch). Bare `v*` tag pushes still build artifacts but do not publish,
+    # so accidental test tags can't reach PyPI.
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rapidfem
+    permissions:
+      id-token: write  # OIDC token for PyPI Trusted Publishing
+    steps:
+      - name: Download all wheels + sdist
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'wheel-*'
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true
