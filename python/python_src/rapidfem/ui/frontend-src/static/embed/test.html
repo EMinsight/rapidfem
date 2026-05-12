@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>fem-viewer embed test</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #131316; color: #d0cdce; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 18px; color: #d9513c; }
+  h2 { font-size: 14px; color: #b8b6b8; margin-top: 28px; }
+  pre { background: #1a1a1f; color: #c4c4c8; padding: 10px; font-size: 11px; border: 1px solid #2a2a31; overflow-x: auto; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #1a1a1f; padding: 12px; border: 1px solid #2a2a31; }
+  fem-viewer { display: block; border: 1px solid #2a2a31; }
+</style>
+<script src="./fem-viewer.js"></script>
+</head>
+<body>
+
+<h1>&lt;fem-viewer&gt; — embed test</h1>
+<p>Standalone web component that mounts a rapidfem mesh + field viewer from a baked example bundle.</p>
+
+<h2>Static — geometry only</h2>
+<pre>&lt;fem-viewer src="/demo/wr90.json" height="280px"&gt;&lt;/fem-viewer&gt;</pre>
+<fem-viewer src="/demo/wr90.json" height="280px"></fem-viewer>
+
+<h2>Interactive — orbit/pan/zoom + double-click to fit</h2>
+<pre>&lt;fem-viewer src="/demo/patch_antenna.json" interactive height="320px"&gt;&lt;/fem-viewer&gt;</pre>
+<fem-viewer src="/demo/patch_antenna.json" interactive height="320px"></fem-viewer>
+
+<h2>Rotating + field animation</h2>
+<pre>&lt;fem-viewer src="/demo/wr90.json" rotate animate-field speed="2" height="280px"&gt;&lt;/fem-viewer&gt;</pre>
+<fem-viewer src="/demo/wr90.json" rotate animate-field speed="2" height="280px"></fem-viewer>
+
+<h2>Side by side</h2>
+<div class="grid">
+  <div class="card">
+    <pre>field-mode="lin" field-freq="10"</pre>
+    <fem-viewer src="/demo/iris_filter.json" rotate animate-field field-mode="lin" field-freq="10" height="240px"></fem-viewer>
+  </div>
+  <div class="card">
+    <pre>field-mode="log" field-freq="10"</pre>
+    <fem-viewer src="/demo/iris_filter.json" rotate animate-field field-mode="log" field-freq="10" height="240px"></fem-viewer>
+  </div>
+</div>
+
+<h2>Transparent + camera preset</h2>
+<pre>&lt;fem-viewer src="/demo/coax_step.json" rotate transparent theta="60" phi="30" height="260px"&gt;&lt;/fem-viewer&gt;</pre>
+<fem-viewer src="/demo/coax_step.json" rotate transparent theta="60" phi="30" height="260px"></fem-viewer>
+
+</body>
+</html>
