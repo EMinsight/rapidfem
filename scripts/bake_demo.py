@@ -226,6 +226,12 @@ def _binarise_fields(fields) -> tuple[bytes, dict] | None:
             mask_bytes[fi * n_port + pi] = 1
             payload_floats.extend(x)
 
+    # Pad the mask up to a 4-byte boundary so the following Float32 block
+    # is naturally aligned. JS's `new Float32Array(buf, offset)` REQUIRES
+    # `offset % 4 == 0` — without padding the FE can't decode the field.
+    mask_pad = (-len(mask_bytes)) % 4
+    mask_bytes.extend(b"\x00" * mask_pad)
+
     header = struct.pack("<5I", _FIELD_BIN_MAGIC, _FIELD_BIN_VERSION,
                          n_freq, n_port, stride)
     payload = struct.pack(f"<{len(payload_floats)}f", *payload_floats)

@@ -281,7 +281,10 @@ class StaticKernelClient {
 		const stride = dv.getUint32(16, true);
 		const mask_off = 20;
 		const mask = new Uint8Array(buf, mask_off, n_freq * n_port);
-		const floats_off = mask_off + mask.byteLength;
+		// The mask block is zero-padded so the float block starts on a
+		// 4-byte boundary — required by Float32Array's offset constraint.
+		const mask_padded = (mask.byteLength + 3) & ~3;
+		const floats_off = mask_off + mask_padded;
 		const all_floats = new Float32Array(buf, floats_off);
 
 		const out: (number[] | null)[][] = [];
