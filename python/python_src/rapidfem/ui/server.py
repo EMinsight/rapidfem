@@ -1,14 +1,20 @@
 """Flask server for `rapidfem serve`.
 
-Exposes the bundled SvelteKit frontend on `/` and a small JSON/WebSocket API
-on `/api/*` and `/ws`. All endpoints are local-only by convention — there is
-no authentication.
+Exposes the bundled SvelteKit frontend on `/` and a small JSON API on
+`/api/*`. All endpoints are local-only by convention — there is no
+authentication.
 
-The actual endpoints are registered in `rapidfem.ui.api` (split out so the
-server module stays small and testable).
+Cell execution runs in a per-file subprocess worker (see
+``rapidfem.ui.runner``); the server itself never exec's user code.
+Streaming events flow via HTTP long-polling on ``/api/cell/poll``.
+
+The actual endpoints are registered in:
+  - ``rapidfem.ui.runner``  → /api/cell/*, /api/kernel
+  - ``rapidfem.ui.api``     → /api/files/*, /api/examples/*, legacy ops
 """
 from __future__ import annotations
 
+import atexit
 import os
 import threading
 import webbrowser
@@ -54,9 +60,6 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
     # check rather than wildcard.
     @app.after_request
     def _cors(resp):
-        origin = resp.headers.get("Origin") or ""
-        # Allow any localhost origin (vite dev server, custom ports).
-        # Reflected only, not "*", so credentials remain blocked anyway.
         from flask import request
         req_origin = request.headers.get("Origin", "")
         if req_origin.startswith("http://127.0.0.1") or req_origin.startswith("http://localhost"):
@@ -73,11 +76,26 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
             "frontend_bundled": dist is not None,
         })
 
+    # Cell runner (subprocess pool + /api/cell/* + /api/kernel).
+    from rapidfem.ui import runner
+    runner.register(app)
+    atexit.register(runner.shutdown_all)
+
+    # File/example/legacy endpoints.
+    try:
+        from rapidfem.ui import api  # noqa: F401
+        api.register(app)
+    except ImportError:
+        pass
+
     # Frontend static serving — only registered when dist/ is present.
     if dist is not None:
         @app.get("/", defaults={"path": ""})
         @app.get("/<path:path>")
         def _spa(path: str):
+            if path.startswith(("api/",)) or path == "api":
+                from flask import abort
+                abort(404)
             target = dist / path
             if path and target.exists() and target.is_file():
                 return send_from_directory(dist, path)
@@ -93,98 +111,6 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
                 "or install a release wheel.</p>"
             ), 503
 
-    try:
-        from rapidfem.ui import api  # noqa: F401
-        api.register(app)
-    except ImportError:
-        pass
-
-    try:
-        # simple_websocket (under flask-sock) negotiates `permessage-deflate`
-        # and sends frames with RSV1 set — but its deflate implementation
-        # produces frames that browsers and Python's `websockets` client
-        # reject as "Invalid frame header" / "reserved bits must be 0".
-        # Locally we have no bandwidth pressure; deflate is pure cost+risk.
-        # Belt-and-suspenders defense in three layers:
-        #   1. PerMessageDeflate.accept → return None so the extension isn't
-        #      negotiated; `_enabled` stays False and FrameProtocol filters it
-        #      out at Connection-construction time.
-        #   2. PerMessageDeflate.enabled → always False, in case some state
-        #      mutation flips `_enabled` later. With enabled=False, FrameProtocol
-        #      drops the extension from `self.extensions` on construction.
-        #   3. PerMessageDeflate.frame_outbound → pass-through (no compression,
-        #      no RSV bits) — the last-line guarantee that nothing slips through
-        #      even if both upper layers were bypassed.
-        # AcceptConnection extensions=[] is *also* patched for completeness,
-        # so the handshake response carries no `Sec-WebSocket-Extensions`.
-        import wsproto.extensions as _wsx
-        if not getattr(_wsx, "_rapidfem_no_deflate", False):
-            _wsx.PerMessageDeflate.accept = lambda self, offer: None
-            _wsx.PerMessageDeflate.enabled = lambda self: False
-            _wsx.PerMessageDeflate.frame_outbound = (
-                lambda self, proto, opcode, rsv, data, fin: (rsv, data)
-            )
-            _wsx._rapidfem_no_deflate = True
-
-        import simple_websocket.ws as _sw_ws
-        if not getattr(_sw_ws, "_rapidfem_no_deflate", False):
-            _orig_accept = _sw_ws.AcceptConnection
-
-            def _no_deflate_accept(*args, **kwargs):
-                kwargs["extensions"] = []
-                return _orig_accept(*args, **kwargs)
-
-            _sw_ws.AcceptConnection = _no_deflate_accept
-            _sw_ws._rapidfem_no_deflate = True
-
-        # simple_websocket.Base.send calls `self.sock.send(out_data)` —
-        # plain socket.send, which on Windows returns short when the OS TCP
-        # buffer (~64 KB by default) can't accept the whole frame. The
-        # remaining bytes are silently dropped, the frame is truncated, and
-        # the next bytes the client decodes from the middle of the payload
-        # look like a malformed WS frame ("reserved bits must be 0" / "Invalid
-        # frame header"). Swap the implementation for one that uses sendall.
-        if not getattr(_sw_ws, "_rapidfem_sendall", False):
-            from wsproto.events import Message, TextMessage
-
-            def _sendall_send(self, data):
-                from simple_websocket import ConnectionClosed
-                if not self.connected:
-                    raise ConnectionClosed(self.close_reason, self.close_message)
-                if isinstance(data, bytes):
-                    out_data = self.ws.send(Message(data=data))
-                else:
-                    out_data = self.ws.send(TextMessage(data=str(data)))
-                # sendall retries until every byte is written, which is what
-                # WS framing requires — anything less and the next frame
-                # starts in the middle of a truncated one.
-                self.sock.sendall(out_data)
-
-            _sw_ws.Base.send = _sendall_send
-            _sw_ws._rapidfem_sendall = True
-
-        from flask_sock import Sock
-        from rapidfem.ui.bus import BUS
-        from rapidfem.ui.kernel_ws import register_kernel_ws
-
-        sock = Sock(app)
-        register_kernel_ws(sock)
-
-        @sock.route("/ws")
-        def _ws(ws):  # pragma: no cover — exercised end-to-end
-            q = BUS.subscribe()
-            try:
-                ws.send('{"kind":"hello","ok":true}')
-                while True:
-                    payload = q.get()
-                    ws.send(payload)
-            except Exception:
-                pass
-            finally:
-                BUS.unsubscribe(q)
-    except ImportError:
-        pass  # flask-sock optional dependency
-
     return app
 
 
@@ -195,17 +121,13 @@ def run(app: Flask, host: str = "127.0.0.1", port: int = 5174, open_browser: boo
     if app.config["RAPIDFEM_FRONTEND_DIST"] is None:
         print("rapidfem serve — WARNING: no frontend bundle found (run scripts/build_frontend).")
 
-    # gmsh.initialize installs a SIGINT handler, which only the main thread
-    # can do. Eagerly init here so Geometry() calls from worker request
-    # threads skip the init via gmsh.isInitialized().
-    try:
-        import gmsh
-        if not gmsh.isInitialized():
-            gmsh.initialize()
-            gmsh.option.setNumber("General.Terminal", 0)
-    except Exception as e:  # noqa: BLE001
-        print(f"rapidfem serve — gmsh pre-init failed: {e}")
-
     if open_browser and not os.environ.get("RAPIDFEM_NO_BROWSER"):
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-    app.run(host=host, port=port, debug=app.config["RAPIDFEM_DEBUG"], use_reloader=False)
+    # threaded=True so the long-poll endpoint doesn't block other requests
+    # while it waits on the worker's stdout queue.
+    app.run(
+        host=host, port=port,
+        debug=app.config["RAPIDFEM_DEBUG"],
+        use_reloader=False,
+        threaded=True,
+    )
