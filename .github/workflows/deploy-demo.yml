@@ -6,14 +6,7 @@ name: Deploy static demo
 
 on:
   push:
-    branches:
-      - feature/static-demo
-      - main
-    paths:
-      - 'src/**'
-      - 'python/**'
-      - 'scripts/bake_demo.py'
-      - '.github/workflows/deploy-demo.yml'
+    branches: [master]
   workflow_dispatch:
 
 # A GH Pages deploy can clobber the in-flight one — serialise.

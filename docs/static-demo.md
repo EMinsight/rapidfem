@@ -70,10 +70,8 @@ python -m http.server 8000 --directory dist
 
 ### Trigger a deploy
 
-- Push to `feature/static-demo` (or `main` later) under any of:
-  `src/**`, `python/**`, `scripts/bake_demo.py`,
-  `.github/workflows/deploy-demo.yml`
-- Or: GitHub UI → Actions → "Deploy static demo" → Run workflow
+- Any push to `master` (incl. merges from feature branches).
+- Or: GitHub UI → Actions → "Deploy static demo" → Run workflow.
 
 ## Operational notes
 
