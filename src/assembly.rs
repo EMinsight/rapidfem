@@ -534,19 +534,11 @@ pub fn frequency_sweep_with_pml(
             solutions
         };
 
-        // Per-frequency norms give a quick sanity signal during long sweeps:
-        // each driven port should produce a non-zero solution.
         let solver_label = if pardiso_solver.is_some() { "pardiso" } else { "faer" };
-        let mut norms_str = String::new();
-        for (pi, x) in solutions.iter().enumerate() {
-            let n: f64 = x.iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt();
-            if pi > 0 { norms_str.push_str(", "); }
-            norms_str.push_str(&format!("||x{}||={:.3e}", pi + 1, n));
-        }
         eprintln!(
-            "  f={:>8.4e} Hz [{:>2}/{:>2}]  {:>6.1}ms  {}  {}",
+            "  f={:>8.4e} Hz [{:>2}/{:>2}]  {:>6.1}ms  {}",
             freq, fi + 1, frequencies.len(), t_freq.elapsed().as_secs_f64() * 1e3,
-            solver_label, norms_str,
+            solver_label,
         );
         results.push(SolveResult { solutions, n_field });
     }
