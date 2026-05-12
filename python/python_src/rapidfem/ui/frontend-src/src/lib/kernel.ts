@@ -129,7 +129,19 @@ export class KernelClient {
 					if (evt.kind === 'error') {
 						opts.onStream?.('stderr', `${evt.error.type}: ${evt.error.message}`);
 					} else {
-						opts.onDisplay?.(evt.kind, evt.payload, evt.name);
+						// onDisplay callbacks touch reactive state (mesh, S-params,
+						// fields). A throw in there used to bubble all the way up
+						// and mark the cell failed — but the cell itself already
+						// finished cleanly on the worker. Log + skip instead so
+						// the user sees the diagnostic, the cell stays OK, and
+						// the next display events keep flowing.
+						try {
+							opts.onDisplay?.(evt.kind, evt.payload, evt.name);
+						} catch (err) {
+							console.error('[kernel] onDisplay threw:', err, evt);
+							opts.onStream?.('stderr',
+								`[ui] display "${evt.kind}" failed to render: ${err}`);
+						}
 					}
 				} else if (evt.type === 'error') {
 					last_error = {
