@@ -702,6 +702,10 @@ class SimulationBuilder:
         execute. Uses a shift-invert Lanczos iteration with PARDISO (or
         faer) as the inner direct factoriser.
 
+        ``.frequencies(...)`` does **not** need to be called for an
+        eigenmode-only build — ``target_frequency`` doubles as the
+        single sample point the matrix assembly needs.
+
         Parameters
         ----------
         target_frequency : float
@@ -859,8 +863,15 @@ class SimulationBuilder:
     # ── Build ──────────────────────────────────────────────────────────────
 
     def _make_config_toml(self) -> str:
+        # Frequencies are required for any *driven* run. An eigenmode-only
+        # build can fall back to the target_frequency as a single shift
+        # value — the Rust side just needs *some* number to seed the matrix
+        # assembly with, which is what the target already is.
         if not self._frequencies:
-            raise ValueError("call .frequencies(...) before .build()/.dump()")
+            if self._eigenmode is None:
+                raise ValueError("call .frequencies(...) before .build()/.dump()")
+            f0, _ = self._eigenmode
+            self._frequencies = [float(f0)]
         toml = ['[mesh]\nfile = "(in-memory)"\n']
         freqs_str = ", ".join(_f64(f) for f in self._frequencies)
         toml.append(f"[frequency]\nvalues = [{freqs_str}]\n")
