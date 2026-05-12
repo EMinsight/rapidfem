@@ -341,26 +341,20 @@
 				queueMicrotask(() => { void notebook?.run_all_cells(); });
 				return;
 			}
-			// Live mode: copy into workdir so edits persist, with numeric
-			// suffix to avoid clobbering prior work.
-			let target = name;
+			// Live mode: if the example file is already in the workdir
+			// (the default — `rapidfem serve` auto-populates them on first
+			// run), just open it. Never overwrite user edits, never spawn
+			// `_1.py` clones.
 			try {
-				let i = 1;
-				while (true) {
-					try {
-						await readFile(target);
-						// File exists — try next variant.
-						target = name.replace(/\.py$/, `_${i}.py`);
-						i++;
-					} catch (e) {
-						if (String(e).includes('HTTP 404')) break;  // free slot
-						throw e;
-					}
-					if (i > 99) break;
-				}
-			} catch {}
-			await writeFile(target, content);
-			await open_file(target);
+				await readFile(name);
+				await open_file(name);
+				return;
+			} catch (e) {
+				if (!String(e).includes('HTTP 404')) throw e;
+			}
+			// File missing → write it once.
+			await writeFile(name, content);
+			await open_file(name);
 		} catch (e) {
 			log_lines = [...log_lines, `[example ${name}] ${e}`];
 		}

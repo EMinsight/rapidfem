@@ -93,14 +93,25 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
         @app.get("/", defaults={"path": ""})
         @app.get("/<path:path>")
         def _spa(path: str):
+            # /api/* never falls through to the static handler.
             if path.startswith(("api/",)) or path == "api":
                 from flask import abort
                 abort(404)
             target = dist / path
             if path and target.exists() and target.is_file():
                 return send_from_directory(dist, path)
-            # SPA fallback: serve index.html so client-side routes resolve.
-            return send_from_directory(dist, "index.html")
+            # `/` is the prerendered landing — its asset URLs are relative
+            # (`./_app/...`), correct only at the root path.
+            if not path:
+                return send_from_directory(dist, "index.html")
+            # Every other client-side route (notebook, embed/test) uses
+            # `404.html` as the SPA fallback. adapter-static produces it
+            # with **absolute** asset URLs (`/_app/...`), so it hydrates
+            # correctly from any URL depth. Without this, deep routes got
+            # `index.html` whose relative paths rebased to e.g.
+            # `/notebook/_app/...` and Flask re-served HTML for every JS
+            # import, silently breaking the whole SvelteKit boot.
+            return send_from_directory(dist, "404.html")
     else:
         @app.get("/")
         def _no_frontend():

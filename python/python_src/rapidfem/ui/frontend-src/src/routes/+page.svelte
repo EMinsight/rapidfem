@@ -1,9 +1,21 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { IS_STATIC_MODE } from '$lib/static_mode';
 
-	// Load the embed script so the <fem-viewer> custom element is defined
-	// before its tags get parsed/upgraded in the card grid.
+	// Local `rapidfem serve` has no use for the landing page — go straight
+	// to /notebook. The landing route is only meaningful in the GH-Pages
+	// build (VITE_STATIC_MODE=1) where this is the fem.rapidpassives.org
+	// entry point. At build time IS_STATIC_MODE is false in the local
+	// serve bundle, so the {#if} below drops the landing DOM from the
+	// prerendered HTML too — no flash of unwanted content.
 	onMount(() => {
+		if (!IS_STATIC_MODE) {
+			const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
+			goto(`${base}/notebook`, { replaceState: true });
+			return;
+		}
+		// Static-demo only: define <fem-viewer> for the card grid.
 		if (customElements.get('fem-viewer')) return;
 		const script = document.createElement('script');
 		script.src = `${import.meta.env.BASE_URL || '/'}embed/fem-viewer.js`.replace(/\/+/g, '/');
@@ -52,7 +64,7 @@
 	}>;
 
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
-	const demo_url = `${base}/demo`;
+	const notebook_url = `${base}/notebook`;
 	const embed_test_url = `${base}/embed/test`;
 
 	const install_cmd = 'pip install rapidfem';
@@ -73,6 +85,7 @@
 	<meta name="description" content="Open-source frequency-domain electromagnetic FEM solver. Nedelec-2 edge elements, complex-symmetric sparse linear algebra, Python API, browser notebook UI." />
 </svelte:head>
 
+{#if IS_STATIC_MODE}
 <div class="page">
 	<header>
 		<a class="brand" href="/">
@@ -80,7 +93,7 @@
 		</a>
 		<span class="nav-sep"></span>
 		<nav class="tabs">
-			<a class="tab" href={demo_url}>Notebook</a>
+			<a class="tab" href={notebook_url}>Notebook</a>
 			<a class="tab" href={embed_test_url}>Embed</a>
 		</nav>
 	</header>
@@ -97,14 +110,14 @@
 					{copied ? '✓ copied' : 'copy'}
 				</button>
 			</div>
-			<a class="cta" href={demo_url}>
+			<a class="cta" href={notebook_url}>
 				<span>Open the Notebook</span>
 				<span class="cta-arrow">→</span>
 			</a>
 		</div>
 		<div class="cards">
 			{#each examples as ex}
-				<a class="card" href={`${demo_url}?example=${ex.name}`}>
+				<a class="card" href={`${notebook_url}?example=${ex.name}`}>
 					<div class="card-preview">
 						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" field-samples="5000"${ex.fieldFreq !== undefined ? ` field-freq="${ex.fieldFreq}"` : ''}${ex.fieldMode ? ` field-mode="${ex.fieldMode}"` : ''} width="100%" height="240px"></fem-viewer>`}
 					</div>
@@ -125,13 +138,14 @@
 		<span class="sep">/</span>
 		<a href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
 		<span class="sep">/</span>
-		<a href={demo_url}>Notebook</a>
+		<a href={notebook_url}>Notebook</a>
 		<span class="sep">/</span>
 		<a href="https://rapidpassives.org" target="_blank" rel="noopener">RapidPassives</a>
 		<span class="sep">/</span>
 		<a href="https://milanrother.com" target="_blank" rel="noopener">Milan Rother</a>
 	</footer>
 </div>
+{/if}
 
 <style>
 	/* Notebook's palette + scale (global vars from app.css) — but a
