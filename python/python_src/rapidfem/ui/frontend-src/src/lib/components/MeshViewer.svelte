@@ -566,6 +566,14 @@
 	let viz_mesh_ready_for: MeshData | null = $state(null);
 	$effect(() => {
 		const m = mesh;
+		// Whenever the mesh changes (file load, regen), drop the old GPU point
+		// cloud immediately. Otherwise the previous file's field samples linger
+		// in their old coordinates on top of the new geometry until the worker
+		// finishes resampling.
+		if (gl_state) {
+			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			field_range = null;
+		}
 		if (!m) { viz_mesh_ready_for = null; return; }
 		viz_mesh_ready_for = null;
 		viz_load_mesh(m).then(() => { viz_mesh_ready_for = m; }).catch((e) => console.error('viz_load_mesh', e));
