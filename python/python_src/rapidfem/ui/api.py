@@ -228,10 +228,19 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     # the slider becomes a mode index, and S-params are empty.
     if last_sim is not None and last_modes is not None and last_result is None:
         try:
+            import math
             modes = last_modes
             n_mode = len(modes)
             freqs_per_mode = [float(m.frequency_hz) for m in modes]
-            q_factors = [float(m.q_factor) for m in modes]
+            # JSON doesn't have an `Infinity` literal — Python's json.dumps
+            # writes the non-standard `Infinity` token, which browsers and
+            # spec-compliant parsers reject. Lossless modes have Q = inf, so
+            # map those to `null`; the frontend's `isFinite()` check renders
+            # them as ∞.
+            q_factors = [
+                float(m.q_factor) if math.isfinite(m.q_factor) else None
+                for m in modes
+            ]
             fields_payload = []
             for m in modes:
                 # n_driven = 1 (the "port axis" collapses for eigenmodes)

@@ -56,7 +56,9 @@
 	// becomes a mode-index slider, and each entry of `freqs` is a resonant
 	// frequency instead of a sweep sample.
 	let eigenmode_mode = $state(false);
-	let mode_q_factors = $state<number[]>([]);
+	// q_factor is null when the mode is lossless (Q = ∞) — the Python side
+	// can't put `Infinity` in valid JSON.
+	let mode_q_factors = $state<(number | null)[]>([]);
 	let field_density = $state(3);
 	let field_scale_mode = $state<'log' | 'lin'>('lin');
 	let field_abc = $derived<Float32Array | null>(
@@ -732,7 +734,7 @@
 											<tr class:active={i === field_freq_idx}>
 												<td>{i + 1}</td>
 												<td>{(f / 1e9).toFixed(4)}</td>
-												<td>{mode_q_factors[i] !== undefined && isFinite(mode_q_factors[i])
+												<td>{mode_q_factors[i] != null && isFinite(mode_q_factors[i])
 													? mode_q_factors[i].toFixed(1)
 													: '∞'}</td>
 											</tr>
@@ -752,7 +754,7 @@
 								<span class="val">
 									{#if eigenmode_mode}
 										{field_freq_idx + 1}: {(freqs[field_freq_idx] / 1e9).toFixed(4)} GHz
-										{#if mode_q_factors[field_freq_idx] !== undefined && isFinite(mode_q_factors[field_freq_idx])}
+										{#if mode_q_factors[field_freq_idx] != null && isFinite(mode_q_factors[field_freq_idx])}
 											· Q={mode_q_factors[field_freq_idx].toFixed(1)}
 										{/if}
 									{:else}
