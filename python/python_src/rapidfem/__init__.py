@@ -146,4 +146,4 @@ __all__ = [
     "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
     "SimulationBuilder", "io", "rfic", "show", "lambda_maxh",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
