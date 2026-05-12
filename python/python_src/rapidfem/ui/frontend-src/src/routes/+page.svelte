@@ -31,6 +31,7 @@
 			name: 'patch_antenna',
 			label: 'Patch Antenna',
 			desc: 'Edge-fed 2.4 GHz patch on FR-4 with a 5-slab PML enclosure and far-field pattern',
+			fieldFreq: 0,   // 2.0 GHz, low end of the sweep — strongest near-field
 			fieldMode: 'log',
 		},
 		{
