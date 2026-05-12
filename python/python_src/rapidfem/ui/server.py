@@ -100,13 +100,32 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
         pass
 
     try:
-        # simple_websocket (used by flask-sock under the hood) hard-codes
-        # `permessage-deflate` in its AcceptConnection event. The deflate
-        # frames it then sends have RSV1 set, but browsers and Python's
-        # `websockets` client reject them with "Invalid frame header" /
-        # "reserved bits must be 0" — confirmed via end-to-end smoke test.
-        # Locally we have zero bandwidth pressure; deflate is pure cost.
-        # Patch the event factory *before* importing flask-sock.
+        # simple_websocket (under flask-sock) negotiates `permessage-deflate`
+        # and sends frames with RSV1 set — but its deflate implementation
+        # produces frames that browsers and Python's `websockets` client
+        # reject as "Invalid frame header" / "reserved bits must be 0".
+        # Locally we have no bandwidth pressure; deflate is pure cost+risk.
+        # Belt-and-suspenders defense in three layers:
+        #   1. PerMessageDeflate.accept → return None so the extension isn't
+        #      negotiated; `_enabled` stays False and FrameProtocol filters it
+        #      out at Connection-construction time.
+        #   2. PerMessageDeflate.enabled → always False, in case some state
+        #      mutation flips `_enabled` later. With enabled=False, FrameProtocol
+        #      drops the extension from `self.extensions` on construction.
+        #   3. PerMessageDeflate.frame_outbound → pass-through (no compression,
+        #      no RSV bits) — the last-line guarantee that nothing slips through
+        #      even if both upper layers were bypassed.
+        # AcceptConnection extensions=[] is *also* patched for completeness,
+        # so the handshake response carries no `Sec-WebSocket-Extensions`.
+        import wsproto.extensions as _wsx
+        if not getattr(_wsx, "_rapidfem_no_deflate", False):
+            _wsx.PerMessageDeflate.accept = lambda self, offer: None
+            _wsx.PerMessageDeflate.enabled = lambda self: False
+            _wsx.PerMessageDeflate.frame_outbound = (
+                lambda self, proto, opcode, rsv, data, fin: (rsv, data)
+            )
+            _wsx._rapidfem_no_deflate = True
+
         import simple_websocket.ws as _sw_ws
         if not getattr(_sw_ws, "_rapidfem_no_deflate", False):
             _orig_accept = _sw_ws.AcceptConnection
