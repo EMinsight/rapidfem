@@ -183,6 +183,15 @@ export async function listExamples(): Promise<{ examples: { name: string }[] }> 
 }
 
 export async function readExample(name: string): Promise<string> {
+	// In static-demo mode the example source lives inside the baked JSON.
+	const { IS_STATIC_MODE, DEMO_BASE } = await import('./static_mode');
+	if (IS_STATIC_MODE) {
+		const stem = name.replace(/\.py$/, '');
+		const r = await fetch(`${DEMO_BASE}${stem}.json`);
+		if (!r.ok) throw new Error(`baked example fetch failed: ${r.status}`);
+		const baked = await r.json() as { source: string };
+		return baked.source;
+	}
 	const r = await get_json<{ ok: boolean; content?: string; error?: string }>(`/api/examples/${encodeURIComponent(name)}`);
 	if (!r.ok || r.content === undefined) throw new Error(r.error ?? 'example not found');
 	return r.content;

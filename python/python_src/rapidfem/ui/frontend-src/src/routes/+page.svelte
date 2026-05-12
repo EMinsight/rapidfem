@@ -6,6 +6,7 @@
 		type MeshPayload, type GeometryPayload, type SMatrix,
 	} from '$lib/api';
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
+	import { IS_STATIC_MODE } from '$lib/static_mode';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -245,6 +246,27 @@
 	onMount(async () => {
 		load_layout();
 		init_editor_w();
+		if (IS_STATIC_MODE) {
+			// No backend — populate workdir label, then open the first baked
+			// example or whatever was open last (if it still exists).
+			workdir = '(static demo)';
+			const last = localStorage.getItem('rapidfem.active_path');
+			try {
+				if (last) {
+					await open_example(last);
+				} else {
+					// Pick the first example from the manifest.
+					const r = await fetch(`${(import.meta.env.BASE_URL ?? '/')}demo/manifest.json`.replace(/\/+/g, '/'));
+					if (r.ok) {
+						const m = await r.json();
+						if (m.examples?.length) await open_example(m.examples[0].filename);
+					}
+				}
+			} catch (e) {
+				log_lines = [...log_lines, `[static-demo] ${e}`];
+			}
+			return;
+		}
 		try {
 			const h = await health();
 			workdir = h.workdir;
@@ -274,6 +296,11 @@
 			if (prev_path !== path) {
 				try { get_kernel().reset(path); } catch {}
 			}
+			// In the static demo the user can't hit Run, so auto-replay the
+			// baked cell stream so the viewer is populated on open.
+			if (IS_STATIC_MODE) {
+				queueMicrotask(() => { void notebook?.run_all_cells(); });
+			}
 		} catch (e) {
 			// 404 typically means a stale localStorage pointer to a file that
 			// has been deleted (e.g. the old welcome.py). Clear it silently
@@ -290,9 +317,25 @@
 	async function open_example(name: string) {
 		try {
 			const content = await readExample(name);
-			// Copy example into the workdir under the same name so edits
-			// persist. If the file already exists, append a numeric suffix
-			// to avoid clobbering the user's prior work.
+			// Static mode: open the example *in place* without copying it
+			// into a workdir (there is no workdir, and no writeFile).
+			if (IS_STATIC_MODE) {
+				const prev_path = active_path;
+				code = content;
+				active_path = name;
+				dirty = false;
+				localStorage.setItem('rapidfem.active_path', name);
+				clear_stale_results();
+				mesh_data = null;
+				log_lines = [];
+				if (prev_path !== name) {
+					try { get_kernel().reset(name); } catch {}
+				}
+				queueMicrotask(() => { void notebook?.run_all_cells(); });
+				return;
+			}
+			// Live mode: copy into workdir so edits persist, with numeric
+			// suffix to avoid clobbering prior work.
 			let target = name;
 			try {
 				let i = 1;
@@ -417,6 +460,7 @@
 	$effect(() => {
 		const _ = code;  // track changes
 		if (!active_path) return;
+		if (IS_STATIC_MODE) return;  // no writes in static-demo mode
 		dirty = true;
 		if (dirty_save_t) clearTimeout(dirty_save_t);
 		dirty_save_t = setTimeout(async () => {
@@ -532,17 +576,17 @@
 			{:else}
 				<div class="pane-inner">
 					<div class="toolbar">
-						<button class="primary has-tip" onclick={() => notebook?.run_all_cells()}>
+						<button class="primary has-tip" onclick={() => notebook?.run_all_cells()} disabled={IS_STATIC_MODE}>
 							Run All
-							<span class="tip">Run all cells<kbd>Ctrl+Shift+Enter</kbd></span>
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Run all cells'}<kbd>Ctrl+Shift+Enter</kbd></span>
 						</button>
-						<button class="primary has-tip" onclick={() => notebook?.run_current_cell()}>
+						<button class="primary has-tip" onclick={() => notebook?.run_current_cell()} disabled={IS_STATIC_MODE}>
 							Run Cell
-							<span class="tip">Run current cell<kbd>Shift+Enter</kbd></span>
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Run current cell'}<kbd>Shift+Enter</kbd></span>
 						</button>
-						<button class="primary subtle has-tip" onclick={on_reset_kernel}>
+						<button class="primary subtle has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE}>
 							Restart Kernel
-							<span class="tip">Wipe namespace + gmsh state</span>
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Wipe namespace + gmsh state'}</span>
 						</button>
 					</div>
 					<div class="editor-wrap">
@@ -550,6 +594,7 @@
 							bind:this={notebook}
 							bind:source={code}
 							file_path={active_path ?? '<unnamed>'}
+							readonly={IS_STATIC_MODE}
 							onRunCell={on_run_cell}
 						/>
 					</div>

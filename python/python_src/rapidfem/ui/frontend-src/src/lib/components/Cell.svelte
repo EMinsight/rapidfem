@@ -13,6 +13,7 @@
 		source = $bindable<string>(''),
 		status = 'idle' as 'idle' | 'running' | 'ok' | 'error',
 		kind = 'code' as 'code' | 'markdown',
+		readonly = false,
 		onRun,
 		onRunAllBelow,
 		onFocus,
@@ -22,6 +23,7 @@
 		source: string;
 		status?: 'idle' | 'running' | 'ok' | 'error';
 		kind?: 'code' | 'markdown';
+		readonly?: boolean;
 		onRun: () => void;
 		onRunAllBelow?: () => void;
 		onFocus?: () => void;
@@ -136,6 +138,7 @@
 			editorTheme,
 			cell_keys,
 			keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+			...(readonly ? [EditorState.readOnly.of(true)] : []),
 			EditorView.updateListener.of((upd) => {
 				if (upd.docChanged) {
 					const text = upd.state.doc.toString();
@@ -193,7 +196,7 @@
 <div class="cell" class:focused class:markdown={kind === 'markdown'} bind:this={cell_root}>
 	<div class="cell-head">
 		{#if kind === 'code'}
-			<button class="run" onclick={onRun} disabled={status === 'running'} title="Run cell (Shift+Enter)">
+			<button class="run" onclick={onRun} disabled={status === 'running' || readonly} title={readonly ? 'Run disabled (static demo)' : 'Run cell (Shift+Enter)'}>
 				{#if status === 'running'}
 					<svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 6"><animateTransform attributeName="transform" type="rotate" from="0 6 6" to="360 6 6" dur="0.9s" repeatCount="indefinite"/></circle></svg>
 				{:else}
