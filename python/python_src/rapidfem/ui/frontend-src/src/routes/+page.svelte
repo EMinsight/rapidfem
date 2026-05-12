@@ -49,23 +49,29 @@
 </script>
 
 <svelte:head>
-	<title>rapidfem &mdash; frequency-domain Maxwell FEM in Rust</title>
+	<title>RapidFEM &mdash; frequency-domain Maxwell FEM in Rust</title>
 	<meta name="description" content="Open-source frequency-domain electromagnetic FEM solver. Nedelec-2 edge elements, complex-symmetric sparse linear algebra, Python API, browser notebook UI." />
 </svelte:head>
 
 <div class="page">
+	<header>
+		<a class="brand" href="/">
+			<img src="{base}/favicon.svg" alt="RapidFEM" class="logo" />
+		</a>
+		<span class="nav-sep"></span>
+		<nav class="tabs">
+			<a class="tab" href={demo_url}>Notebook</a>
+			<a class="tab" href={embed_test_url}>Embed</a>
+		</nav>
+		<span class="spacer"></span>
+		<a class="tab" href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
+		<a class="tab" href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
+	</header>
 	<div class="landing">
 		<div class="hero">
-			<img src="{base}/favicon.svg" alt="rapidfem" class="logo" />
-			<h1>rapidfem</h1>
+			<h1>RapidFEM</h1>
 			<p>Frequency-domain electromagnetic FEM in Rust. Nédélec-2 edge elements, complex-symmetric sparse solvers, Python API, browser notebook UI.</p>
-			<div class="cta">
-				<a class="cta-primary" href={demo_url}>Open notebook demo &rarr;</a>
-				<a class="cta-secondary" href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
-			</div>
-			<pre class="install">pip install rapidfem[ui]   <span class="comment"># solver + browser UI</span></pre>
 		</div>
-
 		<div class="cards">
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
@@ -79,17 +85,17 @@
 				</a>
 			{/each}
 		</div>
-
 		<a class="embed-hint" href={embed_test_url}>
 			<span class="embed-tag">&lt;fem-viewer&gt;</span>
 			<span>Embed FEM results on your website</span>
 		</a>
 	</div>
-
 	<footer class="landing-footer">
 		<a href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
 		<span class="sep">/</span>
 		<a href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
+		<span class="sep">/</span>
+		<a href={demo_url}>Notebook</a>
 		<span class="sep">/</span>
 		<a href="https://rapidpassives.org" target="_blank" rel="noopener">RapidPassives</a>
 		<span class="sep">/</span>
@@ -98,100 +104,102 @@
 </div>
 
 <style>
+	/* Use the rapidpassives.org landing palette here — the notebook UI
+	 * has darker viewer-matched bg/text-dim values; on the landing we
+	 * want exact visual parity with the sibling project. */
 	.page {
+		--bg: #1c1c21;
+		--text-muted: #7d7a85;
+		--text-dim: #55535a;
+		background: var(--bg);
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
 	}
+
+	/* ── Header ───────────────────────────────────────────────────────── */
+	header {
+		display: flex;
+		align-items: center;
+		padding: 0 16px;
+		height: 36px;
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+		gap: 12px;
+	}
+	.brand { text-decoration: none; }
+	.logo {
+		height: 22px;
+		width: auto;
+		display: block;
+	}
+	.nav-sep {
+		width: 1px;
+		height: 16px;
+		background: var(--border);
+		flex-shrink: 0;
+	}
+	.tabs {
+		display: flex;
+		gap: 12px;
+	}
+	header .tab {
+		font-size: var(--fs-xs);
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		text-decoration: none;
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		font-weight: 600;
+		transition: color var(--transition);
+	}
+	header .tab:hover { color: var(--accent); }
+	header .spacer { flex: 1; }
 	.landing {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: 32px;
-		padding: 40px 24px;
+		padding: 40px;
+		overflow-y: auto;
 	}
-
-	/* ── Hero ─────────────────────────────────────────────────────────── */
 	.hero {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
 		text-align: center;
-		gap: 12px;
-		max-width: 640px;
-	}
-	.hero .logo {
-		width: 56px;
-		height: 56px;
-		margin-bottom: 4px;
+		margin-bottom: 16px;
 	}
 	.hero h1 {
-		font-size: 32px;
+		font-size: 28px;
 		font-weight: 700;
 		color: var(--accent);
 		font-family: var(--font-mono);
 		letter-spacing: 2px;
-		margin: 0;
+		margin-bottom: 10px;
 	}
 	.hero p {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
+		max-width: 480px;
 		font-family: var(--font-mono);
-		line-height: 1.55;
-		margin: 0;
+		line-height: 1.5;
 	}
-	.cta {
-		display: flex;
-		gap: 12px;
-		margin-top: 4px;
-	}
-	.cta-primary, .cta-secondary {
-		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
-		text-decoration: none;
-		padding: 8px 16px;
-		border: 1px solid var(--border);
-		letter-spacing: 0.5px;
-		transition: border-color var(--transition), color var(--transition), background var(--transition);
-	}
-	.cta-primary {
-		background: var(--accent);
-		color: var(--bg);
-		border-color: var(--accent);
-		font-weight: 600;
-	}
-	.cta-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-	.cta-secondary { color: var(--text-muted); }
-	.cta-secondary:hover { color: var(--accent); border-color: var(--accent); }
-	.install {
-		background: var(--bg-mid);
-		border: 1px solid var(--border-subtle);
-		padding: 10px 14px;
-		font-size: var(--fs-xs);
-		font-family: var(--font-mono);
-		color: var(--text);
-		margin: 8px 0 0;
-		text-align: left;
-	}
-	.install .comment { color: var(--text-dim); }
-
-	/* ── Cards ────────────────────────────────────────────────────────── */
 	.cards {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+		display: flex;
 		gap: 16px;
-		width: 100%;
-		max-width: 980px;
+		flex-wrap: wrap;
+		justify-content: center;
+		max-width: 900px;
 	}
 	.card {
-		background: var(--bg-mid);
+		width: 200px;
+		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
 		text-decoration: none;
 		color: inherit;
+		transition: border-color var(--transition), transform var(--transition);
 		display: flex;
 		flex-direction: column;
-		transition: border-color var(--transition), transform var(--transition);
 	}
 	.card:hover {
 		border-color: var(--accent);
@@ -200,7 +208,6 @@
 	.card-preview {
 		width: 100%;
 		overflow: hidden;
-		background: var(--canvas-bg);
 	}
 	.card-info {
 		padding: 12px 14px;
@@ -211,18 +218,14 @@
 		font-weight: 600;
 		color: var(--accent);
 		font-family: var(--font-mono);
-		margin: 0 0 4px;
-		letter-spacing: 0.3px;
+		margin-bottom: 4px;
 	}
 	.card-info p {
 		font-size: var(--fs-xs);
 		color: var(--text-dim);
-		line-height: 1.45;
+		line-height: 1.4;
 		font-family: var(--font-mono);
-		margin: 0;
 	}
-
-	/* ── Embed hint ───────────────────────────────────────────────────── */
 	.embed-hint {
 		display: flex;
 		align-items: center;
@@ -245,8 +248,6 @@
 		border-color: var(--accent);
 		color: var(--accent);
 	}
-
-	/* ── Footer ───────────────────────────────────────────────────────── */
 	.landing-footer {
 		display: flex;
 		align-items: center;
@@ -258,6 +259,10 @@
 		border-top: 1px solid var(--border);
 		flex-shrink: 0;
 	}
+	.sep {
+		color: var(--border);
+		font-size: var(--fs-xs);
+	}
 	.landing-footer a {
 		font-size: var(--fs-xs);
 		font-family: var(--font-mono);
@@ -267,5 +272,4 @@
 		transition: color var(--transition);
 	}
 	.landing-footer a:hover { color: var(--accent); }
-	.sep { color: var(--border); font-size: var(--fs-xs); }
 </style>

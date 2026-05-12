@@ -111,11 +111,57 @@ async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(n
 	return out;
 }
 
-// Build a triangle-soup Float32Array (positions + normals) from a mesh payload's
-// surface triangles. Flat-shaded per face — matches MeshViewer's rendering.
-function buildSurfaceMesh(mesh: MeshPayload): { positions: Float32Array; normals: Float32Array } {
-	const nodes = mesh.nodes; // flat xyz
-	const tris = mesh.tris;   // flat i,j,k
+// Extract the outer hull of every physical volume by finding tet faces that
+// appear only once (a face shared by two tets is internal). Same algorithm
+// MeshViewer uses to render the substrate / air / PML shells. This is the
+// dominant visible surface — the named-surface tris (port faces, PEC walls)
+// alone would only show "slices" of the geometry.
+function buildVolumeBoundaryTris(mesh: MeshPayload): number[] {
+	const tets = mesh.tets;
+	const tet_phys = mesh.tet_phys;
+	const ntets = tet_phys.length;
+	const enc = (a: number, b: number, c: number): bigint => {
+		const s = [a, b, c].sort((x, y) => x - y);
+		return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
+	};
+	// Group tets by phys-volume tag.
+	const per_vol = new Map<number, number[]>();
+	for (let t = 0; t < ntets; t++) {
+		const v = tet_phys[t];
+		if (!v) continue;
+		let arr = per_vol.get(v);
+		if (!arr) { arr = []; per_vol.set(v, arr); }
+		arr.push(t);
+	}
+	const out: number[] = [];
+	for (const [, tet_indices] of per_vol.entries()) {
+		const seen = new Map<bigint, { count: number; tri: [number, number, number] }>();
+		for (const t of tet_indices) {
+			const a = tets[t * 4], b = tets[t * 4 + 1],
+			      c = tets[t * 4 + 2], d = tets[t * 4 + 3];
+			const faces: [number, number, number][] = [
+				[a, b, c], [a, b, d], [a, c, d], [b, c, d],
+			];
+			for (const f of faces) {
+				const k = enc(f[0], f[1], f[2]);
+				const prev = seen.get(k);
+				if (!prev) seen.set(k, { count: 1, tri: f });
+				else prev.count++;
+			}
+		}
+		for (const e of seen.values()) {
+			if (e.count === 1) out.push(e.tri[0], e.tri[1], e.tri[2]);
+		}
+	}
+	return out;
+}
+
+// Build a flat-shaded triangle-soup (positions + normals) from a list of
+// triangle indices into the mesh's flat node array.
+function buildTriSoup(
+	nodes: number[],
+	tris: number[],
+): { positions: Float32Array; normals: Float32Array } {
 	const n_tris = tris.length / 3;
 	const positions = new Float32Array(n_tris * 9);
 	const normals = new Float32Array(n_tris * 9);
@@ -217,7 +263,7 @@ class FemViewerElement extends HTMLElement {
 		const badge = document.createElement('a');
 		badge.href = 'https://fem.rapidpassives.org';
 		badge.target = '_blank'; badge.rel = 'noopener';
-		badge.textContent = 'rapidfem';
+		badge.textContent = 'RapidFEM';
 		badge.style.cssText = 'position:absolute;bottom:6px;right:8px;font:500 9px/1 monospace;color:#55535a;text-decoration:none;opacity:0.7;transition:opacity 0.15s;';
 		badge.onmouseenter = () => badge.style.opacity = '1';
 		badge.onmouseleave = () => badge.style.opacity = '0.7';
@@ -341,8 +387,20 @@ class FemViewerElement extends HTMLElement {
 
 		const showGeom = this.attrBool('show-geometry', true);
 		if (showGeom) {
-			const { positions, normals } = buildSurfaceMesh(this.mesh);
-			addMesh(this.glState, positions, normals, [0.18, 0.18, 0.22], 1);
+			// Per-volume outer hull (substrate / air / PML shells). This is
+			// the main "shape" of the model. Slightly translucent so the
+			// field point cloud and inner ports remain visible.
+			const hull_tris = buildVolumeBoundaryTris(this.mesh);
+			if (hull_tris.length) {
+				const { positions, normals } = buildTriSoup(this.mesh.nodes, hull_tris);
+				addMesh(this.glState, positions, normals, [0.16, 0.16, 0.20], 1);
+			}
+			// Named-surface tris (PEC walls, ports). Brighter so they stand
+			// out against the hull.
+			if (this.mesh.tris.length) {
+				const { positions, normals } = buildTriSoup(this.mesh.nodes, this.mesh.tris);
+				addMesh(this.glState, positions, normals, [0.36, 0.30, 0.34], 2);
+			}
 		}
 		this.applyField();
 	}
