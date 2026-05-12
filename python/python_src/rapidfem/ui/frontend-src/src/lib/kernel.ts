@@ -74,6 +74,7 @@ async function post_json<T>(path: string, body: object): Promise<T> {
 
 export class KernelClient {
 	async execute(opts: ExecuteOptions): Promise<ExecuteResult> {
+		console.log('[kernel] execute', { cell_id: opts.cell_id, file: opts.file, code_len: opts.code.length });
 		try {
 			const run = await post_json<{ ok: boolean; cell_id?: string; error?: string }>(
 				'/api/cell/run',
@@ -85,14 +86,18 @@ export class KernelClient {
 				},
 			);
 			if (!run.ok || !run.cell_id) {
+				console.warn('[kernel] /api/cell/run rejected', run);
 				return {
 					ok: false,
 					error: { type: 'RunError', message: run.error ?? 'cell-run failed', traceback: '' },
 				};
 			}
 			opts.onStarted?.();
-			return await this.drain_until_done(opts);
+			const r = await this.drain_until_done(opts);
+			if (!r.ok) console.warn('[kernel] execute returning ok=false', r);
+			return r;
 		} catch (e) {
+			console.error('[kernel] execute caught:', e);
 			return {
 				ok: false,
 				error: { type: 'NetworkError', message: String(e), traceback: '' },
@@ -153,11 +158,9 @@ export class KernelClient {
 					if (evt.traceback) opts.onStream?.('stderr', evt.traceback);
 				} else if (evt.type === 'done') {
 					if (evt.id === target) {
-						console.debug('[kernel] cell done', { cell_id: target, ok: evt.ok });
+						console.log('[kernel] cell done', { cell_id: target, ok: evt.ok, has_error: !!last_error });
 						return { ok: evt.ok, error: last_error };
 					}
-					// done for a different cell — log so we can see if cell-id
-					// matching is off.
 					console.warn('[kernel] done event for non-matching cell', {
 						received_id: evt.id, target,
 					});
