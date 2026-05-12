@@ -137,6 +137,34 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
             _sw_ws.AcceptConnection = _no_deflate_accept
             _sw_ws._rapidfem_no_deflate = True
 
+        # simple_websocket.Base.send calls `self.sock.send(out_data)` —
+        # plain socket.send, which on Windows returns short when the OS TCP
+        # buffer (~64 KB by default) can't accept the whole frame. The
+        # remaining bytes are silently dropped, the frame is truncated, and
+        # the next bytes the client decodes from the middle of the payload
+        # look like a malformed WS frame ("reserved bits must be 0" / "Invalid
+        # frame header"). Swap the implementation for one that uses sendall.
+        import simple_websocket as _sw
+        if not getattr(_sw, "_rapidfem_sendall", False):
+            _orig_send = _sw.Base.send
+
+            def _sendall_send(self, data):
+                from simple_websocket import ConnectionClosed
+                from wsproto.events import Message, TextMessage
+                if not self.connected:
+                    raise ConnectionClosed(self.close_reason, self.close_message)
+                if isinstance(data, bytes):
+                    out_data = self.ws.send(Message(data=data))
+                else:
+                    out_data = self.ws.send(TextMessage(data=str(data)))
+                # sendall retries until every byte is written, which is what
+                # WS framing requires — anything less and the next frame
+                # starts in the middle of a truncated one.
+                self.sock.sendall(out_data)
+
+            _sw.Base.send = _sendall_send
+            _sw._rapidfem_sendall = True
+
         from flask_sock import Sock
         from rapidfem.ui.bus import BUS
         from rapidfem.ui.kernel_ws import register_kernel_ws
