@@ -54,6 +54,18 @@
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
 	const demo_url = `${base}/demo`;
 	const embed_test_url = `${base}/embed/test`;
+
+	const install_cmd = 'pip install rapidfem';
+	let copied = false;
+	let copy_timer: ReturnType<typeof setTimeout> | null = null;
+	function copyInstall() {
+		try {
+			navigator.clipboard.writeText(install_cmd);
+			copied = true;
+			if (copy_timer) clearTimeout(copy_timer);
+			copy_timer = setTimeout(() => { copied = false; }, 1400);
+		} catch {}
+	}
 </script>
 
 <svelte:head>
@@ -77,6 +89,27 @@
 			<h1>RapidFEM</h1>
 			<p>Frequency-domain electromagnetic FEM in Rust. Nédélec-2 edge elements, complex-symmetric sparse solvers, Python API, browser notebook UI.</p>
 		</div>
+		<div class="quickstart">
+			<div class="install-line">
+				<span class="install-prompt">$</span>
+				<code class="install-cmd">{install_cmd}</code>
+				<button class="copy-btn" on:click={copyInstall} aria-label="Copy install command">
+					{copied ? '✓ copied' : 'copy'}
+				</button>
+			</div>
+			<a class="cta" href={demo_url}>
+				<span>Open the Notebook</span>
+				<span class="cta-arrow">→</span>
+			</a>
+		</div>
+		<p class="quickstart-note">
+			Python solver with a static, browser-side notebook UI &mdash; drive a sweep, inspect
+			S-parameters and 3D fields. Already on
+			<a href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
+			and
+			<a href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>.
+			The cards below open straight into the notebook.
+		</p>
 		<div class="cards">
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
@@ -192,6 +225,96 @@
 		max-width: 480px;
 		font-family: var(--font-mono);
 		line-height: 1.5;
+	}
+	.quickstart {
+		display: flex;
+		align-items: stretch;
+		gap: 14px;
+		flex-wrap: wrap;
+		justify-content: center;
+		margin-top: -8px;
+	}
+	.install-line {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		padding: 0 12px;
+		height: 36px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
+	.install-prompt {
+		color: var(--text-dim);
+		user-select: none;
+	}
+	.install-cmd {
+		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		letter-spacing: 0.3px;
+	}
+	.copy-btn {
+		background: transparent;
+		border: 1px solid var(--border);
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		letter-spacing: 0.5px;
+		padding: 3px 8px;
+		cursor: pointer;
+		text-transform: uppercase;
+		transition: color var(--transition), border-color var(--transition);
+	}
+	.copy-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.cta {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		padding: 0 18px;
+		height: 36px;
+		background: var(--accent);
+		color: var(--bg);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		font-weight: 700;
+		letter-spacing: 0.6px;
+		text-decoration: none;
+		text-transform: uppercase;
+		transition: filter var(--transition), transform var(--transition);
+	}
+	.cta:hover {
+		filter: brightness(1.1);
+		transform: translateY(-1px);
+	}
+	.cta-arrow {
+		font-size: 14px;
+		line-height: 1;
+		transition: transform var(--transition);
+	}
+	.cta:hover .cta-arrow { transform: translateX(2px); }
+	.quickstart-note {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text-dim);
+		text-align: center;
+		max-width: 560px;
+		line-height: 1.6;
+		margin-top: -12px;
+	}
+	.quickstart-note a {
+		color: var(--text-muted);
+		text-decoration: none;
+		border-bottom: 1px solid var(--border);
+		transition: color var(--transition), border-color var(--transition);
+	}
+	.quickstart-note a:hover {
+		color: var(--accent);
+		border-bottom-color: var(--accent);
 	}
 	.cards {
 		display: flex;
