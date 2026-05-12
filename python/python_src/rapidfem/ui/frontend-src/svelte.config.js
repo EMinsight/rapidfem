@@ -9,10 +9,13 @@ const config = {
 			// via importlib.resources without an extra copy step.
 			pages: '../frontend/dist',
 			assets: '../frontend/dist',
-			fallback: 'index.html',
+			// `404.html` is what GH-Pages serves for any unknown path —
+			// using it as the SPA fallback lets deep links like /demo work
+			// without prerendering every route. The root index.html is
+			// produced from the prerendered '/' route below.
+			fallback: '404.html',
 		}),
-		// SPA-style: every route resolves to fallback at runtime, no server.
-		prerender: { entries: [] },
+		prerender: { entries: ['/'] },
 	},
 	vitePlugin: {
 		dynamicCompileOptions: ({ filename }) =>
