@@ -5,12 +5,11 @@
 	onMount(() => {
 		if (customElements.get('fem-viewer')) return;
 		const script = document.createElement('script');
-		script.src = `${import.meta.env.BASE_URL || '/'}embed/fem-viewer.js`.replace(/\/+/g, '/');
+		script.src = '/embed/fem-viewer.js';
 		document.head.appendChild(script);
 	});
 
-	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
-	const demo_root = `${base}/demo`;
+	const demo_root = '/demo';
 
 	const examples = [
 		{
@@ -77,11 +76,11 @@
 
 <div class="page">
 	<header>
-		<a class="brand" href="/"><img src="{base}/favicon.svg" alt="RapidFEM" /></a>
+		<a class="brand" href="/" data-sveltekit-reload><img src="/favicon.svg" alt="RapidFEM" /></a>
 		<span class="nav-sep"></span>
 		<nav class="tabs">
-			<a class="tab" href="{base}/demo">Notebook</a>
-			<a class="tab active" href="{base}/embed/test">Embed</a>
+			<a class="tab" href="/demo" data-sveltekit-reload>Notebook</a>
+			<a class="tab active" href="/embed/test">Embed</a>
 		</nav>
 	</header>
 

@@ -36,7 +36,6 @@ const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 // Tag layout — each renderable group gets its own integer so we can
 // toggle visibility per cycle phase via setTagVisible(state, tag, vis).
 const TAG_HULL = 1;        // dielectric / volume hulls (substrate, air, PML)
-const TAG_CONDUCTORS = 2;  // named PEC walls + ports (mesh.tris)
 const TAG_WIRE = 3;        // wireframe edges
 
 // Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
@@ -428,22 +427,21 @@ class FemViewerElement extends HTMLElement {
 		clearMeshes(this.glState);
 		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
 
-		// 1) Volume hulls — substrate / air / PML shells.
+		// Volume hulls — substrate / air / PML shells. Single solid layer:
+		// rendering the named-surface tris (PEC walls, ports) on top of this
+		// produces z-fight blotches because most named surfaces coincide
+		// with hull facets for our examples. The hull alone is monochrome
+		// but artefact-free and includes internal volume interfaces (e.g.
+		// the substrate-vs-air boundary in patch_antenna) that the named
+		// tris don't expose.
 		const hull = buildVolumeHullTris(this.mesh);
 		if (hull.length) {
 			const { positions, normals } = buildTriSoup(this.mesh.nodes, hull);
-			addMesh(this.glState, positions, normals, [0.20, 0.20, 0.24], TAG_HULL);
-		}
-		// 2) Named conductors / ports / PEC walls (mesh.tris).
-		if (this.mesh.tris.length) {
-			const { positions, normals } = buildTriSoup(this.mesh.nodes, this.mesh.tris);
-			addMesh(this.glState, positions, normals, [0.55, 0.42, 0.45], TAG_CONDUCTORS);
-		}
-		// 3) Wireframe — edges of every surface tri, hidden by default; the
-		//    mesh-mode phase toggles it on.
-		const edges = buildEdgeLines(this.mesh.nodes, this.mesh.tris);
-		if (edges.length) {
-			addLineMesh(this.glState, edges, [0.32, 0.32, 0.38], TAG_WIRE);
+			addMesh(this.glState, positions, normals, [0.22, 0.22, 0.26], TAG_HULL);
+			// Wireframe of the SAME hull tris — gives broader edge coverage
+			// than mesh.tris alone (which misses internal interfaces).
+			const edges = buildEdgeLines(this.mesh.nodes, hull);
+			if (edges.length) addLineMesh(this.glState, edges, [0.34, 0.34, 0.40], TAG_WIRE);
 		}
 		this.applyField();
 	}
@@ -487,14 +485,12 @@ class FemViewerElement extends HTMLElement {
 	private applyPhase(phase: Phase) {
 		if (!this.glState) return;
 		this.currentPhase = phase;
-		const showHull = phase === 'geometry' || phase === 'field';
-		const showCond = phase === 'geometry' || phase === 'field';
+		const showHull = phase === 'geometry';
 		const showWire = phase === 'mesh';
 		const showField = phase === 'field' && this.hasField;
 		setTagVisible(this.glState, TAG_HULL, showHull);
-		setTagVisible(this.glState, TAG_CONDUCTORS, showCond);
 		setTagVisible(this.glState, TAG_WIRE, showWire);
-		// Point cloud: not tag-gated; clear it when the phase isn't field.
+		// Point cloud is not tag-gated — clear/repopulate it explicitly.
 		if (!showField && this.mesh) {
 			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
 		} else if (showField) {
