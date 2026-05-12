@@ -73,7 +73,7 @@
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
 					<div class="card-preview">
-						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" width="100%" height="200px"></fem-viewer>`}
+						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" width="100%" height="240px"></fem-viewer>`}
 					</div>
 					<div class="card-info">
 						<h3>{ex.label}</h3>
@@ -101,10 +101,11 @@
 </div>
 
 <style>
-	/* Identical palette + scale to the notebook UI — global vars from
-	 * app.css carry through. */
+	/* Notebook's palette + scale (global vars from app.css) — but a
+	 * lifted mid-gray bg so the tiles read as cards instead of floating
+	 * voids on the viewer-dark default. */
 	.page {
-		background: var(--bg);
+		background: #1c1c21;
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
@@ -186,13 +187,13 @@
 	}
 	.cards {
 		display: flex;
-		gap: 16px;
+		gap: 18px;
 		flex-wrap: wrap;
 		justify-content: center;
-		max-width: 900px;
+		max-width: 1100px;
 	}
 	.card {
-		width: 200px;
+		width: 320px;
 		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
 		text-decoration: none;
