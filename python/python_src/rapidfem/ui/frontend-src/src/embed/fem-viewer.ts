@@ -336,17 +336,17 @@ class FemViewerElement extends HTMLElement {
 		clearMeshes(this.glState);
 		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
 
-		// Volume hulls — substrate / air / PML shells. We delegate to the
+		// Volume hulls — substrate / air / PML shells. Delegated to the
 		// shared mesh_scene helper so the embed and the in-app MeshViewer
-		// produce bit-identical normals (orient_outward + float64 cross
-		// product + axis-aligned snapping) — anything less leaves dappled
-		// shading on flat faces.
+		// produce bit-identical shading (orient_outward + float64 cross
+		// + axis-aligned snap). Colour matches MeshViewer's default
+		// dielectric tone (#5a6470) and wire colour (#3a3a44).
 		addVolumeHullMeshes(
 			this.glState, this.mesh,
-			/* color = */ [0.22, 0.22, 0.26],
-			/* hullTag = */ TAG_HULL,
-			/* wireTag = */ TAG_WIRE,
-			/* wireColor = */ [0.34, 0.34, 0.40],
+			/* hull color = */ [0x5a / 255, 0x64 / 255, 0x70 / 255],
+			/* hullTag    = */ TAG_HULL,
+			/* wireTag    = */ TAG_WIRE,
+			/* wire color = */ [0x3a / 255, 0x3a / 255, 0x44 / 255],
 		);
 		this.applyField();
 	}

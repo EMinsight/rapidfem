@@ -101,34 +101,31 @@
 </div>
 
 <style>
-	/* Exact rapidpassives.org landing palette + scale. Notebook UI uses
-	 * the darker viewer-matched values; landing is a sibling-project look. */
+	/* Identical palette + scale to the notebook UI — global vars from
+	 * app.css carry through. */
 	.page {
-		--bg: #1c1c21;
-		--text-muted: #7d7a85;
-		--text-dim: #55535a;
-		--fs-xs: 10px;
-		--fs-sm: 12px;
-		--fs-md: 14px;
-		--fs-lg: 20px;
 		background: var(--bg);
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
 	}
 
-	/* ── Header ───────────────────────────────────────────────────────── */
+	/* ── Header (matches /demo notebook header) ──────────────────────── */
 	header {
 		display: flex;
 		align-items: center;
-		padding: 0 16px;
+		padding: 0 var(--space-xl);
+		gap: var(--space-md);
 		height: 36px;
 		background: var(--bg-surface);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
-		gap: 12px;
 	}
-	.brand { text-decoration: none; }
+	.brand {
+		display: inline-flex;
+		align-items: center;
+		text-decoration: none;
+	}
 	.logo {
 		height: 22px;
 		width: auto;
@@ -136,25 +133,29 @@
 	}
 	.nav-sep {
 		width: 1px;
-		align-self: stretch;
+		height: 100%;
 		background: var(--border);
 		flex-shrink: 0;
 	}
 	.tabs {
 		display: flex;
-		gap: 24px;
+		gap: 0;
+		height: 100%;
 	}
 	header .tab {
+		display: flex;
+		align-items: center;
+		padding: 0 14px;
 		font-size: var(--fs-xs);
-		font-family: var(--font-mono);
-		color: var(--text-muted);
-		text-decoration: none;
-		letter-spacing: 0.5px;
-		text-transform: uppercase;
 		font-weight: 600;
+		font-family: var(--font-mono);
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		text-decoration: none;
 		transition: color var(--transition);
 	}
-	header .tab:hover { color: var(--accent); }
+	header .tab:hover { color: var(--text-muted); }
+	header .tab.active { color: var(--accent); }
 	.landing {
 		flex: 1;
 		display: flex;
@@ -215,13 +216,13 @@
 	.card-info h3 {
 		font-size: var(--fs-sm);
 		font-weight: 600;
-		color: #d9513c;                    /* accent — locked to rapidpassives */
+		color: var(--accent);
 		font-family: var(--font-mono);
 		margin-bottom: 4px;
 	}
 	.card-info p {
 		font-size: var(--fs-xs);
-		color: #55535a;                    /* text-dim — locked to rapidpassives */
+		color: var(--text-dim);
 		line-height: 1.4;
 		font-family: var(--font-mono);
 	}

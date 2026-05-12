@@ -107,9 +107,6 @@
 
 <style>
 	.page {
-		--bg: #1c1c21;
-		--text-muted: #7d7a85;
-		--text-dim: #55535a;
 		background: var(--bg);
 		min-height: 100vh;
 		display: flex;
@@ -118,32 +115,43 @@
 	header {
 		display: flex;
 		align-items: center;
-		padding: 0 16px;
+		padding: 0 var(--space-xl);
+		gap: var(--space-md);
 		height: 36px;
 		background: var(--bg-surface);
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
-		gap: 12px;
 	}
-	header .brand { text-decoration: none; }
+	header .brand {
+		display: inline-flex;
+		align-items: center;
+		text-decoration: none;
+	}
 	header .brand img { height: 22px; display: block; }
 	header .nav-sep {
 		width: 1px;
-		align-self: stretch;
+		height: 100%;
 		background: var(--border);
+		flex-shrink: 0;
 	}
-	header .tabs { display: flex; gap: 24px; }
+	header .tabs {
+		display: flex;
+		gap: 0;
+		height: 100%;
+	}
 	header .tab {
+		display: flex;
+		align-items: center;
+		padding: 0 14px;
 		font-size: var(--fs-xs);
-		font-family: var(--font-mono);
-		color: var(--text-muted);
-		text-decoration: none;
-		letter-spacing: 0.5px;
-		text-transform: uppercase;
 		font-weight: 600;
+		font-family: var(--font-mono);
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		text-decoration: none;
 		transition: color var(--transition);
 	}
-	header .tab:hover { color: var(--accent); }
+	header .tab:hover { color: var(--text-muted); }
 	header .tab.active { color: var(--accent); }
 
 	.content {
