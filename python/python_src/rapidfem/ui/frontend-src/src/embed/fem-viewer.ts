@@ -333,8 +333,12 @@ class FemViewerElement extends HTMLElement {
 		if (!this.glState || !this.mesh) return;
 		clearMeshes(this.glState);
 		const phase = this.currentPhase;
+		// Field mode = pure point cloud; the in-app viewer keeps faces in
+		// field mode and colors them by per-node |E|, but the embed only
+		// ships per-tet centroid samples in the bake bundle, so we drop
+		// the geometry entirely to avoid mixing the two.
 		buildScene(this.glState, this.mesh, {
-			showFaces: phase === 'geometry' || phase === 'field',
+			showFaces: phase === 'geometry',
 			showWire: phase === 'mesh',
 		});
 		if (phase === 'field' && this.hasField) this.applyField();
