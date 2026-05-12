@@ -41,7 +41,7 @@ const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 // Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
 type Phase = 'geometry' | 'mesh' | 'field';
 const CYCLE_ORDER: Phase[] = ['geometry', 'mesh', 'field'];
-const CYCLE_HOLD_S = 2.4;
+const CYCLE_HOLD_S = 4.8;
 
 interface BakedFieldsStub {
 	$bin: true; magic: number; version: number;
