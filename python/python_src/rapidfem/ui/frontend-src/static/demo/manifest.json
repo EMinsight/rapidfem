@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1778600840,
+  "baked_at": 1778604725,
   "examples": [
     {
       "name": "coax_step",
@@ -49,9 +49,9 @@
           "stream_lines": 41
         }
       ],
-      "json_bytes": 680870,
+      "json_bytes": 680871,
       "bin_bytes": 940500,
-      "bake_seconds": 3.17
+      "bake_seconds": 2.97
     },
     {
       "name": "dielectric_resonator",
@@ -100,9 +100,9 @@
           "stream_lines": 17
         }
       ],
-      "json_bytes": 1103854,
+      "json_bytes": 1105583,
       "bin_bytes": 127048,
-      "bake_seconds": 1.96
+      "bake_seconds": 2.79
     },
     {
       "name": "iris_filter",
@@ -151,9 +151,9 @@
           "stream_lines": 50
         }
       ],
-      "json_bytes": 1102471,
+      "json_bytes": 1102465,
       "bin_bytes": 2445344,
-      "bake_seconds": 8.3
+      "bake_seconds": 7.58
     },
     {
       "name": "microstrip_line",
@@ -202,9 +202,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 772508,
+      "json_bytes": 772503,
       "bin_bytes": 919360,
-      "bake_seconds": 4.56
+      "bake_seconds": 4.42
     },
     {
       "name": "patch_antenna",
@@ -253,9 +253,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 1899213,
+      "json_bytes": 1899216,
       "bin_bytes": 1005020,
-      "bake_seconds": 23.4
+      "bake_seconds": 17.88
     },
     {
       "name": "stepped_impedance_filter",
@@ -304,9 +304,9 @@
           "stream_lines": 54
         }
       ],
-      "json_bytes": 2742094,
-      "bin_bytes": 6056624,
-      "bake_seconds": 28.69
+      "json_bytes": 1769100,
+      "bin_bytes": 3900680,
+      "bake_seconds": 26.2
     },
     {
       "name": "wr90",
@@ -355,9 +355,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 451573,
+      "json_bytes": 451574,
       "bin_bytes": 522712,
-      "bake_seconds": 2.15
+      "bake_seconds": 2.01
     },
     {
       "name": "wr90_pml",
@@ -406,9 +406,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 747209,
+      "json_bytes": 747214,
       "bin_bytes": 456416,
-      "bake_seconds": 3.47
+      "bake_seconds": 3.43
     }
   ]
 }
