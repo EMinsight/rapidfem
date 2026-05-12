@@ -27,12 +27,14 @@
  */
 
 import {
-	initGL, disposeGL, createCamera, clearMeshes,
+	initGL, disposeGL, createCamera, clearMeshes, setTagVisible,
 	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
-import { buildScene, clearFieldCloud, sampleFieldCloud } from '../lib/render/scene_builder';
+import {
+	buildScene, clearFieldCloud, sampleFieldCloud, WIRE_TAG,
+} from '../lib/render/scene_builder';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
@@ -138,6 +140,16 @@ class FemViewerElement extends HTMLElement {
 	private lastMouse = { x: 0, y: 0 };
 	private currentPhase: Phase = 'geometry';
 	private phaseStart = 0;
+	// Perf state ────────────────────────────────────────────────────────
+	private loadStarted = false;            // load() kicked off (lazy via IO)
+	private isOnscreen = false;             // updated by IntersectionObserver
+	private inObs: IntersectionObserver | null = null;
+	private resObs: ResizeObserver | null = null;
+	private faceTags: number[] = [];        // populated by buildScene
+	private fieldCloudCache = new Map<string, {
+		positions: Float32Array; abc: Float32Array;
+		maxE2: number; minE2: number;
+	}>();
 
 	static get observedAttributes() {
 		return ['src', 'width', 'height', 'rotate', 'cycle', 'mode', 'interactive',
@@ -186,24 +198,51 @@ class FemViewerElement extends HTMLElement {
 			this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 			this.canvas.addEventListener('dblclick', () => this.fitView());
 		}
-		const ro = new ResizeObserver(() => { this.needsRender = true; });
-		ro.observe(this.wrapper);
+		this.resObs = new ResizeObserver(() => { this.needsRender = true; });
+		this.resObs.observe(this.wrapper);
 
+		// Defer fetch + animation until the embed is anywhere near the
+		// viewport. On a 6-card landing page this means only the 2-3
+		// cards above the fold load their JSON+bin on first paint; the
+		// rest stream in as the user scrolls.
 		const src = this.getAttribute('src');
-		if (src) void this.load(src);
+		this.inObs = new IntersectionObserver((entries) => {
+			for (const e of entries) {
+				this.isOnscreen = e.isIntersecting;
+				if (this.isOnscreen) {
+					if (src && !this.loadStarted) {
+						this.loadStarted = true;
+						void this.load(src);
+					} else if (this.mesh) {
+						this.startAnimation();
+					}
+				} else {
+					this.stopAnimation();
+				}
+			}
+		}, { rootMargin: '200px' });
+		this.inObs.observe(this);
 	}
 
 	disconnectedCallback() {
 		this.mounted = false; this.animId++;
+		this.inObs?.disconnect(); this.inObs = null;
+		this.resObs?.disconnect(); this.resObs = null;
 		if (this.glState) disposeGL(this.glState);
 	}
+
+	private stopAnimation() { this.animId++; }
 
 	attributeChangedCallback(name: string, _old: string | null, val: string | null) {
 		if (!this.mounted) return;
 		if (name === 'src' && val) void this.load(val);
-		else if (name === 'mode' || name === 'field-mode' || name === 'field-freq' || name === 'field-port' || name === 'field-samples') {
-			this.applyField();
-			this.applyPhase(this.resolvePhase());
+		else if (name === 'field-samples') {
+			this.fieldCloudCache.clear();   // sample count changed → invalidate
+			this.applyPhaseInstant(this.resolvePhase());
+			this.needsRender = true;
+		}
+		else if (name === 'mode' || name === 'field-mode' || name === 'field-freq' || name === 'field-port') {
+			this.applyPhaseInstant(this.resolvePhase());
 			this.needsRender = true;
 		}
 	}
@@ -278,35 +317,50 @@ class FemViewerElement extends HTMLElement {
 				this.hasField = false;
 			}
 
-			this.rebuildScene();
+			this.buildSceneOnce();
 			this.fitView();
 			if (this.loadingEl) this.loadingEl.style.display = 'none';
 			this.phaseStart = performance.now() / 1000;
-			this.applyPhase(this.resolvePhase());
-			this.startAnimation();
+			this.applyPhaseInstant(this.resolvePhase());
+			if (this.isOnscreen) this.startAnimation();
 		} catch (e) {
 			console.error('[fem-viewer] load failed', e);
 			if (this.loadingEl) this.loadingEl.textContent = `Error: ${(e as Error).message}`;
 		}
 	}
 
-	/** Wipe + rebuild the GL scene for the current phase.
-	 *  Routes through the same `buildScene` the in-app MeshViewer uses
-	 *  → bit-identical rendering, no embed-specific hand-rolled colors. */
-	private rebuildScene() {
+	/** Build the GL scene ONCE per load — faces + wireframe both
+	 *  uploaded at the same time. Phase changes flip visibility flags
+	 *  rather than re-uploading buffers, which makes cycle transitions
+	 *  effectively free (was ~10–50 ms per phase × 6 cards × cycle). */
+	private buildSceneOnce() {
 		if (!this.glState || !this.mesh) return;
 		clearMeshes(this.glState);
-		const phase = this.currentPhase;
-		// Field mode = pure point cloud; the in-app viewer keeps faces in
-		// field mode and colors them by per-node |E|, but the embed only
-		// ships per-tet centroid samples in the bake bundle, so we drop
-		// the geometry entirely to avoid mixing the two.
-		buildScene(this.glState, this.mesh, {
-			showFaces: phase === 'geometry',
-			showWire: phase === 'mesh',
+		this.fieldCloudCache.clear();
+		const { faceTags } = buildScene(this.glState, this.mesh, {
+			showFaces: true,
+			showWire: true,
 		});
+		this.faceTags = faceTags;
+		// Default to whatever the resolvePhase() returns for the initial
+		// frame; the visibility flags then get set per-phase below.
+		this.applyPhaseInstant(this.resolvePhase());
+	}
+
+	/** Toggle the resident scene's tag visibility instead of rebuilding. */
+	private applyPhaseInstant(phase: Phase) {
+		if (!this.glState) return;
+		this.currentPhase = phase;
+		const showFaces = phase === 'geometry';
+		const showWire  = phase === 'mesh';
+		for (const t of this.faceTags) setTagVisible(this.glState, t, showFaces);
+		setTagVisible(this.glState, WIRE_TAG, showWire);
 		if (phase === 'field' && this.hasField) this.applyField();
 		else clearFieldCloud(this.glState);
+		if (this.labelEl) {
+			this.labelEl.textContent = phase;
+			this.labelEl.style.opacity = this.hasAttribute('cycle') ? '0.65' : '0';
+		}
 	}
 
 	private applyField() {
@@ -321,22 +375,26 @@ class FemViewerElement extends HTMLElement {
 		const row = this.fields[fIdx];
 		const arr = row && row[pIdx];
 		if (!arr) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
-		// Volume-uniform barycentric sampling — same algorithm as the
-		// in-app worker (lib/viz.ts), just sync inline. Default 8 k keeps
-		// the smaller embed canvas responsive; override via the
-		// `field-samples` attribute (e.g. larger for a full-page embed).
 		const n = Math.max(500, parseInt(this.getAttribute('field-samples') || '8000', 10));
-		const { positions, abc, maxE2, minE2 } = sampleFieldCloud(this.mesh, arr, n);
-		setPointCloud(this.glState, positions, abc);
+
+		// Cache the sampled cloud per (freq, port, n) — cycle re-enters
+		// field phase every CYCLE_HOLD_S × 3 seconds; re-sampling 5–50 k
+		// random points each time is wasted work when the inputs match.
+		const key = `${fIdx}|${pIdx}|${n}`;
+		let cached = this.fieldCloudCache.get(key);
+		if (!cached) {
+			cached = sampleFieldCloud(this.mesh, arr, n);
+			this.fieldCloudCache.set(key, cached);
+		}
+		setPointCloud(this.glState, cached.positions, cached.abc);
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
 		setPointScaleMode(this.glState, mode);
 		if (mode === 'log') {
-			const log_max = Math.log10(Math.sqrt(Math.max(maxE2, 1e-30)));
+			const log_max = Math.log10(Math.sqrt(Math.max(cached.maxE2, 1e-30)));
 			setPointLogRange(this.glState, log_max - 4, 4);
 		} else {
-			setPointLinRange(this.glState, 0, Math.sqrt(Math.max(maxE2, 1e-30)));
+			setPointLinRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
 		}
-		void minE2;
 	}
 
 	/** What phase should be displayed right now. */
@@ -353,25 +411,16 @@ class FemViewerElement extends HTMLElement {
 		return 'geometry';
 	}
 
-	/** Apply a phase: re-runs buildScene with the appropriate flags so the
-	 *  GL state holds exactly what this phase wants — no leftover tags
-	 *  from the previous phase, no setTagVisible juggling. */
-	private applyPhase(phase: Phase) {
-		if (!this.glState) return;
-		this.currentPhase = phase;
-		this.rebuildScene();
-		if (this.labelEl) {
-			this.labelEl.textContent = phase;
-			this.labelEl.style.opacity = this.hasAttribute('cycle') ? '0.65' : '0';
-		}
-	}
-
 	private syncCanvas(): { w: number; h: number } {
 		if (!this.canvas) return { w: 0, h: 0 };
 		const rect = this.canvas.getBoundingClientRect();
 		const cssW = Math.round(rect.width), cssH = Math.round(rect.height);
 		if (cssW <= 0 || cssH <= 0) return { w: 0, h: 0 };
-		const dpr = window.devicePixelRatio || 1;
+		// Clamp dpr: a 3× retina canvas at 320 × 240 CSS = 960 × 720
+		// backbuffer = 4× the pixel work of dpr=1.5. The visual delta on
+		// an embed thumbnail is negligible; the perf delta is significant
+		// (6 cards × 240 px tall × 60 fps × 3× ≫ same at 1.5×).
+		const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 		const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
 		if (this.canvas.width !== bw || this.canvas.height !== bh) {
 			this.canvas.width = bw; this.canvas.height = bh;
@@ -396,7 +445,7 @@ class FemViewerElement extends HTMLElement {
 		}
 		if (this.hasAttribute('cycle')) {
 			const next = this.resolvePhase();
-			if (next !== this.currentPhase) this.applyPhase(next);
+			if (next !== this.currentPhase) this.applyPhaseInstant(next);
 		}
 		// 5th arg is zFlip — MUST be 1 in the rapidfem renderer, otherwise the
 		// vertex shader multiplies every vertex's z by 0 and the geometry

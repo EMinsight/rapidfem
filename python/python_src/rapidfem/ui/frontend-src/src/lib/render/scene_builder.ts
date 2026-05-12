@@ -200,15 +200,18 @@ export interface BuildSceneConfig {
  * off to a worker and the embed builds a synchronous tet-centroid
  * sample — both call setPointCloud themselves.
  */
+export const WIRE_TAG = -1;
+
 export function buildScene(
 	state: GLState,
 	mesh: SceneMesh,
 	config: BuildSceneConfig = {},
-): { tags: number[] } {
+): { faceTags: number[]; wireTag: number | null } {
 	const showFaces = config.showFaces ?? true;
 	const showWire = config.showWire ?? false;
 	const fieldNorm = config.fieldNorm ?? null;
-	const tags: number[] = [];
+	const faceTags: number[] = [];
+	let wireTag: number | null = null;
 
 	setBBox(state, mesh.bbox.min, mesh.bbox.max);
 
@@ -228,7 +231,7 @@ export function buildScene(
 			const kind = classify(name);
 			if (!kind) continue;
 			pushGroup(state, mesh, idx, colorFor(kind, name), tag, undefined, fieldNorm);
-			tags.push(tag);
+			faceTags.push(tag);
 		}
 		// 2) Implicit volume hulls — substrate / air / PML shells. Push
 		//    behind via polygon offset so coplanar conductors win the
@@ -240,7 +243,7 @@ export function buildScene(
 			if (!name || name.startsWith('_mat_')) continue;
 			const offset: [number, number] | undefined = fieldNorm ? undefined : [2, 2];
 			pushGroup(state, mesh, idx, colorFor('dielectric', name), vtag, offset, fieldNorm);
-			tags.push(vtag);
+			faceTags.push(vtag);
 		}
 	}
 
@@ -248,10 +251,11 @@ export function buildScene(
 		const edges = buildWireEdges(mesh);
 		// Dim grey — matches the line color MeshViewer uses for its mesh
 		// wireframe overlay so embed + in-app look identical.
-		addLineMesh(state, edges, hex('#3a3a44'), -1);
+		addLineMesh(state, edges, hex('#3a3a44'), WIRE_TAG);
+		wireTag = WIRE_TAG;
 	}
 
-	return { tags };
+	return { faceTags, wireTag };
 }
 
 /** Convenience: wipe the field cloud. Callers use this when toggling
