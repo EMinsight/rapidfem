@@ -40,6 +40,13 @@ class SimulationBuilder:
         self._pec_tags: list[int] = []
         self._z0_ref: float = 50.0
         self._mat_name_to_tag: dict[str, int] = {}
+        self._eigenmode: tuple[float, int] | None = None
+        self._adaptive: tuple[float, float] | None = None
+        self._out_touchstone: str | None = None
+        self._out_vtk: str | None = None
+        self._out_farfield: str | None = None
+        self._out_farfield_nfft_tag: int | None = None
+        self._out_group_delay: str | None = None
 
     # ── Mesh sources ────────────────────────────────────────────────────────
 
@@ -293,10 +300,75 @@ class SimulationBuilder:
         self._materials.append(s)
         return self
 
+    # ── Eigenmode + adaptive refinement ────────────────────────────────────
+
+    def eigenmode(self, target_frequency: float, *,
+                  n_modes: int = 6) -> "SimulationBuilder":
+        """Configure an eigenmode solve around ``target_frequency`` (Hz).
+
+        Use ``Simulation.run_eigenmode()`` after ``.build()`` to actually
+        run it. ``n_modes`` is the number of eigenpairs requested from the
+        shift-invert Lanczos solver.
+        """
+        self._eigenmode = (float(target_frequency), int(n_modes))
+        return self
+
+    def adaptive(self, *,
+                 theta: float = 0.5,
+                 refinement_ratio: float = 0.5) -> "SimulationBuilder":
+        """Enable adaptive mesh refinement on the driven sweep.
+
+        ``theta`` is the Dörfler-marking fraction (elements carrying the
+        top θ of the residual error are marked). ``refinement_ratio`` is
+        the local size reduction applied to marked elements during the
+        gmsh size-field export.
+
+        Note: the adaptive refinement loop (solve → estimate → mark →
+        write size field → re-mesh → repeat) is driven by the CLI
+        (``rapidfem`` binary), not by ``Simulation.run_sweep()``. Use
+        this with ``.dump()`` to write a config the CLI consumes.
+        """
+        self._adaptive = (float(theta), float(refinement_ratio))
+        return self
+
     # ── Output / reference impedance ───────────────────────────────────────
 
     def reference_impedance(self, z0: float) -> "SimulationBuilder":
         self._z0_ref = float(z0)
+        return self
+
+    def output_touchstone(self, path: str) -> "SimulationBuilder":
+        """Write a Touchstone (.sNp) file of the driven sweep S-parameters
+        to ``path``.
+
+        Note: consumed by the ``rapidfem`` CLI; pair with ``.dump()`` to
+        write a TOML the CLI can execute. From Python, write Touchstone
+        post-solve via ``rapidfem.io.to_touchstone(result, path)``.
+        """
+        self._out_touchstone = str(path)
+        return self
+
+    def output_vtk(self, path: str) -> "SimulationBuilder":
+        """Write a VTK field dump to ``path``. CLI-driven; see
+        :meth:`output_touchstone` for the workflow note."""
+        self._out_vtk = str(path)
+        return self
+
+    def output_farfield(self, path: str, *,
+                        nfft_tag: int | None = None) -> "SimulationBuilder":
+        """Write a far-field CSV to ``path``. ``nfft_tag`` overrides the
+        physical-group tag of the NFFT surface (defaults to the ABC tag).
+        CLI-driven; from Python use ``sim.compute_farfield(...)``.
+        """
+        self._out_farfield = str(path)
+        if nfft_tag is not None:
+            self._out_farfield_nfft_tag = int(nfft_tag)
+        return self
+
+    def output_group_delay(self, path: str) -> "SimulationBuilder":
+        """Write group delay τ_g = -dφ/dω of the S-parameters to ``path``
+        (CSV, one row per frequency). CLI-driven."""
+        self._out_group_delay = str(path)
         return self
 
     # ── Build ──────────────────────────────────────────────────────────────
@@ -314,7 +386,30 @@ class SimulationBuilder:
             toml.append(f"[pec]\ntags = [{tags_str}]\n")
         else:
             toml.append("[pec]\ntags = []\n")
-        toml.append(f"[output]\nz0 = {_f64(self._z0_ref)}\n")
+
+        if self._eigenmode is not None:
+            f0, nm = self._eigenmode
+            toml.append(
+                f"[eigenmode]\ntarget_frequency = {_f64(f0)}\nn_modes = {nm}\n"
+            )
+        if self._adaptive is not None:
+            theta, ratio = self._adaptive
+            toml.append(
+                f"[adaptive]\ntheta = {_f64(theta)}\nrefinement_ratio = {_f64(ratio)}\n"
+            )
+
+        out_lines = [f"[output]\nz0 = {_f64(self._z0_ref)}"]
+        if self._out_touchstone is not None:
+            out_lines.append(f'touchstone = "{self._out_touchstone}"')
+        if self._out_vtk is not None:
+            out_lines.append(f'vtk = "{self._out_vtk}"')
+        if self._out_farfield is not None:
+            out_lines.append(f'farfield = "{self._out_farfield}"')
+        if self._out_farfield_nfft_tag is not None:
+            out_lines.append(f'nfft_tag = {self._out_farfield_nfft_tag}')
+        if self._out_group_delay is not None:
+            out_lines.append(f'group_delay = "{self._out_group_delay}"')
+        toml.append("\n".join(out_lines) + "\n")
         return "\n".join(toml)
 
     def build(self) -> Simulation:
