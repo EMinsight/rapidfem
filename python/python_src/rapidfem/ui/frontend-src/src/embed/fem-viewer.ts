@@ -25,20 +25,14 @@
  */
 
 import {
-	initGL, disposeGL, createCamera, clearMeshes, addMesh,
+	initGL, disposeGL, createCamera, clearMeshes,
 	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
-	setTagVisible, setBBox, render3D, fitCamera,
+	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
-import { addVolumeHullMeshes, buildTriSoupF64 } from '../lib/render/mesh_scene';
+import { buildScene, clearFieldCloud } from '../lib/render/scene_builder';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
-
-// Tag layout — each renderable group gets its own integer so we can
-// toggle visibility per cycle phase via setTagVisible(state, tag, vis).
-const TAG_HULL = 1;        // dielectric / volume hulls (substrate, air, PML)
-const TAG_COND = 2;        // named conductors / ports overlay
-const TAG_WIRE = 3;        // wireframe edges
 
 // Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
 type Phase = 'geometry' | 'mesh' | 'field';
@@ -332,34 +326,19 @@ class FemViewerElement extends HTMLElement {
 		}
 	}
 
+	/** Wipe + rebuild the GL scene for the current phase.
+	 *  Routes through the same `buildScene` the in-app MeshViewer uses
+	 *  → bit-identical rendering, no embed-specific hand-rolled colors. */
 	private rebuildScene() {
 		if (!this.glState || !this.mesh) return;
 		clearMeshes(this.glState);
-		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
-
-		// 1) Volume hulls — substrate / air / PML shells, pushed back via
-		//    polygon offset so coplanar conductor surfaces win the depth
-		//    test cleanly. Bit-identical normals to MeshViewer.
-		addVolumeHullMeshes(
-			this.glState, this.mesh,
-			/* hull color = */ [0x5a / 255, 0x64 / 255, 0x70 / 255],
-			/* hullTag    = */ TAG_HULL,
-			/* wireTag    = */ TAG_WIRE,
-			/* wire color = */ [0x3a / 255, 0x3a / 255, 0x44 / 255],
-			/* offset     = */ [2, 2],
-		);
-
-		// 2) Named conductors / ports overlay — the bright brand-accent
-		//    layer on top of the hull (PEC walls, port faces, feed
-		//    plates). Gives the embed visible internal detail instead
-		//    of just an outer gray shell.
-		if (this.mesh.tris.length) {
-			const { positions, normals } = buildTriSoupF64(this.mesh.nodes, this.mesh.tris);
-			addMesh(this.glState, positions, normals,
-				/* accent-secondary orange */ [0xe8 / 255, 0x94 / 255, 0x4a / 255],
-				TAG_COND);
-		}
-		this.applyField();
+		const phase = this.currentPhase;
+		buildScene(this.glState, this.mesh, {
+			showFaces: phase === 'geometry' || phase === 'field',
+			showWire: phase === 'mesh',
+		});
+		if (phase === 'field' && this.hasField) this.applyField();
+		else clearFieldCloud(this.glState);
 	}
 
 	private applyField() {
@@ -397,23 +376,13 @@ class FemViewerElement extends HTMLElement {
 		return 'geometry';
 	}
 
-	/** Toggle which mesh groups + field cloud are visible for this phase. */
+	/** Apply a phase: re-runs buildScene with the appropriate flags so the
+	 *  GL state holds exactly what this phase wants — no leftover tags
+	 *  from the previous phase, no setTagVisible juggling. */
 	private applyPhase(phase: Phase) {
 		if (!this.glState) return;
 		this.currentPhase = phase;
-		const showHull = phase === 'geometry';
-		const showCond = phase === 'geometry';
-		const showWire = phase === 'mesh';
-		const showField = phase === 'field' && this.hasField;
-		setTagVisible(this.glState, TAG_HULL, showHull);
-		setTagVisible(this.glState, TAG_COND, showCond);
-		setTagVisible(this.glState, TAG_WIRE, showWire);
-		// Point cloud is not tag-gated — clear/repopulate it explicitly.
-		if (!showField && this.mesh) {
-			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
-		} else if (showField) {
-			this.applyField();
-		}
+		this.rebuildScene();
 		if (this.labelEl) {
 			this.labelEl.textContent = phase;
 			this.labelEl.style.opacity = this.hasAttribute('cycle') ? '0.65' : '0';
