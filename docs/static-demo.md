@@ -22,8 +22,12 @@ deployed to `fem.rapidpassives.org` via GitHub Pages.
    - replaces the workdir browser with a manifest-driven examples list
    - auto-runs all cells on file open
 
-3. The build output (`python/python_src/rapidfem/ui/frontend/dist/`)
-   is published to GitHub Pages by `.github/workflows/deploy-demo.yml`.
+3. The baked output in `static/demo/` is **committed to git** so CI does
+   not have to run gmsh + the FEM solver. Re-bake locally and commit
+   whenever an example file (or `bake_demo.py` itself) changes.
+
+4. `.github/workflows/deploy-demo.yml` just runs `npm ci && npm run build`
+   with `VITE_STATIC_MODE=1` and pushes `dist/` to GitHub Pages.
 
 ## Local preview
 
@@ -76,12 +80,13 @@ python -m http.server 8000 --directory dist
 ## Operational notes
 
 - The bake step needs the same Python deps as the live UI server
-  (`rapidfem` editable + `[ui]` extra) and uses faer's LU solver
-  on the CI runner (no MKL/PARDISO needed). Total bake time for the
-  current 5 examples is ~20 s on `ubuntu-latest`.
+  (`rapidfem` editable + `[ui]` extra). PARDISO is used if MKL is
+  available, otherwise faer. Total bake time for the current 5 examples
+  is ~20 s locally.
 - Bundle size: ~7 MB raw, ~2–3 MB transferred (GH Pages auto-gzips).
-- The `static/demo/` directory is gitignored — CI regenerates it on
-  every deploy. Don't check in baked artefacts.
+- `static/demo/` is **committed to git** — CI does not re-solve. If you
+  change an example or `bake_demo.py`, re-bake locally and commit the
+  updated JSON + .bin files.
 - The kernel-WS protocol on the live server and the `StaticKernelClient`
   consume the *same* display-event shape. If you change `serialize.py`
   or `_serialize_captures_for_protocol`, re-bake.

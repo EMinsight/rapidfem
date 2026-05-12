@@ -141,4 +141,7 @@ cargo test --release
 
 ## License
 
-GPL-2.0.
+[GNU Affero General Public License v3.0 or later](LICENSE). If you run a
+modified version of rapidfem as a network service (e.g. SaaS), the AGPL
+requires that you make the modified source available to the users of that
+service. For commercial use under different terms, get in touch.
