@@ -53,9 +53,17 @@ resonator.material = "ceramic"
 # Conformal cuts so the three volumes share faces.
 g.fragment(air, support, resonator)
 
-# All outer cavity faces are PEC (closed metal box → trapped modes).
-for face in air.faces:
-    face.name = "pec"
+# Only the 6 axis-aligned cavity walls are PEC — selecting via min/max
+# avoids tagging the cylinder-air interface faces that `fragment` exposes
+# on `air.faces`. Tagging those would wall the dielectric off from the
+# air and the eigenmode solver would find isolated-dielectric modes
+# instead of cavity-resonator modes.
+air.faces.min(axis="z").name = "pec"   # cavity floor
+air.faces.max(axis="z").name = "pec"   # cavity ceiling
+air.faces.min(axis="x").name = "pec"
+air.faces.max(axis="x").name = "pec"
+air.faces.min(axis="y").name = "pec"
+air.faces.max(axis="y").name = "pec"
 
 # Mesh — wavelength in the ceramic is √34 ≈ 5.8× shorter than air, so
 # resolve there. For the cavity bulk λ_air/12 ≈ 12.5 mm at 2 GHz is fine.
