@@ -25,23 +25,30 @@
 			name: 'iris_filter',
 			label: 'Iris Bandpass',
 			desc: 'Three inductive irises in WR-90 form a 3rd-order Chebyshev passband near 10 GHz',
+			fieldFreq: 24,  // 10.72 GHz on the 8.2-12.4 GHz / 41-pt sweep
 		},
 		{
 			name: 'patch_antenna',
 			label: 'Patch Antenna',
 			desc: 'Edge-fed 2.4 GHz patch on FR-4 with a 5-slab PML enclosure and far-field pattern',
+			fieldMode: 'log',
 		},
 		{
 			name: 'coax_step',
 			label: 'Coax Step',
 			desc: '50 → 75 ohm coaxial impedance discontinuity, native coax TEM ports',
+			fieldFreq: 0,   // 1 GHz, the low end of the sweep
 		},
 		{
 			name: 'microstrip_line',
 			label: 'Microstrip Z₀',
 			desc: '50 ohm microstrip on RO4003C, narrowed to the λ_g/2 sweet spot for clean S-params',
+			fieldMode: 'log',
 		},
-	];
+	] as Array<{
+		name: string; label: string; desc: string;
+		fieldFreq?: number; fieldMode?: 'lin' | 'log';
+	}>;
 
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
 	const demo_url = `${base}/demo`;
@@ -73,7 +80,7 @@
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
 					<div class="card-preview">
-						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" field-samples="5000" width="100%" height="240px"></fem-viewer>`}
+						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" field-samples="5000"${ex.fieldFreq !== undefined ? ` field-freq="${ex.fieldFreq}"` : ''}${ex.fieldMode ? ` field-mode="${ex.fieldMode}"` : ''} width="100%" height="240px"></fem-viewer>`}
 					</div>
 					<div class="card-info">
 						<h3>{ex.label}</h3>

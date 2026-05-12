@@ -107,7 +107,7 @@
 
 <style>
 	.page {
-		background: var(--bg);
+		background: #1c1c21;        /* match the landing page's lifted bg */
 		min-height: 100vh;
 		display: flex;
 		flex-direction: column;
