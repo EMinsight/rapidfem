@@ -58,17 +58,6 @@
 			desc: '50 ohm microstrip on RO4003C, narrowed to the λ_g/2 sweet spot for clean S-params',
 			fieldMode: 'log',
 		},
-		{
-			name: 'stepped_impedance_filter',
-			label: 'Stepped LPF',
-			desc: '7-section microstrip stepped-impedance low-pass filter, ~2 GHz cutoff with classic harmonic re-entry',
-			fieldMode: 'log',
-		},
-		{
-			name: 'dielectric_resonator',
-			label: 'Dielectric Resonator',
-			desc: 'Ceramic puck on alumina support in a metal cavity — eigenmode solver finds the first 5 resonances near 2 GHz',
-		},
 	] as Array<{
 		name: string; label: string; desc: string;
 		fieldFreq?: number; fieldMode?: 'lin' | 'log';
