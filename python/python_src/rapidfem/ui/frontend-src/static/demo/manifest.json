@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1778560332,
+  "baked_at": 1778562472,
   "examples": [
     {
       "name": "coax_step",
@@ -49,9 +49,9 @@
           "stream_lines": 41
         }
       ],
-      "json_bytes": 728178,
+      "json_bytes": 728180,
       "bin_bytes": 1110130,
-      "bake_seconds": 4.19
+      "bake_seconds": 3.44
     },
     {
       "name": "iris_filter",
@@ -100,9 +100,60 @@
           "stream_lines": 50
         }
       ],
-      "json_bytes": 524960,
+      "json_bytes": 524962,
       "bin_bytes": 1067742,
-      "bake_seconds": 2.19
+      "bake_seconds": 2.45
+    },
+    {
+      "name": "microstrip_line",
+      "filename": "microstrip_line.py",
+      "json": "microstrip_line.json",
+      "bin_files": [
+        "microstrip_line_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 36
+        }
+      ],
+      "json_bytes": 522041,
+      "bin_bytes": 591254,
+      "bake_seconds": 2.74
     },
     {
       "name": "patch_antenna",
@@ -153,7 +204,7 @@
       ],
       "json_bytes": 1954250,
       "bin_bytes": 1040801,
-      "bake_seconds": 9.22
+      "bake_seconds": 9.58
     },
     {
       "name": "wr90",
@@ -202,9 +253,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 235374,
+      "json_bytes": 235370,
       "bin_bytes": 221318,
-      "bake_seconds": 0.58
+      "bake_seconds": 0.67
     },
     {
       "name": "wr90_pml",
@@ -253,9 +304,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 158097,
+      "json_bytes": 158102,
       "bin_bytes": 69089,
-      "bake_seconds": 0.22
+      "bake_seconds": 0.27
     }
   ]
 }
