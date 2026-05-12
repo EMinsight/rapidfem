@@ -5,12 +5,14 @@
 	let {
 		source = $bindable<string>(''),
 		file_path = '',
+		readonly = false,
 		onRunCell,
 		onRunAll,
 		onResetKernel,
 	}: {
 		source: string;
 		file_path: string;
+		readonly?: boolean;
 		onRunCell: (cell_source: string, reset_first: boolean) => Promise<'ok' | 'error'>;
 		onRunAll?: () => void;
 		onResetKernel?: () => void;
@@ -149,6 +151,7 @@
 			bind:source={cell.text}
 			status={cell.status}
 			kind="code"
+			{readonly}
 			focused={cell.id === focused_id}
 			onRun={() => { focused_id = cell.id; void run_cell(cell, { advance: true }); }}
 			onRunAllBelow={() => { focused_id = cell.id; void run_all(); }}
@@ -158,7 +161,7 @@
 	{#if cells.length === 0}
 		<div class="empty">Open a file or pick an example to start.</div>
 	{/if}
-	{#if cells.length > 0}
+	{#if cells.length > 0 && !readonly}
 		<button
 			class="add-cell"
 			onclick={() => { if (focused_id != null) add_cell_after(focused_id); }}

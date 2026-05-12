@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { listFiles, listExamples, deleteFile, renameFile, type FileEntry } from '$lib/api';
+	import { IS_STATIC_MODE, DEMO_BASE } from '$lib/static_mode';
 
 	let {
 		active_path = $bindable<string | null>(null),
@@ -57,10 +58,20 @@
 	async function refresh() {
 		loading = true;
 		try {
-			const [r, ex] = await Promise.all([listFiles(), listExamples()]);
-			workdir = r.workdir;
-			files = r.files;
-			examples = ex.examples;
+			if (IS_STATIC_MODE) {
+				// No backend: list comes from the baked manifest.json.
+				workdir = '(static demo)';
+				files = [];
+				const r = await fetch(`${DEMO_BASE}manifest.json`);
+				if (!r.ok) throw new Error(`manifest fetch failed: ${r.status}`);
+				const m = await r.json();
+				examples = (m.examples ?? []).map((e: { filename: string }) => ({ name: e.filename }));
+			} else {
+				const [r, ex] = await Promise.all([listFiles(), listExamples()]);
+				workdir = r.workdir;
+				files = r.files;
+				examples = ex.examples;
+			}
 			error = null;
 		} catch (e) {
 			error = String(e);
@@ -200,21 +211,23 @@
 
 <div class="browser">
 	<div class="head">
-		<span class="title">Files</span>
-		<button class="tb" onclick={onNew} title="New .py file" aria-label="New file">
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-				<path d="M8 3v10" />
-				<path d="M3 8h10" />
-			</svg>
-		</button>
-		<button class="tb" onclick={refresh} title="Refresh" aria-label="Refresh" disabled={loading}>
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8" />
-				<polyline points="12.5,2 12.5,4.5 10,4.5" />
-				<path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.8" />
-				<polyline points="3.5,14 3.5,11.5 6,11.5" />
-			</svg>
-		</button>
+		<span class="title">{IS_STATIC_MODE ? 'Demo' : 'Files'}</span>
+		{#if !IS_STATIC_MODE}
+			<button class="tb" onclick={onNew} title="New .py file" aria-label="New file">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+					<path d="M8 3v10" />
+					<path d="M3 8h10" />
+				</svg>
+			</button>
+			<button class="tb" onclick={refresh} title="Refresh" aria-label="Refresh" disabled={loading}>
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8" />
+					<polyline points="12.5,2 12.5,4.5 10,4.5" />
+					<path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.8" />
+					<polyline points="3.5,14 3.5,11.5 6,11.5" />
+				</svg>
+			</button>
+		{/if}
 	</div>
 
 	{#if error}
@@ -222,6 +235,7 @@
 	{/if}
 
 	<div class="list">
+		{#if !IS_STATIC_MODE}
 		<!-- ── Workdir section ────────────────────────────────────────────── -->
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div
@@ -290,10 +304,11 @@
 				<div class="empty">No .py files yet.</div>
 			{/if}
 		{/if}
+		{/if}
 
 		<!-- ── Examples section ───────────────────────────────────────────── -->
 		{#if examples.length}
-			<div class="section-sep"></div>
+			{#if !IS_STATIC_MODE}<div class="section-sep"></div>{/if}
 			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<div
 				class="section"

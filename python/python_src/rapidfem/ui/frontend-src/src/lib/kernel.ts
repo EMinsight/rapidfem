@@ -166,8 +166,205 @@ export class KernelClient {
 	}
 }
 
-let _singleton: KernelClient | null = null;
-export function get_kernel(): KernelClient {
-	if (!_singleton) _singleton = new KernelClient();
+// ── Static-demo replay client ──────────────────────────────────────────
+//
+// Used when the frontend is built with VITE_STATIC_MODE=1. Loads the bake
+// artefacts produced by `scripts/bake_demo.py` from `static/demo/` and
+// replays them through the same execute() callbacks as the live WS path,
+// so consumers (Cell, Notebook, +page.svelte) don't have to branch.
+
+import { IS_STATIC_MODE, DEMO_BASE } from './static_mode';
+
+interface BakedFieldsStub {
+	$bin: true;
+	magic: number;
+	version: number;
+	n_freq: number;
+	n_port: number;
+	stride: number;
+	url: string;
+}
+
+interface BakedDisplayEvent {
+	kind: 'geometry' | 'mesh' | 'result' | 'error';
+	name: string;
+	payload?: Record<string, unknown>;
+	error?: PythonError;
+}
+
+interface BakedCell {
+	marker: string | null;
+	code: string;
+	status: 'ok' | 'error';
+	stream_lines: { stream: StreamKind; line: string }[];
+	display_events: BakedDisplayEvent[];
+	error?: PythonError;
+}
+
+interface BakedExample {
+	name: string;
+	filename: string;
+	source: string;
+	cells: BakedCell[];
+}
+
+interface ManifestEntry {
+	name: string;
+	filename: string;
+	json: string;
+	bin_files: string[];
+	n_cells: number;
+}
+
+interface Manifest {
+	version: number;
+	baked_at: number;
+	examples: ManifestEntry[];
+}
+
+class StaticKernelClient {
+	private manifest_promise: Promise<Manifest> | null = null;
+	private examples = new Map<string, Promise<BakedExample>>();
+	private bins = new Map<string, Promise<ArrayBuffer>>();
+
+	private load_manifest(): Promise<Manifest> {
+		if (!this.manifest_promise) {
+			this.manifest_promise = fetch(`${DEMO_BASE}manifest.json`)
+				.then((r) => {
+					if (!r.ok) throw new Error(`manifest fetch failed: ${r.status}`);
+					return r.json() as Promise<Manifest>;
+				});
+		}
+		return this.manifest_promise;
+	}
+
+	private async load_example(filename: string): Promise<BakedExample> {
+		// File path keys are stored as bare filenames in the manifest, but
+		// callers may pass a longer "<path>" — match on basename.
+		const base = filename.split(/[\\/]/).pop() ?? filename;
+		let p = this.examples.get(base);
+		if (p) return p;
+		p = this.load_manifest().then(async (m) => {
+			const entry = m.examples.find((e) => e.filename === base);
+			if (!entry) throw new Error(`baked example not found: ${base}`);
+			const r = await fetch(`${DEMO_BASE}${entry.json}`);
+			if (!r.ok) throw new Error(`example fetch failed: ${r.status}`);
+			return r.json() as Promise<BakedExample>;
+		});
+		this.examples.set(base, p);
+		return p;
+	}
+
+	private async load_bin(url: string): Promise<ArrayBuffer> {
+		let p = this.bins.get(url);
+		if (p) return p;
+		p = fetch(`${DEMO_BASE}${url}`).then((r) => {
+			if (!r.ok) throw new Error(`bin fetch failed: ${r.status} ${url}`);
+			return r.arrayBuffer();
+		});
+		this.bins.set(url, p);
+		return p;
+	}
+
+	/** Hydrate the binary field stub back into the nested-array shape the
+	 *  live UI's `fields_raw` expects: ``(number[] | null)[][]``. */
+	private async hydrate_fields(stub: BakedFieldsStub): Promise<(number[] | null)[][]> {
+		const buf = await this.load_bin(stub.url);
+		const dv = new DataView(buf);
+		const magic = dv.getUint32(0, true);
+		const version = dv.getUint32(4, true);
+		if (magic !== stub.magic || version !== stub.version) {
+			throw new Error(`field bin header mismatch (got ${magic.toString(16)}/${version})`);
+		}
+		const n_freq = dv.getUint32(8, true);
+		const n_port = dv.getUint32(12, true);
+		const stride = dv.getUint32(16, true);
+		const mask_off = 20;
+		const mask = new Uint8Array(buf, mask_off, n_freq * n_port);
+		const floats_off = mask_off + mask.byteLength;
+		const all_floats = new Float32Array(buf, floats_off);
+
+		const out: (number[] | null)[][] = [];
+		let cursor = 0;
+		for (let fi = 0; fi < n_freq; fi++) {
+			const row: (number[] | null)[] = [];
+			for (let pi = 0; pi < n_port; pi++) {
+				if (mask[fi * n_port + pi] === 0) {
+					row.push(null);
+				} else {
+					row.push(Array.from(all_floats.subarray(cursor, cursor + stride)));
+					cursor += stride;
+				}
+			}
+			out.push(row);
+		}
+		return out;
+	}
+
+	/** Find the baked cell matching the source the editor just sent. */
+	private find_cell(example: BakedExample, code: string): BakedCell | null {
+		const eq = (a: string, b: string) => a === b || a.trimEnd() === b.trimEnd();
+		const exact = example.cells.find((c) => eq(c.code, code));
+		if (exact) return exact;
+		// Fallback: trimmed match in case Notebook.serialize() added/dropped
+		// a trailing newline.
+		return example.cells.find((c) => c.code.trim() === code.trim()) ?? null;
+	}
+
+	execute(opts: ExecuteOptions): Promise<ExecuteResult> {
+		return (async () => {
+			opts.onStarted?.();
+			let example: BakedExample;
+			try {
+				example = await this.load_example(opts.file);
+			} catch (err) {
+				opts.onStream?.('stderr', String(err));
+				return { ok: false, error: { type: 'StaticDemoError', message: String(err), traceback: '' } };
+			}
+			const cell = this.find_cell(example, opts.code);
+			if (!cell) {
+				opts.onStream?.('stderr', '[static-demo] no baked record for this cell');
+				return { ok: false, error: { type: 'StaticDemoError', message: 'no cell match', traceback: '' } };
+			}
+
+			for (const s of cell.stream_lines) opts.onStream?.(s.stream, s.line);
+
+			for (const ev of cell.display_events) {
+				if (ev.kind === 'error') {
+					if (ev.error) opts.onStream?.('stderr', `${ev.error.type}: ${ev.error.message}`);
+					continue;
+				}
+				let payload = ev.payload ?? {};
+				if (ev.kind === 'result') {
+					const f = (payload as Record<string, unknown>).fields as BakedFieldsStub | undefined | null;
+					if (f && (f as BakedFieldsStub).$bin) {
+						try {
+							const hydrated = await this.hydrate_fields(f as BakedFieldsStub);
+							payload = { ...payload, fields: hydrated };
+						} catch (err) {
+							opts.onStream?.('stderr', `[static-demo] field load failed: ${err}`);
+						}
+					}
+				}
+				opts.onDisplay?.(ev.kind, payload, ev.name);
+			}
+
+			if (cell.status === 'error') {
+				return { ok: false, error: cell.error };
+			}
+			return { ok: true };
+		})();
+	}
+
+	reset(_file: string) {
+		/* no-op in static mode — the namespace is whatever was baked */
+	}
+}
+
+let _singleton: KernelClient | StaticKernelClient | null = null;
+export function get_kernel(): KernelClient | StaticKernelClient {
+	if (!_singleton) {
+		_singleton = IS_STATIC_MODE ? new StaticKernelClient() : new KernelClient();
+	}
 	return _singleton;
 }
