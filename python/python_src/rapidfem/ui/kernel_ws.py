@@ -52,11 +52,22 @@ def register_kernel_ws(sock) -> None:
 
     @sock.route("/ws/kernel")
     def kernel_ws(ws):  # pragma: no cover — exercised end-to-end
+        # Per-connection lock that serialises every `ws.send`. Without it,
+        # the stdout/stderr reader threads spawned by `_capture_streams`
+        # write to the same socket as this handler thread — `socket.send`
+        # is not atomic for multi-byte writes, so concurrent calls produce
+        # interleaved bytes that destroy the WS frame stream. Symptom:
+        # "Invalid frame header" / "reserved bits must be 0" in clients,
+        # plus Werkzeug dumping `HTTP/1.1 500` onto the now-corrupted WS.
+        send_lock = threading.Lock()
+
         def send(obj: dict[str, Any]) -> None:
-            try:
-                ws.send(json.dumps(obj, default=str))
-            except Exception:
-                pass
+            payload = json.dumps(obj, default=str)
+            with send_lock:
+                try:
+                    ws.send(payload)
+                except Exception:
+                    pass
 
         send({"type": "hello"})
 
