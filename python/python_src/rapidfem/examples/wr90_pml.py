@@ -42,8 +42,14 @@ pml.name = "pml_back"
 # Make the two volumes share their interface face cleanly.
 g.fragment(inner, pml)
 
-# Port at z=0 of the inner volume; all other faces (incl. the PML's outer
-# walls and the +z back cap) are PEC. The PML alone handles the absorption.
+# The fragmented interface at z=L_INNER is a face of BOTH volumes — name it
+# explicitly so the auto-pec loops below skip it. Without this it would be
+# tagged "pec" and reflect the incoming wave straight back, leaving the PML
+# unused (|S11| ≈ 0 dB).
+inner.faces.max(axis="z").name = "_iface"
+
+# Port at z=0 of the inner volume; all other external faces (incl. the PML's
+# outer walls and the +z back cap) are PEC. The PML alone handles absorption.
 inner.faces.min(axis="z").name = "port_in"
 for face in inner.faces:
     if face.name is None:

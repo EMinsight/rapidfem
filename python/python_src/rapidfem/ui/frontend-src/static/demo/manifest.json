@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1778562746,
+  "baked_at": 1778576629,
   "examples": [
     {
       "name": "coax_step",
@@ -51,7 +51,7 @@
       ],
       "json_bytes": 728180,
       "bin_bytes": 1110132,
-      "bake_seconds": 3.43
+      "bake_seconds": 3.54
     },
     {
       "name": "iris_filter",
@@ -100,9 +100,9 @@
           "stream_lines": 50
         }
       ],
-      "json_bytes": 524978,
+      "json_bytes": 524955,
       "bin_bytes": 1067744,
-      "bake_seconds": 2.16
+      "bake_seconds": 2.38
     },
     {
       "name": "microstrip_line",
@@ -151,9 +151,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 522039,
-      "bin_bytes": 591256,
-      "bake_seconds": 2.44
+      "json_bytes": 1093651,
+      "bin_bytes": 1247464,
+      "bake_seconds": 9.65
     },
     {
       "name": "patch_antenna",
@@ -204,7 +204,7 @@
       ],
       "json_bytes": 1954251,
       "bin_bytes": 1040804,
-      "bake_seconds": 8.39
+      "bake_seconds": 9.42
     },
     {
       "name": "wr90",
@@ -255,7 +255,7 @@
       ],
       "json_bytes": 235372,
       "bin_bytes": 221320,
-      "bake_seconds": 0.57
+      "bake_seconds": 0.66
     },
     {
       "name": "wr90_pml",
@@ -304,9 +304,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 158100,
+      "json_bytes": 158924,
       "bin_bytes": 69092,
-      "bake_seconds": 0.23
+      "bake_seconds": 0.27
     }
   ]
 }
