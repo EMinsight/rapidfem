@@ -26,8 +26,14 @@ WIDTHS_MIL  = [ 50, 128,   8, 224,   8, 128,  50]
 
 SUB_H = 62 * mil            # PCB substrate thickness
 ER_SUB = 2.2                # low-loss laminate (Rogers-like)
-AIR_H = 60 * mil            # air-box height above substrate
-PAD_Y = 200 * mil           # lateral margin around the trace
+# Air headroom + lateral margin. Both have to be large enough that the
+# 2nd-order ABC on the air-box walls only sees a clean travelling-wave
+# microstrip mode — fringe fields that haven't decayed by the time they
+# reach the boundary get reflected back and corrupt S-params (|S21|+ |S11|
+# straying above 0 dB). λ_air/4 at the *highest* sweep frequency is the
+# usual rule of thumb; here at 8 GHz that's ~9 mm, so we go to 15 mm.
+AIR_H = 15 * mm             # was 60 mil ≈ 1.5 mm — ABC was right on top of the trace
+PAD_Y = 12 * mm             # lateral margin around the trace
 
 FREQUENCIES = np.linspace(0.2e9, 8.0e9, 41)
 
