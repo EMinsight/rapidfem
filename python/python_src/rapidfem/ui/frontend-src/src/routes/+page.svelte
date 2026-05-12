@@ -102,14 +102,6 @@
 				<span class="cta-arrow">→</span>
 			</a>
 		</div>
-		<p class="quickstart-note">
-			Python solver with a static, browser-side notebook UI &mdash; drive a sweep, inspect
-			S-parameters and 3D fields. Already on
-			<a href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
-			and
-			<a href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>.
-			The cards below open straight into the notebook.
-		</p>
 		<div class="cards">
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>

@@ -139,7 +139,9 @@ class FemViewerElement extends HTMLElement {
 	private isRightDrag = false;
 	private lastMouse = { x: 0, y: 0 };
 	private currentPhase: Phase = 'geometry';
-	private phaseStart = 0;
+	// Phase cycling reads performance.now() directly (no per-instance anchor),
+	// so multiple <fem-viewer> tags on the same page tick in lockstep instead
+	// of each drifting from its own load moment.
 	// Perf state ────────────────────────────────────────────────────────
 	private loadStarted = false;            // load() kicked off (lazy via IO)
 	private isOnscreen = false;             // updated by IntersectionObserver
@@ -320,7 +322,6 @@ class FemViewerElement extends HTMLElement {
 			this.buildSceneOnce();
 			this.fitView();
 			if (this.loadingEl) this.loadingEl.style.display = 'none';
-			this.phaseStart = performance.now() / 1000;
 			this.applyPhaseInstant(this.resolvePhase());
 			if (this.isOnscreen) this.startAnimation();
 		} catch (e) {
@@ -400,9 +401,11 @@ class FemViewerElement extends HTMLElement {
 	/** What phase should be displayed right now. */
 	private resolvePhase(): Phase {
 		if (this.hasAttribute('cycle')) {
-			// Time-based phase cycling.
-			const t = performance.now() / 1000 - this.phaseStart;
-			let order: Phase[] = this.hasField ? CYCLE_ORDER : CYCLE_ORDER.filter(p => p !== 'field');
+			// Wall-clock-driven phase: every viewer reads the same `t`, so
+			// multiple cards on a page advance in lockstep regardless of when
+			// each one finished loading.
+			const t = performance.now() / 1000;
+			const order: Phase[] = this.hasField ? CYCLE_ORDER : CYCLE_ORDER.filter(p => p !== 'field');
 			const idx = Math.floor(t / CYCLE_HOLD_S) % order.length;
 			return order[idx];
 		}
