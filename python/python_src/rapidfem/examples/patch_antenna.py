@@ -108,6 +108,17 @@ pml_yp.name = "pml_yp"
 pml_ym.name = "pml_ym"
 pml_zp.name = "pml_zp"
 
+# After `fragment`, the face between each PML and the inner air is a *shared*
+# sub-face of both volumes. If we let the auto-pec loop below tag it as "pec"
+# we wrap the PML in a PEC wall and the wave bounces off the inner boundary
+# instead of getting absorbed (|S11| ~ 0 dB across the band). Name those
+# interface faces explicitly so the loop skips them.
+pml_xp.faces.min(axis="x").name = "_iface"   # x = +X_OUT
+pml_xm.faces.max(axis="x").name = "_iface"   # x = -X_OUT
+pml_yp.faces.min(axis="y").name = "_iface"   # y = +Y_OUT
+pml_ym.faces.max(axis="y").name = "_iface"   # y = -Y_OUT
+pml_zp.faces.min(axis="z").name = "_iface"   # z = AIR_TOP
+
 # Outer faces of the PML enclosure → PEC.
 for vol in (pml_xp, pml_xm, pml_yp, pml_ym, pml_zp):
     for face in vol.faces:

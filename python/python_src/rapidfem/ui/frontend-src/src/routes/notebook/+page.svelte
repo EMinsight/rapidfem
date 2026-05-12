@@ -22,15 +22,27 @@
 	let dirty = $state(false);
 	let log_lines = $state<string[]>([]);
 	let output_body_el: HTMLElement | undefined = $state();
+	let _stick_to_bottom = $state(true);
 	$effect(() => {
-		// Auto-scroll to bottom when new lines arrive (unless user has
-		// scrolled up: bail when they're more than ~80px from the bottom).
-		const n = log_lines.length;
-		if (!output_body_el || n === 0) return;
+		// Auto-scroll on new lines. The "is the user near the bottom?" check
+		// has to happen *before* the new lines re-render the DOM (so the
+		// scroll position reflects the user's intent, not the just-appended
+		// content). We track stickiness in a state variable that the scroll
+		// handler updates whenever the user actually scrolls, then `tick()`
+		// past the re-render before snapping to the new scrollHeight.
+		log_lines.length;  // track
+		if (!output_body_el || !_stick_to_bottom) return;
 		const el = output_body_el;
-		const at_bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-		if (at_bottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
+		// rAF runs after Svelte flushes DOM mutations, so el.scrollHeight
+		// already includes the new lines.
+		requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 	});
+
+	function on_output_scroll() {
+		const el = output_body_el;
+		if (!el) return;
+		_stick_to_bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+	}
 
 	let mesh_data = $state<MeshData | null>(null);
 	let wireframe = $state<import('$lib/api').GeometryPayload | null>(null);
@@ -626,7 +638,7 @@
 							{/if}
 						</div>
 						{#if !output_collapsed}
-							<div class="output-body" bind:this={output_body_el}>
+							<div class="output-body" bind:this={output_body_el} onscroll={on_output_scroll}>
 								{#each log_lines as line}
 									<div class="line">{line}</div>
 								{:else}
