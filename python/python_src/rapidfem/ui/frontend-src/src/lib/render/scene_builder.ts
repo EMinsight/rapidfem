@@ -259,3 +259,115 @@ export function buildScene(
 export function clearFieldCloud(state: GLState): void {
 	setPointCloud(state, new Float32Array(0), new Float32Array(0));
 }
+
+// ── Volumetric field point-cloud sampling ────────────────────────────
+//
+// Same algorithm as `$lib/viz.ts` (the worker-side sampler the in-app
+// MeshViewer uses), but in-line and synchronous for the embed which
+// doesn't carry a worker. We draw N random points uniformly within
+// the tet volume (weighted by per-tet volume so density is uniform
+// across the mesh, not biased toward small tets) and interpolate the
+// (A, B, C) phasor coefficients via barycentric weights.
+
+interface TetCdfCache {
+	cdf: Float64Array;       // running sum of |tet volume|
+	totalVolume: number;
+}
+
+function buildTetVolumeCDF(mesh: SceneMesh): TetCdfCache {
+	const tets = mesh.tets;
+	const nodes = mesh.nodes;
+	const n = tets.length / 4;
+	const cdf = new Float64Array(n);
+	let acc = 0;
+	for (let t = 0; t < n; t++) {
+		const a = tets[t * 4], b = tets[t * 4 + 1],
+		      c = tets[t * 4 + 2], d = tets[t * 4 + 3];
+		const ax = nodes[a * 3], ay = nodes[a * 3 + 1], az = nodes[a * 3 + 2];
+		const bx = nodes[b * 3], by = nodes[b * 3 + 1], bz = nodes[b * 3 + 2];
+		const cx = nodes[c * 3], cy = nodes[c * 3 + 1], cz = nodes[c * 3 + 2];
+		const dx = nodes[d * 3], dy = nodes[d * 3 + 1], dz = nodes[d * 3 + 2];
+		const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+		const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+		const e3x = dx - ax, e3y = dy - ay, e3z = dz - az;
+		// Tet volume = |det| / 6
+		const det = e1x * (e2y * e3z - e2z * e3y)
+		          - e1y * (e2x * e3z - e2z * e3x)
+		          + e1z * (e2x * e3y - e2y * e3x);
+		acc += Math.abs(det) / 6;
+		cdf[t] = acc;
+	}
+	return { cdf, totalVolume: acc };
+}
+
+function bsearchCdf(cdf: Float64Array, target: number): number {
+	let lo = 0, hi = cdf.length - 1;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (cdf[mid] < target) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
+/** Uniform barycentric weights for a tetrahedron (sorted-triple trick). */
+function uniformBary(out: [number, number, number, number]): void {
+	let s = Math.random();
+	let t = Math.random();
+	let u = Math.random();
+	if (s > t) [s, t] = [t, s];
+	if (t > u) [t, u] = [u, t];
+	if (s > t) [s, t] = [t, s];
+	out[0] = s;
+	out[1] = t - s;
+	out[2] = u - t;
+	out[3] = 1 - u;
+}
+
+/** Volume-uniform random sampling of N points across the mesh, with
+ *  (A, B, C) phasor coefficients interpolated by barycentric weights.
+ *  Same output shape `viz.ts:viz_sample` produces — drop into
+ *  `setPointCloud` directly. */
+export function sampleFieldCloud(
+	mesh: SceneMesh,
+	fieldAbc: number[] | Float32Array,
+	n: number,
+): { positions: Float32Array; abc: Float32Array; maxE2: number; minE2: number } {
+	const { cdf, totalVolume } = buildTetVolumeCDF(mesh);
+	const tets = mesh.tets;
+	const nodes = mesh.nodes;
+	const positions = new Float32Array(n * 3);
+	const abc = new Float32Array(n * 3);
+	const w: [number, number, number, number] = [0, 0, 0, 0];
+	let minE2 = Infinity, maxE2 = 0;
+	for (let i = 0; i < n; i++) {
+		const u = Math.random() * totalVolume;
+		const ti = bsearchCdf(cdf, u);
+		uniformBary(w);
+		const a = tets[ti * 4], b = tets[ti * 4 + 1],
+		      c = tets[ti * 4 + 2], d = tets[ti * 4 + 3];
+		positions[i * 3] = (
+			w[0] * nodes[a * 3] + w[1] * nodes[b * 3] +
+			w[2] * nodes[c * 3] + w[3] * nodes[d * 3]
+		);
+		positions[i * 3 + 1] = (
+			w[0] * nodes[a * 3 + 1] + w[1] * nodes[b * 3 + 1] +
+			w[2] * nodes[c * 3 + 1] + w[3] * nodes[d * 3 + 1]
+		);
+		positions[i * 3 + 2] = (
+			w[0] * nodes[a * 3 + 2] + w[1] * nodes[b * 3 + 2] +
+			w[2] * nodes[c * 3 + 2] + w[3] * nodes[d * 3 + 2]
+		);
+		const A = w[0] * fieldAbc[a * 3]     + w[1] * fieldAbc[b * 3]     + w[2] * fieldAbc[c * 3]     + w[3] * fieldAbc[d * 3];
+		const B = w[0] * fieldAbc[a * 3 + 1] + w[1] * fieldAbc[b * 3 + 1] + w[2] * fieldAbc[c * 3 + 1] + w[3] * fieldAbc[d * 3 + 1];
+		const C = w[0] * fieldAbc[a * 3 + 2] + w[1] * fieldAbc[b * 3 + 2] + w[2] * fieldAbc[c * 3 + 2] + w[3] * fieldAbc[d * 3 + 2];
+		abc[i * 3] = A; abc[i * 3 + 1] = B; abc[i * 3 + 2] = C;
+		const e2 = 0.5 * (A + B);
+		if (e2 > 0) {
+			if (e2 < minE2) minE2 = e2;
+			if (e2 > maxE2) maxE2 = e2;
+		}
+	}
+	if (!isFinite(minE2) || maxE2 === 0) { minE2 = 1; maxE2 = 1; }
+	return { positions, abc, maxE2, minE2 };
+}

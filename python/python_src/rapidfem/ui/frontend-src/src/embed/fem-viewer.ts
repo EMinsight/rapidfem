@@ -22,6 +22,8 @@
  *   field-mode      'lin' or 'log' (default 'lin')
  *   field-freq      frequency index for field display (default last)
  *   field-port      port index for field display (default 0)
+ *   field-samples   N random points sampled in the volume (default 8000;
+ *                   bump for full-page embeds, drop for tiny thumbnails)
  */
 
 import {
@@ -30,7 +32,7 @@ import {
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
-import { buildScene, clearFieldCloud } from '../lib/render/scene_builder';
+import { buildScene, clearFieldCloud, sampleFieldCloud } from '../lib/render/scene_builder';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
@@ -115,46 +117,8 @@ async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(n
 // (per-volume hull + edge extraction live in lib/render/mesh_scene.ts,
 // shared with the in-app MeshViewer to keep the two pipelines bit-identical)
 
-// Tet-centroid point cloud for the field viz.
-function buildFieldCloud(
-	mesh: MeshPayload,
-	field: number[],   // flat [A,B,C, A,B,C, ...] per node
-): { positions: Float32Array; abc: Float32Array } {
-	const nodes = mesh.nodes;
-	const tets = mesh.tets;
-	const n_tets = tets.length / 4;
-	const positions = new Float32Array(n_tets * 3);
-	const abc = new Float32Array(n_tets * 3);
-	for (let t = 0; t < n_tets; t++) {
-		const i0 = tets[t * 4], i1 = tets[t * 4 + 1],
-		      i2 = tets[t * 4 + 2], i3 = tets[t * 4 + 3];
-		for (let d = 0; d < 3; d++) {
-			positions[t * 3 + d] = 0.25 * (
-				nodes[i0 * 3 + d] + nodes[i1 * 3 + d] +
-				nodes[i2 * 3 + d] + nodes[i3 * 3 + d]
-			);
-			abc[t * 3 + d] = 0.25 * (
-				field[i0 * 3 + d] + field[i1 * 3 + d] +
-				field[i2 * 3 + d] + field[i3 * 3 + d]
-			);
-		}
-	}
-	return { positions, abc };
-}
-
-function computeFieldRange(abc: Float32Array, mode: 'lin' | 'log'): { floor: number; range: number } {
-	let max_e2 = 0;
-	for (let i = 0; i < abc.length; i += 3) {
-		const e2 = Math.max(abc[i], abc[i + 1]);
-		if (e2 > max_e2) max_e2 = e2;
-	}
-	const max_e = Math.sqrt(Math.max(max_e2, 1e-30));
-	if (mode === 'log') {
-		const log_max = Math.log10(max_e);
-		return { floor: log_max - 4, range: 4 };
-	}
-	return { floor: 0, range: max_e };
-}
+// (field sampling lives in scene_builder.ts — same algorithm the in-app
+// viewer's viz.ts worker uses; we just inline the call here)
 
 class FemViewerElement extends HTMLElement {
 	private canvas: HTMLCanvasElement | null = null;
@@ -178,7 +142,7 @@ class FemViewerElement extends HTMLElement {
 	static get observedAttributes() {
 		return ['src', 'width', 'height', 'rotate', 'cycle', 'mode', 'interactive',
 		        'transparent', 'speed', 'theta', 'phi',
-		        'field-mode', 'field-freq', 'field-port'];
+		        'field-mode', 'field-freq', 'field-port', 'field-samples'];
 	}
 
 	connectedCallback() {
@@ -237,7 +201,7 @@ class FemViewerElement extends HTMLElement {
 	attributeChangedCallback(name: string, _old: string | null, val: string | null) {
 		if (!this.mounted) return;
 		if (name === 'src' && val) void this.load(val);
-		else if (name === 'mode' || name === 'field-mode' || name === 'field-freq' || name === 'field-port') {
+		else if (name === 'mode' || name === 'field-mode' || name === 'field-freq' || name === 'field-port' || name === 'field-samples') {
 			this.applyField();
 			this.applyPhase(this.resolvePhase());
 			this.needsRender = true;
@@ -357,13 +321,22 @@ class FemViewerElement extends HTMLElement {
 		const row = this.fields[fIdx];
 		const arr = row && row[pIdx];
 		if (!arr) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
-		const { positions, abc } = buildFieldCloud(this.mesh, arr);
+		// Volume-uniform barycentric sampling — same algorithm as the
+		// in-app worker (lib/viz.ts), just sync inline. Default 8 k keeps
+		// the smaller embed canvas responsive; override via the
+		// `field-samples` attribute (e.g. larger for a full-page embed).
+		const n = Math.max(500, parseInt(this.getAttribute('field-samples') || '8000', 10));
+		const { positions, abc, maxE2, minE2 } = sampleFieldCloud(this.mesh, arr, n);
 		setPointCloud(this.glState, positions, abc);
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
-		const r = computeFieldRange(abc, mode);
 		setPointScaleMode(this.glState, mode);
-		if (mode === 'log') setPointLogRange(this.glState, r.floor, r.range);
-		else                setPointLinRange(this.glState, r.floor, r.range);
+		if (mode === 'log') {
+			const log_max = Math.log10(Math.sqrt(Math.max(maxE2, 1e-30)));
+			setPointLogRange(this.glState, log_max - 4, 4);
+		} else {
+			setPointLinRange(this.glState, 0, Math.sqrt(Math.max(maxE2, 1e-30)));
+		}
+		void minE2;
 	}
 
 	/** What phase should be displayed right now. */

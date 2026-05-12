@@ -73,7 +73,7 @@
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
 					<div class="card-preview">
-						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" width="100%" height="240px"></fem-viewer>`}
+						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" field-samples="5000" width="100%" height="240px"></fem-viewer>`}
 					</div>
 					<div class="card-info">
 						<h3>{ex.label}</h3>

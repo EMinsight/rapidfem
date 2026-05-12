@@ -531,7 +531,7 @@
 
 <div class="app">
 	<header>
-		<span class="brand"><img src="/favicon.svg" alt="rapidfem" class="logo" /></span>
+		<a class="brand" href="https://fem.rapidpassives.org" target="_blank" rel="noopener" title="RapidFEM landing"><img src="/favicon.svg" alt="RapidFEM" class="logo" /></a>
 		<span class="nav-sep"></span>
 		{#if active_path}
 			<span class="active-file has-tip">
