@@ -25,11 +25,12 @@
  */
 
 import {
-	initGL, disposeGL, createCamera, addMesh, addLineMesh, clearMeshes,
+	initGL, disposeGL, createCamera, clearMeshes,
 	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
 	setTagVisible, setBBox, render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
+import { addVolumeHullMeshes } from '../lib/render/mesh_scene';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
@@ -116,100 +117,8 @@ async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(n
 	return out;
 }
 
-// Flat-shaded triangle soup from indexed mesh nodes.
-function buildTriSoup(
-	nodes: number[],
-	tris: number[],
-): { positions: Float32Array; normals: Float32Array } {
-	const n_tris = tris.length / 3;
-	const positions = new Float32Array(n_tris * 9);
-	const normals = new Float32Array(n_tris * 9);
-	const a = [0, 0, 0], b = [0, 0, 0], c = [0, 0, 0];
-	for (let t = 0; t < n_tris; t++) {
-		const i = tris[t * 3], j = tris[t * 3 + 1], k = tris[t * 3 + 2];
-		a[0] = nodes[i * 3]; a[1] = nodes[i * 3 + 1]; a[2] = nodes[i * 3 + 2];
-		b[0] = nodes[j * 3]; b[1] = nodes[j * 3 + 1]; b[2] = nodes[j * 3 + 2];
-		c[0] = nodes[k * 3]; c[1] = nodes[k * 3 + 1]; c[2] = nodes[k * 3 + 2];
-		const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
-		const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
-		const nx = e1y * e2z - e1z * e2y;
-		const ny = e1z * e2x - e1x * e2z;
-		const nz = e1x * e2y - e1y * e2x;
-		const inv = 1 / Math.max(Math.hypot(nx, ny, nz), 1e-20);
-		const nxN = nx * inv, nyN = ny * inv, nzN = nz * inv;
-		positions.set(a, t * 9); positions.set(b, t * 9 + 3); positions.set(c, t * 9 + 6);
-		for (let v = 0; v < 3; v++) {
-			normals[t * 9 + v * 3] = nxN;
-			normals[t * 9 + v * 3 + 1] = nyN;
-			normals[t * 9 + v * 3 + 2] = nzN;
-		}
-	}
-	return { positions, normals };
-}
-
-// Per-volume outer hull from tet boundary faces (the substrate / air /
-// PML shells that bound each physical-group volume).
-function buildVolumeHullTris(mesh: MeshPayload): number[] {
-	const tets = mesh.tets;
-	const tet_phys = mesh.tet_phys;
-	const ntets = tet_phys.length;
-	const enc = (a: number, b: number, c: number): bigint => {
-		const s = [a, b, c].sort((x, y) => x - y);
-		return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
-	};
-	const per_vol = new Map<number, number[]>();
-	for (let t = 0; t < ntets; t++) {
-		const v = tet_phys[t];
-		if (!v) continue;
-		let arr = per_vol.get(v);
-		if (!arr) { arr = []; per_vol.set(v, arr); }
-		arr.push(t);
-	}
-	const out: number[] = [];
-	for (const [, tet_indices] of per_vol.entries()) {
-		const seen = new Map<bigint, { count: number; tri: [number, number, number] }>();
-		for (const t of tet_indices) {
-			const a = tets[t * 4], b = tets[t * 4 + 1],
-			      c = tets[t * 4 + 2], d = tets[t * 4 + 3];
-			const faces: [number, number, number][] = [
-				[a, b, c], [a, b, d], [a, c, d], [b, c, d],
-			];
-			for (const f of faces) {
-				const k = enc(f[0], f[1], f[2]);
-				const prev = seen.get(k);
-				if (!prev) seen.set(k, { count: 1, tri: f });
-				else prev.count++;
-			}
-		}
-		for (const e of seen.values()) {
-			if (e.count === 1) out.push(e.tri[0], e.tri[1], e.tri[2]);
-		}
-	}
-	return out;
-}
-
-// Build edge-list (positions, two vertices per edge) from triangle faces,
-// deduplicated. Used for the wireframe / mesh-mode display.
-function buildEdgeLines(nodes: number[], tris: number[]): Float32Array {
-	const seen = new Set<bigint>();
-	const out: number[] = [];
-	const push = (a: number, b: number) => {
-		const lo = a < b ? a : b, hi = a < b ? b : a;
-		const k = (BigInt(lo) << 32n) | BigInt(hi);
-		if (seen.has(k)) return;
-		seen.add(k);
-		out.push(
-			nodes[a * 3], nodes[a * 3 + 1], nodes[a * 3 + 2],
-			nodes[b * 3], nodes[b * 3 + 1], nodes[b * 3 + 2],
-		);
-	};
-	const n_tris = tris.length / 3;
-	for (let t = 0; t < n_tris; t++) {
-		const i = tris[t * 3], j = tris[t * 3 + 1], k = tris[t * 3 + 2];
-		push(i, j); push(j, k); push(k, i);
-	}
-	return Float32Array.from(out);
-}
+// (per-volume hull + edge extraction live in lib/render/mesh_scene.ts,
+// shared with the in-app MeshViewer to keep the two pipelines bit-identical)
 
 // Tet-centroid point cloud for the field viz.
 function buildFieldCloud(
@@ -427,22 +336,18 @@ class FemViewerElement extends HTMLElement {
 		clearMeshes(this.glState);
 		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
 
-		// Volume hulls — substrate / air / PML shells. Single solid layer:
-		// rendering the named-surface tris (PEC walls, ports) on top of this
-		// produces z-fight blotches because most named surfaces coincide
-		// with hull facets for our examples. The hull alone is monochrome
-		// but artefact-free and includes internal volume interfaces (e.g.
-		// the substrate-vs-air boundary in patch_antenna) that the named
-		// tris don't expose.
-		const hull = buildVolumeHullTris(this.mesh);
-		if (hull.length) {
-			const { positions, normals } = buildTriSoup(this.mesh.nodes, hull);
-			addMesh(this.glState, positions, normals, [0.22, 0.22, 0.26], TAG_HULL);
-			// Wireframe of the SAME hull tris — gives broader edge coverage
-			// than mesh.tris alone (which misses internal interfaces).
-			const edges = buildEdgeLines(this.mesh.nodes, hull);
-			if (edges.length) addLineMesh(this.glState, edges, [0.34, 0.34, 0.40], TAG_WIRE);
-		}
+		// Volume hulls — substrate / air / PML shells. We delegate to the
+		// shared mesh_scene helper so the embed and the in-app MeshViewer
+		// produce bit-identical normals (orient_outward + float64 cross
+		// product + axis-aligned snapping) — anything less leaves dappled
+		// shading on flat faces.
+		addVolumeHullMeshes(
+			this.glState, this.mesh,
+			/* color = */ [0.22, 0.22, 0.26],
+			/* hullTag = */ TAG_HULL,
+			/* wireTag = */ TAG_WIRE,
+			/* wireColor = */ [0.34, 0.34, 0.40],
+		);
 		this.applyField();
 	}
 

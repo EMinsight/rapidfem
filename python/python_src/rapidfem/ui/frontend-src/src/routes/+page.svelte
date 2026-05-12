@@ -101,13 +101,16 @@
 </div>
 
 <style>
-	/* Use the rapidpassives.org landing palette here — the notebook UI
-	 * has darker viewer-matched bg/text-dim values; on the landing we
-	 * want exact visual parity with the sibling project. */
+	/* Exact rapidpassives.org landing palette + scale. Notebook UI uses
+	 * the darker viewer-matched values; landing is a sibling-project look. */
 	.page {
 		--bg: #1c1c21;
 		--text-muted: #7d7a85;
 		--text-dim: #55535a;
+		--fs-xs: 10px;
+		--fs-sm: 12px;
+		--fs-md: 14px;
+		--fs-lg: 20px;
 		background: var(--bg);
 		min-height: 100vh;
 		display: flex;
@@ -212,13 +215,13 @@
 	.card-info h3 {
 		font-size: var(--fs-sm);
 		font-weight: 600;
-		color: var(--accent);
+		color: #d9513c;                    /* accent — locked to rapidpassives */
 		font-family: var(--font-mono);
 		margin-bottom: 4px;
 	}
 	.card-info p {
 		font-size: var(--fs-xs);
-		color: var(--text-dim);
+		color: #55535a;                    /* text-dim — locked to rapidpassives */
 		line-height: 1.4;
 		font-family: var(--font-mono);
 	}
