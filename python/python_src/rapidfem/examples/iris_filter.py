@@ -27,7 +27,7 @@ L = INPUT_LEN + (len(APERTURES) - 1) * SPACING + 2 * IRIS_T + OUTPUT_LEN
 # Sweep across the X-band single-mode region
 FREQUENCIES = np.linspace(8.2e9, 12.4e9, 41)
 
-MAXH = 3.0e-3
+MAXH = rapidfem.lambda_maxh(f_max=12.4e9)   # air-wavelength bound, ~2 mm
 
 
 # %% Geometry + Materials
@@ -66,6 +66,8 @@ rapidfem.show(g)
 
 
 # %% Mesh
+# (No auto_refine_features here — the iris solids are only PEC-wall scaffolding;
+# their volumes are cut out by `fragment` and don't see the FEM solve.)
 g.mesh(maxh=MAXH)
 rapidfem.show(g)
 
