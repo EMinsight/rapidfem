@@ -1,21 +1,29 @@
-"""
-Fluent SimulationBuilder — pair the geometry-layer's name → tag map with
-typed port/material/frequency builders, no TOML strings or integer tags
-in user code.
+"""Fluent builder for assembling a :class:`Simulation` from a meshed geometry.
 
-    sim = (
-        rapidfem.SimulationBuilder()
-        .from_geometry(g, maxh=10e-3)
-        .frequencies(np.linspace(2.3e9, 2.5e9, 21))
-        .pec("ground", "patch_pec")
-        .lumped_port("feed", direction=(0, 0, 1), z0=50.0)
-        .material("fr4", er=4.4)
-        .material("air", er=1.0)
-        .build()
-    )
+The :class:`SimulationBuilder` lets you compose ports, materials, frequencies,
+PEC walls, PML regions, and output options on top of an already-meshed
+:class:`rapidfem.Geometry`. Names from the geometry layer are resolved to
+gmsh physical-group tags internally, so user code never deals with TOML
+strings or integer tags.
 
-`build()` resolves every name through the geometry's `name_to_tag` map and
-constructs a `Simulation` via the existing in-memory bytes API.
+Example
+-------
+>>> import numpy as np
+>>> import rapidfem
+>>> g = rapidfem.Geometry()
+>>> # ... build geometry, assign names + materials ...
+>>> g.mesh(maxh=5e-3)
+>>> sim = (
+...     rapidfem.SimulationBuilder()
+...     .mesh_from(g)
+...     .frequencies(np.linspace(2.3e9, 2.5e9, 21))
+...     .pec("ground", "patch_pec")
+...     .lumped_port("feed", direction=(0, 0, 1), z0=50.0)
+...     .material("fr4", er=4.4)
+...     .material("air", er=1.0)
+...     .build()
+... )
+>>> result = sim.run_sweep()
 """
 from __future__ import annotations
 
@@ -31,6 +39,18 @@ def _f64(x: float) -> str:
 
 
 class SimulationBuilder:
+    """Fluent builder for a frequency-domain Maxwell :class:`Simulation`.
+
+    Methods return ``self`` so calls can be chained. ``build()`` consumes
+    the accumulated state and returns a native :class:`Simulation` ready
+    for ``run_sweep()`` or ``run_eigenmode()``.
+
+    Every method that references geometry takes ``name`` strings instead
+    of gmsh physical-group integers — names are resolved through the
+    name→tag map captured by ``mesh()`` / ``from_geometry()`` /
+    ``mesh_from()``.
+    """
+
     def __init__(self):
         self._mesh_bytes: bytes | None = None
         self._name_to_tag: dict[str, int] = {}
@@ -51,21 +71,72 @@ class SimulationBuilder:
     # ── Mesh sources ────────────────────────────────────────────────────────
 
     def mesh(self, mesh_bytes: bytes, name_to_tag: dict[str, int]) -> "SimulationBuilder":
+        """Bind a pre-meshed .msh blob and its name → tag map.
+
+        Use ``from_geometry`` or ``mesh_from`` for the typical workflow;
+        this lower-level entry point exists for callers that produce
+        gmsh bytes through some other path.
+
+        Parameters
+        ----------
+        mesh_bytes : bytes
+            A gmsh ``.msh`` v4 file as bytes.
+        name_to_tag : dict[str, int]
+            Mapping from geometry names (port faces, materials, etc.)
+            to gmsh physical-group integer tags.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self, for call chaining.
+        """
         self._mesh_bytes = mesh_bytes
         self._name_to_tag = dict(name_to_tag)
-        # Also separate out the material-volume tags (gmsh physical groups for volumes).
-        # Volumes will be wired to materials in the TOML.
         return self
 
     def from_geometry(self, geometry, maxh: float = 1.0) -> "SimulationBuilder":
-        """Convenience: invokes geometry.mesh(maxh) and stores the bytes + name map."""
+        """Mesh a :class:`Geometry` and bind the result in one step.
+
+        Equivalent to calling ``geometry.mesh(maxh)`` then ``mesh(...)``.
+
+        Parameters
+        ----------
+        geometry : rapidfem.Geometry
+            Geometry with names + materials assigned. Will be meshed
+            in-place if not already meshed.
+        maxh : float, optional
+            Maximum tetrahedron edge length in metres. Default 1.0
+            (which is enormous — always pass a value).
+
+        Returns
+        -------
+        SimulationBuilder
+            Self, for call chaining.
+        """
         mesh_bytes, name_to_tag = geometry.mesh(maxh=maxh)
         return self.mesh(mesh_bytes, name_to_tag)
 
     def mesh_from(self, geometry) -> "SimulationBuilder":
-        """Use an already-meshed Geometry. Requires `geometry.mesh(maxh)` to
-        have been called first; reads the cached .msh bytes + name→tag map
-        without re-meshing.
+        """Reuse a geometry that was meshed in an earlier cell.
+
+        Reads the cached ``.msh`` bytes + name→tag map from
+        ``geometry._last_mesh`` without re-meshing. Raises if the
+        geometry was never meshed.
+
+        Parameters
+        ----------
+        geometry : rapidfem.Geometry
+            A geometry on which ``.mesh(maxh=...)`` has been called.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self, for call chaining.
+
+        Raises
+        ------
+        ValueError
+            If the geometry has no cached mesh.
         """
         cached = getattr(geometry, "_last_mesh", None)
         if cached is None:
@@ -79,21 +150,83 @@ class SimulationBuilder:
     # ── Frequencies ────────────────────────────────────────────────────────
 
     def frequencies(self, values: Iterable[float]) -> "SimulationBuilder":
+        """Set the driven-sweep frequency points.
+
+        Parameters
+        ----------
+        values : Iterable[float]
+            Frequencies in Hz. Order is preserved.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Examples
+        --------
+        >>> b.frequencies(np.linspace(8e9, 12e9, 21))
+        """
         self._frequencies = [float(v) for v in values]
         return self
 
     def frequency_range(self, start: float, stop: float, n: int) -> "SimulationBuilder":
+        """Set frequencies as a linearly-spaced sweep.
+
+        Parameters
+        ----------
+        start, stop : float
+            Sweep endpoints in Hz (inclusive on both ends).
+        n : int
+            Number of points (≥ 2 for a real sweep).
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         self._frequencies = list(np.linspace(start, stop, n))
         return self
 
     # ── PEC / PMC ──────────────────────────────────────────────────────────
 
     def pec(self, *names: str) -> "SimulationBuilder":
+        """Mark one or more named surfaces as perfect electric conductor.
+
+        Parameters
+        ----------
+        *names : str
+            Geometry names to treat as PEC. Each must exist in the
+            geometry's name → tag map.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Examples
+        --------
+        >>> b.pec("ground", "patch_pec", "pec")
+        """
         for n in names:
             self._pec_tags.append(self._tag(n))
         return self
 
     def pmc(self, *names: str) -> "SimulationBuilder":
+        """Mark one or more named surfaces as perfect magnetic conductor.
+
+        Useful as a symmetry boundary for problems where the magnetic
+        field is tangential to a plane.
+
+        Parameters
+        ----------
+        *names : str
+            Geometry names to treat as PMC.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         for n in names:
             tag = self._tag(n)
             self._ports.append(f'[[ports]]\ntype = "pmc"\ntag = {tag}\n')
@@ -107,6 +240,32 @@ class SimulationBuilder:
                        power: float = 1.0,
                        width: float = 0.0,
                        height: float = 0.0) -> "SimulationBuilder":
+        """Drive or terminate a port with an analytic TE mode of a
+        rectangular waveguide.
+
+        Cross-section dimensions (``width``, ``height``) are auto-detected
+        from the port face bounding-box when set to 0. Override only if
+        the face is clipped or you want to drive a specific waveguide cross
+        section.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the port plane.
+        mode : tuple[int, int], optional
+            (m, n) TE-mode indices. Default ``(1, 0)`` = TE₁₀.
+        er : float, optional
+            Relative permittivity inside the waveguide. Default 1.
+        power : float, optional
+            Incident power in watts. Default 1.
+        width, height : float, optional
+            Cross-section overrides in metres. 0 means auto-detect.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         self._ports.append(
             f'[[ports]]\ntype = "rectangular"\ntag = {tag}\n'
@@ -122,6 +281,34 @@ class SimulationBuilder:
                     power: float = 1.0,
                     width: float = 0.0,
                     height: float = 0.0) -> "SimulationBuilder":
+        """Drive a port via a lumped 50-ohm (or arbitrary Z₀) voltage source.
+
+        The port surface should bridge two PEC conductors (e.g. ground and
+        a microstrip trace). ``direction`` is the voltage-integration
+        direction — typically perpendicular to the two conductors.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the port surface.
+        direction : Sequence[float]
+            3-vector giving the voltage-integration direction.
+        z0 : float, optional
+            Reference port impedance in ohms. Default 50.
+        power : float, optional
+            Incident power in watts. Default 1.
+        width, height : float, optional
+            Port extent overrides in metres. 0 means auto-detect.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Examples
+        --------
+        >>> b.lumped_port("feed", direction=(0, 0, 1), z0=50.0)
+        """
         tag = self._tag(name)
         d = [float(v) for v in direction]
         self._ports.append(
@@ -139,6 +326,29 @@ class SimulationBuilder:
                   z_axis: Sequence[float] | None = None,
                   er: float = 1.0,
                   power: float = 1.0) -> "SimulationBuilder":
+        """Drive a port with the analytic TEM mode of a coaxial line.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the annular port surface.
+        ri, ro : float
+            Inner and outer coax radii in metres.
+        origin : Sequence[float], optional
+            Point on the coax axis. Defaults to the bbox centre of the
+            port face.
+        z_axis : Sequence[float], optional
+            Direction of the coax axis. Defaults to +z.
+        er : float, optional
+            Relative permittivity of the coax dielectric. Default 1.
+        power : float, optional
+            Incident power in watts. Default 1.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         s = (
             f'[[ports]]\ntype = "coax"\ntag = {tag}\n'
@@ -157,6 +367,22 @@ class SimulationBuilder:
     def user_defined_port(self, name: str, *,
                           e_field: Sequence[float],
                           power: float = 1.0) -> "SimulationBuilder":
+        """Drive a port with a user-supplied uniform E-field on the face.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the port.
+        e_field : Sequence[float]
+            3-vector of the imposed electric field on the port face.
+        power : float, optional
+            Normalisation power in watts. Default 1.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         e = [float(v) for v in e_field]
         self._ports.append(
@@ -172,6 +398,31 @@ class SimulationBuilder:
                      mode_nr: int = 1,
                      er: float = 1.0,
                      power: float = 1.0) -> "SimulationBuilder":
+        """Drive a port with a Floquet plane-wave mode for periodic unit cells.
+
+        For frequency-selective surfaces, phased-array unit cells, and
+        similar problems requiring oblique-incidence excitation.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the Floquet port (typically the top
+            or bottom of a periodic unit cell).
+        scan_theta_deg, scan_phi_deg : float, optional
+            Scan angles in degrees (spherical coords). Default (0, 0)
+            = normal incidence.
+        mode_nr : int, optional
+            Floquet mode index. Default 1 (fundamental).
+        er : float, optional
+            Relative permittivity of the port medium. Default 1.
+        power : float, optional
+            Incident power in watts. Default 1.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         self._ports.append(
             f'[[ports]]\ntype = "floquet"\ntag = {tag}\n'
@@ -190,14 +441,43 @@ class SimulationBuilder:
             ur_base: float = 1.0,
             exponent: float = 1.5,
             delta_max: float = 8.0) -> "SimulationBuilder":
-        """Perfectly Matched Layer absorbing boundary, applied to a *volume*
-        whose `name` was set on the geometry (e.g. ``shell.name = "pml_top"``).
+        """Apply a Perfectly Matched Layer to a *volume* in the geometry.
 
-        ``direction`` is the outward-pointing axis the PML attenuates along
-        (use a unit vector like (0, 0, 1) for +z). ``inner_face`` is the
-        coordinate of the PML's inner boundary along that axis;
-        ``thickness`` extends outward from there. The remaining knobs match
-        the TOML ``[[pml]]`` schema."""
+        Coordinate-stretched anisotropic PML following EMerge's formulation.
+        For a closed PML enclosure around an antenna, use 5 non-overlapping
+        slabs (top + 4 sides) with each pointing outward along its face
+        normal — see ``examples/patch_antenna.py``.
+
+        Parameters
+        ----------
+        name : str
+            Geometry *volume* name. The volume must have its ``name``
+            attribute set on the OCC primitive before meshing.
+        direction : Sequence[float]
+            Outward-pointing unit vector along the absorption axis. Must
+            be axis-aligned (one of ±x̂, ±ŷ, ±ẑ).
+        inner_face : float
+            Coordinate of the PML's inner face along ``direction`` (m).
+        thickness : float
+            PML extent in metres beyond ``inner_face``.
+        er_base, ur_base : float, optional
+            Base relative permittivity / permeability inside the PML.
+            Default 1 (air-PML).
+        exponent : float, optional
+            Polynomial profile exponent for the stretch. Typical 1.5–3.
+        delta_max : float, optional
+            Peak stretch magnitude δ_max at the outer face. Typical 5–12.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Examples
+        --------
+        >>> b.pml("pml_top", direction=(0, 0, 1), inner_face=AIR_TOP,
+        ...       thickness=PML_T, exponent=1.5, delta_max=8.0)
+        """
         tag = self._tag(name)
         d = ", ".join(_f64(v) for v in direction)
         self._materials.append(
@@ -212,6 +492,26 @@ class SimulationBuilder:
         return self
 
     def abc(self, name: str, *, order: int = 1, abctype: str = "B") -> "SimulationBuilder":
+        """Apply an Absorbing Boundary Condition to a named surface.
+
+        Lower-cost alternative to PML: a surface-level radiation
+        boundary. Order 1 is the first-order Sommerfeld ABC; order 2 is
+        higher-accuracy at the price of more matrix fill-in.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the ABC surface.
+        order : int, optional
+            ABC order. ``1`` or ``2``. Default 1.
+        abctype : str, optional
+            Coefficient family (A–E). Default ``"B"``.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         self._ports.append(
             f'[[ports]]\ntype = "abc"\ntag = {tag}\n'
@@ -225,6 +525,32 @@ class SimulationBuilder:
                           er: float = 1.0,
                           thickness: float | None = None,
                           zs: tuple[float, float] | None = None) -> "SimulationBuilder":
+        """Apply a surface impedance boundary condition.
+
+        Either give ``conductivity`` + ``mur`` + ``er`` (+ optionally
+        ``thickness`` for a thin lossy sheet), or pass ``zs`` directly
+        as a ``(real, imag)`` ohms-per-square tuple to override the
+        analytic value.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name.
+        conductivity : float, optional
+            Bulk conductivity σ (S/m) of the lossy conductor.
+        mur, er : float, optional
+            Relative permeability / permittivity of the surface medium.
+        thickness : float, optional
+            Physical thickness of the lossy sheet in metres.
+        zs : tuple[float, float], optional
+            Explicit surface impedance ``(Re, Im)`` in Ω/□. Overrides
+            the analytic computation.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         s = (
             f'[[ports]]\ntype = "surface_impedance"\ntag = {tag}\n'
@@ -245,6 +571,31 @@ class SimulationBuilder:
                        direction: Sequence[float] = (0.0, 0.0, 1.0),
                        width: float = 0.0,
                        height: float = 0.0) -> "SimulationBuilder":
+        """Embed a chip R / L / C element on a 2D surface.
+
+        Models a series-RLC lumped element living on a named face. Use
+        for isolation resistors (Wilkinson dividers), shunt caps, etc.
+
+        Parameters
+        ----------
+        name : str
+            Geometry face name for the element footprint.
+        r : float, optional
+            Series resistance in ohms.
+        l : float, optional
+            Series inductance in henries.
+        c : float, optional
+            Series capacitance in farads. ``None`` = no capacitor.
+        direction : Sequence[float], optional
+            Current-flow direction across the element. Default +z.
+        width, height : float, optional
+            Footprint dimensions in metres. 0 means auto-detect.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         tag = self._tag(name)
         s = (
             f'[[ports]]\ntype = "lumped_element"\ntag = {tag}\n'
@@ -271,6 +622,47 @@ class SimulationBuilder:
                  ur_diag: Sequence[float] | None = None,
                  debye: dict | None = None,
                  drude: dict | None = None) -> "SimulationBuilder":
+        """Assign material properties to a named volume.
+
+        Supports isotropic scalars (``er``, ``ur``, loss tangent,
+        conductivity), diagonal anisotropy, and dispersive Debye / Drude
+        models for frequency-dependent ε.
+
+        Parameters
+        ----------
+        name : str
+            Geometry volume name (must have ``volume.material = "..."``
+            set in the geometry layer).
+        er, ur : float, optional
+            Relative permittivity / permeability. Default 1.
+        tand : float, optional
+            Loss tangent tan δ. Default 0.
+        conductivity : float, optional
+            Bulk conductivity σ (S/m). Default 0.
+        er_diag, ur_diag : Sequence[float], optional
+            Diagonal anisotropic (εxx, εyy, εzz) / (μxx, μyy, μzz).
+            Overrides the scalar ``er``/``ur``.
+        debye : dict, optional
+            Debye dispersion. Keys: ``er_inf`` (ε∞), ``er_static`` (εs),
+            ``tau_s`` (relaxation time in s).
+        drude : dict, optional
+            Drude dispersion. Keys: ``er_inf``, ``plasma_freq_hz``,
+            ``damping_freq_hz``.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Examples
+        --------
+        >>> b.material("fr4", er=4.4, tand=0.02)
+        >>> b.material("gold", drude={
+        ...     "er_inf": 1.0,
+        ...     "plasma_freq_hz": 2.18e15,
+        ...     "damping_freq_hz": 6.46e12,
+        ... })
+        """
         tag = self._tag(name)
         s = (
             f'[[materials]]\nvolume_tag = {tag}\n'
@@ -304,11 +696,24 @@ class SimulationBuilder:
 
     def eigenmode(self, target_frequency: float, *,
                   n_modes: int = 6) -> "SimulationBuilder":
-        """Configure an eigenmode solve around ``target_frequency`` (Hz).
+        """Configure an eigenmode solve around ``target_frequency``.
 
-        Use ``Simulation.run_eigenmode()`` after ``.build()`` to actually
-        run it. ``n_modes`` is the number of eigenpairs requested from the
-        shift-invert Lanczos solver.
+        After ``build()``, call :meth:`Simulation.run_eigenmode` to
+        execute. Uses a shift-invert Lanczos iteration with PARDISO (or
+        faer) as the inner direct factoriser.
+
+        Parameters
+        ----------
+        target_frequency : float
+            Spectral shift in Hz. Modes nearest this frequency are
+            returned.
+        n_modes : int, optional
+            Number of eigenpairs requested. Default 6.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
         """
         self._eigenmode = (float(target_frequency), int(n_modes))
         return self
@@ -318,15 +723,26 @@ class SimulationBuilder:
                  refinement_ratio: float = 0.5) -> "SimulationBuilder":
         """Enable adaptive mesh refinement on the driven sweep.
 
-        ``theta`` is the Dörfler-marking fraction (elements carrying the
-        top θ of the residual error are marked). ``refinement_ratio`` is
-        the local size reduction applied to marked elements during the
-        gmsh size-field export.
+        Parameters
+        ----------
+        theta : float, optional
+            Dörfler-marking fraction — elements carrying the top θ of the
+            residual error are marked. Default 0.5.
+        refinement_ratio : float, optional
+            Local size reduction applied to marked elements in the gmsh
+            size field. Default 0.5.
 
-        Note: the adaptive refinement loop (solve → estimate → mark →
-        write size field → re-mesh → repeat) is driven by the CLI
-        (``rapidfem`` binary), not by ``Simulation.run_sweep()``. Use
-        this with ``.dump()`` to write a config the CLI consumes.
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Notes
+        -----
+        The adaptive refinement loop (solve → estimate → mark → write
+        size field → re-mesh → repeat) is driven by the ``rapidfem``
+        CLI, not by :meth:`Simulation.run_sweep`. Combine with
+        :meth:`dump` to produce a CLI-consumable config.
         """
         self._adaptive = (float(theta), float(refinement_ratio))
         return self
@@ -334,31 +750,86 @@ class SimulationBuilder:
     # ── Output / reference impedance ───────────────────────────────────────
 
     def reference_impedance(self, z0: float) -> "SimulationBuilder":
+        """Set the reference impedance used when reporting S-parameters.
+
+        Default is 50 Ω. Has no effect on the assembly itself, only on
+        the post-processed S-parameter normalisation.
+
+        Parameters
+        ----------
+        z0 : float
+            Reference impedance in ohms.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+        """
         self._z0_ref = float(z0)
         return self
 
     def output_touchstone(self, path: str) -> "SimulationBuilder":
-        """Write a Touchstone (.sNp) file of the driven sweep S-parameters
-        to ``path``.
+        """Request Touchstone (.sNp) export of the S-parameter sweep.
 
-        Note: consumed by the ``rapidfem`` CLI; pair with ``.dump()`` to
-        write a TOML the CLI can execute. From Python, write Touchstone
+        Parameters
+        ----------
+        path : str
+            Output file path.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Notes
+        -----
+        Consumed by the ``rapidfem`` CLI; pair with :meth:`dump` to
+        write a config the CLI executes. From Python, write Touchstone
         post-solve via ``rapidfem.io.to_touchstone(result, path)``.
         """
         self._out_touchstone = str(path)
         return self
 
     def output_vtk(self, path: str) -> "SimulationBuilder":
-        """Write a VTK field dump to ``path``. CLI-driven; see
-        :meth:`output_touchstone` for the workflow note."""
+        """Request VTK field-dump export (one file per frequency).
+
+        Parameters
+        ----------
+        path : str
+            Output file path or template.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Notes
+        -----
+        CLI-driven. See :meth:`output_touchstone` for the workflow note.
+        """
         self._out_vtk = str(path)
         return self
 
     def output_farfield(self, path: str, *,
                         nfft_tag: int | None = None) -> "SimulationBuilder":
-        """Write a far-field CSV to ``path``. ``nfft_tag`` overrides the
-        physical-group tag of the NFFT surface (defaults to the ABC tag).
-        CLI-driven; from Python use ``sim.compute_farfield(...)``.
+        """Request a far-field CSV export from the NFFT surface.
+
+        Parameters
+        ----------
+        path : str
+            Output CSV path.
+        nfft_tag : int, optional
+            Physical-group tag of the NFFT surface. Defaults to the ABC
+            tag if any.
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Notes
+        -----
+        CLI-driven. From Python, use :meth:`Simulation.compute_farfield`.
         """
         self._out_farfield = str(path)
         if nfft_tag is not None:
@@ -366,8 +837,22 @@ class SimulationBuilder:
         return self
 
     def output_group_delay(self, path: str) -> "SimulationBuilder":
-        """Write group delay τ_g = -dφ/dω of the S-parameters to ``path``
-        (CSV, one row per frequency). CLI-driven."""
+        """Request group-delay export τ_g = -dφ/dω as CSV.
+
+        Parameters
+        ----------
+        path : str
+            Output CSV path (one row per frequency).
+
+        Returns
+        -------
+        SimulationBuilder
+            Self.
+
+        Notes
+        -----
+        CLI-driven.
+        """
         self._out_group_delay = str(path)
         return self
 
@@ -413,13 +898,41 @@ class SimulationBuilder:
         return "\n".join(toml)
 
     def build(self) -> Simulation:
+        """Construct a native :class:`Simulation` ready for solving.
+
+        Returns
+        -------
+        Simulation
+            The native FEM problem. Call ``.run_sweep()`` (driven) or
+            ``.run_eigenmode()`` (modal) to compute results.
+
+        Raises
+        ------
+        ValueError
+            If no mesh has been bound or no frequencies set.
+        """
         if self._mesh_bytes is None:
             raise ValueError("call .mesh(...) or .from_geometry(...) before .build()")
         return Simulation.from_bytes(self._mesh_bytes, self._make_config_toml())
 
     def dump(self, mesh_path: str, config_path: str) -> None:
-        """Write the assembled mesh + TOML to disk. Use this to ship inputs
-        to the WASM demo (or any other consumer) without running the solver.
+        """Write the assembled mesh + TOML config to disk.
+
+        Use this to feed the ``rapidfem`` CLI without going through
+        Python's solver path. The output pair is exactly what the CLI
+        expects.
+
+        Parameters
+        ----------
+        mesh_path : str
+            Destination for the binary ``.msh`` file.
+        config_path : str
+            Destination for the TOML config.
+
+        Raises
+        ------
+        ValueError
+            If no mesh has been bound.
         """
         if self._mesh_bytes is None:
             raise ValueError("call .mesh(...) or .from_geometry(...) before .dump()")

@@ -59,11 +59,30 @@ from rapidfem import _show_capture
 
 
 def show(obj, name: str = "default"):
-    """Send a Geometry, SimulationBuilder, Simulation, or SweepResult to the UI.
+    """Hand an object to the rapidfem viewer (no-op outside ``rapidfem serve``).
 
-    In a normal Python run this is a print-only no-op — scripts work the
-    same on the command line. When ``rapidfem serve`` executes the script
-    it activates a capture slot, and the object is forwarded to the viewer.
+    In a plain Python run, ``show`` prints a one-line summary and returns
+    ``obj`` unchanged — scripts behave the same on the command line.
+    Under ``rapidfem serve`` (or during a static-demo bake), the kernel
+    activates a capture slot; ``show`` forwards the object to the live
+    3D viewer / S-parameter plot.
+
+    Parameters
+    ----------
+    obj : Geometry | SimulationBuilder | Simulation | SweepResult
+        Anything renderable by the UI. Geometry pre-mesh shows a coarse
+        OCC-surface preview; post-mesh shows the FEM tet mesh. Simulation
+        and SweepResult render |E(t,r)|² point clouds + S-parameters.
+    name : str, optional
+        Display slot name. Repeated ``show`` calls with the same name
+        overwrite earlier outputs; different names allocate separate
+        viewers. Default ``"default"``.
+
+    Returns
+    -------
+    The same ``obj``, so calls compose with assignment::
+
+        result = rapidfem.show(sim.run_sweep())
     """
     kind = _show_capture.classify(obj)
     if _show_capture.is_capturing():

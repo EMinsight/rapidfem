@@ -121,11 +121,13 @@ class EntityCollection:
     """A collection of sub-entities (faces or edges) with selectors and bulk
     attribute writes.
 
-    Setting `.name = "..."` or `.maxh = ...` applies to all members. Selectors
-    return *new* collections, so chaining composes:
+    Setting ``.name = "..."`` or ``.maxh = ...`` applies to all members.
+    Selectors return *new* collections so chains compose.
 
-        box.faces.where(lambda c, b: c[2] < 0.5).min(axis="x").name = "port"
-        box.edges.where(lambda c, _: c[2] == 0).maxh = 1e-3
+    Examples
+    --------
+    >>> box.faces.where(lambda c, b: c[2] < 0.5).min(axis="x").name = "port"
+    >>> box.edges.where(lambda c, _: c[2] == 0).maxh = 1e-3
     """
 
     def __init__(self, geometry: "Geometry", entities: list[_Entity]):
@@ -140,6 +142,19 @@ class EntityCollection:
 
     # Selectors
     def min(self, axis: str = "z") -> "EntityCollection":
+        """Keep only entities whose centroid is at the minimum along ``axis``.
+
+        Parameters
+        ----------
+        axis : {'x', 'y', 'z'}, optional
+            Axis to compare centroids on. Default ``'z'``.
+
+        Returns
+        -------
+        EntityCollection
+            Subset of this collection at the min coordinate. Usually one
+            face for a convex primitive.
+        """
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
             return EntityCollection(self._geometry, [])
@@ -148,6 +163,10 @@ class EntityCollection:
         return EntityCollection(self._geometry, kept)
 
     def max(self, axis: str = "z") -> "EntityCollection":
+        """Keep only entities whose centroid is at the maximum along ``axis``.
+
+        Mirror of :meth:`min`. See that method for parameters/returns.
+        """
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
             return EntityCollection(self._geometry, [])
@@ -156,6 +175,19 @@ class EntityCollection:
         return EntityCollection(self._geometry, kept)
 
     def where(self, predicate: Callable[[tuple, tuple], bool]) -> "EntityCollection":
+        """Filter entities by an arbitrary predicate on centroid + bbox.
+
+        Parameters
+        ----------
+        predicate : Callable[[tuple, tuple], bool]
+            Function ``(centroid, bbox) -> bool``. Both arguments are
+            3-tuples; ``bbox`` is ``(xmin, ymin, zmin, xmax, ymax, zmax)``.
+
+        Returns
+        -------
+        EntityCollection
+            Entities for which the predicate returned True.
+        """
         kept = [e for e in self._entities if predicate(e.cog, e.bbox)]
         return EntityCollection(self._geometry, kept)
 
@@ -197,15 +229,30 @@ EdgeCollection = EntityCollection
 class GeoObject:
     """A primitive (volume or 2D plate) in the geometry.
 
-    Direct attribute writes set the entity's own name/material/maxh:
+    Attributes
+    ----------
+    name : str | None
+        Physical-group name the entity gets when meshed. Setting this
+        makes the entity reachable through the builder's name resolver.
+    material : str | None
+        Material name (volume-only). Must be wired to a
+        ``SimulationBuilder.material(...)`` call later.
+    maxh : float | None
+        Per-entity mesh size override in metres.
+    dim : int
+        Topological dimension: 3 for volumes, 2 for plates.
+    faces : EntityCollection
+        Bounding faces of a volume (or self, for a plate).
+    edges : EntityCollection
+        Bounding edges of the entity.
 
-        substrate.name = "fr4_volume"
-        substrate.material = "fr4"
-        substrate.maxh = 5e-3
-
-    Sub-entity collections expose selectors:
-
-        substrate.faces.min(axis="z").name = "ground"
+    Examples
+    --------
+    >>> substrate = g.box(60e-3, 60e-3, 1.6e-3)
+    >>> substrate.name = "fr4_volume"
+    >>> substrate.material = "fr4"
+    >>> substrate.maxh = 5e-3
+    >>> substrate.faces.min(axis="z").name = "ground"
     """
 
     def __init__(self, geometry: "Geometry", entity: _Entity):
@@ -306,7 +353,27 @@ class GeoObject:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Geometry:
-    """Top-level geometry builder. Owns a gmsh model session for its lifetime."""
+    """Top-level geometry builder. Owns a gmsh OCC model for its lifetime.
+
+    Build with primitives (:meth:`box`, :meth:`cylinder`, ...), tag
+    faces / edges / volumes with names, assign materials, then call
+    :meth:`mesh` to produce the FEM mesh. Hand the meshed geometry to
+    :class:`rapidfem.SimulationBuilder` to assemble a :class:`Simulation`.
+
+    Examples
+    --------
+    >>> import rapidfem
+    >>> g = rapidfem.Geometry()
+    >>> air = g.box(22.86e-3, 10.16e-3, 30e-3,
+    ...             position=(-11.43e-3, -5.08e-3, 0))
+    >>> air.material = "air"
+    >>> air.faces.min(axis="z").name = "port_in"
+    >>> air.faces.max(axis="z").name = "port_out"
+    >>> for f in air.faces:
+    ...     if f.name is None:
+    ...         f.name = "pec"
+    >>> g.mesh(maxh=3e-3)
+    """
 
     def __init__(self, name: str = "rapidfem"):
         if not gmsh.isInitialized():
@@ -552,9 +619,20 @@ class Geometry:
 
     def box(self, width: float, depth: float, height: float,
             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Axis-aligned box. `position` = lower (xmin, ymin, zmin) corner; the
-        box extends `width`, `depth`, `height` along x, y, z respectively.
-        Returns a `GeoObject` with 6 `.faces`, 12 `.edges`."""
+        """Add an axis-aligned box primitive.
+
+        Parameters
+        ----------
+        width, depth, height : float
+            Extents along x, y, z respectively (m).
+        position : tuple[float, float, float], optional
+            Lower corner ``(xmin, ymin, zmin)``. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            Volume with 6 ``.faces`` and 12 ``.edges``.
+        """
         x, y, z = position
         tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)
         return self._wrap_volume(tag)
@@ -563,13 +641,46 @@ class Geometry:
                  position: tuple[float, float, float] = (0, 0, 0),
                  axis: tuple[float, float, float] = (0, 0, 1),
                  angle: float = 2 * math.pi) -> GeoObject:
-        """Cylinder along `axis`. `position` = base center, `height` is along `axis`."""
+        """Add a (partial-sweep) cylinder primitive.
+
+        Parameters
+        ----------
+        radius : float
+            Cylinder radius in metres.
+        height : float
+            Extent along ``axis``.
+        position : tuple[float, float, float], optional
+            Base centre. Default origin.
+        axis : tuple[float, float, float], optional
+            Cylinder axis direction. Default +z.
+        angle : float, optional
+            Sweep angle in radians. Default 2π (full cylinder).
+
+        Returns
+        -------
+        GeoObject
+            Volume.
+        """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
         tag = gmsh.model.occ.addCylinder(x, y, z, ax, ay, az, radius, angle=angle)
         return self._wrap_volume(tag)
 
     def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Add a sphere primitive.
+
+        Parameters
+        ----------
+        radius : float
+            Sphere radius in metres.
+        center : tuple[float, float, float], optional
+            Sphere centre. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            Volume.
+        """
         cx, cy, cz = center
         tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)
         return self._wrap_volume(tag)
@@ -578,7 +689,26 @@ class Geometry:
              position: tuple[float, float, float] = (0, 0, 0),
              axis: tuple[float, float, float] = (0, 0, 1),
              angle: float = 2 * math.pi) -> GeoObject:
-        """Truncated cone (or cylinder if r1==r2). `position` = base center."""
+        """Add a truncated cone (or cylinder if ``r1 == r2``).
+
+        Parameters
+        ----------
+        r1, r2 : float
+            Base and top radii in metres.
+        height : float
+            Extent along ``axis``.
+        position : tuple[float, float, float], optional
+            Base centre. Default origin.
+        axis : tuple[float, float, float], optional
+            Cone axis direction. Default +z.
+        angle : float, optional
+            Sweep angle in radians. Default 2π.
+
+        Returns
+        -------
+        GeoObject
+            Volume.
+        """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
         tag = gmsh.model.occ.addCone(x, y, z, ax, ay, az, r1, r2, angle=angle)
@@ -587,9 +717,25 @@ class Geometry:
     def wedge(self, dx: float, dy: float, dz: float,
               top_x: float = 0.0,
               position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Rectangular-base prism. The base is dx×dy at z=0; the top edge runs
-        from x=0 to x=top_x at height dz (parallel to y). top_x=0 ⇒ triangular
-        wedge; top_x=dx ⇒ ordinary box.
+        """Add a rectangular-base prism (wedge).
+
+        The base is ``dx × dy`` at z = 0; the top edge runs from x = 0 to
+        x = ``top_x`` at height ``dz``, parallel to y.
+
+        Parameters
+        ----------
+        dx, dy, dz : float
+            Base width, base depth, height in metres.
+        top_x : float, optional
+            x-extent of the top edge. ``0`` = triangular wedge; ``dx`` =
+            ordinary box. Default 0.
+        position : tuple[float, float, float], optional
+            Lower-left corner of the base. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            Volume.
         """
         x, y, z = position
         tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)
@@ -598,35 +744,91 @@ class Geometry:
     def torus(self, major_radius: float, minor_radius: float,
               center: tuple[float, float, float] = (0, 0, 0),
               angle: float = 2 * math.pi) -> GeoObject:
-        """Torus with major (donut) and minor (tube) radii, centered on `center`,
-        with axis along z. `angle` < 2π gives a partial torus."""
+        """Add a torus primitive.
+
+        Parameters
+        ----------
+        major_radius : float
+            Donut radius (centre of the tube to torus axis).
+        minor_radius : float
+            Tube radius.
+        center : tuple[float, float, float], optional
+            Torus centre. Default origin. Axis is along +z.
+        angle : float, optional
+            Sweep angle in radians. ``< 2π`` gives a partial torus.
+
+        Returns
+        -------
+        GeoObject
+            Volume.
+        """
         cx, cy, cz = center
         tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)
         return self._wrap_volume(tag)
 
     def xy_plate(self, width: float, height: float,
                  position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Rectangle in the xy-plane (constant z). `width` along x, `height` along y."""
+        """Add a thin rectangular plate in the xy-plane.
+
+        Parameters
+        ----------
+        width : float
+            x-extent in metres.
+        height : float
+            y-extent in metres (note: not a vertical extent).
+        position : tuple[float, float, float], optional
+            Lower corner. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            2D face (dim=2). Typically used for thin conductors like
+            patch antennas or microstrip traces.
+        """
         x, y, z = position
         tag = gmsh.model.occ.addRectangle(x, y, z, width, height)
         return self._wrap_face(tag)
 
     def xz_plate(self, width: float, height: float,
                  position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Rectangle in the xz-plane (constant y). `width` along x, `height` along z."""
+        """Add a thin rectangular plate in the xz-plane.
+
+        See :meth:`xy_plate`. ``width`` runs along x, ``height`` along z.
+        """
         return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height))
 
     def yz_plate(self, width: float, height: float,
                  position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Rectangle in the yz-plane (constant x). `width` along y, `height` along z."""
+        """Add a thin rectangular plate in the yz-plane.
+
+        See :meth:`xy_plate`. ``width`` runs along y, ``height`` along z.
+        """
         return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height))
 
     def plate(self, p0: tuple[float, float, float],
               width: tuple[float, float, float],
               height: tuple[float, float, float]) -> GeoObject:
-        """Plate at arbitrary orientation. p0 = corner; width, height = edge vectors.
+        """Add a thin rectangular plate at arbitrary orientation.
 
-        gmsh OCC has no direct API; we build a 4-vertex wire and surface.
+        Parameters
+        ----------
+        p0 : tuple[float, float, float]
+            One corner of the rectangle.
+        width : tuple[float, float, float]
+            Edge vector from ``p0`` defining one side.
+        height : tuple[float, float, float]
+            Edge vector from ``p0`` defining the perpendicular side.
+
+        Returns
+        -------
+        GeoObject
+            2D face. Used for vertical lumped-port sheets, oblique feed
+            plates, etc.
+
+        Notes
+        -----
+        gmsh OCC has no direct arbitrary-rectangle API; we build a
+        four-vertex wire and plane-surface internally.
         """
         x0, y0, z0 = p0
         wx, wy, wz = width
@@ -646,13 +848,29 @@ class Geometry:
     # ── Boolean ops ─────────────────────────────────────────────────────────
 
     def fragment(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean fragment: makes geometry conformal at interfaces. Names survive.
+        """Boolean fragment: make all overlaps conformal.
 
-        Strategy: gmsh's `fragment` returns ``(out, out_map)`` where ``out_map[i]``
-        lists the new (dim, tag) pairs that input i was split into. We use that
-        directly to update each input GeoObject's tag — no fragile COG matching
-        needed for the top-level objects. For their child faces/edges, we still
-        fall back to COG+bbox re-resolution.
+        Splits each overlap into a shared face / volume that both
+        operands keep, so meshing produces a single mesh across the
+        interfaces. Names assigned on the operands survive.
+
+        Parameters
+        ----------
+        target : GeoObject
+            First operand.
+        *tools : GeoObject
+            Additional operands to fragment with ``target``.
+
+        Notes
+        -----
+        Uses gmsh's ``occ.fragment`` ``out_map`` to update each input's
+        tag directly — robust against the COG drift that can break naive
+        name-tracking after boolean ops. Child faces / edges are
+        re-resolved by ``(centroid, bbox)`` matching.
+
+        Examples
+        --------
+        >>> g.fragment(air, substrate, patch, feed)
         """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
@@ -663,7 +881,16 @@ class Geometry:
         self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
 
     def cut(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean subtract. Like `fragment`, uses gmsh's `out_map` for tag tracking."""
+        """Boolean subtract ``tools`` from ``target``.
+
+        Parameters
+        ----------
+        target : GeoObject
+            Object to subtract from. Survives (possibly as several pieces).
+        *tools : GeoObject
+            Objects to subtract. **Consumed** by the operation — do not
+            reference them afterwards.
+        """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
         _, out_map = gmsh.model.occ.cut(target_dt, tools_dt)
@@ -720,9 +947,21 @@ class Geometry:
         self._entities = survived
 
     def fuse(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean union. WARNING: face names on the operands are NOT preserved
-        (faces merge, COGs shift). Top-level volume names survive via gmsh's
-        out_map; set FACE names AFTER fuse, or use fragment() instead.
+        """Boolean union ``target ∪ tools``.
+
+        Parameters
+        ----------
+        target : GeoObject
+            First operand. Survives as the merged object.
+        *tools : GeoObject
+            Operands to merge in.
+
+        Warnings
+        --------
+        Face names on the operands are NOT preserved (faces merge and
+        centroids shift). Top-level volume names survive via the gmsh
+        out_map, but **set face names AFTER fuse**, or use
+        :meth:`fragment` if interface preservation matters.
         """
         warnings.warn(
             "fuse() merges faces and shifts their COGs; named faces on the "
@@ -741,16 +980,38 @@ class Geometry:
     # ── Mesh emit ───────────────────────────────────────────────────────────
 
     def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
-        """Generate the 3D mesh and return (msh_bytes, name_to_tag).
+        """Generate the 3D tet mesh of the current geometry.
 
-        Per-entity `obj.maxh = h` is honored via gmsh `Distance` + `Threshold`
-        background fields, so refinement transitions are smooth instead of abrupt.
-        Each refined entity contributes a Threshold field that grows from `h`
-        right at the entity to the global `maxh` at `transition_distance`
-        (default: 5*h). The combined background is the per-cell minimum of all
-        Threshold fields, so the smallest size wins where regions overlap.
+        Calls gmsh's OCC mesher with the configured per-entity sizes
+        and global cap. Per-entity ``obj.maxh = h`` is honoured via
+        gmsh ``Distance + Threshold`` background fields so refinement
+        transitions are smooth, not abrupt.
 
-        `name_to_tag` maps each user-supplied name to its physical-group tag.
+        Parameters
+        ----------
+        maxh : float, optional
+            Global maximum tet edge length in metres. Default 1.0
+            (always pass a real value).
+        transition_distance : float, optional
+            Distance over which a refined region's element size grows
+            from its local ``h`` to the global cap. Default ``5 · h``
+            per-entity.
+
+        Returns
+        -------
+        mesh_bytes : bytes
+            gmsh ``.msh`` v4 file as bytes — feed to
+            :meth:`SimulationBuilder.mesh` or use ``.mesh_from(g)`` to
+            pick it up from the geometry's cache.
+        name_to_tag : dict[str, int]
+            Map from every user-supplied name (face / edge / volume,
+            and ``material=``) to its physical-group integer tag.
+
+        Notes
+        -----
+        Side effect: caches ``(mesh_bytes, name_to_tag)`` on
+        ``self._last_mesh`` so ``SimulationBuilder.mesh_from(g)`` can
+        find it without re-meshing.
         """
         gmsh.model.occ.synchronize()
         # Wipe any prior mesh state AND physical groups. Without the latter,
