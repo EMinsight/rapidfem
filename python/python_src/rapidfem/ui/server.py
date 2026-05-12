@@ -144,13 +144,11 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
         # the next bytes the client decodes from the middle of the payload
         # look like a malformed WS frame ("reserved bits must be 0" / "Invalid
         # frame header"). Swap the implementation for one that uses sendall.
-        import simple_websocket as _sw
-        if not getattr(_sw, "_rapidfem_sendall", False):
-            _orig_send = _sw.Base.send
+        if not getattr(_sw_ws, "_rapidfem_sendall", False):
+            from wsproto.events import Message, TextMessage
 
             def _sendall_send(self, data):
                 from simple_websocket import ConnectionClosed
-                from wsproto.events import Message, TextMessage
                 if not self.connected:
                     raise ConnectionClosed(self.close_reason, self.close_message)
                 if isinstance(data, bytes):
@@ -162,8 +160,8 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
                 # starts in the middle of a truncated one.
                 self.sock.sendall(out_data)
 
-            _sw.Base.send = _sendall_send
-            _sw._rapidfem_sendall = True
+            _sw_ws.Base.send = _sendall_send
+            _sw_ws._rapidfem_sendall = True
 
         from flask_sock import Sock
         from rapidfem.ui.bus import BUS
