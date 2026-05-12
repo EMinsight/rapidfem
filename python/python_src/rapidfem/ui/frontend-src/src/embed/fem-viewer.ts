@@ -25,18 +25,19 @@
  */
 
 import {
-	initGL, disposeGL, createCamera, clearMeshes,
+	initGL, disposeGL, createCamera, clearMeshes, addMesh,
 	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
 	setTagVisible, setBBox, render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
-import { addVolumeHullMeshes } from '../lib/render/mesh_scene';
+import { addVolumeHullMeshes, buildTriSoupF64 } from '../lib/render/mesh_scene';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
 // Tag layout — each renderable group gets its own integer so we can
 // toggle visibility per cycle phase via setTagVisible(state, tag, vis).
 const TAG_HULL = 1;        // dielectric / volume hulls (substrate, air, PML)
+const TAG_COND = 2;        // named conductors / ports overlay
 const TAG_WIRE = 3;        // wireframe edges
 
 // Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
@@ -336,18 +337,28 @@ class FemViewerElement extends HTMLElement {
 		clearMeshes(this.glState);
 		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
 
-		// Volume hulls — substrate / air / PML shells. Delegated to the
-		// shared mesh_scene helper so the embed and the in-app MeshViewer
-		// produce bit-identical shading (orient_outward + float64 cross
-		// + axis-aligned snap). Colour matches MeshViewer's default
-		// dielectric tone (#5a6470) and wire colour (#3a3a44).
+		// 1) Volume hulls — substrate / air / PML shells, pushed back via
+		//    polygon offset so coplanar conductor surfaces win the depth
+		//    test cleanly. Bit-identical normals to MeshViewer.
 		addVolumeHullMeshes(
 			this.glState, this.mesh,
 			/* hull color = */ [0x5a / 255, 0x64 / 255, 0x70 / 255],
 			/* hullTag    = */ TAG_HULL,
 			/* wireTag    = */ TAG_WIRE,
 			/* wire color = */ [0x3a / 255, 0x3a / 255, 0x44 / 255],
+			/* offset     = */ [2, 2],
 		);
+
+		// 2) Named conductors / ports overlay — the bright brand-accent
+		//    layer on top of the hull (PEC walls, port faces, feed
+		//    plates). Gives the embed visible internal detail instead
+		//    of just an outer gray shell.
+		if (this.mesh.tris.length) {
+			const { positions, normals } = buildTriSoupF64(this.mesh.nodes, this.mesh.tris);
+			addMesh(this.glState, positions, normals,
+				/* accent-secondary orange */ [0xe8 / 255, 0x94 / 255, 0x4a / 255],
+				TAG_COND);
+		}
 		this.applyField();
 	}
 
@@ -391,9 +402,11 @@ class FemViewerElement extends HTMLElement {
 		if (!this.glState) return;
 		this.currentPhase = phase;
 		const showHull = phase === 'geometry';
+		const showCond = phase === 'geometry';
 		const showWire = phase === 'mesh';
 		const showField = phase === 'field' && this.hasField;
 		setTagVisible(this.glState, TAG_HULL, showHull);
+		setTagVisible(this.glState, TAG_COND, showCond);
 		setTagVisible(this.glState, TAG_WIRE, showWire);
 		// Point cloud is not tag-gated — clear/repopulate it explicitly.
 		if (!showField && this.mesh) {
@@ -410,14 +423,20 @@ class FemViewerElement extends HTMLElement {
 	private syncCanvas(): { w: number; h: number } {
 		if (!this.canvas) return { w: 0, h: 0 };
 		const rect = this.canvas.getBoundingClientRect();
-		const w = Math.round(rect.width), h = Math.round(rect.height);
-		if (w <= 0 || h <= 0) return { w, h };
+		const cssW = Math.round(rect.width), cssH = Math.round(rect.height);
+		if (cssW <= 0 || cssH <= 0) return { w: 0, h: 0 };
 		const dpr = window.devicePixelRatio || 1;
-		const bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+		const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
 		if (this.canvas.width !== bw || this.canvas.height !== bh) {
 			this.canvas.width = bw; this.canvas.height = bh;
+			this.canvas.style.width = cssW + 'px';
+			this.canvas.style.height = cssH + 'px';
 		}
-		return { w, h };
+		// Return BACKBUFFER pixel size — render3D feeds this straight into
+		// gl.viewport(0, 0, w, h). Passing CSS dimensions on a 2× hidpi
+		// display would render into the bottom-left quarter only, which is
+		// what "not centered" looked like.
+		return { w: bw, h: bh };
 	}
 
 	private renderFrame() {

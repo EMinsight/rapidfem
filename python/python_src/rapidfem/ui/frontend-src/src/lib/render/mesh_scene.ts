@@ -178,11 +178,15 @@ export function addVolumeHullMeshes(
 	hullTag: number,
 	wireTag: number | null,
 	wireColor: [number, number, number] | null,
+	/** Polygon depth offset for the hull pass — push it back so coplanar
+	 *  conductor surfaces win the depth test cleanly. Pair with a
+	 *  zero-offset second `addMesh` call for the named conductors. */
+	depthOffset: [number, number] | undefined = [2, 2],
 ): void {
 	const per_vol = buildVolumeBoundaries(mesh);
 	for (const [, tris] of per_vol.entries()) {
 		const { positions, normals } = buildTriSoupF64(mesh.nodes, tris);
-		addMesh(state, positions, normals, color, hullTag);
+		addMesh(state, positions, normals, color, hullTag, depthOffset);
 		if (wireTag !== null && wireColor !== null) {
 			const edges = buildEdgeLines(mesh.nodes, tris);
 			if (edges.length) addLineMesh(state, edges, wireColor, wireTag);
