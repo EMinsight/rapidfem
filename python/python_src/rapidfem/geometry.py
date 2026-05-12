@@ -845,6 +845,144 @@ class Geometry:
         tag = gmsh.model.occ.addPlaneSurface([loop])
         return self._wrap_face(tag)
 
+    def polygon(self, points: Iterable[tuple[float, float]],
+                position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Add a planar polygon face in the xy-plane.
+
+        Parameters
+        ----------
+        points : iterable of (x, y) tuples
+            2D vertices in CCW order. Polygon closes automatically.
+        position : tuple[float, float, float], optional
+            Offset ``(x0, y0, z0)`` added to every vertex. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            2D face. Combine with :meth:`extrude` for a microstrip-style
+            volume or :meth:`revolve` for an axisymmetric solid.
+
+        Examples
+        --------
+        Hexagonal trace footprint:
+
+        >>> import math
+        >>> pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))
+        ...        for t in (i * math.pi / 3 for i in range(6))]
+        >>> hex_face = g.polygon(pts)
+        """
+        pts = list(points)
+        if len(pts) < 3:
+            raise ValueError("polygon needs at least 3 vertices")
+        x0, y0, z0 = position
+        vtags = [gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0) for p in pts]
+        n = len(vtags)
+        ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]
+        loop = gmsh.model.occ.addCurveLoop(ltags)
+        tag = gmsh.model.occ.addPlaneSurface([loop])
+        return self._wrap_face(tag)
+
+    def disc(self, radius: float,
+             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+        """Add a circular face in the xy-plane.
+
+        Parameters
+        ----------
+        radius : float
+            Disc radius in metres.
+        position : tuple[float, float, float], optional
+            Disc centre. Default origin.
+
+        Returns
+        -------
+        GeoObject
+            2D face. Smooth NURBS circle (gmsh OCC ``addDisk``) — meshes
+            into curved triangles with ``MeshSizeFromCurvature``.
+        """
+        x, y, z = position
+        tag = gmsh.model.occ.addDisk(x, y, z, radius, radius)
+        return self._wrap_face(tag)
+
+    # ── Extrude / revolve ───────────────────────────────────────────────────
+
+    def extrude(self, face: GeoObject, height: float,
+                axis: tuple[float, float, float] = (0, 0, 1)) -> GeoObject:
+        """Extrude a 2D face along ``axis * height`` into a 3D volume.
+
+        Parameters
+        ----------
+        face : GeoObject
+            2D face (e.g. from :meth:`polygon`, :meth:`disc`, :meth:`plate`).
+        height : float
+            Sweep distance along ``axis``.
+        axis : tuple[float, float, float], optional
+            Sweep direction (will be scaled by ``height``). Default +z.
+
+        Returns
+        -------
+        GeoObject
+            New volume. The source ``face`` becomes the bottom cap and
+            remains tracked (boundary of the new volume).
+
+        Examples
+        --------
+        >>> poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])
+        >>> trace = g.extrude(poly, height=0.035e-3)   # 35 µm copper
+        """
+        if face.dim != 2:
+            raise ValueError(f"extrude expects a 2D face, got dim={face.dim}")
+        dx, dy, dz = axis[0] * height, axis[1] * height, axis[2] * height
+        out = gmsh.model.occ.extrude([(face.dim, face._entity.tag)], dx, dy, dz)
+        gmsh.model.occ.synchronize()
+        vol_tag = next((t for d, t in out if d == 3), None)
+        if vol_tag is None:
+            raise RuntimeError("extrude produced no volume")
+        return self._wrap_volume(vol_tag)
+
+    def revolve(self, face: GeoObject,
+                axis_point: tuple[float, float, float] = (0, 0, 0),
+                axis_dir: tuple[float, float, float] = (0, 0, 1),
+                angle: float = 2 * math.pi) -> GeoObject:
+        """Revolve a 2D face around an axis to create a 3D volume.
+
+        Parameters
+        ----------
+        face : GeoObject
+            2D face. For ``angle == 2π`` the profile typically touches
+            the axis; otherwise you get a torus-shaped sweep.
+        axis_point : tuple[float, float, float], optional
+            A point on the rotation axis. Default origin.
+        axis_dir : tuple[float, float, float], optional
+            Axis direction. Default +z.
+        angle : float, optional
+            Sweep angle in radians. Default 2π.
+
+        Returns
+        -------
+        GeoObject
+            New volume. The source ``face`` becomes one cap (if the sweep
+            is partial) or is absorbed (if full 2π) and remains tracked.
+
+        Examples
+        --------
+        Conical horn from a 4-point profile revolved around the x-axis:
+
+        >>> profile = g.polygon([(L, 0), (L+a, 0), (L+a, R), (L, r)])
+        >>> horn = g.revolve(profile, axis_point=(0, 0, 0), axis_dir=(1, 0, 0))
+        """
+        if face.dim != 2:
+            raise ValueError(f"revolve expects a 2D face, got dim={face.dim}")
+        cx, cy, cz = axis_point
+        ax, ay, az = axis_dir
+        out = gmsh.model.occ.revolve(
+            [(face.dim, face._entity.tag)], cx, cy, cz, ax, ay, az, angle
+        )
+        gmsh.model.occ.synchronize()
+        vol_tag = next((t for d, t in out if d == 3), None)
+        if vol_tag is None:
+            raise RuntimeError("revolve produced no volume")
+        return self._wrap_volume(vol_tag)
+
     # ── Boolean ops ─────────────────────────────────────────────────────────
 
     def fragment(self, target: GeoObject, *tools: GeoObject) -> None:
@@ -945,6 +1083,105 @@ class Geometry:
                     stacklevel=3,
                 )
         self._entities = survived
+
+    # ── Transforms ──────────────────────────────────────────────────────────
+
+    def rotate(self, obj: GeoObject, angle: float,
+               axis: tuple[float, float, float] = (0, 0, 1),
+               center: tuple[float, float, float] = (0, 0, 0)) -> None:
+        """Rotate ``obj`` (and all its child faces / edges) in place.
+
+        Parameters
+        ----------
+        obj : GeoObject
+            Volume or face to rotate.
+        angle : float
+            Rotation angle in radians (right-hand rule about ``axis``).
+        axis : tuple[float, float, float], optional
+            Axis direction. Default +z.
+        center : tuple[float, float, float], optional
+            Point on the rotation axis. Default origin.
+
+        Notes
+        -----
+        gmsh dimtags survive the transform unchanged; only the geometric
+        attributes (COG, bbox) of every tracked entity descending from
+        ``obj`` are refreshed. Named selectors keep working — the resolver
+        sees the new positions.
+        """
+        cx, cy, cz = center
+        ax, ay, az = axis
+        gmsh.model.occ.rotate([(obj.dim, obj._entity.tag)], cx, cy, cz, ax, ay, az, angle)
+        gmsh.model.occ.synchronize()
+        self._refresh_descendants(obj)
+
+    def stretch(self, obj: GeoObject,
+                fx: float = 1.0, fy: float = 1.0, fz: float = 1.0,
+                center: tuple[float, float, float] = (0, 0, 0)) -> None:
+        """Anisotropic scale ``obj`` about ``center`` by ``(fx, fy, fz)``.
+
+        Parameters
+        ----------
+        obj : GeoObject
+            Volume or face to scale.
+        fx, fy, fz : float, optional
+            Scale factors along each axis. Default 1 (no change).
+        center : tuple[float, float, float], optional
+            Scaling centre — stays fixed. Default origin.
+
+        Examples
+        --------
+        Squash a circular waveguide by 0.1% to split degenerate modes:
+
+        >>> g.stretch(feed, fy=1.001)
+        """
+        cx, cy, cz = center
+        gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)], cx, cy, cz, fx, fy, fz)
+        gmsh.model.occ.synchronize()
+        self._refresh_descendants(obj)
+
+    def _refresh_descendants(self, obj: GeoObject) -> None:
+        """Refresh COG/bbox for every tracked entity in ``obj``'s boundary
+        tree (plus ``obj`` itself). In-place transforms keep dimtags but
+        move centroids — without this, named-face resolvers would miss.
+
+        gmsh's ``getBoundary(recursive=True)`` descends straight to the
+        vertices, so we walk one dimension at a time to collect faces and
+        edges as well.
+        """
+        descendants = {(obj.dim, obj._entity.tag)}
+        current = [(obj.dim, obj._entity.tag)]
+        while current and current[0][0] > 0:
+            next_level = gmsh.model.getBoundary(current, oriented=False, recursive=False)
+            descendants.update(next_level)
+            current = list(next_level)
+        for ent in self._entities:
+            if (ent.dim, ent.tag) in descendants:
+                ent.cog = tuple(gmsh.model.occ.getCenterOfMass(ent.dim, ent.tag))
+                ent.bbox = tuple(gmsh.model.getBoundingBox(ent.dim, ent.tag))
+
+    def intersect(self, target: GeoObject, *tools: GeoObject) -> None:
+        """Boolean intersect ``target ∩ tools``.
+
+        Parameters
+        ----------
+        target : GeoObject
+            Object to intersect. Survives as the intersection region.
+        *tools : GeoObject
+            Objects to intersect with. **Consumed** by the operation —
+            do not reference them afterwards.
+
+        Examples
+        --------
+        >>> g.intersect(horn, halfspace)   # clip horn to z >= 0
+        """
+        target_dt = [(target.dim, target._entity.tag)]
+        tools_dt = [(t.dim, t._entity.tag) for t in tools]
+        _, out_map = gmsh.model.occ.intersect(target_dt, tools_dt)
+        gmsh.model.occ.synchronize()
+        # Tools are consumed; only target survives (possibly as several pieces).
+        self._apply_out_map([target], out_map[:1] if out_map else [[]])
+        self._reresolve_children(top_level={id(target._entity)})
 
     def fuse(self, target: GeoObject, *tools: GeoObject) -> None:
         """Boolean union ``target ∪ tools``.
