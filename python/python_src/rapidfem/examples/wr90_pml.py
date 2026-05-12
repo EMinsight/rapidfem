@@ -22,7 +22,7 @@ L_INNER = 40.0e-3                # length of the regular (air) section
 PML_T  = 15.0e-3                 # PML thickness along +z
 
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 21)
-MAXH = 5.0e-3
+MAXH = rapidfem.lambda_maxh(f_max=12.0e9)    # ~2.1 mm — air λ/12 at f_max
 
 
 # %% Geometry + Materials
@@ -57,6 +57,9 @@ for face in inner.faces:
 for face in pml.faces:
     if face.name is None:
         face.name = "pec"
+
+# PML doesn't need fine wavelength sampling — fields decay exponentially.
+pml.maxh = 2 * MAXH
 
 rapidfem.show(g)
 

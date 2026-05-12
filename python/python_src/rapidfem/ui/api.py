@@ -19,7 +19,10 @@ from flask import Flask, jsonify, request
 import rapidfem
 from rapidfem import _show_capture
 from rapidfem.ui.bus import BUS
-from rapidfem.ui.kernel import Kernel, get_kernel, reset_kernel
+# NB: cell execution lives in `rapidfem.ui.runner` (subprocess pool +
+# HTTP polling). Anything here that touches `kernel` is the legacy
+# in-process path used by /api/run /api/mesh /api/solve (one-shot exec
+# routes that the new Notebook UI no longer calls).
 
 
 # Long-running operations (mesh, solve) hold this lock so the gmsh model
@@ -685,61 +688,9 @@ def register(app: Flask) -> None:
 
         return rendered, mesh_payload, result_payload
 
-    @app.post("/api/cell/run")
-    def api_cell_run():
-        body = request.get_json(silent=True) or {}
-        file_path = body.get("file", "<unnamed>")
-        code = body.get("code", "")
-        reset_first = bool(body.get("reset", False))
-        if not isinstance(code, str):
-            return jsonify({"ok": False, "error": {"type": "ValueError", "message": "code must be string", "traceback": ""}}), 400
-
-        kernel = get_kernel(file_path)
-        if reset_first:
-            kernel.reset()
-
-        BUS.publish({"kind": "stage_start", "stage": "cell", "file": file_path})
-        err: BaseException | None = None
-        with _pipeline_lock, kernel.lock:
-            _show_capture.start_capture()
-            try:
-                with _capture_native_streams("cell") as (lines_out, lines_err):
-                    try:
-                        exec(compile(code, file_path or "<cell>", "exec"), kernel.namespace)
-                    except BaseException as e:  # noqa: BLE001
-                        err = e
-            finally:
-                captured = _show_capture.stop_capture()
-
-        stdout_text = "\n".join(lines_out)
-        stderr_text = "\n".join(lines_err)
-
-        if err is not None:
-            BUS.publish({"kind": "stage_end", "stage": "cell", "ok": False})
-            return jsonify({
-                "ok": False,
-                "error": _format_exception(err),
-                "stdout": stdout_text,
-                "stderr": stderr_text,
-                "captures": [], "mesh": None, "result": None,
-            }), 200
-
-        rendered, mesh_payload, result_payload = _serialize_captures(captured)
-        BUS.publish({"kind": "stage_end", "stage": "cell", "ok": True})
-        return jsonify({
-            "ok": True,
-            "stdout": stdout_text, "stderr": stderr_text,
-            "captures": rendered, "mesh": mesh_payload, "result": result_payload,
-        }), 200
-
-    @app.post("/api/cell/reset")
-    def api_cell_reset():
-        body = request.get_json(silent=True) or {}
-        file_path = body.get("file", "")
-        reset_kernel(file_path)
-        return jsonify({"ok": True})
-
     # ── Examples (shipped with the package) ───────────────────────────────
+    # NB: /api/cell/run and /api/cell/reset moved to rapidfem.ui.runner — the
+    # subprocess-based runner exposes them with streaming via /api/cell/poll.
 
     @app.get("/api/examples")
     def api_examples_list():
@@ -796,9 +747,11 @@ def register(app: Flask) -> None:
         except OSError as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         # Drop the kernel so a future file at the same path starts fresh.
+        # Tolerate either the new runner module or absence (legacy single
+        # in-process kernel was removed).
         try:
-            from rapidfem.ui.kernel import drop_kernel
-            drop_kernel(str(target))
+            from rapidfem.ui import runner
+            runner._remove(str(target))
         except Exception:
             pass
         return jsonify({"ok": True, "path": rel})

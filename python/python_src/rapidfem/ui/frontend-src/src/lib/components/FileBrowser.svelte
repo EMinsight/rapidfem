@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { listFiles, listExamples, deleteFile, renameFile, type FileEntry } from '$lib/api';
 	import { IS_STATIC_MODE, DEMO_BASE } from '$lib/static_mode';
+	import { openConfirm, openPrompt } from '$lib/modals';
 
 	let {
 		active_path = $bindable<string | null>(null),
@@ -179,7 +180,13 @@
 
 	async function on_delete(e: MouseEvent, path: string) {
 		e.stopPropagation();
-		if (!confirm(`Delete ${path}?`)) return;
+		const ok = await openConfirm({
+			title: 'Delete file',
+			body: `This will permanently remove ${path} from your workspace.`,
+			confirmLabel: 'Delete',
+			danger: true,
+		});
+		if (!ok) return;
 		try {
 			await deleteFile(path);
 			if (active_path === path) {
@@ -194,7 +201,17 @@
 
 	async function on_rename(e: MouseEvent, path: string) {
 		e.stopPropagation();
-		const next = prompt('Rename to:', path);
+		const next = await openPrompt({
+			title: 'Rename file',
+			label: 'New name',
+			defaultValue: path,
+			confirmLabel: 'Rename',
+			validate: (v) => {
+				if (!v) return 'Name cannot be empty';
+				if (!v.endsWith('.py')) return 'Name must end in .py';
+				return null;
+			},
+		});
 		if (!next || next === path) return;
 		try {
 			await renameFile(path, next);

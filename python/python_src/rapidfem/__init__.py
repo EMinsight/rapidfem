@@ -58,6 +58,55 @@ from rapidfem import rfic  # RFIC builder helpers (Stack, microstrip, via, gsg_p
 from rapidfem import _show_capture
 
 
+_C0 = 299_792_458.0
+
+
+def lambda_maxh(*, f_max: float, er_max: float = 1.0,
+                mu_max: float = 1.0, per_lambda: int = 12) -> float:
+    """Wavelength-based mesh size cap.
+
+    Picks the largest tet edge length that still resolves the shortest
+    wavelength in the model with ``per_lambda`` elements per wavelength::
+
+        maxh = c0 / (sqrt(er_max · mu_max) · f_max · per_lambda)
+
+    Parameters
+    ----------
+    f_max : float
+        Highest frequency in the planned sweep, in Hz.
+    er_max : float, optional
+        Largest relative permittivity in the model. The smallest local
+        wavelength lives in the highest-εᵣ material, so this is the one
+        that bounds the mesh size. Default 1.0 (air only).
+    mu_max : float, optional
+        Largest relative permeability (rarely > 1 in microwave work).
+        Default 1.0.
+    per_lambda : int, optional
+        Target elements per wavelength. For second-kind Nédélec-2,
+        ``8–12`` is the usual range; raise to ``15`` for stringent
+        accuracy, drop to ``6–8`` for fast preview meshes. Default 12.
+
+    Returns
+    -------
+    float
+        Mesh size cap in metres, ready to pass to ``g.mesh(maxh=...)``.
+
+    Examples
+    --------
+    >>> import rapidfem
+    >>> # Patch antenna on FR-4 at 2.8 GHz
+    >>> maxh = rapidfem.lambda_maxh(f_max=2.8e9, er_max=4.4)
+    >>> g.mesh(maxh=maxh)                                  # doctest: +SKIP
+    """
+    if f_max <= 0:
+        raise ValueError(f"f_max must be positive, got {f_max}")
+    if er_max <= 0 or mu_max <= 0:
+        raise ValueError(f"er_max and mu_max must be positive, got {er_max}, {mu_max}")
+    if per_lambda <= 0:
+        raise ValueError(f"per_lambda must be positive, got {per_lambda}")
+    return _C0 / ((er_max * mu_max) ** 0.5 * f_max * per_lambda)
+
+
 def show(obj, name: str = "default"):
     """Hand an object to the rapidfem viewer (no-op outside ``rapidfem serve``).
 
@@ -95,6 +144,6 @@ def show(obj, name: str = "default"):
 __all__ = [
     "Simulation", "SweepResult", "Eigenmode", "RadiationPattern",
     "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
-    "SimulationBuilder", "io", "rfic", "show",
+    "SimulationBuilder", "io", "rfic", "show", "lambda_maxh",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

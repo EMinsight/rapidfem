@@ -46,8 +46,9 @@ PML_T = 20 * mm
 FREQUENCIES = np.linspace(2.0e9, 2.8e9, 21)
 F0 = 2.4e9
 
-# Mesh density
-MAXH = 8 * mm
+# Mesh density: the global cap is the air-wavelength bound at f_max.
+# Higher-εᵣ volumes (the substrate) get their own tighter size below.
+MAXH = rapidfem.lambda_maxh(f_max=2.8e9)
 
 
 # %% Geometry + Materials
@@ -107,6 +108,17 @@ pml_yp.name = "pml_yp"
 pml_ym.name = "pml_ym"
 pml_zp.name = "pml_zp"
 
+# After `fragment`, the face between each PML and the inner air is a *shared*
+# sub-face of both volumes. If we let the auto-pec loop below tag it as "pec"
+# we wrap the PML in a PEC wall and the wave bounces off the inner boundary
+# instead of getting absorbed (|S11| ~ 0 dB across the band). Name those
+# interface faces explicitly so the loop skips them.
+pml_xp.faces.min(axis="x").name = "_iface"   # x = +X_OUT
+pml_xm.faces.max(axis="x").name = "_iface"   # x = -X_OUT
+pml_yp.faces.min(axis="y").name = "_iface"   # y = +Y_OUT
+pml_ym.faces.max(axis="y").name = "_iface"   # y = -Y_OUT
+pml_zp.faces.min(axis="z").name = "_iface"   # z = AIR_TOP
+
 # Outer faces of the PML enclosure → PEC.
 for vol in (pml_xp, pml_xm, pml_yp, pml_ym, pml_zp):
     for face in vol.faces:
@@ -117,10 +129,22 @@ for vol in (pml_xp, pml_xm, pml_yp, pml_ym, pml_zp):
 sub.material = "fr4"
 air.material = "air"
 
+# Substrate wavelength is √εᵣ shorter than air → resolve it there explicitly.
+sub.maxh = rapidfem.lambda_maxh(f_max=2.8e9, er_max=ER_SUB)
+
+# PML fields decay exponentially — ~2 tets across the thickness is enough.
+# Without this the PML inherits MAXH and bloats the DoF count for nothing.
+for pml in (pml_xp, pml_xm, pml_yp, pml_ym, pml_zp):
+    pml.maxh = 2 * MAXH
+
 rapidfem.show(g)
 
 
 # %% Mesh
+# Auto-refine thin features (the 1.6 mm substrate, 1.5 mm feed) so they get
+# at least 3 tets across their smallest dimension. Volumes that are large
+# in every direction are untouched; explicit `obj.maxh = ...` overrides win.
+g.auto_refine_features(base_maxh=MAXH)
 g.mesh(maxh=MAXH)
 rapidfem.show(g)
 

@@ -14,6 +14,7 @@
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
 	import Select from '$lib/components/Select.svelte';
+	import { openPrompt } from '$lib/modals';
 
 	let status = $state('idle');
 	let workdir = $state('');
@@ -22,15 +23,27 @@
 	let dirty = $state(false);
 	let log_lines = $state<string[]>([]);
 	let output_body_el: HTMLElement | undefined = $state();
+	let _stick_to_bottom = $state(true);
 	$effect(() => {
-		// Auto-scroll to bottom when new lines arrive (unless user has
-		// scrolled up: bail when they're more than ~80px from the bottom).
-		const n = log_lines.length;
-		if (!output_body_el || n === 0) return;
+		// Auto-scroll on new lines. The "is the user near the bottom?" check
+		// has to happen *before* the new lines re-render the DOM (so the
+		// scroll position reflects the user's intent, not the just-appended
+		// content). We track stickiness in a state variable that the scroll
+		// handler updates whenever the user actually scrolls, then `tick()`
+		// past the re-render before snapping to the new scrollHeight.
+		log_lines.length;  // track
+		if (!output_body_el || !_stick_to_bottom) return;
 		const el = output_body_el;
-		const at_bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-		if (at_bottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
+		// rAF runs after Svelte flushes DOM mutations, so el.scrollHeight
+		// already includes the new lines.
+		requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 	});
+
+	function on_output_scroll() {
+		const el = output_body_el;
+		if (!el) return;
+		_stick_to_bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+	}
 
 	let mesh_data = $state<MeshData | null>(null);
 	let wireframe = $state<import('$lib/api').GeometryPayload | null>(null);
@@ -341,26 +354,20 @@
 				queueMicrotask(() => { void notebook?.run_all_cells(); });
 				return;
 			}
-			// Live mode: copy into workdir so edits persist, with numeric
-			// suffix to avoid clobbering prior work.
-			let target = name;
+			// Live mode: if the example file is already in the workdir
+			// (the default — `rapidfem serve` auto-populates them on first
+			// run), just open it. Never overwrite user edits, never spawn
+			// `_1.py` clones.
 			try {
-				let i = 1;
-				while (true) {
-					try {
-						await readFile(target);
-						// File exists — try next variant.
-						target = name.replace(/\.py$/, `_${i}.py`);
-						i++;
-					} catch (e) {
-						if (String(e).includes('HTTP 404')) break;  // free slot
-						throw e;
-					}
-					if (i > 99) break;
-				}
-			} catch {}
-			await writeFile(target, content);
-			await open_file(target);
+				await readFile(name);
+				await open_file(name);
+				return;
+			} catch (e) {
+				if (!String(e).includes('HTTP 404')) throw e;
+			}
+			// File missing → write it once.
+			await writeFile(name, content);
+			await open_file(name);
 		} catch (e) {
 			log_lines = [...log_lines, `[example ${name}] ${e}`];
 		}
@@ -377,7 +384,16 @@
 	}
 
 	async function new_file() {
-		const name = prompt('New file name (e.g. patch.py):');
+		const name = await openPrompt({
+			title: 'New notebook',
+			label: 'File name',
+			placeholder: 'patch.py',
+			confirmLabel: 'Create',
+			validate: (v) => {
+				if (!v) return 'Name cannot be empty';
+				return null;
+			},
+		});
 		if (!name) return;
 		const path = name.endsWith('.py') ? name : `${name}.py`;
 		try {
@@ -632,7 +648,7 @@
 							{/if}
 						</div>
 						{#if !output_collapsed}
-							<div class="output-body" bind:this={output_body_el}>
+							<div class="output-body" bind:this={output_body_el} onscroll={on_output_scroll}>
 								{#each log_lines as line}
 									<div class="line">{line}</div>
 								{:else}

@@ -42,6 +42,18 @@ python/python_src/rapidfem/ui/frontend-src/build/
 /wr90*.py
 /microstrip*.py
 /welcome.py
+/python/coax_step*.py
+/python/iris_filter*.py
+/python/patch_antenna*.py
+/python/wr90*.py
+/python/microstrip*.py
+/python/welcome.py
+/python/coax_step*.py
+/python/iris_filter*.py
+/python/patch_antenna*.py
+/python/wr90*.py
+/python/microstrip*.py
+/python/welcome.py
 
 # Static demo bake artefacts (regenerated locally by scripts/bake_demo.py
 # and committed to git, so CI can deploy without re-running FEM solves)

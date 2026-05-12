@@ -295,13 +295,25 @@ def bake_example(path: Path) -> dict:
     the live notebook uses, so variables defined in cell N are visible
     in cell N+1.
     """
-    from rapidfem.ui.kernel import Kernel
+    # The bake runs in-process — we don't need the subprocess kernel from
+    # rapidfem.ui.runner, just a tiny namespace + the show-capture +
+    # serialize pipeline. Live serving uses a real worker subprocess.
+    import rapidfem
 
     source = path.read_text(encoding="utf-8")
     cells = split_cells(source)
 
     _reset_gmsh()
-    kernel = Kernel(file_path=path.name)
+
+    class _Kernel:
+        file_path = path.name
+        namespace = {
+            "__name__": "__rapidfem_bake__",
+            "__file__": path.name,
+            "rapidfem": rapidfem,
+        }
+
+    kernel = _Kernel()
 
     cell_records: list[dict] = []
     for c in cells:

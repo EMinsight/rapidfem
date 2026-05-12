@@ -1,14 +1,20 @@
 """Flask server for `rapidfem serve`.
 
-Exposes the bundled SvelteKit frontend on `/` and a small JSON/WebSocket API
-on `/api/*` and `/ws`. All endpoints are local-only by convention — there is
-no authentication.
+Exposes the bundled SvelteKit frontend on `/` and a small JSON API on
+`/api/*`. All endpoints are local-only by convention — there is no
+authentication.
 
-The actual endpoints are registered in `rapidfem.ui.api` (split out so the
-server module stays small and testable).
+Cell execution runs in a per-file subprocess worker (see
+``rapidfem.ui.runner``); the server itself never exec's user code.
+Streaming events flow via HTTP long-polling on ``/api/cell/poll``.
+
+The actual endpoints are registered in:
+  - ``rapidfem.ui.runner``  → /api/cell/*, /api/kernel
+  - ``rapidfem.ui.api``     → /api/files/*, /api/examples/*, legacy ops
 """
 from __future__ import annotations
 
+import atexit
 import os
 import threading
 import webbrowser
@@ -54,9 +60,6 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
     # check rather than wildcard.
     @app.after_request
     def _cors(resp):
-        origin = resp.headers.get("Origin") or ""
-        # Allow any localhost origin (vite dev server, custom ports).
-        # Reflected only, not "*", so credentials remain blocked anyway.
         from flask import request
         req_origin = request.headers.get("Origin", "")
         if req_origin.startswith("http://127.0.0.1") or req_origin.startswith("http://localhost"):
@@ -73,16 +76,42 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
             "frontend_bundled": dist is not None,
         })
 
+    # Cell runner (subprocess pool + /api/cell/* + /api/kernel).
+    from rapidfem.ui import runner
+    runner.register(app)
+    atexit.register(runner.shutdown_all)
+
+    # File/example/legacy endpoints.
+    try:
+        from rapidfem.ui import api  # noqa: F401
+        api.register(app)
+    except ImportError:
+        pass
+
     # Frontend static serving — only registered when dist/ is present.
     if dist is not None:
         @app.get("/", defaults={"path": ""})
         @app.get("/<path:path>")
         def _spa(path: str):
+            # /api/* never falls through to the static handler.
+            if path.startswith(("api/",)) or path == "api":
+                from flask import abort
+                abort(404)
             target = dist / path
             if path and target.exists() and target.is_file():
                 return send_from_directory(dist, path)
-            # SPA fallback: serve index.html so client-side routes resolve.
-            return send_from_directory(dist, "index.html")
+            # `/` is the prerendered landing — its asset URLs are relative
+            # (`./_app/...`), correct only at the root path.
+            if not path:
+                return send_from_directory(dist, "index.html")
+            # Every other client-side route (notebook, embed/test) uses
+            # `404.html` as the SPA fallback. adapter-static produces it
+            # with **absolute** asset URLs (`/_app/...`), so it hydrates
+            # correctly from any URL depth. Without this, deep routes got
+            # `index.html` whose relative paths rebased to e.g.
+            # `/notebook/_app/...` and Flask re-served HTML for every JS
+            # import, silently breaking the whole SvelteKit boot.
+            return send_from_directory(dist, "404.html")
     else:
         @app.get("/")
         def _no_frontend():
@@ -92,35 +121,6 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
                 "<code>scripts/build_frontend.{ps1,sh}</code> and reinstall, "
                 "or install a release wheel.</p>"
             ), 503
-
-    try:
-        from rapidfem.ui import api  # noqa: F401
-        api.register(app)
-    except ImportError:
-        pass
-
-    try:
-        from flask_sock import Sock
-        from rapidfem.ui.bus import BUS
-        from rapidfem.ui.kernel_ws import register_kernel_ws
-
-        sock = Sock(app)
-        register_kernel_ws(sock)
-
-        @sock.route("/ws")
-        def _ws(ws):  # pragma: no cover — exercised end-to-end
-            q = BUS.subscribe()
-            try:
-                ws.send('{"kind":"hello","ok":true}')
-                while True:
-                    payload = q.get()
-                    ws.send(payload)
-            except Exception:
-                pass
-            finally:
-                BUS.unsubscribe(q)
-    except ImportError:
-        pass  # flask-sock optional dependency
 
     return app
 
@@ -132,17 +132,13 @@ def run(app: Flask, host: str = "127.0.0.1", port: int = 5174, open_browser: boo
     if app.config["RAPIDFEM_FRONTEND_DIST"] is None:
         print("rapidfem serve — WARNING: no frontend bundle found (run scripts/build_frontend).")
 
-    # gmsh.initialize installs a SIGINT handler, which only the main thread
-    # can do. Eagerly init here so Geometry() calls from worker request
-    # threads skip the init via gmsh.isInitialized().
-    try:
-        import gmsh
-        if not gmsh.isInitialized():
-            gmsh.initialize()
-            gmsh.option.setNumber("General.Terminal", 0)
-    except Exception as e:  # noqa: BLE001
-        print(f"rapidfem serve — gmsh pre-init failed: {e}")
-
     if open_browser and not os.environ.get("RAPIDFEM_NO_BROWSER"):
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-    app.run(host=host, port=port, debug=app.config["RAPIDFEM_DEBUG"], use_reloader=False)
+    # threaded=True so the long-poll endpoint doesn't block other requests
+    # while it waits on the worker's stdout queue.
+    app.run(
+        host=host, port=port,
+        debug=app.config["RAPIDFEM_DEBUG"],
+        use_reloader=False,
+        threaded=True,
+    )

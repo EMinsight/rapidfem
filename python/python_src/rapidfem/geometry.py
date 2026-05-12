@@ -979,6 +979,61 @@ class Geometry:
 
     # ── Mesh emit ───────────────────────────────────────────────────────────
 
+    def auto_refine_features(
+        self,
+        base_maxh: float,
+        resolution: int = 3,
+        min_maxh: float | None = None,
+    ) -> dict[str, float]:
+        """Auto-assign per-volume ``maxh`` for any volume thinner than ``base_maxh``.
+
+        Walks every 3D volume in the geometry. For each, computes the smallest
+        bbox dimension (the "feature size"). If that dimension is smaller than
+        ``base_maxh`` *and* the user hasn't already set ``vol.maxh`` explicitly,
+        sets ``vol.maxh = max(min_dim / resolution, min_maxh)`` so the volume
+        is resolved with at least ``resolution`` tets across its thinnest axis.
+
+        Idempotent — only writes ``maxh`` when it's currently ``None``, so
+        explicit per-volume sizes always win.
+
+        Parameters
+        ----------
+        base_maxh : float
+            Reference size (typically what you'll pass to ``g.mesh(maxh=...)``).
+            Volumes wider than this in all directions are left untouched.
+        resolution : int, optional
+            Target number of tets across the thinnest dimension. Default 3 —
+            enough for ND-2 to capture per-element gradients; bump to 4–5 for
+            very high accuracy near a specific feature. Default 3.
+        min_maxh : float, optional
+            Floor on the auto-assigned size, to avoid catastrophic refinement
+            on micron-scale features. ``None`` means no floor.
+
+        Returns
+        -------
+        dict[str, float]
+            Map ``{volume_descriptor: assigned_maxh}`` for the volumes touched,
+            for logging. The descriptor is ``name`` if the volume has one, else
+            ``"vol@(cx,cy,cz)"`` from its centroid.
+        """
+        assigned: dict[str, float] = {}
+        for obj in self._objects:
+            if obj.dim != 3 or obj.maxh is not None:
+                continue
+            bbox = obj._entity.bbox
+            dims = (bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])
+            min_dim = min(d for d in dims if d > 0)
+            if min_dim >= base_maxh:
+                continue
+            h = min_dim / resolution
+            if min_maxh is not None:
+                h = max(h, min_maxh)
+            obj.maxh = h
+            cog = obj._entity.cog
+            desc = obj.name or f"vol@({cog[0]*1e3:.1f},{cog[1]*1e3:.1f},{cog[2]*1e3:.1f})mm"
+            assigned[desc] = h
+        return assigned
+
     def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
         """Generate the 3D tet mesh of the current geometry.
 
@@ -1065,10 +1120,22 @@ class Geometry:
             min_id = gmsh.model.mesh.field.add("Min")
             gmsh.model.mesh.field.setNumbers(min_id, "FieldsList", threshold_field_ids)
             gmsh.model.mesh.field.setAsBackgroundMesh(min_id)
-            # Disable competing default size sources so Field is authoritative
+            # When threshold fields are active the user explicitly cares about
+            # local size — keep `ExtendFromBoundary` off so global Max applies
+            # away from refined regions, but leave Curvature on (combined via
+            # Min) so curved features get resolved cleanly even if the user
+            # only set per-volume sizes.
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+        # Curvature-based sizing: gmsh disables this by default. Turning it
+        # on gives curved primitives (cylinder, sphere, cone, torus) a
+        # geometry-accurate facet count without the user having to refine
+        # those surfaces by hand. Value = target elements per 2π radians.
+        # 12 is a reasonable balance between fidelity and DoF count for
+        # second-kind Nédélec-2 (high-order absorbs some discretisation
+        # error already). User can override before calling .mesh().
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
 
         # Assign physical groups by name. Group entities of the same name+dim.
         by_dim_name: dict[tuple[int, str], list[int]] = {}

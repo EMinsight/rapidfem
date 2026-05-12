@@ -11,78 +11,46 @@ from pathlib import Path
 from rapidfem import __version__
 
 
-_WELCOME_SCRIPT = '''\
-"""Welcome to rapidfem!
+def _default_workdir() -> Path:
+    """Default workdir: ``~/rapidfem-workspace/``.
 
-This is the script you opened in the editor. The UI workflow:
-
-  1. Edit this file and press Ctrl+S — the right-hand 3D view refreshes
-     automatically (it calls /api/run on the Flask backend, which exec's
-     this script and renders whatever you pass to rapidfem.show()).
-
-  2. Click "Generate Mesh" to run gmsh and see the full tet mesh.
-
-  3. Click "Run Simulation" to build a SimulationBuilder + run the FEM
-     frequency sweep. S-params appear in the second tab.
-
-The example below is a tiny WR-90 rectangular waveguide section — change
-its dimensions, materials, or ports, then save to see updates.
-"""
-import numpy as np
-import rapidfem
+    Lives outside any source tree so example copies never pollute the
+    rapidfem checkout, and stays stable across shell sessions so users
+    can run ``rapidfem serve`` from anywhere and find their edits.
+    """
+    return Path.home() / "rapidfem-workspace"
 
 
-# ── Geometry ─────────────────────────────────────────────────────────────
-# WR-90 = 22.86 mm × 10.16 mm; 30 mm long section.
-A, B, L = 22.86e-3, 10.16e-3, 30.0e-3
+def _populate_examples(workdir: Path) -> int:
+    """Copy bundled examples into ``workdir`` if no ``.py`` is there yet.
 
-g = rapidfem.Geometry()
-air = g.box(A, B, L, position=(-A / 2, -B / 2, 0))
-air.material = "air"
-
-# Name the two faces at z = 0 and z = L as ports.
-air.faces.min(axis="z").name = "port_in"
-air.faces.max(axis="z").name = "port_out"
-# All other faces are PEC walls.
-for face in air.faces:
-    if face.name is None:
-        face.name = "pec"
-
-# Mesh a bit smaller on the ports so they get resolved properly.
-air.maxh = 5e-3
-
-# ── Send the geometry to the viewer ──────────────────────────────────────
-rapidfem.show(g)
-
-
-# ── Build a SimulationBuilder (used by "Run Simulation") ─────────────────
-# 21-point sweep across the WR-90 single-mode band.
-builder = (
-    rapidfem.SimulationBuilder()
-    .from_geometry(g, maxh=5e-3)
-    .frequencies(np.linspace(8.0e9, 12.0e9, 21))
-    .rect_waveguide("port_in")
-    .rect_waveguide("port_out")
-    .pec("pec")
-    .material("air", er=1.0)
-)
-rapidfem.show(builder)
-'''
-
-
-def _maybe_write_welcome(workdir: Path) -> None:
-    """Drop a welcome.py the first time someone serves an empty workdir."""
-    has_py = any(p.is_file() for p in workdir.glob("*.py"))
-    if has_py:
-        return
-    target = workdir / "welcome.py"
-    if target.exists():
-        return
+    Idempotent: never overwrites an existing file. Returns the count of
+    files actually copied (0 if the workdir already had Python in it).
+    """
+    if any(p.is_file() for p in workdir.glob("*.py")):
+        return 0
     try:
-        target.write_text(_WELCOME_SCRIPT, encoding="utf-8", newline="\n")
-        print(f"rapidfem serve — wrote starter script to {target}")
-    except OSError as e:
-        print(f"rapidfem serve — could not write welcome.py: {e}", file=sys.stderr)
+        from importlib import resources
+        root = resources.files("rapidfem.examples")
+    except (ModuleNotFoundError, FileNotFoundError):
+        return 0
+    n = 0
+    for entry in root.iterdir():  # type: ignore[attr-defined]
+        if not entry.is_file():
+            continue
+        name = entry.name
+        if not name.endswith(".py") or name.startswith("_"):
+            continue
+        target = workdir / name
+        if target.exists():
+            continue
+        try:
+            content = entry.read_text(encoding="utf-8")
+            target.write_text(content, encoding="utf-8", newline="\n")
+            n += 1
+        except OSError as e:
+            print(f"rapidfem serve — could not copy {name}: {e}", file=sys.stderr)
+    return n
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -97,16 +65,30 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
         return 2
 
-    workdir = Path(args.workdir).resolve()
-    if not workdir.exists():
-        print(f"error: workdir does not exist: {workdir}", file=sys.stderr)
-        return 2
-    if not workdir.is_dir():
-        print(f"error: workdir is not a directory: {workdir}", file=sys.stderr)
-        return 2
+    if args.workdir is None:
+        workdir = _default_workdir()
+        if not workdir.exists():
+            try:
+                workdir.mkdir(parents=True, exist_ok=True)
+                print(f"rapidfem serve — created workdir {workdir}")
+            except OSError as e:
+                print(f"error: could not create default workdir {workdir}: {e}", file=sys.stderr)
+                return 2
+    else:
+        workdir = Path(args.workdir).resolve()
+        if not workdir.exists():
+            print(f"error: workdir does not exist: {workdir}", file=sys.stderr)
+            return 2
+        if not workdir.is_dir():
+            print(f"error: workdir is not a directory: {workdir}", file=sys.stderr)
+            return 2
 
-    # Bundled examples are now exposed via /api/examples, so we no longer
-    # need to drop a welcome.py into the workdir on first start.
+    # Populate bundled examples on a fresh workdir so users see the demos
+    # the first time they open the UI. Skipped if any *.py is already
+    # present — never overwrites user edits.
+    n_copied = _populate_examples(workdir)
+    if n_copied:
+        print(f"rapidfem serve — populated {n_copied} example scripts in {workdir}")
 
     app = create_app(workdir=workdir, debug=args.debug)
     run(app, host=args.host, port=args.port, open_browser=not args.no_browser)
@@ -129,8 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "workdir",
         nargs="?",
-        default=".",
-        help="project working directory (default: current directory)",
+        default=None,
+        help="project working directory (default: ~/rapidfem-workspace/)",
     )
     s.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
     s.add_argument("--port", type=int, default=5174, help="bind port (default: 5174)")

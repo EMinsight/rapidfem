@@ -79,7 +79,7 @@
 		<a class="brand" href="/" data-sveltekit-reload><img src="/favicon.svg" alt="RapidFEM" /></a>
 		<span class="nav-sep"></span>
 		<nav class="tabs">
-			<a class="tab" href="/demo" data-sveltekit-reload>Notebook</a>
+			<a class="tab" href="/notebook" data-sveltekit-reload>Notebook</a>
 			<a class="tab active" href="/embed/test">Embed</a>
 		</nav>
 	</header>

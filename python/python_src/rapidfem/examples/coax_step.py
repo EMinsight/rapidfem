@@ -22,7 +22,9 @@ RI_2, RO_2 = 0.99e-3, 3.45e-3
 L1, L2 = 15.0e-3, 15.0e-3
 
 FREQUENCIES = np.linspace(1.0e9, 10.0e9, 31)
-MAXH = 1.0e-3
+# Air-filled coax — wavelength bound + curvature-based facets on the cylinder
+# walls (enabled by default) give a geometry-accurate mesh without manual tuning.
+MAXH = rapidfem.lambda_maxh(f_max=10.0e9)   # ~2.5 mm = λ_air/12 at f_max
 
 
 # %% Geometry + Materials

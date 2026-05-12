@@ -46,9 +46,10 @@ AIR_H  = 10.0 * mm
 # line is electrically λg/2 — perfectly matched at that frequency.
 FREQUENCIES = np.linspace(2.85e9, 3.30e9, 21)
 
-# Mesh density — substrate gets ~1 element through (W/H ratio is the
-# Z0-defining feature, not the bulk dielectric resolution).
-MAXH = 1.5 * mm
+# Mesh density: feature size dominates here — λ_air/12 at 3.3 GHz is ~7.6 mm
+# but the W=1.13 mm trace and 0.5 mm substrate force tighter cells. We cap the
+# bulk at λ_substrate/12 and let auto_refine_features pick the substrate up.
+MAXH = rapidfem.lambda_maxh(f_max=3.3e9, er_max=ER_SUB)  # ~3.5 mm
 
 
 # %% Geometry + Materials
@@ -98,6 +99,9 @@ rapidfem.show(g)
 
 
 # %% Mesh
+# Substrate is 0.508 mm thin; auto-refine assigns sub.maxh ≈ 0.17 mm so the
+# Z0-defining W/H ratio is resolved properly. Air box stays at MAXH.
+g.auto_refine_features(base_maxh=MAXH)
 g.mesh(maxh=MAXH)
 rapidfem.show(g)
 
