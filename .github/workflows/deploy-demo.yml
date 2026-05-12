@@ -1,0 +1,97 @@
+name: Deploy static demo
+
+# Builds rapidfem, pre-bakes the bundled examples through the kernel
+# pipeline, builds the SvelteKit frontend with VITE_STATIC_MODE=1, and
+# deploys the result to GitHub Pages (fem.rapidpassives.org).
+
+on:
+  push:
+    branches:
+      - feature/static-demo
+      - main
+    paths:
+      - 'src/**'
+      - 'python/**'
+      - 'scripts/bake_demo.py'
+      - '.github/workflows/deploy-demo.yml'
+  workflow_dispatch:
+
+# A GH Pages deploy can clobber the in-flight one — serialise.
+concurrency:
+  group: deploy-static-demo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Bake examples + build frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-demo-cargo-${{ hashFiles('Cargo.lock', 'python/Cargo.toml') }}
+
+      - name: Install system deps (gmsh runtime libs)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
+
+      - name: Install rapidfem (editable, with [ui])
+        run: |
+          python -m pip install --upgrade pip maturin
+          python -m pip install -e ".[ui]"
+        working-directory: python
+
+      - name: Bake examples
+        run: python scripts/bake_demo.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: python/python_src/rapidfem/ui/frontend-src/package-lock.json
+
+      - name: Install frontend deps + build (static mode)
+        working-directory: python/python_src/rapidfem/ui/frontend-src
+        env:
+          VITE_STATIC_MODE: '1'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: python/python_src/rapidfem/ui/frontend/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
