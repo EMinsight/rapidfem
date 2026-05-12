@@ -1,27 +1,31 @@
 /**
- * WS-based kernel client. Single ordered event stream per cell execution.
+ * HTTP-based kernel client.
  *
- * Protocol (mirrors rapidfem.ui.kernel_ws):
- *   client → execute / reset / interrupt
- *   server → hello / started / stream / display / error / done
+ * Each notebook file gets a long-lived worker subprocess (managed by
+ * rapidfem.ui.runner). Cell execution is:
+ *   1. POST /api/cell/run  → server kicks off subprocess, returns cell_id
+ *   2. POST /api/cell/poll → long-polls (100 ms) for stream/display/error/done
+ *      events until `done: true` lands in the response.
+ *
+ * The previous WS-based path is gone — see commits leading to
+ * feature/subprocess-worker for the rationale (Werkzeug+wsproto+deflate
+ * frame-encoding bugs that bit on >64 KiB messages).
  */
 
-import type { GeometryPayload, MeshPayload, PythonError } from './api';
+import { api_base, type GeometryPayload, type MeshPayload, type PythonError } from './api';
 
 export type StreamKind = 'stdout' | 'stderr';
 
 export type KernelEvent =
-	| { type: 'hello' }
-	| { type: 'started'; cell_id: string; file: string }
-	| { type: 'stream'; cell_id: string; stream: StreamKind; line: string }
-	| { type: 'display'; cell_id: string; kind: 'geometry'; name: string; payload: GeometryPayload }
-	| { type: 'display'; cell_id: string; kind: 'mesh'; name: string; payload: MeshPayload }
-	| { type: 'display'; cell_id: string; kind: 'result'; name: string; payload: SolveResultPayload }
-	| { type: 'display'; cell_id: string; kind: 'error'; name: string; error: PythonError }
-	| { type: 'error'; cell_id: string; error: PythonError }
-	| { type: 'done'; cell_id: string; ok: boolean }
-	| { type: 'reset_ack'; file: string }
-	| { type: 'interrupt_ack'; cell_id: string; ok: boolean };
+	| { type: 'stream'; stream: StreamKind; value: string }
+	| { type: 'display'; kind: 'geometry'; name: string; payload: GeometryPayload }
+	| { type: 'display'; kind: 'mesh'; name: string; payload: MeshPayload }
+	| { type: 'display'; kind: 'result'; name: string; payload: SolveResultPayload }
+	| { type: 'display'; kind: 'error'; name: string; error: PythonError }
+	| { type: 'error'; id?: string; error: string; traceback?: string }
+	| { type: 'done'; id: string; ok: boolean }
+	| { type: 'reset-ack' }
+	| { type: 'worker-exit' };
 
 export interface SolveResultPayload {
 	frequencies: number[];
@@ -49,120 +53,115 @@ export interface ExecuteResult {
 	error?: PythonError;
 }
 
-function ws_url(): string {
-	if (typeof window === 'undefined') return '';
-	const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	if (window.location.port === '5173') return `${proto}//127.0.0.1:5174/ws/kernel`;
-	return `${proto}//${window.location.host}/ws/kernel`;
+async function post_json<T>(path: string, body: object): Promise<T> {
+	const res = await fetch(api_base() + path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		const text = await res.text().catch(() => '');
+		throw new Error(`${path}: HTTP ${res.status} ${text.slice(0, 200)}`);
+	}
+	return res.json() as Promise<T>;
 }
 
 export class KernelClient {
-	private ws: WebSocket | null = null;
-	private pending = new Map<string, {
-		opts: ExecuteOptions;
-		resolve: (r: ExecuteResult) => void;
-	}>();
-	private outbox: string[] = [];
-	private connect_retry: ReturnType<typeof setTimeout> | null = null;
-	private hello_resolvers: Array<() => void> = [];
-	private connected = false;
-
-	constructor() {
-		if (typeof window !== 'undefined') this.connect();
-	}
-
-	private connect() {
+	async execute(opts: ExecuteOptions): Promise<ExecuteResult> {
 		try {
-			this.ws = new WebSocket(ws_url());
-		} catch {
-			this.schedule_reconnect();
-			return;
+			const run = await post_json<{ ok: boolean; cell_id?: string; error?: string }>(
+				'/api/cell/run',
+				{
+					file: opts.file,
+					code: opts.code,
+					reset: !!opts.reset,
+					cell_id: opts.cell_id,
+				},
+			);
+			if (!run.ok || !run.cell_id) {
+				return {
+					ok: false,
+					error: { type: 'RunError', message: run.error ?? 'cell-run failed', traceback: '' },
+				};
+			}
+			opts.onStarted?.();
+			return await this.drain_until_done(opts);
+		} catch (e) {
+			return {
+				ok: false,
+				error: { type: 'NetworkError', message: String(e), traceback: '' },
+			};
 		}
-		this.ws.onmessage = (m) => {
+	}
+
+	private async drain_until_done(opts: ExecuteOptions): Promise<ExecuteResult> {
+		const target = opts.cell_id;
+		let last_error: PythonError | undefined;
+		// Poll loop. The server's /api/cell/poll long-polls 100 ms so this
+		// stays cheap and responsive.
+		while (true) {
+			let resp: { messages: KernelEvent[]; done: boolean };
 			try {
-				this.dispatch(JSON.parse(m.data) as KernelEvent);
-			} catch (err) {
-				console.warn('[kernel] bad payload', err);
+				resp = await post_json<{ messages: KernelEvent[]; done: boolean }>(
+					'/api/cell/poll',
+					{ file: opts.file },
+				);
+			} catch (e) {
+				return {
+					ok: false,
+					error: { type: 'NetworkError', message: String(e), traceback: '' },
+				};
 			}
-		};
-		this.ws.onopen = () => {
-			this.connected = true;
-			for (const msg of this.outbox) this.ws?.send(msg);
-			this.outbox = [];
-		};
-		this.ws.onerror = () => {};
-		this.ws.onclose = () => {
-			this.connected = false;
-			this.ws = null;
-			// Fail any in-flight cells so callers don't hang.
-			for (const [_id, p] of this.pending) {
-				p.resolve({ ok: false, error: { type: 'ConnectionError', message: 'WS closed', traceback: '' } });
+			for (const evt of resp.messages) {
+				if (evt.type === 'stream') {
+					// Server sends raw chunks; split into lines so the
+					// notebook log panel renders cleanly.
+					for (const line of evt.value.split('\n')) {
+						if (line.length > 0) opts.onStream?.(evt.stream, line);
+					}
+				} else if (evt.type === 'display') {
+					if (evt.kind === 'error') {
+						opts.onStream?.('stderr', `${evt.error.type}: ${evt.error.message}`);
+					} else {
+						opts.onDisplay?.(evt.kind, evt.payload, evt.name);
+					}
+				} else if (evt.type === 'error') {
+					last_error = {
+						type: 'ExecError',
+						message: evt.error,
+						traceback: evt.traceback ?? '',
+					};
+					opts.onStream?.('stderr', evt.error);
+					if (evt.traceback) opts.onStream?.('stderr', evt.traceback);
+				} else if (evt.type === 'done') {
+					if (evt.id === target) {
+						return { ok: evt.ok, error: last_error };
+					}
+				} else if (evt.type === 'worker-exit') {
+					return {
+						ok: false,
+						error: { type: 'WorkerExit', message: 'Worker process exited', traceback: '' },
+					};
+				}
 			}
-			this.pending.clear();
-			this.schedule_reconnect();
-		};
-	}
-
-	private schedule_reconnect() {
-		if (this.connect_retry) return;
-		this.connect_retry = setTimeout(() => {
-			this.connect_retry = null;
-			this.connect();
-		}, 1500);
-	}
-
-	private send_raw(msg: object) {
-		const s = JSON.stringify(msg);
-		if (this.ws && this.connected) this.ws.send(s);
-		else this.outbox.push(s);
-	}
-
-	private dispatch(e: KernelEvent) {
-		if (e.type === 'hello') {
-			const rs = this.hello_resolvers;
-			this.hello_resolvers = [];
-			for (const r of rs) r();
-			return;
-		}
-		const cell_id = (e as { cell_id?: string }).cell_id;
-		if (!cell_id) return;
-		const p = this.pending.get(cell_id);
-		if (!p) return;
-		if (e.type === 'started') {
-			p.opts.onStarted?.();
-		} else if (e.type === 'stream') {
-			p.opts.onStream?.(e.stream, e.line);
-		} else if (e.type === 'display') {
-			if (e.kind === 'error') {
-				// Surface as stream so the user sees it in the output panel.
-				p.opts.onStream?.('stderr', `${e.error.type}: ${e.error.message}`);
-			} else {
-				p.opts.onDisplay?.(e.kind, e.payload, e.name);
+			// If the server says we're done but we never saw our own `done`,
+			// something raced — bail with whatever error we caught.
+			if (resp.done && resp.messages.every((e) => e.type !== 'done' || e.id !== target)) {
+				return last_error
+					? { ok: false, error: last_error }
+					: { ok: true };
 			}
-		} else if (e.type === 'error') {
-			p.opts.onStream?.('stderr', `${e.error.type}: ${e.error.message}`);
-			// keep pending; "done" closes the promise with ok:false
-		} else if (e.type === 'done') {
-			this.pending.delete(cell_id);
-			p.resolve({ ok: e.ok });
+			// Empty-but-not-done poll → idle wait until next tick. The server
+			// already blocks ~100 ms so we don't add a JS-side delay here.
 		}
 	}
 
-	execute(opts: ExecuteOptions): Promise<ExecuteResult> {
-		return new Promise((resolve) => {
-			this.pending.set(opts.cell_id, { opts, resolve });
-			this.send_raw({
-				type: 'execute',
-				cell_id: opts.cell_id,
-				file: opts.file,
-				code: opts.code,
-				reset: !!opts.reset,
-			});
-		});
-	}
-
-	reset(file: string) {
-		this.send_raw({ type: 'reset', file });
+	async reset(file: string): Promise<void> {
+		try {
+			await post_json('/api/cell/reset', { file });
+		} catch (e) {
+			console.warn('[kernel] reset failed:', e);
+		}
 	}
 }
 

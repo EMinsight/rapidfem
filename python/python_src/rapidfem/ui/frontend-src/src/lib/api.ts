@@ -19,7 +19,7 @@ import type { MeshData } from './msh';
 // the Flask port directly.
 const DEV_BACKEND = 'http://127.0.0.1:5174';
 
-function api_base(): string {
+export function api_base(): string {
 	if (typeof window !== 'undefined' && window.location.port === '5173') {
 		return DEV_BACKEND;
 	}
