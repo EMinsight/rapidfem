@@ -63,9 +63,6 @@
 			<a class="tab" href={demo_url}>Notebook</a>
 			<a class="tab" href={embed_test_url}>Embed</a>
 		</nav>
-		<span class="spacer"></span>
-		<a class="tab" href="https://github.com/milanofthe/rapidfem" target="_blank" rel="noopener">GitHub</a>
-		<a class="tab" href="https://pypi.org/project/rapidfem/" target="_blank" rel="noopener">PyPI</a>
 	</header>
 	<div class="landing">
 		<div class="hero">
@@ -76,7 +73,7 @@
 			{#each examples as ex}
 				<a class="card" href={`${demo_url}?example=${ex.name}`}>
 					<div class="card-preview">
-						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate animate-field speed="0.6" width="100%" height="200px"></fem-viewer>`}
+						{@html `<fem-viewer src="${base}/demo/${ex.name}.json" rotate cycle speed="0.6" width="100%" height="200px"></fem-viewer>`}
 					</div>
 					<div class="card-info">
 						<h3>{ex.label}</h3>
@@ -136,13 +133,13 @@
 	}
 	.nav-sep {
 		width: 1px;
-		height: 16px;
+		align-self: stretch;
 		background: var(--border);
 		flex-shrink: 0;
 	}
 	.tabs {
 		display: flex;
-		gap: 12px;
+		gap: 24px;
 	}
 	header .tab {
 		font-size: var(--fs-xs);
@@ -155,7 +152,6 @@
 		transition: color var(--transition);
 	}
 	header .tab:hover { color: var(--accent); }
-	header .spacer { flex: 1; }
 	.landing {
 		flex: 1;
 		display: flex;

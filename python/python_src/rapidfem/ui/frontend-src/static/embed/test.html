@@ -2,50 +2,263 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>fem-viewer embed test</title>
-<style>
-  body { font-family: -apple-system, sans-serif; background: #131316; color: #d0cdce; padding: 24px; max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 18px; color: #d9513c; }
-  h2 { font-size: 14px; color: #b8b6b8; margin-top: 28px; }
-  pre { background: #1a1a1f; color: #c4c4c8; padding: 10px; font-size: 11px; border: 1px solid #2a2a31; overflow-x: auto; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .card { background: #1a1a1f; padding: 12px; border: 1px solid #2a2a31; }
-  fem-viewer { display: block; border: 1px solid #2a2a31; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Embed Test &mdash; RapidFEM</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <script src="./fem-viewer.js"></script>
+<style>
+  :root {
+    --bg: #1c1c21;
+    --bg-surface: #232329;
+    --bg-mid: #1a1a1f;
+    --text: #e2ddd5;
+    --text-muted: #7d7a85;
+    --text-dim: #55535a;
+    --accent: #d9513c;
+    --border: #35353d;
+    --border-subtle: #2d2d34;
+    --canvas-bg: #131316;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --fs-xs: 10px;
+    --fs-sm: 12px;
+    --fs-md: 14px;
+    --fs-lg: 20px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: var(--fs-sm);
+  }
+  body { overflow-y: auto; }
+  header {
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    height: 36px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  header .brand img { height: 22px; display: block; }
+  header .nav-sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--border);
+  }
+  header .tabs { display: flex; gap: 24px; }
+  header .tab {
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    text-decoration: none;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-weight: 600;
+    transition: color 0.15s;
+  }
+  header .tab:hover { color: var(--accent); }
+  header .tab.active { color: var(--accent); }
+
+  .page {
+    padding: 40px 40px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .intro h1 {
+    font-size: var(--fs-lg);
+    font-family: var(--font-mono);
+    color: var(--accent);
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+  }
+  .intro p {
+    font-size: var(--fs-sm);
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+  }
+  .example {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-surface);
+    padding: 16px;
+  }
+  .example-info { display: flex; flex-direction: column; gap: 10px; }
+  .example-info h3 {
+    font-size: var(--fs-sm);
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .example-info p {
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .example-info pre {
+    background: var(--bg-mid);
+    border: 1px solid var(--border-subtle);
+    padding: 10px 12px;
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    color: var(--text);
+    overflow-x: auto;
+    white-space: pre;
+    margin-top: auto;
+  }
+  .example-preview { min-height: 300px; overflow: hidden; }
+  @media (max-width: 800px) { .example { grid-template-columns: 1fr; } }
+</style>
 </head>
 <body>
 
-<h1>&lt;fem-viewer&gt; — embed test</h1>
-<p>Standalone web component that mounts a RapidFEM mesh + field viewer from a baked example bundle.</p>
+<header>
+  <a class="brand" href="/"><img src="/favicon.svg" alt="RapidFEM" /></a>
+  <span class="nav-sep"></span>
+  <nav class="tabs">
+    <a class="tab" href="/demo">Notebook</a>
+    <a class="tab active" href="/embed/test.html">Embed</a>
+  </nav>
+</header>
 
-<h2>Static — geometry only</h2>
-<pre>&lt;fem-viewer src="/demo/wr90.json" height="280px"&gt;&lt;/fem-viewer&gt;</pre>
-<fem-viewer src="/demo/wr90.json" height="280px"></fem-viewer>
-
-<h2>Interactive — orbit/pan/zoom + double-click to fit</h2>
-<pre>&lt;fem-viewer src="/demo/patch_antenna.json" interactive height="320px"&gt;&lt;/fem-viewer&gt;</pre>
-<fem-viewer src="/demo/patch_antenna.json" interactive height="320px"></fem-viewer>
-
-<h2>Rotating + field animation</h2>
-<pre>&lt;fem-viewer src="/demo/wr90.json" rotate animate-field speed="2" height="280px"&gt;&lt;/fem-viewer&gt;</pre>
-<fem-viewer src="/demo/wr90.json" rotate animate-field speed="2" height="280px"></fem-viewer>
-
-<h2>Side by side</h2>
-<div class="grid">
-  <div class="card">
-    <pre>field-mode="lin" field-freq="10"</pre>
-    <fem-viewer src="/demo/iris_filter.json" rotate animate-field field-mode="lin" field-freq="10" height="240px"></fem-viewer>
+<div class="page">
+  <div class="intro">
+    <h1>Embeddable FEM Viewer</h1>
+    <p>Drop simulated antenna / waveguide / line results onto any page with a single script tag.</p>
   </div>
-  <div class="card">
-    <pre>field-mode="log" field-freq="10"</pre>
-    <fem-viewer src="/demo/iris_filter.json" rotate animate-field field-mode="log" field-freq="10" height="240px"></fem-viewer>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Default</h3>
+      <p>Static 3D view, no interaction. Useful for documentation thumbnails.</p>
+<pre>&lt;script src="https://fem.rapidpassives.org/embed/fem-viewer.js"&gt;&lt;/script&gt;
+&lt;fem-viewer
+  src="/demo/wr90.json"
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/wr90.json" width="100%" height="300px"></fem-viewer>
+    </div>
   </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Rotating</h3>
+      <p>Continuous camera orbit at default speed.</p>
+<pre>&lt;fem-viewer
+  src="/demo/wr90.json"
+  rotate
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/wr90.json" rotate width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Cycle &mdash; Geometry / Mesh / Field</h3>
+      <p>Animated walk through the three display modes, every ~2 seconds. Same trick the landing cards use.</p>
+<pre>&lt;fem-viewer
+  src="/demo/wr90.json"
+  rotate cycle
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/wr90.json" rotate cycle width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Interactive</h3>
+      <p>Orbit (left-drag), pan (right-drag), zoom (wheel), double-click to fit.</p>
+<pre>&lt;fem-viewer
+  src="/demo/patch_antenna.json"
+  interactive
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/patch_antenna.json" interactive width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Field mode</h3>
+      <p>Static field display at a chosen frequency / port index.</p>
+<pre>&lt;fem-viewer
+  src="/demo/iris_filter.json"
+  rotate mode="field"
+  field-mode="lin" field-freq="20" field-port="0"
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/iris_filter.json" rotate mode="field" field-mode="lin" field-freq="20" field-port="0" width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Mesh mode</h3>
+      <p>Wireframe view of every named surface — useful for spotting bad mesh density visually.</p>
+<pre>&lt;fem-viewer
+  src="/demo/coax_step.json"
+  rotate mode="mesh"
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/coax_step.json" rotate mode="mesh" width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Custom camera preset</h3>
+      <p>Pin the initial view with <code>theta</code> / <code>phi</code> (degrees). Combine with <code>interactive</code> to let the user move from there.</p>
+<pre>&lt;fem-viewer
+  src="/demo/microstrip_line.json"
+  interactive theta="60" phi="20"
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview">
+      <fem-viewer src="/demo/microstrip_line.json" interactive theta="60" phi="20" width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
+  <div class="example">
+    <div class="example-info">
+      <h3>Transparent background</h3>
+      <p>Blends with whatever the host page uses behind the canvas.</p>
+<pre>&lt;fem-viewer
+  src="/demo/wr90_pml.json"
+  rotate transparent
+  width="100%" height="300px"
+&gt;&lt;/fem-viewer&gt;</pre>
+    </div>
+    <div class="example-preview" style="background:linear-gradient(45deg,#2a1f1c 0%,#1c1c21 100%);">
+      <fem-viewer src="/demo/wr90_pml.json" rotate transparent width="100%" height="300px"></fem-viewer>
+    </div>
+  </div>
+
 </div>
-
-<h2>Transparent + camera preset</h2>
-<pre>&lt;fem-viewer src="/demo/coax_step.json" rotate transparent theta="60" phi="30" height="260px"&gt;&lt;/fem-viewer&gt;</pre>
-<fem-viewer src="/demo/coax_step.json" rotate transparent theta="60" phi="30" height="260px"></fem-viewer>
 
 </body>
 </html>

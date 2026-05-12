@@ -1,38 +1,48 @@
 /**
- * <fem-viewer> — Embeddable rapidfem 3D viewer web component.
+ * <fem-viewer> — Embeddable RapidFEM 3D viewer web component.
  *
- * Loads a baked example bundle (the same `<name>.json` + `.bin` artefacts
- * produced by `scripts/bake_demo.py`) and renders mesh + optional field
- * directly in any host page.
+ * Loads a baked example bundle (the `<name>.json` + `.bin` artefacts
+ * produced by `scripts/bake_demo.py`) and renders it in any host page.
  *
  * Usage:
  *   <script src="https://fem.rapidpassives.org/embed/fem-viewer.js"></script>
- *   <fem-viewer src="/demo/wr90.json" rotate animate-field></fem-viewer>
+ *   <fem-viewer src="/demo/wr90.json" rotate cycle></fem-viewer>
  *
  * Attributes:
  *   src             URL to a baked `.json` (the matching `.bin` is auto-loaded)
  *   width / height  CSS dimensions (default 100% / 400px)
  *   rotate          continuous camera orbit
+ *   cycle           cycle the display through Geometry → Mesh → Field
+ *   mode            static display mode: `geometry` | `mesh` | `field`
+ *                   (overridden by `cycle` if both are set; default `geometry`)
  *   interactive     enable mouse orbit/pan/zoom (default off)
  *   transparent     transparent background
  *   speed           animation speed multiplier (default 1)
  *   theta / phi     initial camera angles in degrees (default 45 / 45)
- *   show-geometry   render filled surface mesh (default on)
- *   show-mesh       render mesh edges (default off)
- *   show-field      render the point-cloud field viz (default on when present)
  *   field-mode      'lin' or 'log' (default 'lin')
  *   field-freq      frequency index for field display (default last)
  *   field-port      port index for field display (default 0)
- *   animate-field   oscillate the phase to show wave motion
  */
 
 import {
-	initGL, disposeGL, createCamera, addMesh, clearMeshes, setPointCloud,
-	setPointPhase, setPointLinRange, setPointLogRange, setPointScaleMode,
-	setBBox, render3D, fitCamera, type Camera, type GLState,
+	initGL, disposeGL, createCamera, addMesh, addLineMesh, clearMeshes,
+	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
+	setTagVisible, setBBox, render3D, fitCamera,
+	type Camera, type GLState,
 } from '../lib/render/canvas3d';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
+
+// Tag layout — each renderable group gets its own integer so we can
+// toggle visibility per cycle phase via setTagVisible(state, tag, vis).
+const TAG_HULL = 1;        // dielectric / volume hulls (substrate, air, PML)
+const TAG_CONDUCTORS = 2;  // named PEC walls + ports (mesh.tris)
+const TAG_WIRE = 3;        // wireframe edges
+
+// Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
+type Phase = 'geometry' | 'mesh' | 'field';
+const CYCLE_ORDER: Phase[] = ['geometry', 'mesh', 'field'];
+const CYCLE_HOLD_S = 2.4;
 
 interface BakedFieldsStub {
 	$bin: true; magic: number; version: number;
@@ -55,7 +65,6 @@ interface ResultPayload {
 	fields?: BakedFieldsStub | (number[] | null)[][];
 }
 interface BakedExample {
-	name: string;
 	cells: Array<{
 		display_events: Array<{
 			kind: 'geometry' | 'mesh' | 'result' | 'error';
@@ -72,7 +81,6 @@ function extractLatestMesh(baked: BakedExample): MeshPayload | null {
 	}
 	return null;
 }
-
 function extractLatestResult(baked: BakedExample): ResultPayload | null {
 	for (let i = baked.cells.length - 1; i >= 0; i--) {
 		for (const ev of baked.cells[i].display_events) {
@@ -88,9 +96,7 @@ async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(n
 	if (!resp.ok) throw new Error(`bin fetch ${resp.status}`);
 	const buf = await resp.arrayBuffer();
 	const dv = new DataView(buf);
-	if (dv.getUint32(0, true) !== FIELD_BIN_MAGIC) {
-		throw new Error('field bin: bad magic');
-	}
+	if (dv.getUint32(0, true) !== FIELD_BIN_MAGIC) throw new Error('field bin: bad magic');
 	const n_freq = dv.getUint32(8, true);
 	const n_port = dv.getUint32(12, true);
 	const stride = dv.getUint32(16, true);
@@ -111,12 +117,40 @@ async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(n
 	return out;
 }
 
-// Extract the outer hull of every physical volume by finding tet faces that
-// appear only once (a face shared by two tets is internal). Same algorithm
-// MeshViewer uses to render the substrate / air / PML shells. This is the
-// dominant visible surface — the named-surface tris (port faces, PEC walls)
-// alone would only show "slices" of the geometry.
-function buildVolumeBoundaryTris(mesh: MeshPayload): number[] {
+// Flat-shaded triangle soup from indexed mesh nodes.
+function buildTriSoup(
+	nodes: number[],
+	tris: number[],
+): { positions: Float32Array; normals: Float32Array } {
+	const n_tris = tris.length / 3;
+	const positions = new Float32Array(n_tris * 9);
+	const normals = new Float32Array(n_tris * 9);
+	const a = [0, 0, 0], b = [0, 0, 0], c = [0, 0, 0];
+	for (let t = 0; t < n_tris; t++) {
+		const i = tris[t * 3], j = tris[t * 3 + 1], k = tris[t * 3 + 2];
+		a[0] = nodes[i * 3]; a[1] = nodes[i * 3 + 1]; a[2] = nodes[i * 3 + 2];
+		b[0] = nodes[j * 3]; b[1] = nodes[j * 3 + 1]; b[2] = nodes[j * 3 + 2];
+		c[0] = nodes[k * 3]; c[1] = nodes[k * 3 + 1]; c[2] = nodes[k * 3 + 2];
+		const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+		const e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+		const nx = e1y * e2z - e1z * e2y;
+		const ny = e1z * e2x - e1x * e2z;
+		const nz = e1x * e2y - e1y * e2x;
+		const inv = 1 / Math.max(Math.hypot(nx, ny, nz), 1e-20);
+		const nxN = nx * inv, nyN = ny * inv, nzN = nz * inv;
+		positions.set(a, t * 9); positions.set(b, t * 9 + 3); positions.set(c, t * 9 + 6);
+		for (let v = 0; v < 3; v++) {
+			normals[t * 9 + v * 3] = nxN;
+			normals[t * 9 + v * 3 + 1] = nyN;
+			normals[t * 9 + v * 3 + 2] = nzN;
+		}
+	}
+	return { positions, normals };
+}
+
+// Per-volume outer hull from tet boundary faces (the substrate / air /
+// PML shells that bound each physical-group volume).
+function buildVolumeHullTris(mesh: MeshPayload): number[] {
 	const tets = mesh.tets;
 	const tet_phys = mesh.tet_phys;
 	const ntets = tet_phys.length;
@@ -124,7 +158,6 @@ function buildVolumeBoundaryTris(mesh: MeshPayload): number[] {
 		const s = [a, b, c].sort((x, y) => x - y);
 		return (BigInt(s[0]) * 0x100000000n + BigInt(s[1])) * 0x100000000n + BigInt(s[2]);
 	};
-	// Group tets by phys-volume tag.
 	const per_vol = new Map<number, number[]>();
 	for (let t = 0; t < ntets; t++) {
 		const v = tet_phys[t];
@@ -156,42 +189,33 @@ function buildVolumeBoundaryTris(mesh: MeshPayload): number[] {
 	return out;
 }
 
-// Build a flat-shaded triangle-soup (positions + normals) from a list of
-// triangle indices into the mesh's flat node array.
-function buildTriSoup(
-	nodes: number[],
-	tris: number[],
-): { positions: Float32Array; normals: Float32Array } {
+// Build edge-list (positions, two vertices per edge) from triangle faces,
+// deduplicated. Used for the wireframe / mesh-mode display.
+function buildEdgeLines(nodes: number[], tris: number[]): Float32Array {
+	const seen = new Set<bigint>();
+	const out: number[] = [];
+	const push = (a: number, b: number) => {
+		const lo = a < b ? a : b, hi = a < b ? b : a;
+		const k = (BigInt(lo) << 32n) | BigInt(hi);
+		if (seen.has(k)) return;
+		seen.add(k);
+		out.push(
+			nodes[a * 3], nodes[a * 3 + 1], nodes[a * 3 + 2],
+			nodes[b * 3], nodes[b * 3 + 1], nodes[b * 3 + 2],
+		);
+	};
 	const n_tris = tris.length / 3;
-	const positions = new Float32Array(n_tris * 9);
-	const normals = new Float32Array(n_tris * 9);
-	const a = [0, 0, 0], b = [0, 0, 0], c = [0, 0, 0], ab = [0, 0, 0], ac = [0, 0, 0];
 	for (let t = 0; t < n_tris; t++) {
 		const i = tris[t * 3], j = tris[t * 3 + 1], k = tris[t * 3 + 2];
-		a[0] = nodes[i * 3]; a[1] = nodes[i * 3 + 1]; a[2] = nodes[i * 3 + 2];
-		b[0] = nodes[j * 3]; b[1] = nodes[j * 3 + 1]; b[2] = nodes[j * 3 + 2];
-		c[0] = nodes[k * 3]; c[1] = nodes[k * 3 + 1]; c[2] = nodes[k * 3 + 2];
-		ab[0] = b[0] - a[0]; ab[1] = b[1] - a[1]; ab[2] = b[2] - a[2];
-		ac[0] = c[0] - a[0]; ac[1] = c[1] - a[1]; ac[2] = c[2] - a[2];
-		// Cross product → flat normal
-		const nx = ab[1] * ac[2] - ab[2] * ac[1];
-		const ny = ab[2] * ac[0] - ab[0] * ac[2];
-		const nz = ab[0] * ac[1] - ab[1] * ac[0];
-		const inv = 1 / Math.max(Math.hypot(nx, ny, nz), 1e-20);
-		const nxN = nx * inv, nyN = ny * inv, nzN = nz * inv;
-		positions.set(a, t * 9); positions.set(b, t * 9 + 3); positions.set(c, t * 9 + 6);
-		normals[t * 9] = nxN; normals[t * 9 + 1] = nyN; normals[t * 9 + 2] = nzN;
-		normals[t * 9 + 3] = nxN; normals[t * 9 + 4] = nyN; normals[t * 9 + 5] = nzN;
-		normals[t * 9 + 6] = nxN; normals[t * 9 + 7] = nyN; normals[t * 9 + 8] = nzN;
+		push(i, j); push(j, k); push(k, i);
 	}
-	return { positions, normals };
+	return Float32Array.from(out);
 }
 
-// Sample a point cloud from tet centroids with the per-node field interpolated
-// (linear interp from the 4 tet vertices to centroid).
-function buildFieldPointCloud(
+// Tet-centroid point cloud for the field viz.
+function buildFieldCloud(
 	mesh: MeshPayload,
-	field: number[],   // flat [A,B,C,A,B,C,...] per node
+	field: number[],   // flat [A,B,C, A,B,C, ...] per node
 ): { positions: Float32Array; abc: Float32Array } {
 	const nodes = mesh.nodes;
 	const tets = mesh.tets;
@@ -201,17 +225,20 @@ function buildFieldPointCloud(
 	for (let t = 0; t < n_tets; t++) {
 		const i0 = tets[t * 4], i1 = tets[t * 4 + 1],
 		      i2 = tets[t * 4 + 2], i3 = tets[t * 4 + 3];
-		positions[t * 3]     = 0.25 * (nodes[i0 * 3]     + nodes[i1 * 3]     + nodes[i2 * 3]     + nodes[i3 * 3]);
-		positions[t * 3 + 1] = 0.25 * (nodes[i0 * 3 + 1] + nodes[i1 * 3 + 1] + nodes[i2 * 3 + 1] + nodes[i3 * 3 + 1]);
-		positions[t * 3 + 2] = 0.25 * (nodes[i0 * 3 + 2] + nodes[i1 * 3 + 2] + nodes[i2 * 3 + 2] + nodes[i3 * 3 + 2]);
-		abc[t * 3]     = 0.25 * (field[i0 * 3]     + field[i1 * 3]     + field[i2 * 3]     + field[i3 * 3]);
-		abc[t * 3 + 1] = 0.25 * (field[i0 * 3 + 1] + field[i1 * 3 + 1] + field[i2 * 3 + 1] + field[i3 * 3 + 1]);
-		abc[t * 3 + 2] = 0.25 * (field[i0 * 3 + 2] + field[i1 * 3 + 2] + field[i2 * 3 + 2] + field[i3 * 3 + 2]);
+		for (let d = 0; d < 3; d++) {
+			positions[t * 3 + d] = 0.25 * (
+				nodes[i0 * 3 + d] + nodes[i1 * 3 + d] +
+				nodes[i2 * 3 + d] + nodes[i3 * 3 + d]
+			);
+			abc[t * 3 + d] = 0.25 * (
+				field[i0 * 3 + d] + field[i1 * 3 + d] +
+				field[i2 * 3 + d] + field[i3 * 3 + d]
+			);
+		}
 	}
 	return { positions, abc };
 }
 
-// Compute a sensible {floor, range} for the field magnitude colour mapping.
 function computeFieldRange(abc: Float32Array, mode: 'lin' | 'log'): { floor: number; range: number } {
 	let max_e2 = 0;
 	for (let i = 0; i < abc.length; i += 3) {
@@ -230,21 +257,25 @@ class FemViewerElement extends HTMLElement {
 	private canvas: HTMLCanvasElement | null = null;
 	private wrapper: HTMLDivElement | null = null;
 	private loadingEl: HTMLDivElement | null = null;
+	private labelEl: HTMLDivElement | null = null;
 	private glState: GLState | null = null;
 	private camera: Camera = createCamera();
 	private animId = 0;
 	private mounted = false;
 	private mesh: MeshPayload | null = null;
 	private fields: (number[] | null)[][] | null = null;
+	private hasField = false;
 	private needsRender = false;
 	private isDragging = false;
 	private isRightDrag = false;
 	private lastMouse = { x: 0, y: 0 };
+	private currentPhase: Phase = 'geometry';
+	private phaseStart = 0;
 
 	static get observedAttributes() {
-		return ['src', 'width', 'height', 'rotate', 'interactive', 'transparent', 'speed',
-		        'theta', 'phi', 'show-geometry', 'show-mesh', 'show-field',
-		        'field-mode', 'field-freq', 'field-port', 'animate-field'];
+		return ['src', 'width', 'height', 'rotate', 'cycle', 'mode', 'interactive',
+		        'transparent', 'speed', 'theta', 'phi',
+		        'field-mode', 'field-freq', 'field-port'];
 	}
 
 	connectedCallback() {
@@ -256,10 +287,16 @@ class FemViewerElement extends HTMLElement {
 		this.canvas = document.createElement('canvas');
 		this.canvas.style.cssText = `display:block;width:100%;height:100%;cursor:${this.hasAttribute('interactive') ? 'grab' : 'default'};`;
 		this.wrapper.appendChild(this.canvas);
+
 		this.loadingEl = document.createElement('div');
 		this.loadingEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:500 11px/1 monospace;color:#55535a;';
-		this.loadingEl.textContent = '';
 		this.wrapper.appendChild(this.loadingEl);
+
+		// Phase label (visible only when cycling)
+		this.labelEl = document.createElement('div');
+		this.labelEl.style.cssText = 'position:absolute;top:8px;left:10px;font:500 10px/1 monospace;color:#9a96a0;text-transform:uppercase;letter-spacing:0.5px;pointer-events:none;opacity:0;transition:opacity 0.3s;';
+		this.wrapper.appendChild(this.labelEl);
+
 		const badge = document.createElement('a');
 		badge.href = 'https://fem.rapidpassives.org';
 		badge.target = '_blank'; badge.rel = 'noopener';
@@ -268,6 +305,7 @@ class FemViewerElement extends HTMLElement {
 		badge.onmouseenter = () => badge.style.opacity = '1';
 		badge.onmouseleave = () => badge.style.opacity = '0.7';
 		this.wrapper.appendChild(badge);
+
 		shadow.appendChild(this.wrapper);
 
 		this.glState = initGL(this.canvas);
@@ -296,8 +334,9 @@ class FemViewerElement extends HTMLElement {
 	attributeChangedCallback(name: string, _old: string | null, val: string | null) {
 		if (!this.mounted) return;
 		if (name === 'src' && val) void this.load(val);
-		else if (name === 'field-mode' || name === 'field-freq' || name === 'field-port') {
+		else if (name === 'mode' || name === 'field-mode' || name === 'field-freq' || name === 'field-port') {
 			this.applyField();
+			this.applyPhase(this.resolvePhase());
 			this.needsRender = true;
 		}
 	}
@@ -353,7 +392,7 @@ class FemViewerElement extends HTMLElement {
 	}
 
 	private async load(srcUrl: string) {
-		if (this.loadingEl) { this.loadingEl.textContent = 'Loading...'; this.loadingEl.style.display = 'flex'; }
+		if (this.loadingEl) { this.loadingEl.textContent = 'Loading…'; this.loadingEl.style.display = 'flex'; }
 		try {
 			const url = new URL(srcUrl, location.href).href;
 			const resp = await fetch(url);
@@ -364,15 +403,19 @@ class FemViewerElement extends HTMLElement {
 			if (!this.mesh) throw new Error('no mesh payload in bake');
 			const result = extractLatestResult(baked);
 			if (result && result.fields && (result.fields as BakedFieldsStub).$bin) {
-				if (this.loadingEl) this.loadingEl.textContent = 'Decoding field...';
+				if (this.loadingEl) this.loadingEl.textContent = 'Decoding field…';
 				this.fields = await hydrateFields(result.fields as BakedFieldsStub, url);
+				this.hasField = this.fields.some((row) => row.some((x) => x !== null));
 			} else {
 				this.fields = null;
+				this.hasField = false;
 			}
 
 			this.rebuildScene();
 			this.fitView();
 			if (this.loadingEl) this.loadingEl.style.display = 'none';
+			this.phaseStart = performance.now() / 1000;
+			this.applyPhase(this.resolvePhase());
 			this.startAnimation();
 		} catch (e) {
 			console.error('[fem-viewer] load failed', e);
@@ -385,37 +428,39 @@ class FemViewerElement extends HTMLElement {
 		clearMeshes(this.glState);
 		setBBox(this.glState, this.mesh.bbox.min, this.mesh.bbox.max);
 
-		const showGeom = this.attrBool('show-geometry', true);
-		if (showGeom) {
-			// Per-volume outer hull (substrate / air / PML shells). This is
-			// the main "shape" of the model. Slightly translucent so the
-			// field point cloud and inner ports remain visible.
-			const hull_tris = buildVolumeBoundaryTris(this.mesh);
-			if (hull_tris.length) {
-				const { positions, normals } = buildTriSoup(this.mesh.nodes, hull_tris);
-				addMesh(this.glState, positions, normals, [0.16, 0.16, 0.20], 1);
-			}
-			// Named-surface tris (PEC walls, ports). Brighter so they stand
-			// out against the hull.
-			if (this.mesh.tris.length) {
-				const { positions, normals } = buildTriSoup(this.mesh.nodes, this.mesh.tris);
-				addMesh(this.glState, positions, normals, [0.36, 0.30, 0.34], 2);
-			}
+		// 1) Volume hulls — substrate / air / PML shells.
+		const hull = buildVolumeHullTris(this.mesh);
+		if (hull.length) {
+			const { positions, normals } = buildTriSoup(this.mesh.nodes, hull);
+			addMesh(this.glState, positions, normals, [0.20, 0.20, 0.24], TAG_HULL);
+		}
+		// 2) Named conductors / ports / PEC walls (mesh.tris).
+		if (this.mesh.tris.length) {
+			const { positions, normals } = buildTriSoup(this.mesh.nodes, this.mesh.tris);
+			addMesh(this.glState, positions, normals, [0.55, 0.42, 0.45], TAG_CONDUCTORS);
+		}
+		// 3) Wireframe — edges of every surface tri, hidden by default; the
+		//    mesh-mode phase toggles it on.
+		const edges = buildEdgeLines(this.mesh.nodes, this.mesh.tris);
+		if (edges.length) {
+			addLineMesh(this.glState, edges, [0.32, 0.32, 0.38], TAG_WIRE);
 		}
 		this.applyField();
 	}
 
 	private applyField() {
 		if (!this.glState || !this.mesh) return;
-		const showField = this.attrBool('show-field', this.fields !== null);
-		if (!showField || !this.fields) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
+		if (!this.hasField || !this.fields) {
+			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
+			return;
+		}
 		const fi = Math.min(parseInt(this.getAttribute('field-freq') || '-1', 10), this.fields.length - 1);
 		const fIdx = fi >= 0 ? fi : this.fields.length - 1;
 		const pIdx = parseInt(this.getAttribute('field-port') || '0', 10);
 		const row = this.fields[fIdx];
 		const arr = row && row[pIdx];
 		if (!arr) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
-		const { positions, abc } = buildFieldPointCloud(this.mesh, arr);
+		const { positions, abc } = buildFieldCloud(this.mesh, arr);
 		setPointCloud(this.glState, positions, abc);
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
 		const r = computeFieldRange(abc, mode);
@@ -424,10 +469,41 @@ class FemViewerElement extends HTMLElement {
 		else                setPointLinRange(this.glState, r.floor, r.range);
 	}
 
-	private attrBool(name: string, def: boolean): boolean {
-		if (!this.hasAttribute(name)) return def;
-		const v = this.getAttribute(name);
-		return v === null || v === '' || v === 'true' || v === '1';
+	/** What phase should be displayed right now. */
+	private resolvePhase(): Phase {
+		if (this.hasAttribute('cycle')) {
+			// Time-based phase cycling.
+			const t = performance.now() / 1000 - this.phaseStart;
+			let order: Phase[] = this.hasField ? CYCLE_ORDER : CYCLE_ORDER.filter(p => p !== 'field');
+			const idx = Math.floor(t / CYCLE_HOLD_S) % order.length;
+			return order[idx];
+		}
+		const mode = (this.getAttribute('mode') || 'geometry').toLowerCase();
+		if (mode === 'mesh' || mode === 'field') return mode as Phase;
+		return 'geometry';
+	}
+
+	/** Toggle which mesh groups + field cloud are visible for this phase. */
+	private applyPhase(phase: Phase) {
+		if (!this.glState) return;
+		this.currentPhase = phase;
+		const showHull = phase === 'geometry' || phase === 'field';
+		const showCond = phase === 'geometry' || phase === 'field';
+		const showWire = phase === 'mesh';
+		const showField = phase === 'field' && this.hasField;
+		setTagVisible(this.glState, TAG_HULL, showHull);
+		setTagVisible(this.glState, TAG_CONDUCTORS, showCond);
+		setTagVisible(this.glState, TAG_WIRE, showWire);
+		// Point cloud: not tag-gated; clear it when the phase isn't field.
+		if (!showField && this.mesh) {
+			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
+		} else if (showField) {
+			this.applyField();
+		}
+		if (this.labelEl) {
+			this.labelEl.textContent = phase;
+			this.labelEl.style.opacity = this.hasAttribute('cycle') ? '0.65' : '0';
+		}
 	}
 
 	private syncCanvas(): { w: number; h: number } {
@@ -443,20 +519,18 @@ class FemViewerElement extends HTMLElement {
 		return { w, h };
 	}
 
-	private renderFrame(time = 0) {
+	private renderFrame() {
 		if (!this.glState || !this.canvas || !this.mounted) return;
 		const { w, h } = this.syncCanvas();
 		if (w <= 0 || h <= 0) return;
-		const doRotate = this.hasAttribute('rotate');
-		const animateField = this.hasAttribute('animate-field');
 		const isTransparent = this.hasAttribute('transparent');
 		const speed = parseFloat(this.getAttribute('speed') || '1');
-		if (doRotate && !this.isDragging) {
+		if (this.hasAttribute('rotate') && !this.isDragging) {
 			this.camera = { ...this.camera, theta: this.camera.theta + 0.003 * speed };
 		}
-		if (animateField) {
-			const phase = (time * 0.001 * speed) % (2 * Math.PI);
-			setPointPhase(this.glState, phase);
+		if (this.hasAttribute('cycle')) {
+			const next = this.resolvePhase();
+			if (next !== this.currentPhase) this.applyPhase(next);
 		}
 		render3D(this.glState, this.camera, w, h, 0, isTransparent, null, 1.0, null);
 		this.needsRender = false;
@@ -464,14 +538,14 @@ class FemViewerElement extends HTMLElement {
 
 	private startAnimation() {
 		const id = ++this.animId;
-		const isAnimated = this.hasAttribute('rotate') || this.hasAttribute('animate-field');
-		if (!isAnimated && !this.hasAttribute('interactive')) {
-			this.renderFrame(0);
+		const animated = this.hasAttribute('rotate') || this.hasAttribute('cycle');
+		if (!animated && !this.hasAttribute('interactive')) {
+			this.renderFrame();
 			return;
 		}
-		const tick = (time: number) => {
+		const tick = () => {
 			if (!this.mounted || id !== this.animId) return;
-			if (isAnimated || this.needsRender) this.renderFrame(time);
+			if (animated || this.needsRender) this.renderFrame();
 			requestAnimationFrame(tick);
 		};
 		requestAnimationFrame(tick);
