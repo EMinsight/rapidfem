@@ -149,6 +149,22 @@ impl PySimulation {
         Some(arr.into_pyarray_bound(py))
     }
 
+    /// Same as ``field_at_nodes`` but for an :class:`Eigenmode`. Returns a
+    /// `(n_nodes, 3)` complex128 numpy array of (Ex, Ey, Ez) at each mesh
+    /// node. Field magnitude is not normalised — eigenmodes are defined up
+    /// to a global scale.
+    fn mode_field_at_nodes<'py>(
+        &self,
+        py: Python<'py>,
+        mode: &PyEigenmode,
+    ) -> Option<Bound<'py, PyArray2<NpC64>>> {
+        let flat = self.inner.eigenmode_field_at_nodes(&mode.inner)?;
+        let n = self.inner.mesh.n_nodes();
+        let conv: Vec<NpC64> = flat.iter().map(|c| NpC64::new(c.re, c.im)).collect();
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), conv).expect("shape");
+        Some(arr.into_pyarray_bound(py))
+    }
+
     /// Compute the far-field radiation pattern at (freq_idx, port_idx) on a (theta, phi) grid.
     /// Returns None if the NFFT surface is empty or out-of-bounds indices.
     #[pyo3(signature = (result, freq_idx=0, port_idx=0, n_theta=91, n_phi=72))]

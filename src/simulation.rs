@@ -310,9 +310,28 @@ impl Simulation {
     /// Used by the Python pyvista exporter.
     pub fn field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
+        Some(self.eval_dofs_at_nodes(solution))
+    }
+
+    /// Same shape as `field_at_nodes` but for an eigenmode's DOF vector.
+    /// The mode field is a free-field eigenfunction (not normalised to a
+    /// driving port) — visualisation libraries typically rescale to a
+    /// peak magnitude. Returns `None` if the mode's DOF vector is empty
+    /// (defensive — `run_eigenmode` never produces empty modes).
+    pub fn eigenmode_field_at_nodes(&self, mode: &Eigenmode) -> Option<Vec<C64>> {
+        if mode.field.is_empty() {
+            return None;
+        }
+        Some(self.eval_dofs_at_nodes(&mode.field))
+    }
+
+    /// Common interior — node → first-adjacent tet → barycentric eval.
+    /// Both ``field_at_nodes`` and ``eigenmode_field_at_nodes`` route here
+    /// so the per-node node→tet table is built the same way in both paths.
+    fn eval_dofs_at_nodes(&self, solution: &[C64]) -> Vec<C64> {
         let n_nodes = self.mesh.n_nodes();
 
-        // Node → adjacent tet (first one wins, like vtk_export)
+        // Node → adjacent tet (first one wins, matches vtk_export behaviour).
         let mut node_to_tet = vec![usize::MAX; n_nodes];
         for (itet, tet) in self.mesh.tets.iter().enumerate() {
             for &ni in tet {
@@ -337,7 +356,7 @@ impl Simulation {
             out.push(ey);
             out.push(ez);
         }
-        Some(out)
+        out
     }
 
     /// Compute the far-field at a given (freq_idx, exc_port_idx). NFFT surface = config.output.nfft_tag

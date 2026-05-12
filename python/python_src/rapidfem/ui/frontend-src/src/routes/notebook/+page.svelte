@@ -52,6 +52,11 @@
 	let fields_raw = $state<(number[] | null)[][] | null>(null);
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
+	// Eigenmode mode: ResultsPanel S-param plots are hidden, the freq slider
+	// becomes a mode-index slider, and each entry of `freqs` is a resonant
+	// frequency instead of a sweep sample.
+	let eigenmode_mode = $state(false);
+	let mode_q_factors = $state<number[]>([]);
 	let field_density = $state(3);
 	let field_scale_mode = $state<'log' | 'lin'>('lin');
 	let field_abc = $derived<Float32Array | null>(
@@ -408,6 +413,8 @@
 		fields_raw = null;
 		smats = [];
 		freqs = [];
+		eigenmode_mode = false;
+		mode_q_factors = [];
 		last_solve_stats = null;
 		last_mesh_stats = null;
 		last_geom_stats = null;
@@ -456,10 +463,12 @@
 				} else if (kind === 'result') {
 					const res = payload as SolveResultPayload;
 					freqs = res.frequencies;
-					smats = sparamsToSMatrices(res.sparams);
+					smats = res.eigenmode ? [] : sparamsToSMatrices(res.sparams);
 					fields_raw = res.fields ?? null;
 					field_freq_idx = 0;
 					field_port_idx = 0;
+					eigenmode_mode = !!res.eigenmode;
+					mode_q_factors = res.q_factors ?? [];
 					last_solve_stats = {
 						n_freq: res.n_freq,
 						n_dofs: res.n_dofs,
@@ -711,6 +720,26 @@
 								point_density={field_density}
 								scale_mode={field_scale_mode}
 							/>
+						{:else if eigenmode_mode}
+							<div class="eigenmode-summary">
+								<h3>Eigenmodes</h3>
+								<table>
+									<thead>
+										<tr><th>#</th><th>f (GHz)</th><th>Q</th></tr>
+									</thead>
+									<tbody>
+										{#each freqs as f, i}
+											<tr class:active={i === field_freq_idx}>
+												<td>{i + 1}</td>
+												<td>{(f / 1e9).toFixed(4)}</td>
+												<td>{mode_q_factors[i] !== undefined && isFinite(mode_q_factors[i])
+													? mode_q_factors[i].toFixed(1)
+													: '∞'}</td>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
 						{:else}
 							<ResultsPanel {freqs} {smats} metrics={[]} />
 						{/if}
@@ -718,9 +747,18 @@
 					{#if display === 'view3d' && show_field && fields_raw && freqs.length}
 						<div class="field-controls">
 							<label class="field-ctrl">
-								<span class="lbl">Freq</span>
+								<span class="lbl">{eigenmode_mode ? 'Mode' : 'Freq'}</span>
 								<input class="slider" type="range" min="0" max={freqs.length - 1} step="1" bind:value={field_freq_idx} />
-								<span class="val">{(freqs[field_freq_idx] / 1e9).toFixed(2)} GHz</span>
+								<span class="val">
+									{#if eigenmode_mode}
+										{field_freq_idx + 1}: {(freqs[field_freq_idx] / 1e9).toFixed(4)} GHz
+										{#if mode_q_factors[field_freq_idx] !== undefined && isFinite(mode_q_factors[field_freq_idx])}
+											· Q={mode_q_factors[field_freq_idx].toFixed(1)}
+										{/if}
+									{:else}
+										{(freqs[field_freq_idx] / 1e9).toFixed(2)} GHz
+									{/if}
+								</span>
 							</label>
 							<label class="field-ctrl">
 								<span class="lbl">Density</span>
@@ -761,6 +799,45 @@
 		background: var(--bg);
 		color: var(--text);
 		font-family: var(--font-body);
+	}
+
+	.eigenmode-summary {
+		padding: 16px 20px;
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		overflow-y: auto;
+		max-height: 100%;
+	}
+	.eigenmode-summary h3 {
+		font-size: var(--fs-sm);
+		font-weight: 700;
+		color: var(--accent);
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		margin: 0 0 12px;
+	}
+	.eigenmode-summary table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: var(--fs-xs);
+	}
+	.eigenmode-summary th {
+		text-align: left;
+		font-weight: 600;
+		color: var(--text-dim);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		font-size: 10px;
+		padding: 4px 8px 8px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.eigenmode-summary td {
+		padding: 6px 8px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+	.eigenmode-summary tr.active td {
+		color: var(--accent);
+		background: var(--accent-dim);
 	}
 
 	header {

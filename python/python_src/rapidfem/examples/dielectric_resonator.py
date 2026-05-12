@@ -83,6 +83,7 @@ sim = (
 )
 modes = sim.run_eigenmode()
 rapidfem.show(sim)
+rapidfem.show(modes)   # Mode slider + per-mode field viewer in the UI.
 
 print(f"DOFs: {sim.n_dofs}, tets: {sim.n_tets}")
 print(f"Found {len(modes)} modes near {F_TARGET/1e9:.2f} GHz:")

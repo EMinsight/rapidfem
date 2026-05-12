@@ -59,4 +59,10 @@ def classify(obj: Any) -> str:
         return "simulation"
     if cls == "SweepResult":
         return "result"
+    if cls == "Eigenmode":
+        return "eigenmode"
+    # `run_eigenmode()` returns a list — accept that as the typical user
+    # show() target so they don't have to unpack per-mode.
+    if isinstance(obj, list) and obj and type(obj[0]).__name__ == "Eigenmode":
+        return "eigenmodes"
     return "unknown"

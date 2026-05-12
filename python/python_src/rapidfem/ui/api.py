@@ -174,6 +174,7 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     last_sim = None
     last_result = None
     last_geo = None
+    last_modes = None  # list[Eigenmode] from rapidfem.show(modes_list)
 
     for item in captures:
         if item.kind == "geometry":
@@ -191,6 +192,12 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             last_sim = item.obj
         elif item.kind == "result":
             last_result = item.obj
+        elif item.kind == "eigenmodes":
+            last_modes = item.obj
+        elif item.kind == "eigenmode":
+            # Single mode → wrap in a list so the downstream serialiser
+            # always sees a uniform shape.
+            last_modes = [item.obj]
 
     # Pair sim+result into mesh+field displays.
     if last_sim is not None:
@@ -214,6 +221,46 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
                 mesh_payload = None
         if mesh_payload is not None:
             out.append({"kind": "mesh", "name": "simulation", "payload": mesh_payload})
+
+    # Eigenmode result: one "frequency" per mode, no port dimension. We
+    # reuse the existing `result` payload shape — frontends already know
+    # how to drive the field viewer + frequency slider; for eigenmodes
+    # the slider becomes a mode index, and S-params are empty.
+    if last_sim is not None and last_modes is not None and last_result is None:
+        try:
+            modes = last_modes
+            n_mode = len(modes)
+            freqs_per_mode = [float(m.frequency_hz) for m in modes]
+            q_factors = [float(m.q_factor) for m in modes]
+            fields_payload = []
+            for m in modes:
+                # n_driven = 1 (the "port axis" collapses for eigenmodes)
+                E = last_sim.mode_field_at_nodes(m)
+                if E is None:
+                    fields_payload.append([None])
+                    continue
+                re = np.asarray(E.real); im = np.asarray(E.imag)
+                A = np.sum(re * re, axis=1)
+                B = np.sum(im * im, axis=1)
+                C = np.sum(re * im, axis=1)
+                bin_vals = np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
+                fields_payload.append([bin_vals])
+            sparams_payload = [[[]] for _ in range(n_mode)]
+            out.append({
+                "kind": "result", "name": "eigenmodes",
+                "payload": {
+                    "frequencies": freqs_per_mode,
+                    "sparams": sparams_payload,
+                    "n_driven": 1, "n_freq": n_mode,
+                    "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
+                    "solve_time_s": 0.0,
+                    "fields": fields_payload,
+                    "eigenmode": True,
+                    "q_factors": q_factors,
+                },
+            })
+        except Exception as e:  # noqa: BLE001
+            out.append({"kind": "error", "name": "eigenmodes", "error": _format_exception(e)})
 
     if last_sim is not None and last_result is not None:
         try:

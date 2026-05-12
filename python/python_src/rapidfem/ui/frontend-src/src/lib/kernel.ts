@@ -34,6 +34,12 @@ export interface SolveResultPayload {
 	n_freq: number;
 	n_dofs: number;
 	n_tets: number;
+	/** True when this is an eigenmode result — `frequencies[i]` is the i-th
+	 *  resonant frequency, `sparams` is empty, the field slider becomes a
+	 *  mode-index slider. */
+	eigenmode?: boolean;
+	/** Per-mode Q factor (only present when eigenmode=true). */
+	q_factors?: number[];
 	solve_time_s: number;
 	fields?: (number[] | null)[][];
 }
