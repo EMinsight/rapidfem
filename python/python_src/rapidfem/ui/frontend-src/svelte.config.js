@@ -15,7 +15,7 @@ const config = {
 			// produced from the prerendered '/' route below.
 			fallback: '404.html',
 		}),
-		prerender: { entries: ['/'] },
+		prerender: { entries: ['/', '/embed/test'] },
 	},
 	vitePlugin: {
 		dynamicCompileOptions: ({ filename }) =>

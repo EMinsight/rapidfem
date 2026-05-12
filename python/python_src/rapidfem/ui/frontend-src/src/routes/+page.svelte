@@ -45,7 +45,7 @@
 
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
 	const demo_url = `${base}/demo`;
-	const embed_test_url = `${base}/embed/test.html`;
+	const embed_test_url = `${base}/embed/test`;
 </script>
 
 <svelte:head>

@@ -532,7 +532,11 @@ class FemViewerElement extends HTMLElement {
 			const next = this.resolvePhase();
 			if (next !== this.currentPhase) this.applyPhase(next);
 		}
-		render3D(this.glState, this.camera, w, h, 0, isTransparent, null, 1.0, null);
+		// 5th arg is zFlip — MUST be 1 in the rapidfem renderer, otherwise the
+		// vertex shader multiplies every vertex's z by 0 and the geometry
+		// collapses to a horizontal slice at z=0. (Lines stay correct because
+		// the line shader doesn't reference uZFlip.)
+		render3D(this.glState, this.camera, w, h, 1);
 		this.needsRender = false;
 	}
 
