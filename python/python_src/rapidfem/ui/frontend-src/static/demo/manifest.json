@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "baked_at": 1778600840,
+  "examples": [
+    {
+      "name": "coax_step",
+      "filename": "coax_step.py",
+      "json": "coax_step.json",
+      "bin_files": [
+        "coax_step_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 41
+        }
+      ],
+      "json_bytes": 680870,
+      "bin_bytes": 940500,
+      "bake_seconds": 3.17
+    },
+    {
+      "name": "dielectric_resonator",
+      "filename": "dielectric_resonator.py",
+      "json": "dielectric_resonator.json",
+      "bin_files": [
+        "dielectric_resonator_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Eigenmode",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 17
+        }
+      ],
+      "json_bytes": 1103854,
+      "bin_bytes": 127048,
+      "bake_seconds": 1.96
+    },
+    {
+      "name": "iris_filter",
+      "filename": "iris_filter.py",
+      "json": "iris_filter.json",
+      "bin_files": [
+        "iris_filter_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 50
+        }
+      ],
+      "json_bytes": 1102471,
+      "bin_bytes": 2445344,
+      "bake_seconds": 8.3
+    },
+    {
+      "name": "microstrip_line",
+      "filename": "microstrip_line.py",
+      "json": "microstrip_line.json",
+      "bin_files": [
+        "microstrip_line_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 36
+        }
+      ],
+      "json_bytes": 772508,
+      "bin_bytes": 919360,
+      "bake_seconds": 4.56
+    },
+    {
+      "name": "patch_antenna",
+      "filename": "patch_antenna.py",
+      "json": "patch_antenna.json",
+      "bin_files": [
+        "patch_antenna_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 36
+        }
+      ],
+      "json_bytes": 1899213,
+      "bin_bytes": 1005020,
+      "bake_seconds": 23.4
+    },
+    {
+      "name": "stepped_impedance_filter",
+      "filename": "stepped_impedance_filter.py",
+      "json": "stepped_impedance_filter.json",
+      "bin_files": [
+        "stepped_impedance_filter_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 54
+        }
+      ],
+      "json_bytes": 2742094,
+      "bin_bytes": 6056624,
+      "bake_seconds": 28.69
+    },
+    {
+      "name": "wr90",
+      "filename": "wr90.py",
+      "json": "wr90.json",
+      "bin_files": [
+        "wr90_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 31
+        }
+      ],
+      "json_bytes": 451573,
+      "bin_bytes": 522712,
+      "bake_seconds": 2.15
+    },
+    {
+      "name": "wr90_pml",
+      "filename": "wr90_pml.py",
+      "json": "wr90_pml.json",
+      "bin_files": [
+        "wr90_pml_c4_d1.bin"
+      ],
+      "n_cells": 5,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Simulation",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 31
+        }
+      ],
+      "json_bytes": 747209,
+      "bin_bytes": 456416,
+      "bake_seconds": 3.47
+    }
+  ]
+}
