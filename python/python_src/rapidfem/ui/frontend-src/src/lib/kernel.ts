@@ -153,9 +153,19 @@ export class KernelClient {
 					if (evt.traceback) opts.onStream?.('stderr', evt.traceback);
 				} else if (evt.type === 'done') {
 					if (evt.id === target) {
+						console.debug('[kernel] cell done', { cell_id: target, ok: evt.ok });
 						return { ok: evt.ok, error: last_error };
 					}
+					// done for a different cell — log so we can see if cell-id
+					// matching is off.
+					console.warn('[kernel] done event for non-matching cell', {
+						received_id: evt.id, target,
+					});
+					opts.onStream?.('stderr',
+						`[ui] WARNING: received done for cell_id="${evt.id}" but expected "${target}" — cell may show stale status`);
 				} else if (evt.type === 'worker-exit') {
+					console.warn('[kernel] worker exited');
+					opts.onStream?.('stderr', '[ui] worker process exited');
 					return {
 						ok: false,
 						error: { type: 'WorkerExit', message: 'Worker process exited', traceback: '' },
