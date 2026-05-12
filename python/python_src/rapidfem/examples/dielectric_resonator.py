@@ -5,6 +5,12 @@ cavity. The DR's first few TE/TM-like modes are what an RF filter would
 exploit; here we solve directly for them with the shift-invert Lanczos
 eigenmode driver.
 
+The Metal box is what *makes* this a resonator — without the PEC walls
+the modes would radiate away and no bound eigenmodes would exist. Tip
+when viewing the result in the UI: click the ``pec`` entry in the legend
+to hide the cavity walls; the mode field is concentrated inside the
+high-εᵣ puck (with weak coupling into the air gap and support).
+
 Adapted from EMerge's ``demo9_dielectric_resonator.py``:
 https://github.com/FennisRobert/EMerge/blob/main/examples/demo9_dielectric_resonator.py
 
