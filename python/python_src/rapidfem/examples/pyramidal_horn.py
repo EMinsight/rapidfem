@@ -1,12 +1,16 @@
-"""Pyramidal horn antenna — WR-90 feed, 50×40 mm aperture, X-band sweep.
+"""Pyramidal horn antenna — WR-90 feed + PML in the main-beam direction.
 
-A standard rectangular horn for the 8–12 GHz band: a short WR-90 feed
-waveguide followed by an 80 mm taper to a 50 × 40 mm aperture. The
-horn's four metal flares are modelled as infinitely thin PEC sheets
-embedded in a single air domain; the aperture and feed throat are
-interior interfaces with the radiation region. A modal port at the back
-of the feed launches the TE₁₀ mode; the outer faces of the air box use
-an Absorbing Boundary Condition.
+A standard rectangular horn for the X-band: a short WR-90 feed waveguide
+followed by an 80 mm taper to a 30 × 22 mm aperture. The horn's four
+metal flares are modelled as infinitely thin PEC sheets embedded in a
+single air domain; the throat and aperture are interior interfaces with
+that domain. A modal port at the back of the feed launches the TE₁₀
+mode.
+
+The +x face — directly in front of the aperture, where the main lobe
+exits — is terminated by a PML slab so the strong forward radiation is
+absorbed cleanly. The other five outer faces of the air box use a
+first-order ABC (cheap, and the off-axis radiation is much weaker).
 
 The horn cavity is built with the new geometry API: two parallel
 rectangular profiles (``polygon`` in the yz-plane) lofted into the
@@ -33,11 +37,17 @@ Lfeed = 15.0 * mm
 Lhorn = 50.0 * mm
 WH, HH = 30.0 * mm, 22.0 * mm
 
-# Radiation padding outside the horn
+# Radiation padding outside the horn (air buffer between the aperture
+# and the PML slab — the wave needs a few λ/8 elements to look planar
+# before the PML sees it).
 LPAD = 15.0 * mm
 
-# Sweep — 5 pts across X-band centered at 10 GHz
-FREQUENCIES = np.linspace(9.0e9, 11.0e9, 5)
+# PML slab thickness for the +x absorption. ~λ/2 at f_max is plenty for
+# 1st-order radiation; the slab gets ~2 tets across so DOF cost is low.
+PML_T = 15.0 * mm
+
+# Sweep — 15 pts across X-band, finely sampling the |S11| dip near 10 GHz
+FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)
 F0 = 10.0e9
 
 # Global mesh cap — λ_air / 8 at f_max. Coarser than the usual λ/12 to
@@ -47,8 +57,10 @@ MAXH = rapidfem.lambda_maxh(f_max=11.0e9, per_lambda=8)
 
 
 # %% Geometry + Materials
-# Big air box wrapping the whole horn. The horn axis runs along +x.
-AIR_X0, AIR_X1 = -Lfeed,        Lhorn + LPAD
+# Air box wraps the horn on five sides; the +x face is occupied by a PML
+# slab in front of the aperture to absorb the main lobe cleanly.
+AIR_X0, AIR_X1 = -Lfeed,        Lhorn + LPAD       # inner air ends at AIR_X1
+PML_X1          = AIR_X1 + PML_T                    # PML extends to here
 AIR_Y0, AIR_Y1 = -WH / 2 - LPAD, WH / 2 + LPAD
 AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
 
@@ -57,6 +69,13 @@ g = rapidfem.Geometry()
 air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
             position=(AIR_X0, AIR_Y0, AIR_Z0))
 air.material = "air"
+
+# PML slab in front of the aperture (+x absorption only). Spans the same
+# yz extent as the inner air box so the air→PML interface is one clean
+# planar rectangle at x = AIR_X1.
+pml_xp = g.box(PML_T, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
+               position=(AIR_X1, AIR_Y0, AIR_Z0))
+pml_xp.material = "air"
 
 # Feed waveguide cavity — sits inside the air box from x=-Lfeed to x=0.
 feed = g.box(Lfeed, wga, wgb, position=(-Lfeed, -wga / 2, -wgb / 2))
@@ -75,9 +94,9 @@ aperture = g.polygon([
 horn = g.loft(throat, aperture)
 horn.material = "air"
 
-# Conformal cuts — feed and horn become sub-regions of the air box,
-# sharing the throat face (feed↔horn) and the aperture face (horn↔air).
-g.fragment(air, feed, horn)
+# Conformal cuts — feed, horn, and the PML slab all become conformal
+# sub-regions of the surrounding air box.
+g.fragment(air, feed, horn, pml_xp)
 
 # Modal port at the back of the feed waveguide
 feed.faces.min(axis="x").name = "feed_port"
@@ -94,9 +113,20 @@ feed.faces.max(axis="z").name = "pec"
 # interior interfaces with the feed and outer air, so we skip them.
 horn.faces.where(lambda c, b: 1e-6 < c[0] < Lhorn - 1e-6).name = "pec"
 
-# Outer faces of the big air box → ABC. Interior interfaces with the
-# feed / horn are already named (PEC or port), so the .name is None test
-# leaves them alone.
+# PML face naming.
+#   - The shared air↔PML interface at x = AIR_X1 must stay unnamed so it
+#     does NOT get tagged as PEC (which would wall the inner air off
+#     from the absorber and the wave would bounce instead of decay).
+#   - The five outer faces of the PML slab terminate the absorber as PEC.
+pml_xp.name = "pml_xp"
+pml_xp.faces.min(axis="x").name = "_iface"   # x = AIR_X1, shared with inner air
+for face in pml_xp.faces:
+    if face.name is None:
+        face.name = "pec"
+
+# Five outer faces of the air box → ABC. The +x face is shared with the
+# PML and is already named "_iface" or absent (depending on how fragment
+# split it), so it won't be re-tagged.
 for face in air.faces:
     if face.name is None:
         face.name = "abc"
@@ -105,6 +135,10 @@ for face in air.faces:
 # so cap it tighter than the outer radiation region.
 feed.maxh = wgb / 3
 horn.maxh = MAXH
+
+# PML field decays exponentially — 2 tets across the slab thickness is
+# enough. Without this it inherits MAXH and bloats DoF count for free.
+pml_xp.maxh = 2 * MAXH
 
 rapidfem.show(g)
 
@@ -122,6 +156,7 @@ sim = (
     .pec("pec")
     .rect_waveguide("feed_port", mode=(1, 0), power=1.0)
     .abc("abc", order=1)
+    .pml("pml_xp", direction=(1, 0, 0), inner_face=Lhorn + LPAD, thickness=PML_T)
     .material("air", er=1.0)
     .build()
 )
