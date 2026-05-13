@@ -845,37 +845,54 @@ class Geometry:
         tag = gmsh.model.occ.addPlaneSurface([loop])
         return self._wrap_face(tag)
 
-    def polygon(self, points: Iterable[tuple[float, float]],
+    def polygon(self, points: Iterable[tuple[float, ...]],
                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
-        """Add a planar polygon face in the xy-plane.
+        """Add a planar polygon face.
 
         Parameters
         ----------
-        points : iterable of (x, y) tuples
-            2D vertices in CCW order. Polygon closes automatically.
+        points : iterable of (x, y) or (x, y, z) tuples
+            Vertices in CCW order. Polygon closes automatically. 2-tuples
+            are placed in the xy-plane (z=0); 3-tuples must all be
+            coplanar — gmsh OCC errors on non-planar input.
         position : tuple[float, float, float], optional
-            Offset ``(x0, y0, z0)`` added to every vertex. Default origin.
+            Offset added to every vertex. Default origin.
 
         Returns
         -------
         GeoObject
             2D face. Combine with :meth:`extrude` for a microstrip-style
-            volume or :meth:`revolve` for an axisymmetric solid.
+            volume, :meth:`revolve` for an axisymmetric solid, or
+            :meth:`loft` to bridge two profiles.
 
         Examples
         --------
-        Hexagonal trace footprint:
+        Hexagonal xy-plane trace footprint:
 
         >>> import math
         >>> pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))
         ...        for t in (i * math.pi / 3 for i in range(6))]
         >>> hex_face = g.polygon(pts)
+
+        Rectangle in the yz-plane at ``x = L`` (waveguide aperture):
+
+        >>> aperture = g.polygon([
+        ...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),
+        ...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),
+        ... ])
         """
         pts = list(points)
         if len(pts) < 3:
             raise ValueError("polygon needs at least 3 vertices")
         x0, y0, z0 = position
-        vtags = [gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0) for p in pts]
+        vtags = []
+        for p in pts:
+            if len(p) == 2:
+                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0))
+            elif len(p) == 3:
+                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, p[2] + z0))
+            else:
+                raise ValueError(f"polygon point must be (x,y) or (x,y,z), got {p!r}")
         n = len(vtags)
         ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]
         loop = gmsh.model.occ.addCurveLoop(ltags)
@@ -938,6 +955,66 @@ class Geometry:
         if vol_tag is None:
             raise RuntimeError("extrude produced no volume")
         return self._wrap_volume(vol_tag)
+
+    def loft(self, face_a: GeoObject, face_b: GeoObject,
+             ruled: bool = True) -> GeoObject:
+        """Loft a volume between two coplanar / parallel 2D faces.
+
+        Linearly interpolates the perimeter of ``face_a`` onto the
+        perimeter of ``face_b``. Both faces must have the same number of
+        edges in their outer boundary (a 4-edge rectangle lofts to a
+        4-edge rectangle, producing a frustum with 4 trapezoidal sides).
+
+        Parameters
+        ----------
+        face_a, face_b : GeoObject
+            Two 2D faces to bridge. The result is a closed solid bounded
+            by the two faces plus ruled side surfaces.
+        ruled : bool, optional
+            When ``True`` (default), produce flat (ruled) side surfaces —
+            the right choice for pyramidal / frustum-style horns. When
+            ``False``, gmsh fits a spline through the section profiles.
+
+        Returns
+        -------
+        GeoObject
+            New volume. The input faces are absorbed into its boundary
+            and remain tracked as the cap faces.
+
+        Examples
+        --------
+        Pyramidal horn between a throat and an aperture rectangle:
+
+        >>> throat = g.polygon([(0, -wga/2, -wgb/2), (0,  wga/2, -wgb/2),
+        ...                     (0,  wga/2,  wgb/2), (0, -wga/2,  wgb/2)])
+        >>> aper = g.polygon([(L, -WH/2, -HH/2), (L,  WH/2, -HH/2),
+        ...                   (L,  WH/2,  HH/2), (L, -WH/2,  HH/2)])
+        >>> horn = g.loft(throat, aper)
+        """
+        if face_a.dim != 2 or face_b.dim != 2:
+            raise ValueError("loft expects two 2D faces")
+        wire_a = self._face_outer_wire(face_a)
+        wire_b = self._face_outer_wire(face_b)
+        out = gmsh.model.occ.addThruSections(
+            [wire_a, wire_b], makeSolid=True, makeRuled=ruled
+        )
+        gmsh.model.occ.synchronize()
+        vol_tag = next((t for d, t in out if d == 3), None)
+        if vol_tag is None:
+            raise RuntimeError("loft produced no volume")
+        return self._wrap_volume(vol_tag)
+
+    def _face_outer_wire(self, face: GeoObject) -> int:
+        """Return a wire tag for the outer boundary of ``face``.
+
+        gmsh ``addThruSections`` expects wire tags; we build a fresh wire
+        from the face's boundary edges so the call is self-contained.
+        """
+        bd = gmsh.model.getBoundary(
+            [(face.dim, face._entity.tag)], oriented=False, recursive=False
+        )
+        edge_tags = [t for d, t in bd if d == 1]
+        return gmsh.model.occ.addWire(edge_tags, checkClosed=True)
 
     def revolve(self, face: GeoObject,
                 axis_point: tuple[float, float, float] = (0, 0, 0),
