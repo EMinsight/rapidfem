@@ -378,8 +378,36 @@ def _examples_dir() -> Path:
     return here / "python" / "python_src" / "rapidfem" / "examples"
 
 
-def bake_all() -> dict:
+def _source_fingerprint_mtime() -> float:
+    """Newest mtime across files whose change should invalidate every bake:
+    this script, plus everything in the rapidfem package (``.py`` and the
+    compiled ``_native.pyd``). An example output is considered stale
+    whenever it's older than its source ``.py`` *or* this fingerprint.
+    """
+    here = Path(__file__).resolve().parent.parent
+    pkg = here / "python" / "python_src" / "rapidfem"
+    files = [Path(__file__)]
+    files.extend(pkg.rglob("*.py"))
+    files.extend(pkg.rglob("*.pyd"))
+    files.extend(pkg.rglob("*.so"))
+    return max((p.stat().st_mtime for p in files if p.is_file()), default=0.0)
+
+
+def _is_fresh(json_path: Path, src_path: Path, fingerprint_mtime: float) -> bool:
+    """``True`` iff ``json_path`` exists and is newer than both the source
+    ``.py`` and the global source fingerprint. Stale otherwise."""
+    if not json_path.is_file():
+        return False
+    out_mtime = json_path.stat().st_mtime
+    return out_mtime > src_path.stat().st_mtime and out_mtime > fingerprint_mtime
+
+
+def bake_all(force: bool = False) -> dict:
     """Bake every example under ``rapidfem/examples/`` into ``static/demo/``.
+
+    Lazy by default — examples whose ``.json`` output is newer than both
+    the source ``.py`` and the rapidfem package fingerprint are reused.
+    Pass ``force=True`` to bake everything regardless.
 
     Writes:
       - ``<name>.json``         per example (cells + display events, field
@@ -396,37 +424,68 @@ def bake_all() -> dict:
     out_dir = _output_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wipe previous artefacts so renames / removed examples don't linger.
-    for old in list(out_dir.glob("*.json")) + list(out_dir.glob("*.bin")):
-        try:
-            old.unlink()
-        except OSError:
-            pass
-
     examples_dir = _examples_dir()
     py_files = sorted(p for p in examples_dir.glob("*.py")
                       if not p.name.startswith("_"))
     if not py_files:
         raise FileNotFoundError(f"no .py examples under {examples_dir}")
 
+    fingerprint = _source_fingerprint_mtime()
+    expected_names = {p.stem for p in py_files}
+
+    # Prune orphan artefacts (an example was renamed or removed). We only
+    # touch files that match an output naming pattern; user-dropped files
+    # in static/demo/ get left alone.
+    for old in list(out_dir.glob("*.json")):
+        if old.name == "manifest.json":
+            continue
+        if old.stem not in expected_names:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    for old in list(out_dir.glob("*.bin")):
+        # bin names: <example>_c<i>_d<j>.bin → keyed on prefix before _c
+        prefix = old.name.split("_c")[0]
+        if prefix not in expected_names:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
     entries: list[dict] = []
+    baked = 0
+    reused = 0
     for path in py_files:
-        t0 = time.perf_counter()
-        print(f"\n── baking {path.name}", file=sys.stderr)
-        record = bake_example(path)
+        json_path = out_dir / f"{path.stem}.json"
+        fresh = (not force) and _is_fresh(json_path, path, fingerprint)
 
-        bin_files = _extract_fields_to_bin(record, out_dir)
-        json_path = out_dir / f"{record['name']}.json"
-        json_path.write_text(json.dumps(record), encoding="utf-8")
-
-        dt = time.perf_counter() - t0
-        json_bytes = json_path.stat().st_size
-        bin_bytes = sum(p.stat().st_size for p in bin_files)
-        print(
-            f"   {json_bytes:>9,} B json  +  {bin_bytes:>9,} B bin"
-            f"   ({len(bin_files)} bin)   [{dt:.1f}s]",
-            file=sys.stderr,
-        )
+        if fresh:
+            # Re-use existing artefacts; just rebuild the manifest entry
+            # from the on-disk record so summaries stay in sync.
+            record = json.loads(json_path.read_text(encoding="utf-8"))
+            bin_files = sorted(out_dir.glob(f"{path.stem}_c*_d*.bin"))
+            json_bytes = json_path.stat().st_size
+            bin_bytes = sum(p.stat().st_size for p in bin_files)
+            dt = 0.0
+            print(f"── reusing {path.name}  ({json_bytes:,} B json"
+                  f" + {bin_bytes:,} B bin)", file=sys.stderr)
+            reused += 1
+        else:
+            t0 = time.perf_counter()
+            print(f"\n── baking {path.name}", file=sys.stderr)
+            record = bake_example(path)
+            bin_files = _extract_fields_to_bin(record, out_dir)
+            json_path.write_text(json.dumps(record), encoding="utf-8")
+            dt = time.perf_counter() - t0
+            json_bytes = json_path.stat().st_size
+            bin_bytes = sum(p.stat().st_size for p in bin_files)
+            print(
+                f"   {json_bytes:>9,} B json  +  {bin_bytes:>9,} B bin"
+                f"   ({len(bin_files)} bin)   [{dt:.1f}s]",
+                file=sys.stderr,
+            )
+            baked += 1
 
         # Per-cell status summary for the manifest (lets the FE show error
         # markers without parsing the full JSON eagerly).
@@ -463,7 +522,8 @@ def bake_all() -> dict:
     total_json = sum(e["json_bytes"] for e in entries)
     total_bin = sum(e["bin_bytes"] for e in entries)
     print(
-        f"\nwrote manifest.json with {len(entries)} example(s);"
+        f"\nwrote manifest.json with {len(entries)} example(s)"
+        f" ({baked} baked, {reused} reused);"
         f" total {total_json:,} B json + {total_bin:,} B bin"
         f" = {total_json + total_bin:,} B",
         file=sys.stderr,
@@ -532,6 +592,7 @@ if __name__ == "__main__":
         raise SystemExit(_bake_one(sys.argv[2]))
     if len(sys.argv) > 1 and sys.argv[1] == "--smoke":
         raise SystemExit(_smoke())
-    # Default: bake everything.
-    bake_all()
+    # Default: lazy bake (only stale examples). --force re-bakes everything.
+    force = "--force" in sys.argv[1:]
+    bake_all(force=force)
     raise SystemExit(0)
