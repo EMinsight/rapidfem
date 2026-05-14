@@ -1,20 +1,36 @@
 /**
- * Volumetric field point-cloud sampling.
+ * Volumetric field splat sampling.
  *
- * Replaces the WASM worker that used to do this. Given a mesh + per-node
- * (A, B, C) phasor coefficients, we draw N random points uniformly within
- * the tet volume (weighted by per-tet volume so density is uniform) and
- * interpolate (A, B, C) at each point via barycentric weights. Coefficients
- * encode the time-domain |E(t)|² as A cos²(ωt) + B sin²(ωt) − 2 C cos·sin,
- * which the GPU shader composites every frame against a phase uniform.
+ * Given a mesh + per-node (A, B, C) phasor coefficients, we draw N random
+ * points across the tet volume and interpolate (A, B, C) at each via
+ * barycentric weights. Each sample becomes one world-space Gaussian splat.
+ *
+ * Sampling is **energy-weighted**: the per-tet draw probability is
+ * `volume × (floor + energy^p)`, so splats concentrate where the field is
+ * strong and gradients are steep, instead of spreading uniformly through dead
+ * air. Because the weighting depends on the field, the sampling CDF is built
+ * per `viz_sample` call — `viz_load_mesh` only caches the field-independent
+ * mesh geometry (per-tet volume + characteristic size).
+ *
+ * Coefficients encode |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin, which
+ * the splat shader composites every frame against a phase uniform.
  */
 import type { MeshData } from './msh';
+
+/** Per-splat world-space σ as a fraction of the containing tet's mean edge
+ *  length. The splat shader extends the Gaussian to ±3σ; ~0.35 gives splats
+ *  that overlap their neighbours enough to read as a continuous volume. */
+const SIGMA_FACTOR = 0.35;
+
+/** Energy coverage floor: even zero-field tets keep this fraction of their
+ *  volume-uniform weight, so the cloud never fully abandons a region. */
+const ENERGY_FLOOR = 0.05;
 
 interface VizCache {
 	nodes: Float64Array;
 	tets: Uint32Array;
-	cdf: Float64Array;        // tet-volume CDF (length = n_tets)
-	total_vol: number;
+	vols: Float64Array;       // |tet volume|, per tet
+	sizes: Float32Array;      // characteristic length (mean edge), per tet
 }
 
 let cache: VizCache | null = null;
@@ -26,7 +42,7 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 		return;
 	}
 	const vols = new Float64Array(n_tets);
-	let total = 0;
+	const sizes = new Float32Array(n_tets);
 	for (let t = 0; t < n_tets; t++) {
 		const a = m.tets[t * 4 + 0] * 3;
 		const b = m.tets[t * 4 + 1] * 3;
@@ -46,22 +62,23 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 			e1x * (e2y * e3z - e2z * e3y) -
 			e1y * (e2x * e3z - e2z * e3x) +
 			e1z * (e2x * e3y - e2y * e3x);
-		const v = Math.abs(det) / 6;
-		vols[t] = v;
-		total += v;
+		vols[t] = Math.abs(det) / 6;
+
+		// Mean of the 6 edge lengths — robust to sliver tets, unlike cbrt(vol).
+		const p = [a, b, c, d];
+		let edgeSum = 0;
+		for (let i = 0; i < 4; i++) {
+			for (let j = i + 1; j < 4; j++) {
+				const pi = p[i], pj = p[j];
+				const dx = m.nodes[pi] - m.nodes[pj];
+				const dy = m.nodes[pi + 1] - m.nodes[pj + 1];
+				const dz = m.nodes[pi + 2] - m.nodes[pj + 2];
+				edgeSum += Math.sqrt(dx * dx + dy * dy + dz * dz);
+			}
+		}
+		sizes[t] = (edgeSum / 6) * SIGMA_FACTOR;
 	}
-	const cdf = new Float64Array(n_tets);
-	let acc = 0;
-	for (let t = 0; t < n_tets; t++) {
-		acc += vols[t];
-		cdf[t] = acc / total;
-	}
-	cache = {
-		nodes: m.nodes,
-		tets: m.tets,
-		cdf,
-		total_vol: total,
-	};
+	cache = { nodes: m.nodes, tets: m.tets, vols, sizes };
 }
 
 /** Binary search for the smallest index `i` with cdf[i] >= u. */
@@ -80,7 +97,6 @@ function uniform_bary(out: [number, number, number, number]): void {
 	let s = Math.random();
 	let t = Math.random();
 	let u = Math.random();
-	// Sort ascending
 	if (s > t) [s, t] = [t, s];
 	if (t > u) [t, u] = [u, t];
 	if (s > t) [s, t] = [t, s];
@@ -90,63 +106,99 @@ function uniform_bary(out: [number, number, number, number]): void {
 	out[3] = 1 - u;
 }
 
+/**
+ * Energy-weighted sampling of N field splats.
+ *
+ * @param field_abc  per-node [A, B, C] phasor terms
+ * @param n          number of splats to draw
+ * @param energy_exp exponent on the normalised per-tet energy (p). 0 ⇒
+ *                   volume-uniform; 1 ⇒ linear energy bias; higher ⇒ tighter
+ *                   concentration on hotspots. Default 1.
+ */
 export async function viz_sample(
 	field_abc: Float32Array,
 	n: number,
+	energy_exp = 1.0,
 ): Promise<{
 	positions: Float32Array;
 	abc: Float32Array;
+	sigma: Float32Array;
 	log_floor: number;
 	log_range: number;
 	field_range: { min: number; max: number; decades: number };
 }> {
-	if (!cache || n <= 0 || !field_abc || field_abc.length === 0) {
-		return {
-			positions: new Float32Array(0),
-			abc: new Float32Array(0),
-			log_floor: 0,
-			log_range: 1,
-			field_range: { min: 0, max: 1, decades: 0 },
-		};
+	const empty = {
+		positions: new Float32Array(0),
+		abc: new Float32Array(0),
+		sigma: new Float32Array(0),
+		log_floor: 0,
+		log_range: 1,
+		field_range: { min: 0, max: 1, decades: 0 },
+	};
+	if (!cache || n <= 0 || !field_abc || field_abc.length === 0) return empty;
+
+	const { nodes, tets, vols, sizes } = cache;
+	const n_tets = vols.length;
+
+	// ── Per-tet time-averaged energy from the phasor terms ──────────────
+	// |E|²_avg ≈ (A + B) / 2, averaged over the tet's 4 nodes.
+	const energy = new Float64Array(n_tets);
+	let e_max = 0;
+	for (let t = 0; t < n_tets; t++) {
+		let sum = 0;
+		for (let k = 0; k < 4; k++) {
+			const nd = tets[t * 4 + k] * 3;
+			sum += 0.5 * (field_abc[nd] + field_abc[nd + 1]);
+		}
+		const e = sum / 4;
+		energy[t] = e > 0 ? e : 0;
+		if (energy[t] > e_max) e_max = energy[t];
 	}
-	const { nodes, tets, cdf } = cache;
+	if (e_max <= 0) e_max = 1;
+
+	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm^p) ──
+	const cdf = new Float64Array(n_tets);
+	let acc = 0;
+	for (let t = 0; t < n_tets; t++) {
+		const e_norm = energy[t] / e_max;
+		const w = vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * Math.pow(e_norm, energy_exp));
+		acc += w;
+		cdf[t] = acc;
+	}
+	if (acc <= 0) return empty;
+	const inv_total = 1 / acc;
+	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
+
+	// ── Draw N splats ───────────────────────────────────────────────────
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
+	const sigma = new Float32Array(n);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
-
-	// Track time-averaged |E|² ≈ (A + B) / 2 for log range.
 	let min_e2 = Infinity, max_e2 = 0;
 
 	for (let i = 0; i < n; i++) {
-		const u = Math.random();
-		const t_idx = bsearch_cdf(cdf, u);
+		const t_idx = bsearch_cdf(cdf, Math.random());
 		uniform_bary(w);
 		const a = tets[t_idx * 4 + 0];
 		const b = tets[t_idx * 4 + 1];
 		const c = tets[t_idx * 4 + 2];
 		const d = tets[t_idx * 4 + 3];
-		const px =
+		positions[i * 3] =
 			w[0] * nodes[a * 3]     + w[1] * nodes[b * 3]     +
 			w[2] * nodes[c * 3]     + w[3] * nodes[d * 3];
-		const py =
+		positions[i * 3 + 1] =
 			w[0] * nodes[a * 3 + 1] + w[1] * nodes[b * 3 + 1] +
 			w[2] * nodes[c * 3 + 1] + w[3] * nodes[d * 3 + 1];
-		const pz =
+		positions[i * 3 + 2] =
 			w[0] * nodes[a * 3 + 2] + w[1] * nodes[b * 3 + 2] +
 			w[2] * nodes[c * 3 + 2] + w[3] * nodes[d * 3 + 2];
-		positions[i * 3]     = px;
-		positions[i * 3 + 1] = py;
-		positions[i * 3 + 2] = pz;
-		const aA = field_abc[a * 3], aB = field_abc[a * 3 + 1], aC = field_abc[a * 3 + 2];
-		const bA = field_abc[b * 3], bB = field_abc[b * 3 + 1], bC = field_abc[b * 3 + 2];
-		const cA = field_abc[c * 3], cB = field_abc[c * 3 + 1], cC = field_abc[c * 3 + 2];
-		const dA = field_abc[d * 3], dB = field_abc[d * 3 + 1], dC = field_abc[d * 3 + 2];
-		const A = w[0] * aA + w[1] * bA + w[2] * cA + w[3] * dA;
-		const B = w[0] * aB + w[1] * bB + w[2] * cB + w[3] * dB;
-		const C = w[0] * aC + w[1] * bC + w[2] * cC + w[3] * dC;
+		const A = w[0] * field_abc[a * 3]     + w[1] * field_abc[b * 3]     + w[2] * field_abc[c * 3]     + w[3] * field_abc[d * 3];
+		const B = w[0] * field_abc[a * 3 + 1] + w[1] * field_abc[b * 3 + 1] + w[2] * field_abc[c * 3 + 1] + w[3] * field_abc[d * 3 + 1];
+		const C = w[0] * field_abc[a * 3 + 2] + w[1] * field_abc[b * 3 + 2] + w[2] * field_abc[c * 3 + 2] + w[3] * field_abc[d * 3 + 2];
 		abc[i * 3]     = A;
 		abc[i * 3 + 1] = B;
 		abc[i * 3 + 2] = C;
+		sigma[i] = sizes[t_idx];
 		// Time-averaged |E|² = (A + B) / 2.
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
@@ -160,9 +212,9 @@ export async function viz_sample(
 	}
 	// Shader works in log10(|E|), not log10(|E|²). Convert.
 	const e_min_raw = Math.sqrt(Math.max(min_e2, 0));
-	const e_max = Math.sqrt(max_e2);
-	const e_min = Math.max(e_min_raw, e_max * 1e-3);
-	const log_max = Math.log10(e_max);
+	const e_max_v = Math.sqrt(max_e2);
+	const e_min = Math.max(e_min_raw, e_max_v * 1e-3);
+	const log_max = Math.log10(e_max_v);
 	const log_min = Math.log10(e_min);
 	const log_floor = log_min;
 	const log_range = Math.max(log_max - log_min, 0.5);
@@ -170,8 +222,9 @@ export async function viz_sample(
 	return {
 		positions,
 		abc,
+		sigma,
 		log_floor,
 		log_range,
-		field_range: { min: e_min, max: e_max, decades },
+		field_range: { min: e_min, max: e_max_v, decades },
 	};
 }

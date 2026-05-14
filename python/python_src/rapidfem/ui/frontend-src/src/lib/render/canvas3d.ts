@@ -62,21 +62,37 @@ export interface GLState {
 	lineProgram: WebGLProgram;
 	uLineMVP: WebGLUniformLocation;
 	uLineColor: WebGLUniformLocation;
-	pointProgram: WebGLProgram;
-	uPointMVP: WebGLUniformLocation;
-	uPointZFlip: WebGLUniformLocation;
-	uPointScale: WebGLUniformLocation;
-	uPointPhase: WebGLUniformLocation;
-	uPointLogFloor: WebGLUniformLocation;
-	uPointLogRange: WebGLUniformLocation;
-	uPointLogScale: WebGLUniformLocation;
+	splatProgram: WebGLProgram;
+	uSplatTex: WebGLUniformLocation;
+	uSplatTexW: WebGLUniformLocation;
+	uSplatMVP: WebGLUniformLocation;
+	uSplatZFlip: WebGLUniformLocation;
+	uSplatPhase: WebGLUniformLocation;
+	uSplatProjScale: WebGLUniformLocation;
+	uSplatSigmaScale: WebGLUniformLocation;
+	uSplatRangeFloor: WebGLUniformLocation;
+	uSplatRangeSpan: WebGLUniformLocation;
+	uSplatLogScale: WebGLUniformLocation;
+	uSplatOpacity: WebGLUniformLocation;
+	/** Shared base-quad VBO for the instanced splat draw. */
+	splatQuadBuf: WebGLBuffer;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
-	pointCloud: { vao: WebGLVertexArrayObject; buffers: WebGLBuffer[]; count: number } | null;
-	pointPhase: number;
-	pointLogFloor: number;
-	pointLogRange: number;
-	pointLogScale: number;
+	/** World-space Gaussian splat cloud. `tex` holds 2 RGBA32F texels per
+	 *  splat; `indexBuf` is the depth-sorted draw order (one uint/splat). */
+	splatCloud: {
+		vao: WebGLVertexArrayObject;
+		tex: WebGLTexture;
+		texW: number;
+		indexBuf: WebGLBuffer;
+		count: number;
+	} | null;
+	splatPhase: number;
+	splatSigmaScale: number;
+	splatOpacity: number;
+	splatRangeFloor: number;
+	splatRangeSpan: number;
+	splatLogScale: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -153,41 +169,74 @@ uniform vec3 uColor;
 out vec4 fragColor;
 void main() { fragColor = vec4(uColor, 1.0); }`;
 
-// ── Volumetric point cloud (gl.POINTS) ──
-const POINT_VS = `#version 300 es
+// ── Volumetric field as world-space Gaussian splats ──
+//
+// Each splat is an isotropic 3D Gaussian (world-space σ) drawn as a single
+// instanced quad. The vertex shader projects σ to a screen-space radius via
+// the perspective scale, so splats keep a consistent *physical* size at any
+// zoom — no screen-space clamp artefacts like the old gl.POINTS path.
+//
+// Splat data lives in an RGBA32F texture (2 texels per splat):
+//   texel 0 = (x, y, z, σ)
+//   texel 1 = (A, B, C, _)   phasor terms for |E(t)|² animation
+// The instanced attribute is a single uint index into that texture. Depth
+// sorting only re-uploads the small index buffer, never the bulk data.
+//
+// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ; the Gaussian is ~0 beyond 3σ.
+const EXTENT_SIGMA = 3.0;
+
+const SPLAT_VS = `#version 300 es
 precision highp float;
-layout(location=0) in vec3 aPos;
-layout(location=1) in vec3 aABC;           // (A, B, C) phasor terms
+layout(location=0) in vec2 aCorner;        // base quad corner in [-1,1]²
+layout(location=1) in uint aIndex;         // splat index (instanced, divisor 1)
+uniform sampler2D uSplatTex;
+uniform int uTexW;
 uniform mat4 uMVP;
 uniform float uZFlip;
-uniform float uPointScale;                 // base size in pixels at unit clip-w
 uniform float uPhase;                      // current ωt in radians
-uniform float uLogFloor;                   // log10(min |E|) (log mode) or |E|min (lin mode)
-uniform float uLogRange;                   // log10(max/min) (log mode) or (|E|max - |E|min) (lin mode)
+uniform vec2 uProjScale;                   // (proj[0][0], proj[1][1]) — perspective scale
+uniform float uSigmaScale;                 // global σ multiplier (UI tuning)
+uniform float uRangeFloor;                 // log10(|E|min) (log) or |E|min (lin)
+uniform float uRangeSpan;                  // log10(max/min) (log) or (|E|max−|E|min) (lin)
 uniform float uLogScale;                   // 1.0 = log color mapping, 0.0 = linear
+out vec2 vCorner;                          // corner scaled to σ units
 out float vScalar;
+const float EXTENT = ${EXTENT_SIGMA.toFixed(1)};
+
+vec4 fetchTexel(int texel) {
+	return texelFetch(uSplatTex, ivec2(texel % uTexW, texel / uTexW), 0);
+}
 void main() {
-	vec3 pos = aPos;
+	int si = int(aIndex);
+	vec4 d0 = fetchTexel(si * 2);
+	vec4 d1 = fetchTexel(si * 2 + 1);
+	vec3 pos = d0.xyz;
 	pos.z *= uZFlip;
-	gl_Position = uMVP * vec4(pos, 1.0);
+	float sigma = d0.w * uSigmaScale;
 
 	// |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
 	float c = cos(uPhase);
 	float s = sin(uPhase);
-	float e2 = aABC.x * c * c + aABC.y * s * s - 2.0 * aABC.z * c * s;
+	float e2 = d1.x * c * c + d1.y * s * s - 2.0 * d1.z * c * s;
 	float mag = sqrt(max(e2, 0.0));
-	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uLogFloor) / max(uLogRange, 1e-9);
-	float norm_lin = (mag - uLogFloor) / max(uLogRange, 1e-9);
-	float norm = mix(norm_lin, norm_log, uLogScale);
-	vScalar = clamp(norm, 0.0, 1.0);
+	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uRangeFloor) / max(uRangeSpan, 1e-9);
+	float norm_lin = (mag - uRangeFloor) / max(uRangeSpan, 1e-9);
+	vScalar = clamp(mix(norm_lin, norm_log, uLogScale), 0.0, 1.0);
 
-	float w = max(gl_Position.w, 1e-6);
-	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * vScalar), 4.0, 96.0);
+	vec4 clip = uMVP * vec4(pos, 1.0);
+	// Isotropic σ → screen ellipse: a world offset σ ⟂ the view dir projects
+	// to NDC half-extent σ·projScale / w. Offset the quad corner there, then
+	// back to clip space (×w).
+	vec2 ndcRadius = sigma * uProjScale / max(clip.w, 1e-6);
+	vCorner = aCorner * EXTENT;
+	gl_Position = vec4(clip.xy + aCorner * EXTENT * ndcRadius * clip.w, clip.z, clip.w);
 }`;
 
-const POINT_FS = `#version 300 es
+const SPLAT_FS = `#version 300 es
 precision highp float;
+in vec2 vCorner;
 in float vScalar;
+uniform float uOpacity;                    // global opacity multiplier
 out vec4 fragColor;
 vec3 inferno(float t) {
 	t = clamp(t, 0.0, 1.0);
@@ -201,13 +250,14 @@ vec3 inferno(float t) {
 	return c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
 }
 void main() {
-	vec2 uv = gl_PointCoord * 2.0 - 1.0;
-	float r2 = dot(uv, uv);
-	if (r2 > 1.0) discard;
-	float falloff = pow(1.0 - r2, 2.0);
+	float r2 = dot(vCorner, vCorner);
+	if (r2 > ${(EXTENT_SIGMA * EXTENT_SIGMA).toFixed(1)}) discard;
+	float g = exp(-0.5 * r2);                       // unit Gaussian falloff
 	vec3 col = inferno(vScalar);
-	// Additive contribution: low-field points fade out, high-field accumulate brightness
-	fragColor = vec4(col * (vScalar * falloff), 1.0);
+	// Alpha rises with field strength so weak regions stay translucent and
+	// hotspots read solid. Premultiplied output for back-to-front "over".
+	float alpha = clamp(g * vScalar * uOpacity, 0.0, 1.0);
+	fragColor = vec4(col * alpha, alpha);
 }`;
 
 // ─── GL helpers ─────────────────────────────────────────────────────
@@ -316,12 +366,18 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 
 	const program = linkProgram(gl, VS, FS);
 	const lineProgram = linkProgram(gl, LINE_VS, LINE_FS);
-	const pointProgram = linkProgram(gl, POINT_VS, POINT_FS);
+	const splatProgram = linkProgram(gl, SPLAT_VS, SPLAT_FS);
 
 	const bg = hexToRgb(canvasTheme.bg);
 	gl.clearColor(bg[0], bg[1], bg[2], 1);
 	gl.enable(gl.DEPTH_TEST);
 	gl.disable(gl.CULL_FACE);
+
+	// Shared base quad for the instanced splat draw: a [-1,1]² triangle strip.
+	const splatQuadBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, splatQuadBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
 	return {
 		gl,
@@ -340,21 +396,28 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		lineProgram,
 		uLineMVP: gl.getUniformLocation(lineProgram, 'uMVP')!,
 		uLineColor: gl.getUniformLocation(lineProgram, 'uColor')!,
-		pointProgram,
-		uPointMVP: gl.getUniformLocation(pointProgram, 'uMVP')!,
-		uPointZFlip: gl.getUniformLocation(pointProgram, 'uZFlip')!,
-		uPointScale: gl.getUniformLocation(pointProgram, 'uPointScale')!,
-		uPointPhase: gl.getUniformLocation(pointProgram, 'uPhase')!,
-		uPointLogFloor: gl.getUniformLocation(pointProgram, 'uLogFloor')!,
-		uPointLogRange: gl.getUniformLocation(pointProgram, 'uLogRange')!,
-		uPointLogScale: gl.getUniformLocation(pointProgram, 'uLogScale')!,
+		splatProgram,
+		uSplatTex: gl.getUniformLocation(splatProgram, 'uSplatTex')!,
+		uSplatTexW: gl.getUniformLocation(splatProgram, 'uTexW')!,
+		uSplatMVP: gl.getUniformLocation(splatProgram, 'uMVP')!,
+		uSplatZFlip: gl.getUniformLocation(splatProgram, 'uZFlip')!,
+		uSplatPhase: gl.getUniformLocation(splatProgram, 'uPhase')!,
+		uSplatProjScale: gl.getUniformLocation(splatProgram, 'uProjScale')!,
+		uSplatSigmaScale: gl.getUniformLocation(splatProgram, 'uSigmaScale')!,
+		uSplatRangeFloor: gl.getUniformLocation(splatProgram, 'uRangeFloor')!,
+		uSplatRangeSpan: gl.getUniformLocation(splatProgram, 'uRangeSpan')!,
+		uSplatLogScale: gl.getUniformLocation(splatProgram, 'uLogScale')!,
+		uSplatOpacity: gl.getUniformLocation(splatProgram, 'uOpacity')!,
+		splatQuadBuf,
 		meshes: [],
 		lineMeshes: [],
-		pointCloud: null,
-		pointPhase: 0,
-		pointLogFloor: -30,
-		pointLogRange: 6,
-		pointLogScale: 1,
+		splatCloud: null,
+		splatPhase: 0,
+		splatSigmaScale: 1,
+		splatOpacity: 0.55,
+		splatRangeFloor: -30,
+		splatRangeSpan: 6,
+		splatLogScale: 0,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -369,12 +432,19 @@ export function disposeGL(state: GLState): void {
 		gl.deleteVertexArray(m.vao);
 		for (const b of m.buffers) gl.deleteBuffer(b);
 	}
+	if (state.splatCloud) {
+		gl.deleteVertexArray(state.splatCloud.vao);
+		gl.deleteTexture(state.splatCloud.tex);
+		gl.deleteBuffer(state.splatCloud.indexBuf);
+	}
+	gl.deleteBuffer(state.splatQuadBuf);
 	gl.deleteProgram(state.program);
 	gl.deleteProgram(state.lineProgram);
+	gl.deleteProgram(state.splatProgram);
 }
 
-/** Drop surface and line meshes. The point cloud has its own lifecycle
- *  (setPointCloud manages its GL buffers) and survives a rebuild so the
+/** Drop surface and line meshes. The splat cloud has its own lifecycle
+ *  (setSplatCloud manages its GL resources) and survives a rebuild so the
  *  field viz stays visible when the user toggles Geometry / Mesh layers. */
 export function clearMeshes(state: GLState): void {
 	const { gl } = state;
@@ -390,55 +460,120 @@ export function clearMeshes(state: GLState): void {
 	state.lineMeshes = [];
 }
 
-/** Replace the volumetric point cloud. positions: [x,y,z,...] in METERS,
- *  abc: [A,B,C, ...] per point — phasor terms the GPU shader composites
- *  with the current phase uniform to render the wave animation. */
-export function setPointCloud(state: GLState, positions: Float32Array, abc: Float32Array): void {
+/** Texture width for the splat data texture. 2 texels per splat, so a
+ *  4096-wide texture holds 2048 splats per row — comfortably fits 1M+ splats
+ *  within the typical 16384 max-texture-size. */
+const SPLAT_TEX_W = 4096;
+
+/** Replace the volumetric field splat cloud.
+ *
+ *  positions: [x,y,z,...] per splat in METERS
+ *  abc:       [A,B,C,...] per splat — phasor terms for |E(t)|² animation
+ *  sigma:     [σ,...]      per splat — world-space Gaussian std-dev
+ *
+ *  Splat data is packed into an RGBA32F texture (2 texels/splat); the draw
+ *  order index buffer is initialised to identity and replaced per frame by
+ *  `setSplatOrder` once the depth-sort worker answers. */
+export function setSplatCloud(
+	state: GLState,
+	positions: Float32Array,
+	abc: Float32Array,
+	sigma: Float32Array,
+): void {
 	const { gl } = state;
-	if (state.pointCloud) {
-		gl.deleteVertexArray(state.pointCloud.vao);
-		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
+	if (state.splatCloud) {
+		gl.deleteVertexArray(state.splatCloud.vao);
+		gl.deleteTexture(state.splatCloud.tex);
+		gl.deleteBuffer(state.splatCloud.indexBuf);
+		state.splatCloud = null;
 	}
-	if (positions.length === 0) {
-		state.pointCloud = null;
-		return;
+	const count = positions.length / 3;
+	if (count === 0) return;
+
+	// Pack 2 RGBA32F texels per splat: (x,y,z,σ) and (A,B,C,_).
+	const texW = SPLAT_TEX_W;
+	const texH = Math.ceil((count * 2) / texW);
+	const data = new Float32Array(texW * texH * 4);
+	for (let i = 0; i < count; i++) {
+		const o = i * 8;
+		data[o + 0] = positions[i * 3 + 0];
+		data[o + 1] = positions[i * 3 + 1];
+		data[o + 2] = positions[i * 3 + 2];
+		data[o + 3] = sigma[i];
+		data[o + 4] = abc[i * 3 + 0];
+		data[o + 5] = abc[i * 3 + 1];
+		data[o + 6] = abc[i * 3 + 2];
+		data[o + 7] = 0;
 	}
+	const tex = gl.createTexture()!;
+	gl.bindTexture(gl.TEXTURE_2D, tex);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, texW, texH, 0, gl.RGBA, gl.FLOAT, data);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	gl.bindTexture(gl.TEXTURE_2D, null);
+
+	// Identity draw order until the first sort lands.
+	const index = new Uint32Array(count);
+	for (let i = 0; i < count; i++) index[i] = i;
+	const indexBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, index, gl.DYNAMIC_DRAW);
+
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
-	const posBuf = gl.createBuffer()!;
-	gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-	gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+	// location 0: base quad corner (per-vertex)
+	gl.bindBuffer(gl.ARRAY_BUFFER, state.splatQuadBuf);
 	gl.enableVertexAttribArray(0);
-	gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-	const abcBuf = gl.createBuffer()!;
-	gl.bindBuffer(gl.ARRAY_BUFFER, abcBuf);
-	gl.bufferData(gl.ARRAY_BUFFER, abc, gl.STATIC_DRAW);
+	gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+	// location 1: splat index (per-instance)
+	gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf);
 	gl.enableVertexAttribArray(1);
-	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+	gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 0);
+	gl.vertexAttribDivisor(1, 1);
 	gl.bindVertexArray(null);
-	state.pointCloud = { vao, buffers: [posBuf, abcBuf], count: positions.length / 3 };
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+	state.splatCloud = { vao, tex, texW, indexBuf, count };
 }
 
-/** Update the field log-range (after a new sample). */
-export function setPointLogRange(state: GLState, log_floor: number, log_range: number): void {
-	state.pointLogFloor = log_floor;
-	state.pointLogRange = log_range;
+/** Upload a fresh depth-sorted draw order (back-to-front). `index` length
+ *  must equal the current splat count; ignored otherwise. */
+export function setSplatOrder(state: GLState, index: Uint32Array): void {
+	const { gl } = state;
+	const sc = state.splatCloud;
+	if (!sc || index.length !== sc.count) return;
+	gl.bindBuffer(gl.ARRAY_BUFFER, sc.indexBuf);
+	gl.bufferSubData(gl.ARRAY_BUFFER, 0, index);
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 }
 
-/** Color-mapping mode for the field point cloud. */
-export function setPointScaleMode(state: GLState, mode: 'log' | 'lin'): void {
-	state.pointLogScale = mode === 'log' ? 1 : 0;
+/** Set the field colour-mapping range. floor/span are interpreted per mode:
+ *  log → (log10(|E|min), log10(max/min)); lin → (|E|min, |E|max−|E|min). */
+export function setSplatRange(state: GLState, floor: number, span: number): void {
+	state.splatRangeFloor = floor;
+	state.splatRangeSpan = span;
 }
 
-/** Linear-mode range. floor=|E|min, range=|E|max−|E|min. */
-export function setPointLinRange(state: GLState, lin_floor: number, lin_range: number): void {
-	state.pointLogFloor = lin_floor;
-	state.pointLogRange = lin_range;
+/** Colour-mapping mode for the field splats. */
+export function setSplatScaleMode(state: GLState, mode: 'log' | 'lin'): void {
+	state.splatLogScale = mode === 'log' ? 1 : 0;
+}
+
+/** Global σ multiplier — UI tuning knob for splat size vs. count. */
+export function setSplatSigmaScale(state: GLState, scale: number): void {
+	state.splatSigmaScale = scale;
+}
+
+/** Global opacity multiplier for the splat cloud. */
+export function setSplatOpacity(state: GLState, opacity: number): void {
+	state.splatOpacity = opacity;
 }
 
 /** Update the time phase (call from requestAnimationFrame for the wave anim). */
-export function setPointPhase(state: GLState, phase: number): void {
-	state.pointPhase = phase;
+export function setSplatPhase(state: GLState, phase: number): void {
+	state.splatPhase = phase;
 }
 
 /** Add a triangle group with a single color. positions and normals must
@@ -594,33 +729,37 @@ export function render3D(
 		}
 	}
 
-	// Point cloud pass (volumetric field) — additive blending so overlapping
-	// points accumulate brightness. Depth test off so points behind solid
-	// conductor surfaces still contribute to the cloud (we want to see the
-	// whole volume, not only the front-facing slab).
-	if (state.pointCloud && state.pointCloud.count > 0) {
-		gl.useProgram(state.pointProgram);
-		gl.uniformMatrix4fv(state.uPointMVP, false, vp);
-		gl.uniform1f(state.uPointZFlip, zFlip);
-		const dx = state.bbox.max[0] - state.bbox.min[0];
-		const dy = state.bbox.max[1] - state.bbox.min[1];
-		const xy = Math.max(dx, dy, 1e-9);
-		// Base size in pixels at unit clip-w, scaled by scene XY extent.
-		// 0.4 makes individual sprites ~visible at default zoom.
-		gl.uniform1f(state.uPointScale, xy * 0.4);
-		gl.uniform1f(state.uPointPhase, state.pointPhase);
-		gl.uniform1f(state.uPointLogFloor, state.pointLogFloor);
-		gl.uniform1f(state.uPointLogRange, state.pointLogRange);
-		gl.uniform1f(state.uPointLogScale, state.pointLogScale);
-		gl.disable(gl.DEPTH_TEST);
+	// Splat pass (volumetric field) — world-space Gaussian splats, drawn
+	// back-to-front in the order the depth-sort worker last produced.
+	// Premultiplied "over" blending for correct alpha compositing; depth
+	// test ON (so splats behind solid conductor silhouettes are occluded)
+	// but depth write OFF (inter-splat ordering is handled by the sort).
+	if (state.splatCloud && state.splatCloud.count > 0) {
+		const sc = state.splatCloud;
+		gl.useProgram(state.splatProgram);
+		gl.uniformMatrix4fv(state.uSplatMVP, false, vp);
+		gl.uniform1f(state.uSplatZFlip, zFlip);
+		gl.uniform1f(state.uSplatPhase, state.splatPhase);
+		// proj[0][0] / proj[1][1] — the perspective scale that maps a world
+		// offset to NDC. Mirrors mat4Perspective: m[0]=f/aspect, m[5]=f.
+		gl.uniform2f(state.uSplatProjScale, proj[0], proj[5]);
+		gl.uniform1f(state.uSplatSigmaScale, state.splatSigmaScale);
+		gl.uniform1f(state.uSplatRangeFloor, state.splatRangeFloor);
+		gl.uniform1f(state.uSplatRangeSpan, state.splatRangeSpan);
+		gl.uniform1f(state.uSplatLogScale, state.splatLogScale);
+		gl.uniform1f(state.uSplatOpacity, state.splatOpacity);
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, sc.tex);
+		gl.uniform1i(state.uSplatTex, 0);
+		gl.uniform1i(state.uSplatTexW, sc.texW);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);
-		gl.blendFunc(gl.ONE, gl.ONE);
-		gl.bindVertexArray(state.pointCloud.vao);
-		gl.drawArrays(gl.POINTS, 0, state.pointCloud.count);
+		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+		gl.bindVertexArray(sc.vao);
+		gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sc.count);
 		gl.disable(gl.BLEND);
 		gl.depthMask(true);
-		gl.enable(gl.DEPTH_TEST);
+		gl.bindTexture(gl.TEXTURE_2D, null);
 	}
 	gl.bindVertexArray(null);
 }

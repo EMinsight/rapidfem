@@ -20,7 +20,7 @@
  */
 
 import {
-	addMesh, addLineMesh, setBBox, setPointCloud,
+	addMesh, addLineMesh, setBBox, setSplatCloud,
 	type GLState,
 } from './canvas3d';
 import { buildVolumeBoundaries } from './mesh_scene';
@@ -198,7 +198,7 @@ export interface BuildSceneConfig {
  *
  * The field point cloud is not set here; the in-app viewer hands it
  * off to a worker and the embed builds a synchronous tet-centroid
- * sample — both call setPointCloud themselves.
+ * sample — both call setSplatCloud themselves.
  */
 export const WIRE_TAG = -1;
 
@@ -258,32 +258,38 @@ export function buildScene(
 	return { faceTags, wireTag };
 }
 
-/** Convenience: wipe the field cloud. Callers use this when toggling
+/** Convenience: wipe the field splat cloud. Callers use this when toggling
  *  out of field mode. */
 export function clearFieldCloud(state: GLState): void {
-	setPointCloud(state, new Float32Array(0), new Float32Array(0));
+	setSplatCloud(state, new Float32Array(0), new Float32Array(0), new Float32Array(0));
 }
 
-// ── Volumetric field point-cloud sampling ────────────────────────────
+// ── Volumetric field splat sampling ──────────────────────────────────
 //
-// Same algorithm as `$lib/viz.ts` (the worker-side sampler the in-app
-// MeshViewer uses), but in-line and synchronous for the embed which
-// doesn't carry a worker. We draw N random points uniformly within
-// the tet volume (weighted by per-tet volume so density is uniform
-// across the mesh, not biased toward small tets) and interpolate the
-// (A, B, C) phasor coefficients via barycentric weights.
+// Same algorithm as `$lib/viz.ts` (the sampler the in-app MeshViewer uses),
+// but in-line and synchronous for the embed which doesn't carry a worker.
+// Sampling is energy-weighted: per-tet draw probability is
+// `volume × (floor + energy)`, so splats concentrate where the field is
+// strong, and each sample carries the containing tet's characteristic size
+// as its world-space Gaussian σ.
 
-interface TetCdfCache {
-	cdf: Float64Array;       // running sum of |tet volume|
-	totalVolume: number;
+/** σ as a fraction of the containing tet's mean edge length — matches
+ *  `viz.ts:SIGMA_FACTOR`. */
+const SIGMA_FACTOR = 0.35;
+/** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. */
+const ENERGY_FLOOR = 0.05;
+
+interface TetSampleCache {
+	vols: Float64Array;     // |tet volume|, per tet
+	sizes: Float64Array;    // characteristic length (mean edge) × SIGMA_FACTOR
 }
 
-function buildTetVolumeCDF(mesh: SceneMesh): TetCdfCache {
+function buildTetCache(mesh: SceneMesh): TetSampleCache {
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
 	const n = tets.length / 4;
-	const cdf = new Float64Array(n);
-	let acc = 0;
+	const vols = new Float64Array(n);
+	const sizes = new Float64Array(n);
 	for (let t = 0; t < n; t++) {
 		const a = tets[t * 4], b = tets[t * 4 + 1],
 		      c = tets[t * 4 + 2], d = tets[t * 4 + 3];
@@ -294,14 +300,22 @@ function buildTetVolumeCDF(mesh: SceneMesh): TetCdfCache {
 		const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
 		const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
 		const e3x = dx - ax, e3y = dy - ay, e3z = dz - az;
-		// Tet volume = |det| / 6
 		const det = e1x * (e2y * e3z - e2z * e3y)
 		          - e1y * (e2x * e3z - e2z * e3x)
 		          + e1z * (e2x * e3y - e2y * e3x);
-		acc += Math.abs(det) / 6;
-		cdf[t] = acc;
+		vols[t] = Math.abs(det) / 6;
+		// Mean of the 6 edge lengths.
+		const px = [ax, bx, cx, dx], py = [ay, by, cy, dy], pz = [az, bz, cz, dz];
+		let edgeSum = 0;
+		for (let i = 0; i < 4; i++) {
+			for (let j = i + 1; j < 4; j++) {
+				const lx = px[i] - px[j], ly = py[i] - py[j], lz = pz[i] - pz[j];
+				edgeSum += Math.sqrt(lx * lx + ly * ly + lz * lz);
+			}
+		}
+		sizes[t] = (edgeSum / 6) * SIGMA_FACTOR;
 	}
-	return { cdf, totalVolume: acc };
+	return { vols, sizes };
 }
 
 function bsearchCdf(cdf: Float64Array, target: number): number {
@@ -328,25 +342,53 @@ function uniformBary(out: [number, number, number, number]): void {
 	out[3] = 1 - u;
 }
 
-/** Volume-uniform random sampling of N points across the mesh, with
- *  (A, B, C) phasor coefficients interpolated by barycentric weights.
- *  Same output shape `viz.ts:viz_sample` produces — drop into
- *  `setPointCloud` directly. */
+/** Energy-weighted random sampling of N field splats, with (A, B, C) phasor
+ *  coefficients interpolated by barycentric weights and a per-splat σ from
+ *  the containing tet. Same output shape `viz.ts:viz_sample` produces (plus
+ *  maxE2/minE2 the embed uses for its colour range) — drop the positions /
+ *  abc / sigma straight into `setSplatCloud`. */
 export function sampleFieldCloud(
 	mesh: SceneMesh,
 	fieldAbc: number[] | Float32Array,
 	n: number,
-): { positions: Float32Array; abc: Float32Array; maxE2: number; minE2: number } {
-	const { cdf, totalVolume } = buildTetVolumeCDF(mesh);
+): { positions: Float32Array; abc: Float32Array; sigma: Float32Array; maxE2: number; minE2: number } {
+	const { vols, sizes } = buildTetCache(mesh);
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
+	const nTets = vols.length;
+
+	// Per-tet time-averaged energy ≈ (A + B) / 2 averaged over the 4 nodes.
+	const energy = new Float64Array(nTets);
+	let eMax = 0;
+	for (let t = 0; t < nTets; t++) {
+		let sum = 0;
+		for (let k = 0; k < 4; k++) {
+			const nd = tets[t * 4 + k] * 3;
+			sum += 0.5 * (fieldAbc[nd] + fieldAbc[nd + 1]);
+		}
+		const e = sum / 4;
+		energy[t] = e > 0 ? e : 0;
+		if (energy[t] > eMax) eMax = energy[t];
+	}
+	if (eMax <= 0) eMax = 1;
+
+	// Energy-weighted CDF: weight = volume × (floor + energy_norm).
+	const cdf = new Float64Array(nTets);
+	let acc = 0;
+	for (let t = 0; t < nTets; t++) {
+		const eNorm = energy[t] / eMax;
+		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eNorm);
+		cdf[t] = acc;
+	}
+	const totalWeight = acc || 1;
+
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
+	const sigma = new Float32Array(n);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
 	let minE2 = Infinity, maxE2 = 0;
 	for (let i = 0; i < n; i++) {
-		const u = Math.random() * totalVolume;
-		const ti = bsearchCdf(cdf, u);
+		const ti = bsearchCdf(cdf, Math.random() * totalWeight);
 		uniformBary(w);
 		const a = tets[ti * 4], b = tets[ti * 4 + 1],
 		      c = tets[ti * 4 + 2], d = tets[ti * 4 + 3];
@@ -366,6 +408,7 @@ export function sampleFieldCloud(
 		const B = w[0] * fieldAbc[a * 3 + 1] + w[1] * fieldAbc[b * 3 + 1] + w[2] * fieldAbc[c * 3 + 1] + w[3] * fieldAbc[d * 3 + 1];
 		const C = w[0] * fieldAbc[a * 3 + 2] + w[1] * fieldAbc[b * 3 + 2] + w[2] * fieldAbc[c * 3 + 2] + w[3] * fieldAbc[d * 3 + 2];
 		abc[i * 3] = A; abc[i * 3 + 1] = B; abc[i * 3 + 2] = C;
+		sigma[i] = sizes[ti];
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
 			if (e2 < minE2) minE2 = e2;
@@ -373,5 +416,5 @@ export function sampleFieldCloud(
 		}
 	}
 	if (!isFinite(minE2) || maxE2 === 0) { minE2 = 1; maxE2 = 1; }
-	return { positions, abc, maxE2, minE2 };
+	return { positions, abc, sigma, maxE2, minE2 };
 }

@@ -28,13 +28,14 @@
 
 import {
 	initGL, disposeGL, createCamera, clearMeshes, setTagVisible,
-	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
+	setSplatCloud, setSplatOrder, setSplatRange, setSplatScaleMode, cameraEye,
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
 import {
 	buildScene, clearFieldCloud, sampleFieldCloud, WIRE_TAG,
 } from '../lib/render/scene_builder';
+import { SplatSorter } from '../lib/render/splat_sorter';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
@@ -149,9 +150,12 @@ class FemViewerElement extends HTMLElement {
 	private resObs: ResizeObserver | null = null;
 	private faceTags: number[] = [];        // populated by buildScene
 	private fieldCloudCache = new Map<string, {
-		positions: Float32Array; abc: Float32Array;
+		positions: Float32Array; abc: Float32Array; sigma: Float32Array;
 		maxE2: number; minE2: number;
 	}>();
+	// Depth-sort worker for the field splat cloud + camera-change debounce.
+	private sorter: SplatSorter | null = null;
+	private lastCamSig = '';
 
 	static get observedAttributes() {
 		return ['src', 'width', 'height', 'rotate', 'cycle', 'mode', 'interactive',
@@ -192,6 +196,14 @@ class FemViewerElement extends HTMLElement {
 		this.glState = initGL(this.canvas);
 		if (!this.glState) return;
 
+		// Depth-sort worker: on a fresh order, re-upload the index buffer.
+		this.sorter = new SplatSorter((index) => {
+			if (this.glState) {
+				setSplatOrder(this.glState, index);
+				this.needsRender = true;
+			}
+		});
+
 		if (this.hasAttribute('interactive')) {
 			this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
 			this.canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -230,6 +242,7 @@ class FemViewerElement extends HTMLElement {
 		this.mounted = false; this.animId++;
 		this.inObs?.disconnect(); this.inObs = null;
 		this.resObs?.disconnect(); this.resObs = null;
+		if (this.sorter) { this.sorter.dispose(); this.sorter = null; }
 		if (this.glState) disposeGL(this.glState);
 	}
 
@@ -366,16 +379,16 @@ class FemViewerElement extends HTMLElement {
 
 	private applyField() {
 		if (!this.glState || !this.mesh) return;
-		if (!this.hasField || !this.fields) {
-			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
-			return;
-		}
+		const clear = () => {
+			if (this.glState) setSplatCloud(this.glState, new Float32Array(0), new Float32Array(0), new Float32Array(0));
+		};
+		if (!this.hasField || !this.fields) { clear(); return; }
 		const fi = Math.min(parseInt(this.getAttribute('field-freq') || '-1', 10), this.fields.length - 1);
 		const fIdx = fi >= 0 ? fi : this.fields.length - 1;
 		const pIdx = parseInt(this.getAttribute('field-port') || '0', 10);
 		const row = this.fields[fIdx];
 		const arr = row && row[pIdx];
-		if (!arr) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
+		if (!arr) { clear(); return; }
 		const n = Math.max(500, parseInt(this.getAttribute('field-samples') || '8000', 10));
 
 		// Cache the sampled cloud per (freq, port, n) — cycle re-enters
@@ -387,14 +400,17 @@ class FemViewerElement extends HTMLElement {
 			cached = sampleFieldCloud(this.mesh, arr, n);
 			this.fieldCloudCache.set(key, cached);
 		}
-		setPointCloud(this.glState, cached.positions, cached.abc);
+		setSplatCloud(this.glState, cached.positions, cached.abc, cached.sigma);
+		// Hand positions to the sort worker; force a sort on the next frame.
+		if (this.sorter) this.sorter.load(cached.positions);
+		this.lastCamSig = '';
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
-		setPointScaleMode(this.glState, mode);
+		setSplatScaleMode(this.glState, mode);
 		if (mode === 'log') {
 			const log_max = Math.log10(Math.sqrt(Math.max(cached.maxE2, 1e-30)));
-			setPointLogRange(this.glState, log_max - 4, 4);
+			setSplatRange(this.glState, log_max - 4, 4);
 		} else {
-			setPointLinRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
+			setSplatRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
 		}
 	}
 
@@ -454,8 +470,25 @@ class FemViewerElement extends HTMLElement {
 		// vertex shader multiplies every vertex's z by 0 and the geometry
 		// collapses to a horizontal slice at z=0. (Lines stay correct because
 		// the line shader doesn't reference uZFlip.)
+		this.maybeRequestSort();
 		render3D(this.glState, this.camera, w, h, 1);
 		this.needsRender = false;
+	}
+
+	/** Re-request a splat depth sort when the camera has actually moved.
+	 *  A static camera (e.g. a non-rotating embed) skips it. */
+	private maybeRequestSort() {
+		if (!this.sorter || !this.glState || !this.glState.splatCloud) return;
+		const c = this.camera;
+		const sig = `${c.theta},${c.phi},${c.distance},${c.target[0]},${c.target[1]},${c.target[2]}`;
+		if (sig === this.lastCamSig) return;
+		this.lastCamSig = sig;
+		const eye = cameraEye(c);
+		let vx = c.target[0] - eye[0];
+		let vy = c.target[1] - eye[1];
+		let vz = c.target[2] - eye[2];
+		const l = Math.hypot(vx, vy, vz) || 1;
+		this.sorter.requestSort([vx / l, vy / l, vz / l]);
 	}
 
 	private startAnimation() {

@@ -2,13 +2,16 @@
 	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setPointCloud, setPointPhase, setPointLogRange, setPointLinRange, setPointScaleMode,
-		render3D, fitCamera, setTagVisible,
+		setSplatCloud, setSplatOrder, setSplatPhase, setSplatRange, setSplatScaleMode,
+		render3D, fitCamera, setTagVisible, cameraEye,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
+	import { SplatSorter } from '$lib/render/splat_sorter';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
 	import { viz_load_mesh, viz_sample } from '$lib/api';
+
+	const EMPTY_F32 = new Float32Array(0);
 
 	let {
 		mesh = null as MeshData | null,
@@ -47,6 +50,28 @@
 	// hides the user picked from the legend.
 	let hidden_tags = $state(new Set<number>());
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
+
+	// ── Splat depth-sort ────────────────────────────────────────────────
+	// Gaussian splats need a back-to-front draw order. The sort runs in a
+	// worker; we (re)request it whenever the camera moves. `last_cam_sig`
+	// debounces: a static camera (e.g. during field animation) skips it.
+	let sorter: SplatSorter | null = null;
+	let last_cam_sig = '';
+	function maybe_request_sort() {
+		if (!sorter || !gl_state || !gl_state.splatCloud) return;
+		const c = camera;
+		const sig = `${c.theta},${c.phi},${c.distance},${c.target[0]},${c.target[1]},${c.target[2]},${z_flip}`;
+		if (sig === last_cam_sig) return;
+		last_cam_sig = sig;
+		const eye = cameraEye(c);
+		let vx = c.target[0] - eye[0];
+		let vy = c.target[1] - eye[1];
+		let vz = c.target[2] - eye[2];
+		const l = Math.hypot(vx, vy, vz) || 1;
+		// Shader applies pos.z *= z_flip, so fold the flip into the view dir
+		// to keep the worker's depth keys consistent with what's drawn.
+		sorter.requestSort([vx / l, vy / l, (vz / l) * z_flip]);
+	}
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
@@ -341,11 +366,11 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex('#3a3a44'), -1);
 		}
 
-		// Field point cloud is sampled asynchronously in the worker (see the
-		// dedicated `$effect` below). rebuild() just clears any stale cloud
-		// here; the worker call repopulates it.
+		// Field splat cloud is sampled asynchronously (see the dedicated
+		// `$effect` below). rebuild() just clears any stale cloud here; the
+		// sampler repopulates it.
 		if (!useField) {
-			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			setSplatCloud(gl_state, EMPTY_F32, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 
@@ -459,6 +484,7 @@
 		const { w, h } = sync_canvas();
 		if (w <= 0 || h <= 0) return;
 		if (needs_rebuild) rebuild();
+		maybe_request_sort();
 		render3D(gl_state, camera, w, h, z_flip);
 	}
 
@@ -526,6 +552,15 @@
 		gl_state = initGL(canvas);
 		if (!gl_state) return;
 
+		// Depth-sort worker for the field splat cloud. On a fresh order it
+		// re-uploads the index buffer and repaints.
+		sorter = new SplatSorter((index) => {
+			if (gl_state) {
+				setSplatOrder(gl_state, index);
+				render_frame();
+			}
+		});
+
 		const ro = new ResizeObserver(() => mounted && render_frame());
 		if (container) ro.observe(container);
 
@@ -539,6 +574,7 @@
 		return () => {
 			mounted = false;
 			ro.disconnect();
+			if (sorter) { sorter.dispose(); sorter = null; }
 			if (gl_state) disposeGL(gl_state);
 			gl_state = null;
 		};
@@ -566,12 +602,12 @@
 	let viz_mesh_ready_for: MeshData | null = $state(null);
 	$effect(() => {
 		const m = mesh;
-		// Whenever the mesh changes (file load, regen), drop the old GPU point
+		// Whenever the mesh changes (file load, regen), drop the old GPU splat
 		// cloud immediately. Otherwise the previous file's field samples linger
-		// in their old coordinates on top of the new geometry until the worker
-		// finishes resampling.
+		// in their old coordinates on top of the new geometry until the
+		// sampler finishes resampling.
 		if (gl_state) {
-			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			setSplatCloud(gl_state, EMPTY_F32, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 		if (!m) { viz_mesh_ready_for = null; return; }
@@ -598,7 +634,11 @@
 			field_range = r.field_range;
 			last_range = r;
 			apply_scale_mode(gl_state, scale_mode, r);
-			setPointCloud(gl_state, r.positions, r.abc);
+			setSplatCloud(gl_state, r.positions, r.abc, r.sigma);
+			// Hand the new positions to the depth-sort worker and force a
+			// fresh sort on the next frame (identity order until it lands).
+			if (sorter) sorter.load(r.positions);
+			last_cam_sig = '';
 			render_frame();
 		}).catch((e) => console.error('viz_sample', e));
 	});
@@ -610,9 +650,9 @@
 		mode: 'log' | 'lin',
 		r: { log_floor: number; log_range: number; field_range: { min: number; max: number } },
 	) {
-		setPointScaleMode(gl, mode);
-		if (mode === 'log') setPointLogRange(gl, r.log_floor, r.log_range);
-		else setPointLinRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
+		setSplatScaleMode(gl, mode);
+		if (mode === 'log') setSplatRange(gl, r.log_floor, r.log_range);
+		else setSplatRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
 	}
 	$effect(() => {
 		const mode = scale_mode;
@@ -629,14 +669,14 @@
 		const want = show_field && animate_field;
 		if (anim_raf != null) { cancelAnimationFrame(anim_raf); anim_raf = null; }
 		if (!want || !gl_state) {
-			if (gl_state) { setPointPhase(gl_state, 0); render_frame(); }
+			if (gl_state) { setSplatPhase(gl_state, 0); render_frame(); }
 			return;
 		}
 		const t0 = performance.now();
 		const tick = () => {
 			if (!gl_state) return;
 			const t = (performance.now() - t0) * 0.001;
-			setPointPhase(gl_state, t * 2 * Math.PI * anim_speed);
+			setSplatPhase(gl_state, t * 2 * Math.PI * anim_speed);
 			render_frame();
 			anim_raf = requestAnimationFrame(tick);
 		};
