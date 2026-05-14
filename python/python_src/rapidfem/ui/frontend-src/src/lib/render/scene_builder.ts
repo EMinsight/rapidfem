@@ -268,28 +268,21 @@ export function clearFieldCloud(state: GLState): void {
 //
 // Same algorithm as `$lib/viz.ts` (the sampler the in-app MeshViewer uses),
 // but in-line and synchronous for the embed which doesn't carry a worker.
-// Sampling is energy-weighted: per-tet draw probability is
-// `volume × (floor + energy)`, so splats concentrate where the field is
-// strong, and each sample carries the containing tet's characteristic size
-// as its world-space Gaussian σ.
+// N random points across the mesh volume, drawn with per-tet probability
+// `volume × energy` so density follows the field, and one global Gaussian σ
+// derived from the mean sample spacing.
 
-/** σ as a fraction of the containing tet's mean edge length — matches
- *  `viz.ts:SIGMA_FACTOR`. */
-const SIGMA_FACTOR = 0.22;
+/** Global σ as a fraction of the mean sample spacing — matches
+ *  `viz.ts:SPACING_FACTOR`. */
+const SPACING_FACTOR = 0.5;
 /** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. */
-const ENERGY_FLOOR = 0.2;
+const ENERGY_FLOOR = 0.08;
 
-interface TetSampleCache {
-	vols: Float64Array;     // |tet volume|, per tet
-	sizes: Float64Array;    // characteristic length (mean edge) × SIGMA_FACTOR
-}
-
-function buildTetCache(mesh: SceneMesh): TetSampleCache {
+function buildTetVolumes(mesh: SceneMesh): Float64Array {
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
 	const n = tets.length / 4;
 	const vols = new Float64Array(n);
-	const sizes = new Float64Array(n);
 	for (let t = 0; t < n; t++) {
 		const a = tets[t * 4], b = tets[t * 4 + 1],
 		      c = tets[t * 4 + 2], d = tets[t * 4 + 3];
@@ -304,18 +297,8 @@ function buildTetCache(mesh: SceneMesh): TetSampleCache {
 		          - e1y * (e2x * e3z - e2z * e3x)
 		          + e1z * (e2x * e3y - e2y * e3x);
 		vols[t] = Math.abs(det) / 6;
-		// Mean of the 6 edge lengths.
-		const px = [ax, bx, cx, dx], py = [ay, by, cy, dy], pz = [az, bz, cz, dz];
-		let edgeSum = 0;
-		for (let i = 0; i < 4; i++) {
-			for (let j = i + 1; j < 4; j++) {
-				const lx = px[i] - px[j], ly = py[i] - py[j], lz = pz[i] - pz[j];
-				edgeSum += Math.sqrt(lx * lx + ly * ly + lz * lz);
-			}
-		}
-		sizes[t] = (edgeSum / 6) * SIGMA_FACTOR;
 	}
-	return { vols, sizes };
+	return vols;
 }
 
 function bsearchCdf(cdf: Float64Array, target: number): number {
@@ -343,16 +326,16 @@ function uniformBary(out: [number, number, number, number]): void {
 }
 
 /** Energy-weighted random sampling of N field splats, with (A, B, C) phasor
- *  coefficients interpolated by barycentric weights and a per-splat σ from
- *  the containing tet. Same output shape `viz.ts:viz_sample` produces (plus
- *  maxE2/minE2 the embed uses for its colour range) — drop the positions /
- *  abc / sigma straight into `setSplatCloud`. */
+ *  coefficients interpolated by barycentric weights and one global σ from
+ *  the mean sample spacing. Same output shape `viz.ts:viz_sample` produces
+ *  (plus maxE2/minE2 the embed uses for its colour range) — drop the
+ *  positions / abc / sigma straight into `setSplatCloud`. */
 export function sampleFieldCloud(
 	mesh: SceneMesh,
 	fieldAbc: number[] | Float32Array,
 	n: number,
 ): { positions: Float32Array; abc: Float32Array; sigma: Float32Array; maxE2: number; minE2: number } {
-	const { vols, sizes } = buildTetCache(mesh);
+	const vols = buildTetVolumes(mesh);
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
 	const nTets = vols.length;
@@ -372,16 +355,20 @@ export function sampleFieldCloud(
 	}
 	if (eMax <= 0) eMax = 1;
 
-	// Energy-weighted CDF: weight = volume × (floor + energy_norm^0.7).
-	// The 0.7 exponent matches `viz.ts` — a gentle bias toward the field.
+	// Energy-weighted CDF: weight = volume × (floor + energy_norm).
 	const cdf = new Float64Array(nTets);
 	let acc = 0;
+	let totalVol = 0;
 	for (let t = 0; t < nTets; t++) {
 		const eNorm = energy[t] / eMax;
-		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * Math.pow(eNorm, 0.7));
+		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eNorm);
+		totalVol += vols[t];
 		cdf[t] = acc;
 	}
 	const totalWeight = acc || 1;
+
+	// One global σ from the mean sample spacing cbrt(totalVol / n).
+	const splatSigma = Math.cbrt(totalVol / Math.max(n, 1)) * SPACING_FACTOR;
 
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
@@ -409,7 +396,7 @@ export function sampleFieldCloud(
 		const B = w[0] * fieldAbc[a * 3 + 1] + w[1] * fieldAbc[b * 3 + 1] + w[2] * fieldAbc[c * 3 + 1] + w[3] * fieldAbc[d * 3 + 1];
 		const C = w[0] * fieldAbc[a * 3 + 2] + w[1] * fieldAbc[b * 3 + 2] + w[2] * fieldAbc[c * 3 + 2] + w[3] * fieldAbc[d * 3 + 2];
 		abc[i * 3] = A; abc[i * 3 + 1] = B; abc[i * 3 + 2] = C;
-		sigma[i] = sizes[ti];
+		sigma[i] = splatSigma;
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
 			if (e2 < minE2) minE2 = e2;

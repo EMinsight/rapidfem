@@ -182,9 +182,10 @@ void main() { fragColor = vec4(uColor, 1.0); }`;
 // The instanced attribute is a single uint index into that texture. Depth
 // sorting only re-uploads the small index buffer, never the bulk data.
 //
-// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ. 2.5σ already drops the
-// Gaussian to ~4%; going wider just burns fill rate on near-invisible edges.
-const EXTENT_SIGMA = 2.5;
+// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ. 2σ drops the Gaussian to
+// ~13%; going wider just burns fill rate on near-invisible edges, and fill
+// rate is the splat renderer's bottleneck.
+const EXTENT_SIGMA = 2.0;
 
 // MAX_NDC_RADIUS caps a splat's projected half-extent in NDC. Without this a
 // splat near the camera (tiny clip.w) blows up to cover the whole screen and

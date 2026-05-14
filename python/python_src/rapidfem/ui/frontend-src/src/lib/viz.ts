@@ -1,38 +1,35 @@
 /**
  * Volumetric field splat sampling.
  *
- * Given a mesh + per-node (A, B, C) phasor coefficients, we draw N random
- * points across the tet volume and interpolate (A, B, C) at each via
- * barycentric weights. Each sample becomes one world-space Gaussian splat.
+ * Identical to the old point-cloud sampler — N random points drawn across
+ * the mesh volume, (A, B, C) interpolated at each by barycentric weights —
+ * with one modifier: the per-tet draw probability is `volume × energy`
+ * instead of `volume`, so sample density follows the field energy. Each
+ * sample becomes one world-space Gaussian splat.
  *
- * Sampling is **energy-weighted**: the per-tet draw probability is
- * `volume × (floor + energy^p)`, so splats concentrate where the field is
- * strong and gradients are steep, instead of spreading uniformly through dead
- * air. Because the weighting depends on the field, the sampling CDF is built
+ * Because the weighting now depends on the field, the sampling CDF is built
  * per `viz_sample` call — `viz_load_mesh` only caches the field-independent
- * mesh geometry (per-tet volume + characteristic size).
+ * per-tet volumes.
  *
  * Coefficients encode |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin, which
  * the splat shader composites every frame against a phase uniform.
  */
 import type { MeshData } from './msh';
 
-/** Per-splat world-space σ as a fraction of the containing tet's mean edge
- *  length. Small on purpose: the *density* of splats fills the volume, not
- *  each splat's footprint — oversized splats just pile up overdraw. */
-const SIGMA_FACTOR = 0.22;
+/** Global splat σ as a fraction of the mean sample spacing cbrt(V/n). One σ
+ *  for the whole cloud (not per-tet) — 0.5 ⇒ neighbouring splats just touch
+ *  on average, which keeps the cloud continuous without runaway overdraw. */
+const SPACING_FACTOR = 0.5;
 
-/** Energy coverage floor: even zero-field tets keep this fraction of their
- *  volume-uniform weight. Kept fairly high (0.2) on purpose — pushing it
- *  lower stacks almost every splat into the hotspot, and the resulting
- *  overdraw tanks the frame rate without actually showing more detail. */
-const ENERGY_FLOOR = 0.2;
+/** Energy coverage floor: a tet with zero field still keeps this small
+ *  fraction of its volume weight, so vacuum regions don't drop out entirely
+ *  and the cloud stays continuous. The dominant term is still `volume × energy`. */
+const ENERGY_FLOOR = 0.08;
 
 interface VizCache {
 	nodes: Float64Array;
 	tets: Uint32Array;
 	vols: Float64Array;       // |tet volume|, per tet
-	sizes: Float32Array;      // characteristic length (mean edge), per tet
 }
 
 let cache: VizCache | null = null;
@@ -44,7 +41,6 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 		return;
 	}
 	const vols = new Float64Array(n_tets);
-	const sizes = new Float32Array(n_tets);
 	for (let t = 0; t < n_tets; t++) {
 		const a = m.tets[t * 4 + 0] * 3;
 		const b = m.tets[t * 4 + 1] * 3;
@@ -65,22 +61,8 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 			e1y * (e2x * e3z - e2z * e3x) +
 			e1z * (e2x * e3y - e2y * e3x);
 		vols[t] = Math.abs(det) / 6;
-
-		// Mean of the 6 edge lengths — robust to sliver tets, unlike cbrt(vol).
-		const p = [a, b, c, d];
-		let edgeSum = 0;
-		for (let i = 0; i < 4; i++) {
-			for (let j = i + 1; j < 4; j++) {
-				const pi = p[i], pj = p[j];
-				const dx = m.nodes[pi] - m.nodes[pj];
-				const dy = m.nodes[pi + 1] - m.nodes[pj + 1];
-				const dz = m.nodes[pi + 2] - m.nodes[pj + 2];
-				edgeSum += Math.sqrt(dx * dx + dy * dy + dz * dz);
-			}
-		}
-		sizes[t] = (edgeSum / 6) * SIGMA_FACTOR;
 	}
-	cache = { nodes: m.nodes, tets: m.tets, vols, sizes };
+	cache = { nodes: m.nodes, tets: m.tets, vols };
 }
 
 /** Binary search for the smallest index `i` with cdf[i] >= u. */
@@ -113,15 +95,10 @@ function uniform_bary(out: [number, number, number, number]): void {
  *
  * @param field_abc  per-node [A, B, C] phasor terms
  * @param n          number of splats to draw
- * @param energy_exp exponent on the normalised per-tet energy (p). 0 ⇒
- *                   volume-uniform; 1 ⇒ linear energy bias; higher ⇒ tighter
- *                   concentration on hotspots. Default 0.7 — a gentle bias
- *                   that resolves gradients without pathological stacking.
  */
 export async function viz_sample(
 	field_abc: Float32Array,
 	n: number,
-	energy_exp = 0.7,
 ): Promise<{
 	positions: Float32Array;
 	abc: Float32Array;
@@ -140,7 +117,7 @@ export async function viz_sample(
 	};
 	if (!cache || n <= 0 || !field_abc || field_abc.length === 0) return empty;
 
-	const { nodes, tets, vols, sizes } = cache;
+	const { nodes, tets, vols } = cache;
 	const n_tets = vols.length;
 
 	// ── Per-tet time-averaged energy from the phasor terms ──────────────
@@ -159,18 +136,24 @@ export async function viz_sample(
 	}
 	if (e_max <= 0) e_max = 1;
 
-	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm^p) ──
+	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm) ────
 	const cdf = new Float64Array(n_tets);
 	let acc = 0;
+	let total_vol = 0;
 	for (let t = 0; t < n_tets; t++) {
 		const e_norm = energy[t] / e_max;
-		const w = vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * Math.pow(e_norm, energy_exp));
-		acc += w;
+		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_norm);
+		total_vol += vols[t];
 		cdf[t] = acc;
 	}
 	if (acc <= 0) return empty;
 	const inv_total = 1 / acc;
 	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
+
+	// ── One global σ from the mean sample spacing ───────────────────────
+	// n points spread over total_vol sit ≈ cbrt(total_vol / n) apart; σ a
+	// fraction of that keeps the cloud continuous with bounded overdraw.
+	const splat_sigma = Math.cbrt(total_vol / n) * SPACING_FACTOR;
 
 	// ── Draw N splats ───────────────────────────────────────────────────
 	const positions = new Float32Array(n * 3);
@@ -201,7 +184,7 @@ export async function viz_sample(
 		abc[i * 3]     = A;
 		abc[i * 3 + 1] = B;
 		abc[i * 3 + 2] = C;
-		sigma[i] = sizes[t_idx];
+		sigma[i] = splat_sigma;
 		// Time-averaged |E|² = (A + B) / 2.
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
