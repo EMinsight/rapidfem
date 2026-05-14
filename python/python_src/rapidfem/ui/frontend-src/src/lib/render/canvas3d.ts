@@ -182,8 +182,14 @@ void main() { fragColor = vec4(uColor, 1.0); }`;
 // The instanced attribute is a single uint index into that texture. Depth
 // sorting only re-uploads the small index buffer, never the bulk data.
 //
-// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ; the Gaussian is ~0 beyond 3σ.
-const EXTENT_SIGMA = 3.0;
+// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ. 2.5σ already drops the
+// Gaussian to ~4%; going wider just burns fill rate on near-invisible edges.
+const EXTENT_SIGMA = 2.5;
+
+// MAX_NDC_RADIUS caps a splat's projected half-extent in NDC. Without this a
+// splat near the camera (tiny clip.w) blows up to cover the whole screen and
+// the resulting overdraw tanks the frame rate — this is THE perf knob.
+const MAX_NDC_RADIUS = 0.32;
 
 const SPLAT_VS = `#version 300 es
 precision highp float;
@@ -202,6 +208,7 @@ uniform float uLogScale;                   // 1.0 = log color mapping, 0.0 = lin
 out vec2 vCorner;                          // corner scaled to σ units
 out float vScalar;
 const float EXTENT = ${EXTENT_SIGMA.toFixed(1)};
+const float MAX_NDC_RADIUS = ${MAX_NDC_RADIUS.toFixed(2)};
 
 vec4 fetchTexel(int texel) {
 	return texelFetch(uSplatTex, ivec2(texel % uTexW, texel / uTexW), 0);
@@ -224,10 +231,17 @@ void main() {
 	vScalar = clamp(mix(norm_lin, norm_log, uLogScale), 0.0, 1.0);
 
 	vec4 clip = uMVP * vec4(pos, 1.0);
+	// Cull splats at/behind the camera plane — a non-positive w would invert
+	// or blow up the projected radius. Push the vertex outside clip space.
+	if (clip.w <= 1e-6) {
+		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+		vCorner = vec2(0.0);
+		return;
+	}
 	// Isotropic σ → screen ellipse: a world offset σ ⟂ the view dir projects
-	// to NDC half-extent σ·projScale / w. Offset the quad corner there, then
-	// back to clip space (×w).
-	vec2 ndcRadius = sigma * uProjScale / max(clip.w, 1e-6);
+	// to NDC half-extent σ·projScale / w. Capped at MAX_NDC_RADIUS so a single
+	// near splat can't cover the whole screen (overdraw guard).
+	vec2 ndcRadius = min(sigma * uProjScale / clip.w, vec2(MAX_NDC_RADIUS));
 	vCorner = aCorner * EXTENT;
 	gl_Position = vec4(clip.xy + aCorner * EXTENT * ndcRadius * clip.w, clip.z, clip.w);
 }`;
@@ -253,11 +267,11 @@ void main() {
 	float r2 = dot(vCorner, vCorner);
 	if (r2 > ${(EXTENT_SIGMA * EXTENT_SIGMA).toFixed(1)}) discard;
 	float g = exp(-0.5 * r2);                       // unit Gaussian falloff
-	vec3 col = inferno(vScalar);
 	// Alpha rises with field strength so weak regions stay translucent and
-	// hotspots read solid. Premultiplied output for back-to-front "over".
+	// hotspots build up. Premultiplied output for back-to-front "over".
 	float alpha = clamp(g * vScalar * uOpacity, 0.0, 1.0);
-	fragColor = vec4(col * alpha, alpha);
+	if (alpha < 0.004) discard;                     // skip near-invisible fill
+	fragColor = vec4(inferno(vScalar) * alpha, alpha);
 }`;
 
 // ─── GL helpers ─────────────────────────────────────────────────────
@@ -414,7 +428,7 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		splatCloud: null,
 		splatPhase: 0,
 		splatSigmaScale: 1,
-		splatOpacity: 0.55,
+		splatOpacity: 0.32,
 		splatRangeFloor: -30,
 		splatRangeSpan: 6,
 		splatLogScale: 0,

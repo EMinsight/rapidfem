@@ -275,9 +275,9 @@ export function clearFieldCloud(state: GLState): void {
 
 /** σ as a fraction of the containing tet's mean edge length — matches
  *  `viz.ts:SIGMA_FACTOR`. */
-const SIGMA_FACTOR = 0.35;
+const SIGMA_FACTOR = 0.22;
 /** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. */
-const ENERGY_FLOOR = 0.05;
+const ENERGY_FLOOR = 0.2;
 
 interface TetSampleCache {
 	vols: Float64Array;     // |tet volume|, per tet
@@ -372,12 +372,13 @@ export function sampleFieldCloud(
 	}
 	if (eMax <= 0) eMax = 1;
 
-	// Energy-weighted CDF: weight = volume × (floor + energy_norm).
+	// Energy-weighted CDF: weight = volume × (floor + energy_norm^0.7).
+	// The 0.7 exponent matches `viz.ts` — a gentle bias toward the field.
 	const cdf = new Float64Array(nTets);
 	let acc = 0;
 	for (let t = 0; t < nTets; t++) {
 		const eNorm = energy[t] / eMax;
-		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eNorm);
+		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * Math.pow(eNorm, 0.7));
 		cdf[t] = acc;
 	}
 	const totalWeight = acc || 1;

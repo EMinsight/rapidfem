@@ -18,13 +18,15 @@
 import type { MeshData } from './msh';
 
 /** Per-splat world-space σ as a fraction of the containing tet's mean edge
- *  length. The splat shader extends the Gaussian to ±3σ; ~0.35 gives splats
- *  that overlap their neighbours enough to read as a continuous volume. */
-const SIGMA_FACTOR = 0.35;
+ *  length. Small on purpose: the *density* of splats fills the volume, not
+ *  each splat's footprint — oversized splats just pile up overdraw. */
+const SIGMA_FACTOR = 0.22;
 
 /** Energy coverage floor: even zero-field tets keep this fraction of their
- *  volume-uniform weight, so the cloud never fully abandons a region. */
-const ENERGY_FLOOR = 0.05;
+ *  volume-uniform weight. Kept fairly high (0.2) on purpose — pushing it
+ *  lower stacks almost every splat into the hotspot, and the resulting
+ *  overdraw tanks the frame rate without actually showing more detail. */
+const ENERGY_FLOOR = 0.2;
 
 interface VizCache {
 	nodes: Float64Array;
@@ -113,12 +115,13 @@ function uniform_bary(out: [number, number, number, number]): void {
  * @param n          number of splats to draw
  * @param energy_exp exponent on the normalised per-tet energy (p). 0 ⇒
  *                   volume-uniform; 1 ⇒ linear energy bias; higher ⇒ tighter
- *                   concentration on hotspots. Default 1.
+ *                   concentration on hotspots. Default 0.7 — a gentle bias
+ *                   that resolves gradients without pathological stacking.
  */
 export async function viz_sample(
 	field_abc: Float32Array,
 	n: number,
-	energy_exp = 1.0,
+	energy_exp = 0.7,
 ): Promise<{
 	positions: Float32Array;
 	abc: Float32Array;
