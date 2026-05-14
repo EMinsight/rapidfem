@@ -79,7 +79,7 @@
 		if (next.has(tag)) next.delete(tag); else next.add(tag);
 		hidden_tags = next;
 		setTagVisible(gl_state, tag, !next.has(tag));
-		render_frame();
+		schedule_render();
 	}
 	let is_dragging = false;
 	let is_right_drag = false;
@@ -108,7 +108,7 @@
 					start.target[2] + (target.target[2] - start.target[2]) * e
 				]
 			};
-			render_frame();
+			schedule_render();
 			if (t < 1) requestAnimationFrame(tick);
 			else anim_target = null;
 		}
@@ -134,7 +134,7 @@
 	}
 	export function flip_z() {
 		z_flip *= -1;
-		render_frame();
+		schedule_render();
 	}
 	export function save_png() {
 		if (!canvas) return;
@@ -488,12 +488,27 @@
 		render3D(gl_state, camera, w, h, z_flip);
 	}
 
+	// Coalesce renders onto a single rAF tick. Pointer events, the
+	// depth-sort worker callback, $effects and the ResizeObserver can all
+	// fire several times before the next display refresh — without this
+	// they each trigger a full render, e.g. orbiting drove TWO renders per
+	// move (one on pointermove, one on the sort result). One render/frame.
+	let render_scheduled = false;
+	function schedule_render() {
+		if (render_scheduled) return;
+		render_scheduled = true;
+		requestAnimationFrame(() => {
+			render_scheduled = false;
+			render_frame();
+		});
+	}
+
 	// ── Pointer / wheel handlers (orbit/pan/zoom analog rapidpassives) ──
 	function on_wheel(e: WheelEvent) {
 		e.preventDefault();
 		const factor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
 		camera = { ...camera, distance: camera.distance * factor };
-		render_frame();
+		schedule_render();
 	}
 	function on_pointer_down(e: PointerEvent) {
 		is_dragging = true;
@@ -539,7 +554,7 @@
 				phi: Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, camera.phi + dy * 0.005))
 			};
 		}
-		render_frame();
+		schedule_render();
 	}
 	function on_pointer_up() { is_dragging = false; is_right_drag = false; }
 	function on_context_menu(e: Event) { e.preventDefault(); }
@@ -557,11 +572,11 @@
 		sorter = new SplatSorter((index) => {
 			if (gl_state) {
 				setSplatOrder(gl_state, index);
-				render_frame();
+				schedule_render();
 			}
 		});
 
-		const ro = new ResizeObserver(() => mounted && render_frame());
+		const ro = new ResizeObserver(() => mounted && schedule_render());
 		if (container) ro.observe(container);
 
 		// Initial fit + render once mesh is available
@@ -585,7 +600,7 @@
 		mesh; wireframe; show_geometry; show_wireframe; show_field; field; point_density;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
-		render_frame();
+		schedule_render();
 	});
 
 
@@ -639,7 +654,7 @@
 			// fresh sort on the next frame (identity order until it lands).
 			if (sorter) sorter.load(r.positions);
 			last_cam_sig = '';
-			render_frame();
+			schedule_render();
 		}).catch((e) => console.error('viz_sample', e));
 	});
 
@@ -658,7 +673,7 @@
 		const mode = scale_mode;
 		if (!gl_state || !last_range) return;
 		apply_scale_mode(gl_state, mode, last_range);
-		render_frame();
+		schedule_render();
 	});
 
 	// Wave animation: while `show_field` is on AND the `animate_field` prop is
@@ -669,7 +684,7 @@
 		const want = show_field && animate_field;
 		if (anim_raf != null) { cancelAnimationFrame(anim_raf); anim_raf = null; }
 		if (!want || !gl_state) {
-			if (gl_state) { setSplatPhase(gl_state, 0); render_frame(); }
+			if (gl_state) { setSplatPhase(gl_state, 0); schedule_render(); }
 			return;
 		}
 		const t0 = performance.now();
@@ -677,7 +692,7 @@
 			if (!gl_state) return;
 			const t = (performance.now() - t0) * 0.001;
 			setSplatPhase(gl_state, t * 2 * Math.PI * anim_speed);
-			render_frame();
+			schedule_render();
 			anim_raf = requestAnimationFrame(tick);
 		};
 		anim_raf = requestAnimationFrame(tick);
