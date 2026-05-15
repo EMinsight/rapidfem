@@ -69,6 +69,11 @@
 		field_channel === 'H' ? fields_h_raw :
 		fields_raw,
 	);
+	let available_channels = $derived<('E' | 'J' | 'H')[]>([
+		...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
+		...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
+		...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
+	]);
 	let field_abc = $derived<Float32Array | null>(
 		active_channel_raw && active_channel_raw[field_freq_idx] && active_channel_raw[field_freq_idx][field_port_idx]
 			? new Float32Array(active_channel_raw[field_freq_idx][field_port_idx] as number[])
@@ -734,9 +739,10 @@
 								{show_wireframe}
 								{show_field}
 								field={show_field ? field_abc : null}
-								{field_channel}
+								bind:field_channel
+								{available_channels}
 								point_density={field_density}
-								scale_mode={field_scale_mode}
+								bind:scale_mode={field_scale_mode}
 							/>
 						{:else if eigenmode_mode}
 							<div class="eigenmode-summary">
@@ -783,34 +789,6 @@
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
 								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
-							<div class="field-ctrl">
-								<span class="lbl">Channel</span>
-								<div class="seg">
-									<button
-										class:active={field_channel === 'E'}
-										onclick={() => (field_channel = 'E')}
-									>E</button>
-									<button
-										class:active={field_channel === 'J'}
-										disabled={!fields_j_raw}
-										title={fields_j_raw ? 'Conduction current density σE' : 'No lossy material in this run — J ≡ 0'}
-										onclick={() => (field_channel = 'J')}
-									>J</button>
-									<button
-										class:active={field_channel === 'H'}
-										disabled={!fields_h_raw}
-										title="Magnetic field ∇×E / (jωμ)"
-										onclick={() => (field_channel = 'H')}
-									>H</button>
-								</div>
-							</div>
-							<div class="field-ctrl">
-								<span class="lbl">Scale</span>
-								<div class="seg">
-									<button class:active={field_scale_mode === 'log'} onclick={() => (field_scale_mode = 'log')}>Log</button>
-									<button class:active={field_scale_mode === 'lin'} onclick={() => (field_scale_mode = 'lin')}>Lin</button>
-								</div>
-							</div>
 							{#if fields_raw[field_freq_idx] && fields_raw[field_freq_idx].length > 1}
 								<div class="field-ctrl">
 									<span class="lbl">Excitation</span>
@@ -1136,8 +1114,9 @@
 
 	.field-controls {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		gap: var(--space-xl);
+		gap: var(--space-sm) var(--space-xl);
 		padding: var(--space-sm) var(--space-lg);
 		background: var(--bg-surface);
 		border-top: 1px solid var(--border-subtle);
@@ -1149,6 +1128,11 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-md);
+		min-width: 0;
+	}
+	.field-ctrl .slider {
+		flex: 1 1 100px;
+		min-width: 60px;
 	}
 	.field-ctrl .lbl {
 		color: var(--text-dim);

@@ -19,9 +19,10 @@
 		show_wireframe = false,
 		show_field = false,
 		field = null,
-		field_channel = 'E',
+		field_channel = $bindable('E' as 'E' | 'J' | 'H'),
+		available_channels = ['E'] as ('E' | 'J' | 'H')[],
 		point_density = 5,
-		scale_mode = 'lin',
+		scale_mode = $bindable('lin' as 'log' | 'lin'),
 		animate_field = false,
 		anim_speed = 1
 	}: {
@@ -32,6 +33,7 @@
 		show_field?: boolean;
 		field?: Float32Array | null;
 		field_channel?: 'E' | 'J' | 'H';
+		available_channels?: ('E' | 'J' | 'H')[];
 		point_density?: number;
 		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
@@ -782,7 +784,10 @@
 
 		{#if show_field && field_range}
 			<div class="overlay-panel cb-panel">
-				<div class="op-title">|E| · V/m <span class="cb-mode">({scale_mode})</span></div>
+				<div class="op-title">
+					{CHANNEL_META[field_channel].sym} · {CHANNEL_META[field_channel].unit}
+					<span class="cb-mode">({scale_mode})</span>
+				</div>
 				<div class="cb-body">
 					<div class="cb-gradient">
 						{#each colorbar_ticks as tk}
@@ -825,17 +830,26 @@
 		</button>
 	</div>
 
-	{#if show_field && field_range}
-		<div class="colorbar">
-			<div class="cb-title">{CHANNEL_META[field_channel].sym} ({CHANNEL_META[field_channel].unit}) · {scale_mode} scale</div>
-			<div class="cb-body">
-				<div class="cb-gradient"></div>
-				<div class="cb-ticks">
-					{#each colorbar_ticks.toReversed() as tk}
-						<span class="cb-tick">{tk.label}</span>
-					{/each}
-				</div>
+	{#if show_field}
+		<div class="field-overlay" role="toolbar" aria-label="Field viz controls">
+			<div class="seg">
+				{#each (['E', 'J', 'H'] as const) as ch}
+					{@const enabled = available_channels.includes(ch)}
+					<button
+						class:active={field_channel === ch}
+						disabled={!enabled}
+						title={ch === 'E' ? 'E-field (V/m)' :
+						       ch === 'J' ? 'Conduction current density σE (A/m²)' :
+						                    'Magnetic field ∇×E / (jωμ) (A/m)'}
+						onclick={() => { if (enabled) field_channel = ch; }}
+					>{ch}</button>
+				{/each}
 			</div>
+			<button
+				class="scale-toggle"
+				title={scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}
+				onclick={() => (scale_mode = scale_mode === 'log' ? 'lin' : 'log')}
+			>{scale_mode}</button>
 		</div>
 	{/if}
 
@@ -928,6 +942,54 @@
 		z-index: 10;
 		display: flex;
 		gap: 2px;
+	}
+
+	.field-overlay {
+		position: absolute;
+		top: 46px;            /* just below .viewer-toolbar */
+		right: 10px;
+		z-index: 10;
+		display: flex;
+		gap: 4px;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+	}
+	.field-overlay .seg {
+		display: inline-flex;
+		border: 1px solid var(--border);
+		background: var(--bg-surface);
+	}
+	.field-overlay .seg button,
+	.field-overlay .scale-toggle {
+		background: transparent;
+		color: var(--text-muted);
+		border: 0;
+		height: 28px;
+		min-width: 28px;
+		padding: 0 6px;
+		font-family: inherit;
+		font-size: inherit;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		cursor: pointer;
+		transition: color var(--transition), background var(--transition);
+	}
+	.field-overlay .seg button + button { border-left: 1px solid var(--border); }
+	.field-overlay .seg button:hover:not(:disabled),
+	.field-overlay .scale-toggle:hover { color: var(--text); }
+	.field-overlay .seg button.active {
+		color: var(--accent);
+		background: var(--accent-dim);
+	}
+	.field-overlay .seg button:disabled {
+		color: var(--text-dim);
+		cursor: default;
+		opacity: 0.4;
+	}
+	.field-overlay .scale-toggle {
+		border: 1px solid var(--border);
+		background: var(--bg-surface);
 	}
 	.tb {
 		position: relative;
