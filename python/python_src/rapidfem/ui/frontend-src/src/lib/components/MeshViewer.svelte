@@ -2,11 +2,10 @@
 	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setSplatCloud, setSplatOrder, setSplatPhase, setSplatRange, setSplatScaleMode,
-		render3D, fitCamera, setTagVisible, cameraEye,
+		setSplatCloud, setSplatPhase, setSplatRange, setSplatScaleMode,
+		render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
-	import { SplatSorter } from '$lib/render/splat_sorter';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
 	import { viz_load_mesh, viz_sample } from '$lib/api';
@@ -51,27 +50,6 @@
 	let hidden_tags = $state(new Set<number>());
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
-	// ── Splat depth-sort ────────────────────────────────────────────────
-	// Gaussian splats need a back-to-front draw order. The sort runs in a
-	// worker; we (re)request it whenever the camera moves. `last_cam_sig`
-	// debounces: a static camera (e.g. during field animation) skips it.
-	let sorter: SplatSorter | null = null;
-	let last_cam_sig = '';
-	function maybe_request_sort() {
-		if (!sorter || !gl_state || !gl_state.splatCloud) return;
-		const c = camera;
-		const sig = `${c.theta},${c.phi},${c.distance},${c.target[0]},${c.target[1]},${c.target[2]},${z_flip}`;
-		if (sig === last_cam_sig) return;
-		last_cam_sig = sig;
-		const eye = cameraEye(c);
-		let vx = c.target[0] - eye[0];
-		let vy = c.target[1] - eye[1];
-		let vz = c.target[2] - eye[2];
-		const l = Math.hypot(vx, vy, vz) || 1;
-		// Shader applies pos.z *= z_flip, so fold the flip into the view dir
-		// to keep the worker's depth keys consistent with what's drawn.
-		sorter.requestSort([vx / l, vy / l, (vz / l) * z_flip]);
-	}
 
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
@@ -484,7 +462,6 @@
 		const { w, h } = sync_canvas();
 		if (w <= 0 || h <= 0) return;
 		if (needs_rebuild) rebuild();
-		maybe_request_sort();
 		render3D(gl_state, camera, w, h, z_flip);
 	}
 
@@ -567,15 +544,6 @@
 		gl_state = initGL(canvas);
 		if (!gl_state) return;
 
-		// Depth-sort worker for the field splat cloud. On a fresh order it
-		// re-uploads the index buffer and repaints.
-		sorter = new SplatSorter((index) => {
-			if (gl_state) {
-				setSplatOrder(gl_state, index);
-				schedule_render();
-			}
-		});
-
 		const ro = new ResizeObserver(() => mounted && schedule_render());
 		if (container) ro.observe(container);
 
@@ -589,7 +557,6 @@
 		return () => {
 			mounted = false;
 			ro.disconnect();
-			if (sorter) { sorter.dispose(); sorter = null; }
 			if (gl_state) disposeGL(gl_state);
 			gl_state = null;
 		};
@@ -650,10 +617,6 @@
 			last_range = r;
 			apply_scale_mode(gl_state, scale_mode, r);
 			setSplatCloud(gl_state, r.positions, r.abc, r.sigma);
-			// Hand the new positions to the depth-sort worker and force a
-			// fresh sort on the next frame (identity order until it lands).
-			if (sorter) sorter.load(r.positions);
-			last_cam_sig = '';
 			schedule_render();
 		}).catch((e) => console.error('viz_sample', e));
 	});

@@ -79,12 +79,12 @@ export interface GLState {
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
 	/** World-space Gaussian splat cloud. `tex` holds 2 RGBA32F texels per
-	 *  splat; `indexBuf` is the depth-sorted draw order (one uint/splat). */
+	 *  splat; instances index it via gl_InstanceID — additive blending
+	 *  removes the need for any explicit draw order. */
 	splatCloud: {
 		vao: WebGLVertexArrayObject;
 		tex: WebGLTexture;
 		texW: number;
-		indexBuf: WebGLBuffer;
 		count: number;
 	} | null;
 	splatPhase: number;
@@ -176,11 +176,17 @@ void main() { fragColor = vec4(uColor, 1.0); }`;
 // the perspective scale, so splats keep a consistent *physical* size at any
 // zoom — no screen-space clamp artefacts like the old gl.POINTS path.
 //
+// Blending is **additive** (ONE, ONE), depth test off: every splat adds its
+// brightness regardless of order, so overlapping splats accumulate a glow
+// instead of occluding each other. That's what gives the cloud a volumetric
+// "see-through" feel — alpha-over compositing makes it look like a surface.
+// As a bonus: no depth sort needed, no inter-splat ordering, one render per
+// camera move, no worker.
+//
 // Splat data lives in an RGBA32F texture (2 texels per splat):
 //   texel 0 = (x, y, z, σ)
 //   texel 1 = (A, B, C, _)   phasor terms for |E(t)|² animation
-// The instanced attribute is a single uint index into that texture. Depth
-// sorting only re-uploads the small index buffer, never the bulk data.
+// Each instance fetches its texels by `gl_InstanceID`.
 //
 // EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ. 2σ drops the Gaussian to
 // ~13%; going wider just burns fill rate on near-invisible edges, and fill
@@ -195,7 +201,6 @@ const MAX_NDC_RADIUS = 0.32;
 const SPLAT_VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 aCorner;        // base quad corner in [-1,1]²
-layout(location=1) in uint aIndex;         // splat index (instanced, divisor 1)
 uniform sampler2D uSplatTex;
 uniform int uTexW;
 uniform mat4 uMVP;
@@ -215,7 +220,7 @@ vec4 fetchTexel(int texel) {
 	return texelFetch(uSplatTex, ivec2(texel % uTexW, texel / uTexW), 0);
 }
 void main() {
-	int si = int(aIndex);
+	int si = gl_InstanceID;
 	vec4 d0 = fetchTexel(si * 2);
 	vec4 d1 = fetchTexel(si * 2 + 1);
 	vec3 pos = d0.xyz;
@@ -268,11 +273,12 @@ void main() {
 	float r2 = dot(vCorner, vCorner);
 	if (r2 > ${(EXTENT_SIGMA * EXTENT_SIGMA).toFixed(1)}) discard;
 	float g = exp(-0.5 * r2);                       // unit Gaussian falloff
-	// Alpha rises with field strength so weak regions stay translucent and
-	// hotspots build up. Premultiplied output for back-to-front "over".
-	float alpha = clamp(g * vScalar * uOpacity, 0.0, 1.0);
-	if (alpha < 0.004) discard;                     // skip near-invisible fill
-	fragColor = vec4(inferno(vScalar) * alpha, alpha);
+	// Additive output: brightness ∝ field × falloff × global gain. The alpha
+	// channel is ignored by the (ONE, ONE) blend func; we set it to 1 for
+	// cleanliness. Low-field regions naturally fade out, hot regions stack.
+	float intensity = g * vScalar * uOpacity;
+	if (intensity < 0.004) discard;                 // skip near-invisible fill
+	fragColor = vec4(inferno(vScalar) * intensity, 1.0);
 }`;
 
 // ─── GL helpers ─────────────────────────────────────────────────────
@@ -429,7 +435,7 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		splatCloud: null,
 		splatPhase: 0,
 		splatSigmaScale: 1,
-		splatOpacity: 0.32,
+		splatOpacity: 1.0,
 		splatRangeFloor: -30,
 		splatRangeSpan: 6,
 		splatLogScale: 0,
@@ -450,7 +456,6 @@ export function disposeGL(state: GLState): void {
 	if (state.splatCloud) {
 		gl.deleteVertexArray(state.splatCloud.vao);
 		gl.deleteTexture(state.splatCloud.tex);
-		gl.deleteBuffer(state.splatCloud.indexBuf);
 	}
 	gl.deleteBuffer(state.splatQuadBuf);
 	gl.deleteProgram(state.program);
@@ -486,9 +491,9 @@ const SPLAT_TEX_W = 4096;
  *  abc:       [A,B,C,...] per splat — phasor terms for |E(t)|² animation
  *  sigma:     [σ,...]      per splat — world-space Gaussian std-dev
  *
- *  Splat data is packed into an RGBA32F texture (2 texels/splat); the draw
- *  order index buffer is initialised to identity and replaced per frame by
- *  `setSplatOrder` once the depth-sort worker answers. */
+ *  Splat data is packed into an RGBA32F texture (2 texels/splat); each draw
+ *  instance fetches its texels by `gl_InstanceID` — no index buffer, no
+ *  ordering, additive blending makes draw order irrelevant. */
 export function setSplatCloud(
 	state: GLState,
 	positions: Float32Array,
@@ -499,7 +504,6 @@ export function setSplatCloud(
 	if (state.splatCloud) {
 		gl.deleteVertexArray(state.splatCloud.vao);
 		gl.deleteTexture(state.splatCloud.tex);
-		gl.deleteBuffer(state.splatCloud.indexBuf);
 		state.splatCloud = null;
 	}
 	const count = positions.length / 3;
@@ -529,39 +533,15 @@ export function setSplatCloud(
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 	gl.bindTexture(gl.TEXTURE_2D, null);
 
-	// Identity draw order until the first sort lands.
-	const index = new Uint32Array(count);
-	for (let i = 0; i < count; i++) index[i] = i;
-	const indexBuf = gl.createBuffer()!;
-	gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf);
-	gl.bufferData(gl.ARRAY_BUFFER, index, gl.DYNAMIC_DRAW);
-
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
-	// location 0: base quad corner (per-vertex)
 	gl.bindBuffer(gl.ARRAY_BUFFER, state.splatQuadBuf);
 	gl.enableVertexAttribArray(0);
 	gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-	// location 1: splat index (per-instance)
-	gl.bindBuffer(gl.ARRAY_BUFFER, indexBuf);
-	gl.enableVertexAttribArray(1);
-	gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 0);
-	gl.vertexAttribDivisor(1, 1);
 	gl.bindVertexArray(null);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-	state.splatCloud = { vao, tex, texW, indexBuf, count };
-}
-
-/** Upload a fresh depth-sorted draw order (back-to-front). `index` length
- *  must equal the current splat count; ignored otherwise. */
-export function setSplatOrder(state: GLState, index: Uint32Array): void {
-	const { gl } = state;
-	const sc = state.splatCloud;
-	if (!sc || index.length !== sc.count) return;
-	gl.bindBuffer(gl.ARRAY_BUFFER, sc.indexBuf);
-	gl.bufferSubData(gl.ARRAY_BUFFER, 0, index);
-	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+	state.splatCloud = { vao, tex, texW, count };
 }
 
 /** Set the field colour-mapping range. floor/span are interpreted per mode:
@@ -744,11 +724,10 @@ export function render3D(
 		}
 	}
 
-	// Splat pass (volumetric field) — world-space Gaussian splats, drawn
-	// back-to-front in the order the depth-sort worker last produced.
-	// Premultiplied "over" blending for correct alpha compositing; depth
-	// test ON (so splats behind solid conductor silhouettes are occluded)
-	// but depth write OFF (inter-splat ordering is handled by the sort).
+	// Splat pass (volumetric field) — world-space Gaussian splats with
+	// additive blending. Depth test OFF so splats behind solid geometry
+	// still contribute to the cloud (we want to see *through* the volume,
+	// not only the front slab). Order-independent → no sorting needed.
 	if (state.splatCloud && state.splatCloud.count > 0) {
 		const sc = state.splatCloud;
 		gl.useProgram(state.splatProgram);
@@ -767,13 +746,15 @@ export function render3D(
 		gl.bindTexture(gl.TEXTURE_2D, sc.tex);
 		gl.uniform1i(state.uSplatTex, 0);
 		gl.uniform1i(state.uSplatTexW, sc.texW);
+		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);
-		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+		gl.blendFunc(gl.ONE, gl.ONE);
 		gl.bindVertexArray(sc.vao);
 		gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sc.count);
 		gl.disable(gl.BLEND);
 		gl.depthMask(true);
+		gl.enable(gl.DEPTH_TEST);
 		gl.bindTexture(gl.TEXTURE_2D, null);
 	}
 	gl.bindVertexArray(null);

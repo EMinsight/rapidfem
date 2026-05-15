@@ -28,14 +28,13 @@
 
 import {
 	initGL, disposeGL, createCamera, clearMeshes, setTagVisible,
-	setSplatCloud, setSplatOrder, setSplatRange, setSplatScaleMode, cameraEye,
+	setSplatCloud, setSplatRange, setSplatScaleMode,
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
 import {
 	buildScene, clearFieldCloud, sampleFieldCloud, WIRE_TAG,
 } from '../lib/render/scene_builder';
-import { SplatSorter } from '../lib/render/splat_sorter';
 
 const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
 
@@ -153,9 +152,6 @@ class FemViewerElement extends HTMLElement {
 		positions: Float32Array; abc: Float32Array; sigma: Float32Array;
 		maxE2: number; minE2: number;
 	}>();
-	// Depth-sort worker for the field splat cloud + camera-change debounce.
-	private sorter: SplatSorter | null = null;
-	private lastCamSig = '';
 
 	static get observedAttributes() {
 		return ['src', 'width', 'height', 'rotate', 'cycle', 'mode', 'interactive',
@@ -196,14 +192,6 @@ class FemViewerElement extends HTMLElement {
 		this.glState = initGL(this.canvas);
 		if (!this.glState) return;
 
-		// Depth-sort worker: on a fresh order, re-upload the index buffer.
-		this.sorter = new SplatSorter((index) => {
-			if (this.glState) {
-				setSplatOrder(this.glState, index);
-				this.needsRender = true;
-			}
-		});
-
 		if (this.hasAttribute('interactive')) {
 			this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
 			this.canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -242,7 +230,6 @@ class FemViewerElement extends HTMLElement {
 		this.mounted = false; this.animId++;
 		this.inObs?.disconnect(); this.inObs = null;
 		this.resObs?.disconnect(); this.resObs = null;
-		if (this.sorter) { this.sorter.dispose(); this.sorter = null; }
 		if (this.glState) disposeGL(this.glState);
 	}
 
@@ -401,9 +388,6 @@ class FemViewerElement extends HTMLElement {
 			this.fieldCloudCache.set(key, cached);
 		}
 		setSplatCloud(this.glState, cached.positions, cached.abc, cached.sigma);
-		// Hand positions to the sort worker; force a sort on the next frame.
-		if (this.sorter) this.sorter.load(cached.positions);
-		this.lastCamSig = '';
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
 		setSplatScaleMode(this.glState, mode);
 		if (mode === 'log') {
@@ -470,25 +454,8 @@ class FemViewerElement extends HTMLElement {
 		// vertex shader multiplies every vertex's z by 0 and the geometry
 		// collapses to a horizontal slice at z=0. (Lines stay correct because
 		// the line shader doesn't reference uZFlip.)
-		this.maybeRequestSort();
 		render3D(this.glState, this.camera, w, h, 1);
 		this.needsRender = false;
-	}
-
-	/** Re-request a splat depth sort when the camera has actually moved.
-	 *  A static camera (e.g. a non-rotating embed) skips it. */
-	private maybeRequestSort() {
-		if (!this.sorter || !this.glState || !this.glState.splatCloud) return;
-		const c = this.camera;
-		const sig = `${c.theta},${c.phi},${c.distance},${c.target[0]},${c.target[1]},${c.target[2]}`;
-		if (sig === this.lastCamSig) return;
-		this.lastCamSig = sig;
-		const eye = cameraEye(c);
-		let vx = c.target[0] - eye[0];
-		let vy = c.target[1] - eye[1];
-		let vz = c.target[2] - eye[2];
-		const l = Math.hypot(vx, vy, vz) || 1;
-		this.sorter.requestSort([vx / l, vy / l, vz / l]);
 	}
 
 	private startAnimation() {
