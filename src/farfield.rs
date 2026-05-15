@@ -208,7 +208,7 @@ pub fn compute_farfield_full(
                 let (ex, ey, ez) = interp::eval_field_in_tet(mesh, basis, solution, tet, x, y, z);
 
                 // curl(E) = jωμ₀ H  =>  H = curl(E) / (jωμ₀)
-                let curl_e = eval_curl_in_tet(mesh, basis, solution, tet);
+                let curl_e = eval_curl_in_tet(mesh, basis, solution, tet, x, y, z);
                 let denom = j * C64::from(omega * MU0);
                 let hx = curl_e[0] / denom;
                 let hy = curl_e[1] / denom;
