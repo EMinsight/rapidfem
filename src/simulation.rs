@@ -440,7 +440,14 @@ impl Simulation {
 
     /// Magnetic field H = ∇×E / (jωμ₀μ_r) at each mesh node, in (A/m).
     /// Returns `Vec<C64>` of length `3 · n_nodes` (interleaved Hx, Hy, Hz).
-    /// Uses the analytic Nédélec-2 curl (constant per tet at the centroid).
+    ///
+    /// Uses a **6-point central-difference curl** of the basis evaluator at
+    /// the node position. The shared analytic curl in `interp::eval_curl_in_tet`
+    /// is exact at the constant edge-mode part but only an approximation of
+    /// the linear face-mode contribution — fine for residual estimates, but
+    /// the per-tet scale artefacts make the resulting H field look noisy.
+    /// Finite differences side-step that by relying only on the field eval
+    /// being correct, which we verify elsewhere.
     pub fn h_field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
@@ -448,6 +455,27 @@ impl Simulation {
         let mur = self.per_tet_mur();
         let n_nodes = self.mesh.n_nodes();
         let node_to_tet = self.node_to_tet_map();
+
+        // FD step per tet — long enough to avoid FP cancellation, short
+        // enough to stay inside the element. 1e-3 of the longest edge gave
+        // stable curls in all examples tested.
+        let n_tets = self.mesh.n_tets();
+        let mut tet_h = vec![0.0f64; n_tets];
+        for ti in 0..n_tets {
+            let tet = &self.mesh.tets[ti];
+            let p0 = self.mesh.nodes[tet[0]];
+            let mut max_edge_sq = 0.0f64;
+            for k in 1..4 {
+                let pk = self.mesh.nodes[tet[k]];
+                let dx = pk[0] - p0[0];
+                let dy = pk[1] - p0[1];
+                let dz = pk[2] - p0[2];
+                let l2 = dx*dx + dy*dy + dz*dz;
+                if l2 > max_edge_sq { max_edge_sq = l2; }
+            }
+            tet_h[ti] = max_edge_sq.sqrt() * 1e-3;
+        }
+
         let j = C64::new(0.0, 1.0);
         let mut out: Vec<C64> = Vec::with_capacity(3 * n_nodes);
         for ni in 0..n_nodes {
@@ -456,13 +484,31 @@ impl Simulation {
                 out.extend_from_slice(&[C64::new(0.0, 0.0); 3]);
                 continue;
             }
-            let curl = crate::interp::eval_curl_in_tet(
-                &self.mesh, &self.basis, solution, tet_idx,
+            let p = self.mesh.nodes[ni];
+            let h = tet_h[tet_idx];
+            let eval = |x, y, z| crate::interp::eval_field_in_tet(
+                &self.mesh, &self.basis, solution, tet_idx, x, y, z,
             );
+            let (_, eyp_x, ezp_x) = eval(p[0]+h, p[1], p[2]);
+            let (_, eym_x, ezm_x) = eval(p[0]-h, p[1], p[2]);
+            let (exp_y, _, ezp_y) = eval(p[0], p[1]+h, p[2]);
+            let (exm_y, _, ezm_y) = eval(p[0], p[1]-h, p[2]);
+            let (exp_z, eyp_z, _) = eval(p[0], p[1], p[2]+h);
+            let (exm_z, eym_z, _) = eval(p[0], p[1], p[2]-h);
+            let inv2h = C64::from(0.5 / h);
+            let d_ez_dy = (ezp_y - ezm_y) * inv2h;
+            let d_ey_dz = (eyp_z - eym_z) * inv2h;
+            let d_ex_dz = (exp_z - exm_z) * inv2h;
+            let d_ez_dx = (ezp_x - ezm_x) * inv2h;
+            let d_ey_dx = (eyp_x - eym_x) * inv2h;
+            let d_ex_dy = (exp_y - exm_y) * inv2h;
+            let curl_x = d_ez_dy - d_ey_dz;
+            let curl_y = d_ex_dz - d_ez_dx;
+            let curl_z = d_ey_dx - d_ex_dy;
             let denom = j * C64::from(omega * MU0 * mur[tet_idx]);
-            out.push(curl[0] / denom);
-            out.push(curl[1] / denom);
-            out.push(curl[2] / denom);
+            out.push(curl_x / denom);
+            out.push(curl_y / denom);
+            out.push(curl_z / denom);
         }
         Some(out)
     }

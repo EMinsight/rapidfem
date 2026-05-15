@@ -2,7 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setSplatCloud, setSplatPhase, setSplatRange, setSplatScaleMode,
+		setPointCloud, setPointPhase, setPointRange, setPointScaleMode,
 		render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
@@ -348,7 +348,7 @@
 		// `$effect` below). rebuild() just clears any stale cloud here; the
 		// sampler repopulates it.
 		if (!useField) {
-			setSplatCloud(gl_state, EMPTY_F32, EMPTY_F32, EMPTY_F32);
+			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 
@@ -589,7 +589,7 @@
 		// in their old coordinates on top of the new geometry until the
 		// sampler finishes resampling.
 		if (gl_state) {
-			setSplatCloud(gl_state, EMPTY_F32, EMPTY_F32, EMPTY_F32);
+			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 		if (!m) { viz_mesh_ready_for = null; return; }
@@ -616,7 +616,7 @@
 			field_range = r.field_range;
 			last_range = r;
 			apply_scale_mode(gl_state, scale_mode, r);
-			setSplatCloud(gl_state, r.positions, r.abc, r.sigma);
+			setPointCloud(gl_state, r.positions, r.abc);
 			schedule_render();
 		}).catch((e) => console.error('viz_sample', e));
 	});
@@ -628,9 +628,9 @@
 		mode: 'log' | 'lin',
 		r: { log_floor: number; log_range: number; field_range: { min: number; max: number } },
 	) {
-		setSplatScaleMode(gl, mode);
-		if (mode === 'log') setSplatRange(gl, r.log_floor, r.log_range);
-		else setSplatRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
+		setPointScaleMode(gl, mode);
+		if (mode === 'log') setPointRange(gl, r.log_floor, r.log_range);
+		else setPointRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
 	}
 	$effect(() => {
 		const mode = scale_mode;
@@ -647,14 +647,14 @@
 		const want = show_field && animate_field;
 		if (anim_raf != null) { cancelAnimationFrame(anim_raf); anim_raf = null; }
 		if (!want || !gl_state) {
-			if (gl_state) { setSplatPhase(gl_state, 0); schedule_render(); }
+			if (gl_state) { setPointPhase(gl_state, 0); schedule_render(); }
 			return;
 		}
 		const t0 = performance.now();
 		const tick = () => {
 			if (!gl_state) return;
 			const t = (performance.now() - t0) * 0.001;
-			setSplatPhase(gl_state, t * 2 * Math.PI * anim_speed);
+			setPointPhase(gl_state, t * 2 * Math.PI * anim_speed);
 			schedule_render();
 			anim_raf = requestAnimationFrame(tick);
 		};

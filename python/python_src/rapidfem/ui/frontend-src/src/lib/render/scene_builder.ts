@@ -20,7 +20,7 @@
  */
 
 import {
-	addMesh, addLineMesh, setBBox, setSplatCloud,
+	addMesh, addLineMesh, setBBox, setPointCloud,
 	type GLState,
 } from './canvas3d';
 import { buildVolumeBoundaries } from './mesh_scene';
@@ -198,7 +198,7 @@ export interface BuildSceneConfig {
  *
  * The field point cloud is not set here; the in-app viewer hands it
  * off to a worker and the embed builds a synchronous tet-centroid
- * sample — both call setSplatCloud themselves.
+ * sample — both call setPointCloud themselves.
  */
 export const WIRE_TAG = -1;
 
@@ -258,23 +258,19 @@ export function buildScene(
 	return { faceTags, wireTag };
 }
 
-/** Convenience: wipe the field splat cloud. Callers use this when toggling
+/** Convenience: wipe the field point cloud. Callers use this when toggling
  *  out of field mode. */
 export function clearFieldCloud(state: GLState): void {
-	setSplatCloud(state, new Float32Array(0), new Float32Array(0), new Float32Array(0));
+	setPointCloud(state, new Float32Array(0), new Float32Array(0));
 }
 
-// ── Volumetric field splat sampling ──────────────────────────────────
+// ── Volumetric field point sampling ──────────────────────────────────
 //
 // Same algorithm as `$lib/viz.ts` (the sampler the in-app MeshViewer uses),
 // but in-line and synchronous for the embed which doesn't carry a worker.
 // N random points across the mesh volume, drawn with per-tet probability
-// `volume × energy` so density follows the field, and one global Gaussian σ
-// derived from the mean sample spacing.
+// `volume × energy` so density follows the field.
 
-/** Global σ as a fraction of the mean sample spacing — matches
- *  `viz.ts:SPACING_FACTOR`. */
-const SPACING_FACTOR = 0.5;
 /** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. */
 const ENERGY_FLOOR = 0.08;
 
@@ -325,16 +321,15 @@ function uniformBary(out: [number, number, number, number]): void {
 	out[3] = 1 - u;
 }
 
-/** Energy-weighted random sampling of N field splats, with (A, B, C) phasor
- *  coefficients interpolated by barycentric weights and one global σ from
- *  the mean sample spacing. Same output shape `viz.ts:viz_sample` produces
- *  (plus maxE2/minE2 the embed uses for its colour range) — drop the
- *  positions / abc / sigma straight into `setSplatCloud`. */
+/** Energy-weighted random sampling of N field points, with (A, B, C) phasor
+ *  coefficients interpolated by barycentric weights. Same output shape
+ *  `viz.ts:viz_sample` produces (plus maxE2/minE2 the embed uses for its
+ *  colour range) — drop the positions / abc straight into `setPointCloud`. */
 export function sampleFieldCloud(
 	mesh: SceneMesh,
 	fieldAbc: number[] | Float32Array,
 	n: number,
-): { positions: Float32Array; abc: Float32Array; sigma: Float32Array; maxE2: number; minE2: number } {
+): { positions: Float32Array; abc: Float32Array; maxE2: number; minE2: number } {
 	const vols = buildTetVolumes(mesh);
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
@@ -358,21 +353,15 @@ export function sampleFieldCloud(
 	// Energy-weighted CDF: weight = volume × (floor + energy_norm).
 	const cdf = new Float64Array(nTets);
 	let acc = 0;
-	let totalVol = 0;
 	for (let t = 0; t < nTets; t++) {
 		const eNorm = energy[t] / eMax;
 		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eNorm);
-		totalVol += vols[t];
 		cdf[t] = acc;
 	}
 	const totalWeight = acc || 1;
 
-	// One global σ from the mean sample spacing cbrt(totalVol / n).
-	const splatSigma = Math.cbrt(totalVol / Math.max(n, 1)) * SPACING_FACTOR;
-
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
-	const sigma = new Float32Array(n);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
 	let minE2 = Infinity, maxE2 = 0;
 	for (let i = 0; i < n; i++) {
@@ -396,7 +385,6 @@ export function sampleFieldCloud(
 		const B = w[0] * fieldAbc[a * 3 + 1] + w[1] * fieldAbc[b * 3 + 1] + w[2] * fieldAbc[c * 3 + 1] + w[3] * fieldAbc[d * 3 + 1];
 		const C = w[0] * fieldAbc[a * 3 + 2] + w[1] * fieldAbc[b * 3 + 2] + w[2] * fieldAbc[c * 3 + 2] + w[3] * fieldAbc[d * 3 + 2];
 		abc[i * 3] = A; abc[i * 3 + 1] = B; abc[i * 3 + 2] = C;
-		sigma[i] = splatSigma;
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
 			if (e2 < minE2) minE2 = e2;
@@ -404,5 +392,5 @@ export function sampleFieldCloud(
 		}
 	}
 	if (!isFinite(minE2) || maxE2 === 0) { minE2 = 1; maxE2 = 1; }
-	return { positions, abc, sigma, maxE2, minE2 };
+	return { positions, abc, maxE2, minE2 };
 }

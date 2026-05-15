@@ -62,37 +62,27 @@ export interface GLState {
 	lineProgram: WebGLProgram;
 	uLineMVP: WebGLUniformLocation;
 	uLineColor: WebGLUniformLocation;
-	splatProgram: WebGLProgram;
-	uSplatTex: WebGLUniformLocation;
-	uSplatTexW: WebGLUniformLocation;
-	uSplatMVP: WebGLUniformLocation;
-	uSplatZFlip: WebGLUniformLocation;
-	uSplatPhase: WebGLUniformLocation;
-	uSplatProjScale: WebGLUniformLocation;
-	uSplatSigmaScale: WebGLUniformLocation;
-	uSplatRangeFloor: WebGLUniformLocation;
-	uSplatRangeSpan: WebGLUniformLocation;
-	uSplatLogScale: WebGLUniformLocation;
-	uSplatOpacity: WebGLUniformLocation;
-	/** Shared base-quad VBO for the instanced splat draw. */
-	splatQuadBuf: WebGLBuffer;
+	pointProgram: WebGLProgram;
+	uPointMVP: WebGLUniformLocation;
+	uPointZFlip: WebGLUniformLocation;
+	uPointScale: WebGLUniformLocation;
+	uPointPhase: WebGLUniformLocation;
+	uPointRangeFloor: WebGLUniformLocation;
+	uPointRangeSpan: WebGLUniformLocation;
+	uPointLogScale: WebGLUniformLocation;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
-	/** World-space Gaussian splat cloud. `tex` holds 2 RGBA32F texels per
-	 *  splat; instances index it via gl_InstanceID — additive blending
-	 *  removes the need for any explicit draw order. */
-	splatCloud: {
+	/** Volumetric field point cloud. Two interleaved float-3 attributes:
+	 *  position (x, y, z) and (A, B, C) phasor terms per sample. */
+	pointCloud: {
 		vao: WebGLVertexArrayObject;
-		tex: WebGLTexture;
-		texW: number;
+		buffers: WebGLBuffer[];
 		count: number;
 	} | null;
-	splatPhase: number;
-	splatSigmaScale: number;
-	splatOpacity: number;
-	splatRangeFloor: number;
-	splatRangeSpan: number;
-	splatLogScale: number;
+	pointPhase: number;
+	pointRangeFloor: number;
+	pointRangeSpan: number;
+	pointLogScale: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
 
@@ -169,94 +159,53 @@ uniform vec3 uColor;
 out vec4 fragColor;
 void main() { fragColor = vec4(uColor, 1.0); }`;
 
-// ── Volumetric field as world-space Gaussian splats ──
+// ── Volumetric field as a gl.POINTS sprite cloud ──
 //
-// Each splat is an isotropic 3D Gaussian (world-space σ) drawn as a single
-// instanced quad. The vertex shader projects σ to a screen-space radius via
-// the perspective scale, so splats keep a consistent *physical* size at any
-// zoom — no screen-space clamp artefacts like the old gl.POINTS path.
+// Each field sample is one gl.POINTS sprite, sized in *screen pixels* with a
+// clamp so the cloud stays performant at any zoom: small enough to never
+// flood fill rate, large enough to stay visible at typical distances. The
+// fragment shader emits a soft round disc that fades into the colour ramp.
 //
-// Blending is **additive** (ONE, ONE), depth test off: every splat adds its
-// brightness regardless of order, so overlapping splats accumulate a glow
-// instead of occluding each other. That's what gives the cloud a volumetric
-// "see-through" feel — alpha-over compositing makes it look like a surface.
-// As a bonus: no depth sort needed, no inter-splat ordering, one render per
-// camera move, no worker.
+// Blending is additive (ONE, ONE) with depth test OFF — every point adds
+// brightness, nothing is occluded, and you see *through* the whole volume
+// rather than just the front slab. That's what gives the cloud its
+// volumetric glow.
 //
-// Splat data lives in an RGBA32F texture (2 texels per splat):
-//   texel 0 = (x, y, z, σ)
-//   texel 1 = (A, B, C, _)   phasor terms for |E(t)|² animation
-// Each instance fetches its texels by `gl_InstanceID`.
-//
-// EXTENT_SIGMA: the quad spans ±EXTENT_SIGMA·σ. 2σ drops the Gaussian to
-// ~13%; going wider just burns fill rate on near-invisible edges, and fill
-// rate is the splat renderer's bottleneck.
-const EXTENT_SIGMA = 2.0;
-
-// MAX_NDC_RADIUS caps a splat's projected half-extent in NDC. Without this a
-// splat near the camera (tiny clip.w) blows up to cover the whole screen and
-// the resulting overdraw tanks the frame rate — this is THE perf knob.
-const MAX_NDC_RADIUS = 0.32;
-
-const SPLAT_VS = `#version 300 es
+// (A, B, C) are phasor terms; the shader composites |E(t)|² per frame
+// against a phase uniform for the wave animation.
+const POINT_VS = `#version 300 es
 precision highp float;
-layout(location=0) in vec2 aCorner;        // base quad corner in [-1,1]²
-uniform sampler2D uSplatTex;
-uniform int uTexW;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aABC;           // (A, B, C) phasor terms
 uniform mat4 uMVP;
 uniform float uZFlip;
+uniform float uPointScale;                 // base size in pixels at unit clip-w
 uniform float uPhase;                      // current ωt in radians
-uniform vec2 uProjScale;                   // (proj[0][0], proj[1][1]) — perspective scale
-uniform float uSigmaScale;                 // global σ multiplier (UI tuning)
 uniform float uRangeFloor;                 // log10(|E|min) (log) or |E|min (lin)
 uniform float uRangeSpan;                  // log10(max/min) (log) or (|E|max−|E|min) (lin)
 uniform float uLogScale;                   // 1.0 = log color mapping, 0.0 = linear
-out vec2 vCorner;                          // corner scaled to σ units
 out float vScalar;
-const float EXTENT = ${EXTENT_SIGMA.toFixed(1)};
-const float MAX_NDC_RADIUS = ${MAX_NDC_RADIUS.toFixed(2)};
-
-vec4 fetchTexel(int texel) {
-	return texelFetch(uSplatTex, ivec2(texel % uTexW, texel / uTexW), 0);
-}
 void main() {
-	int si = gl_InstanceID;
-	vec4 d0 = fetchTexel(si * 2);
-	vec4 d1 = fetchTexel(si * 2 + 1);
-	vec3 pos = d0.xyz;
+	vec3 pos = aPos;
 	pos.z *= uZFlip;
-	float sigma = d0.w * uSigmaScale;
+	gl_Position = uMVP * vec4(pos, 1.0);
 
 	// |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
 	float c = cos(uPhase);
 	float s = sin(uPhase);
-	float e2 = d1.x * c * c + d1.y * s * s - 2.0 * d1.z * c * s;
+	float e2 = aABC.x * c * c + aABC.y * s * s - 2.0 * aABC.z * c * s;
 	float mag = sqrt(max(e2, 0.0));
 	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uRangeFloor) / max(uRangeSpan, 1e-9);
 	float norm_lin = (mag - uRangeFloor) / max(uRangeSpan, 1e-9);
 	vScalar = clamp(mix(norm_lin, norm_log, uLogScale), 0.0, 1.0);
 
-	vec4 clip = uMVP * vec4(pos, 1.0);
-	// Cull splats at/behind the camera plane — a non-positive w would invert
-	// or blow up the projected radius. Push the vertex outside clip space.
-	if (clip.w <= 1e-6) {
-		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-		vCorner = vec2(0.0);
-		return;
-	}
-	// Isotropic σ → screen ellipse: a world offset σ ⟂ the view dir projects
-	// to NDC half-extent σ·projScale / w. Capped at MAX_NDC_RADIUS so a single
-	// near splat can't cover the whole screen (overdraw guard).
-	vec2 ndcRadius = min(sigma * uProjScale / clip.w, vec2(MAX_NDC_RADIUS));
-	vCorner = aCorner * EXTENT;
-	gl_Position = vec4(clip.xy + aCorner * EXTENT * ndcRadius * clip.w, clip.z, clip.w);
+	float w = max(gl_Position.w, 1e-6);
+	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * vScalar), 4.0, 96.0);
 }`;
 
-const SPLAT_FS = `#version 300 es
+const POINT_FS = `#version 300 es
 precision highp float;
-in vec2 vCorner;
 in float vScalar;
-uniform float uOpacity;                    // global opacity multiplier
 out vec4 fragColor;
 vec3 inferno(float t) {
 	t = clamp(t, 0.0, 1.0);
@@ -270,15 +219,13 @@ vec3 inferno(float t) {
 	return c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
 }
 void main() {
-	float r2 = dot(vCorner, vCorner);
-	if (r2 > ${(EXTENT_SIGMA * EXTENT_SIGMA).toFixed(1)}) discard;
-	float g = exp(-0.5 * r2);                       // unit Gaussian falloff
-	// Additive output: brightness ∝ field × falloff × global gain. The alpha
-	// channel is ignored by the (ONE, ONE) blend func; we set it to 1 for
-	// cleanliness. Low-field regions naturally fade out, hot regions stack.
-	float intensity = g * vScalar * uOpacity;
-	if (intensity < 0.004) discard;                 // skip near-invisible fill
-	fragColor = vec4(inferno(vScalar) * intensity, 1.0);
+	vec2 uv = gl_PointCoord * 2.0 - 1.0;
+	float r2 = dot(uv, uv);
+	if (r2 > 1.0) discard;
+	float falloff = pow(1.0 - r2, 2.0);
+	vec3 col = inferno(vScalar);
+	// Additive: low-field points fade out, hotspots accumulate brightness.
+	fragColor = vec4(col * (vScalar * falloff), 1.0);
 }`;
 
 // ─── GL helpers ─────────────────────────────────────────────────────
@@ -387,18 +334,12 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 
 	const program = linkProgram(gl, VS, FS);
 	const lineProgram = linkProgram(gl, LINE_VS, LINE_FS);
-	const splatProgram = linkProgram(gl, SPLAT_VS, SPLAT_FS);
+	const pointProgram = linkProgram(gl, POINT_VS, POINT_FS);
 
 	const bg = hexToRgb(canvasTheme.bg);
 	gl.clearColor(bg[0], bg[1], bg[2], 1);
 	gl.enable(gl.DEPTH_TEST);
 	gl.disable(gl.CULL_FACE);
-
-	// Shared base quad for the instanced splat draw: a [-1,1]² triangle strip.
-	const splatQuadBuf = gl.createBuffer()!;
-	gl.bindBuffer(gl.ARRAY_BUFFER, splatQuadBuf);
-	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
 	return {
 		gl,
@@ -417,28 +358,21 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		lineProgram,
 		uLineMVP: gl.getUniformLocation(lineProgram, 'uMVP')!,
 		uLineColor: gl.getUniformLocation(lineProgram, 'uColor')!,
-		splatProgram,
-		uSplatTex: gl.getUniformLocation(splatProgram, 'uSplatTex')!,
-		uSplatTexW: gl.getUniformLocation(splatProgram, 'uTexW')!,
-		uSplatMVP: gl.getUniformLocation(splatProgram, 'uMVP')!,
-		uSplatZFlip: gl.getUniformLocation(splatProgram, 'uZFlip')!,
-		uSplatPhase: gl.getUniformLocation(splatProgram, 'uPhase')!,
-		uSplatProjScale: gl.getUniformLocation(splatProgram, 'uProjScale')!,
-		uSplatSigmaScale: gl.getUniformLocation(splatProgram, 'uSigmaScale')!,
-		uSplatRangeFloor: gl.getUniformLocation(splatProgram, 'uRangeFloor')!,
-		uSplatRangeSpan: gl.getUniformLocation(splatProgram, 'uRangeSpan')!,
-		uSplatLogScale: gl.getUniformLocation(splatProgram, 'uLogScale')!,
-		uSplatOpacity: gl.getUniformLocation(splatProgram, 'uOpacity')!,
-		splatQuadBuf,
+		pointProgram,
+		uPointMVP: gl.getUniformLocation(pointProgram, 'uMVP')!,
+		uPointZFlip: gl.getUniformLocation(pointProgram, 'uZFlip')!,
+		uPointScale: gl.getUniformLocation(pointProgram, 'uPointScale')!,
+		uPointPhase: gl.getUniformLocation(pointProgram, 'uPhase')!,
+		uPointRangeFloor: gl.getUniformLocation(pointProgram, 'uRangeFloor')!,
+		uPointRangeSpan: gl.getUniformLocation(pointProgram, 'uRangeSpan')!,
+		uPointLogScale: gl.getUniformLocation(pointProgram, 'uLogScale')!,
 		meshes: [],
 		lineMeshes: [],
-		splatCloud: null,
-		splatPhase: 0,
-		splatSigmaScale: 1,
-		splatOpacity: 1.0,
-		splatRangeFloor: -30,
-		splatRangeSpan: 6,
-		splatLogScale: 0,
+		pointCloud: null,
+		pointPhase: 0,
+		pointRangeFloor: -30,
+		pointRangeSpan: 6,
+		pointLogScale: 0,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -453,18 +387,17 @@ export function disposeGL(state: GLState): void {
 		gl.deleteVertexArray(m.vao);
 		for (const b of m.buffers) gl.deleteBuffer(b);
 	}
-	if (state.splatCloud) {
-		gl.deleteVertexArray(state.splatCloud.vao);
-		gl.deleteTexture(state.splatCloud.tex);
+	if (state.pointCloud) {
+		gl.deleteVertexArray(state.pointCloud.vao);
+		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
 	}
-	gl.deleteBuffer(state.splatQuadBuf);
 	gl.deleteProgram(state.program);
 	gl.deleteProgram(state.lineProgram);
-	gl.deleteProgram(state.splatProgram);
+	gl.deleteProgram(state.pointProgram);
 }
 
-/** Drop surface and line meshes. The splat cloud has its own lifecycle
- *  (setSplatCloud manages its GL resources) and survives a rebuild so the
+/** Drop surface and line meshes. The point cloud has its own lifecycle
+ *  (setPointCloud manages its GL resources) and survives a rebuild so the
  *  field viz stays visible when the user toggles Geometry / Mesh layers. */
 export function clearMeshes(state: GLState): void {
 	const { gl } = state;
@@ -480,95 +413,59 @@ export function clearMeshes(state: GLState): void {
 	state.lineMeshes = [];
 }
 
-/** Texture width for the splat data texture. 2 texels per splat, so a
- *  4096-wide texture holds 2048 splats per row — comfortably fits 1M+ splats
- *  within the typical 16384 max-texture-size. */
-const SPLAT_TEX_W = 4096;
-
-/** Replace the volumetric field splat cloud.
+/** Replace the volumetric field point cloud.
  *
- *  positions: [x,y,z,...] per splat in METERS
- *  abc:       [A,B,C,...] per splat — phasor terms for |E(t)|² animation
- *  sigma:     [σ,...]      per splat — world-space Gaussian std-dev
+ *  positions: [x,y,z,...] per sample in METERS
+ *  abc:       [A,B,C,...] per sample — phasor terms for |E(t)|² animation
  *
- *  Splat data is packed into an RGBA32F texture (2 texels/splat); each draw
- *  instance fetches its texels by `gl_InstanceID` — no index buffer, no
- *  ordering, additive blending makes draw order irrelevant. */
-export function setSplatCloud(
+ *  Pure additive point-sprite cloud — no draw order, no sorting, no σ. */
+export function setPointCloud(
 	state: GLState,
 	positions: Float32Array,
 	abc: Float32Array,
-	sigma: Float32Array,
 ): void {
 	const { gl } = state;
-	if (state.splatCloud) {
-		gl.deleteVertexArray(state.splatCloud.vao);
-		gl.deleteTexture(state.splatCloud.tex);
-		state.splatCloud = null;
+	if (state.pointCloud) {
+		gl.deleteVertexArray(state.pointCloud.vao);
+		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
+		state.pointCloud = null;
 	}
 	const count = positions.length / 3;
 	if (count === 0) return;
 
-	// Pack 2 RGBA32F texels per splat: (x,y,z,σ) and (A,B,C,_).
-	const texW = SPLAT_TEX_W;
-	const texH = Math.ceil((count * 2) / texW);
-	const data = new Float32Array(texW * texH * 4);
-	for (let i = 0; i < count; i++) {
-		const o = i * 8;
-		data[o + 0] = positions[i * 3 + 0];
-		data[o + 1] = positions[i * 3 + 1];
-		data[o + 2] = positions[i * 3 + 2];
-		data[o + 3] = sigma[i];
-		data[o + 4] = abc[i * 3 + 0];
-		data[o + 5] = abc[i * 3 + 1];
-		data[o + 6] = abc[i * 3 + 2];
-		data[o + 7] = 0;
-	}
-	const tex = gl.createTexture()!;
-	gl.bindTexture(gl.TEXTURE_2D, tex);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, texW, texH, 0, gl.RGBA, gl.FLOAT, data);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-	gl.bindTexture(gl.TEXTURE_2D, null);
-
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
-	gl.bindBuffer(gl.ARRAY_BUFFER, state.splatQuadBuf);
+	const posBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
 	gl.enableVertexAttribArray(0);
-	gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+	gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+	const abcBuf = gl.createBuffer()!;
+	gl.bindBuffer(gl.ARRAY_BUFFER, abcBuf);
+	gl.bufferData(gl.ARRAY_BUFFER, abc, gl.STATIC_DRAW);
+	gl.enableVertexAttribArray(1);
+	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 	gl.bindVertexArray(null);
 	gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
-	state.splatCloud = { vao, tex, texW, count };
+	state.pointCloud = { vao, buffers: [posBuf, abcBuf], count };
 }
 
 /** Set the field colour-mapping range. floor/span are interpreted per mode:
  *  log → (log10(|E|min), log10(max/min)); lin → (|E|min, |E|max−|E|min). */
-export function setSplatRange(state: GLState, floor: number, span: number): void {
-	state.splatRangeFloor = floor;
-	state.splatRangeSpan = span;
+export function setPointRange(state: GLState, floor: number, span: number): void {
+	state.pointRangeFloor = floor;
+	state.pointRangeSpan = span;
 }
 
-/** Colour-mapping mode for the field splats. */
-export function setSplatScaleMode(state: GLState, mode: 'log' | 'lin'): void {
-	state.splatLogScale = mode === 'log' ? 1 : 0;
-}
-
-/** Global σ multiplier — UI tuning knob for splat size vs. count. */
-export function setSplatSigmaScale(state: GLState, scale: number): void {
-	state.splatSigmaScale = scale;
-}
-
-/** Global opacity multiplier for the splat cloud. */
-export function setSplatOpacity(state: GLState, opacity: number): void {
-	state.splatOpacity = opacity;
+/** Colour-mapping mode for the field point cloud. */
+export function setPointScaleMode(state: GLState, mode: 'log' | 'lin'): void {
+	state.pointLogScale = mode === 'log' ? 1 : 0;
 }
 
 /** Update the time phase (call from requestAnimationFrame for the wave anim). */
-export function setSplatPhase(state: GLState, phase: number): void {
-	state.splatPhase = phase;
+export function setPointPhase(state: GLState, phase: number): void {
+	state.pointPhase = phase;
 }
 
 /** Add a triangle group with a single color. positions and normals must
@@ -724,38 +621,31 @@ export function render3D(
 		}
 	}
 
-	// Splat pass (volumetric field) — world-space Gaussian splats with
-	// additive blending. Depth test OFF so splats behind solid geometry
-	// still contribute to the cloud (we want to see *through* the volume,
-	// not only the front slab). Order-independent → no sorting needed.
-	if (state.splatCloud && state.splatCloud.count > 0) {
-		const sc = state.splatCloud;
-		gl.useProgram(state.splatProgram);
-		gl.uniformMatrix4fv(state.uSplatMVP, false, vp);
-		gl.uniform1f(state.uSplatZFlip, zFlip);
-		gl.uniform1f(state.uSplatPhase, state.splatPhase);
-		// proj[0][0] / proj[1][1] — the perspective scale that maps a world
-		// offset to NDC. Mirrors mat4Perspective: m[0]=f/aspect, m[5]=f.
-		gl.uniform2f(state.uSplatProjScale, proj[0], proj[5]);
-		gl.uniform1f(state.uSplatSigmaScale, state.splatSigmaScale);
-		gl.uniform1f(state.uSplatRangeFloor, state.splatRangeFloor);
-		gl.uniform1f(state.uSplatRangeSpan, state.splatRangeSpan);
-		gl.uniform1f(state.uSplatLogScale, state.splatLogScale);
-		gl.uniform1f(state.uSplatOpacity, state.splatOpacity);
-		gl.activeTexture(gl.TEXTURE0);
-		gl.bindTexture(gl.TEXTURE_2D, sc.tex);
-		gl.uniform1i(state.uSplatTex, 0);
-		gl.uniform1i(state.uSplatTexW, sc.texW);
+	// Volumetric field point cloud — additive blending, depth test off,
+	// so every sample adds brightness and you see *through* the whole
+	// volume rather than just the front slab.
+	if (state.pointCloud && state.pointCloud.count > 0) {
+		gl.useProgram(state.pointProgram);
+		gl.uniformMatrix4fv(state.uPointMVP, false, vp);
+		gl.uniform1f(state.uPointZFlip, zFlip);
+		const dx = state.bbox.max[0] - state.bbox.min[0];
+		const dy = state.bbox.max[1] - state.bbox.min[1];
+		const xy = Math.max(dx, dy, 1e-9);
+		// Base size in pixels at unit clip-w, scaled by scene XY extent.
+		gl.uniform1f(state.uPointScale, xy * 0.4);
+		gl.uniform1f(state.uPointPhase, state.pointPhase);
+		gl.uniform1f(state.uPointRangeFloor, state.pointRangeFloor);
+		gl.uniform1f(state.uPointRangeSpan, state.pointRangeSpan);
+		gl.uniform1f(state.uPointLogScale, state.pointLogScale);
 		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);
 		gl.enable(gl.BLEND);
 		gl.blendFunc(gl.ONE, gl.ONE);
-		gl.bindVertexArray(sc.vao);
-		gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sc.count);
+		gl.bindVertexArray(state.pointCloud.vao);
+		gl.drawArrays(gl.POINTS, 0, state.pointCloud.count);
 		gl.disable(gl.BLEND);
 		gl.depthMask(true);
 		gl.enable(gl.DEPTH_TEST);
-		gl.bindTexture(gl.TEXTURE_2D, null);
 	}
 	gl.bindVertexArray(null);
 }

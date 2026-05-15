@@ -1,25 +1,19 @@
 /**
- * Volumetric field splat sampling.
+ * Volumetric field point-cloud sampling.
  *
- * Identical to the old point-cloud sampler — N random points drawn across
- * the mesh volume, (A, B, C) interpolated at each by barycentric weights —
- * with one modifier: the per-tet draw probability is `volume × energy`
- * instead of `volume`, so sample density follows the field energy. Each
- * sample becomes one world-space Gaussian splat.
+ * N random points drawn across the mesh volume with (A, B, C) phasor
+ * coefficients interpolated by barycentric weights. The per-tet draw
+ * probability is `volume × energy` (not just `volume`), so sample density
+ * follows the field energy.
  *
- * Because the weighting now depends on the field, the sampling CDF is built
- * per `viz_sample` call — `viz_load_mesh` only caches the field-independent
+ * Because the weighting depends on the field, the sampling CDF is built per
+ * `viz_sample` call — `viz_load_mesh` only caches the field-independent
  * per-tet volumes.
  *
  * Coefficients encode |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin, which
- * the splat shader composites every frame against a phase uniform.
+ * the point shader composites every frame against a phase uniform.
  */
 import type { MeshData } from './msh';
-
-/** Global splat σ as a fraction of the mean sample spacing cbrt(V/n). One σ
- *  for the whole cloud (not per-tet) — 0.5 ⇒ neighbouring splats just touch
- *  on average, which keeps the cloud continuous without runaway overdraw. */
-const SPACING_FACTOR = 0.5;
 
 /** Energy coverage floor: a tet with zero field still keeps this small
  *  fraction of its volume weight, so vacuum regions don't drop out entirely
@@ -102,7 +96,6 @@ export async function viz_sample(
 ): Promise<{
 	positions: Float32Array;
 	abc: Float32Array;
-	sigma: Float32Array;
 	log_floor: number;
 	log_range: number;
 	field_range: { min: number; max: number; decades: number };
@@ -110,7 +103,6 @@ export async function viz_sample(
 	const empty = {
 		positions: new Float32Array(0),
 		abc: new Float32Array(0),
-		sigma: new Float32Array(0),
 		log_floor: 0,
 		log_range: 1,
 		field_range: { min: 0, max: 1, decades: 0 },
@@ -139,26 +131,18 @@ export async function viz_sample(
 	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm) ────
 	const cdf = new Float64Array(n_tets);
 	let acc = 0;
-	let total_vol = 0;
 	for (let t = 0; t < n_tets; t++) {
 		const e_norm = energy[t] / e_max;
 		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_norm);
-		total_vol += vols[t];
 		cdf[t] = acc;
 	}
 	if (acc <= 0) return empty;
 	const inv_total = 1 / acc;
 	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
 
-	// ── One global σ from the mean sample spacing ───────────────────────
-	// n points spread over total_vol sit ≈ cbrt(total_vol / n) apart; σ a
-	// fraction of that keeps the cloud continuous with bounded overdraw.
-	const splat_sigma = Math.cbrt(total_vol / n) * SPACING_FACTOR;
-
-	// ── Draw N splats ───────────────────────────────────────────────────
+	// ── Draw N points ───────────────────────────────────────────────────
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
-	const sigma = new Float32Array(n);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
 	let min_e2 = Infinity, max_e2 = 0;
 
@@ -184,7 +168,6 @@ export async function viz_sample(
 		abc[i * 3]     = A;
 		abc[i * 3 + 1] = B;
 		abc[i * 3 + 2] = C;
-		sigma[i] = splat_sigma;
 		// Time-averaged |E|² = (A + B) / 2.
 		const e2 = 0.5 * (A + B);
 		if (e2 > 0) {
@@ -208,7 +191,6 @@ export async function viz_sample(
 	return {
 		positions,
 		abc,
-		sigma,
 		log_floor,
 		log_range,
 		field_range: { min: e_min, max: e_max_v, decades },

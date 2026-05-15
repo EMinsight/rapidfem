@@ -28,7 +28,7 @@
 
 import {
 	initGL, disposeGL, createCamera, clearMeshes, setTagVisible,
-	setSplatCloud, setSplatRange, setSplatScaleMode,
+	setPointCloud, setPointRange, setPointScaleMode,
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
@@ -149,7 +149,7 @@ class FemViewerElement extends HTMLElement {
 	private resObs: ResizeObserver | null = null;
 	private faceTags: number[] = [];        // populated by buildScene
 	private fieldCloudCache = new Map<string, {
-		positions: Float32Array; abc: Float32Array; sigma: Float32Array;
+		positions: Float32Array; abc: Float32Array;
 		maxE2: number; minE2: number;
 	}>();
 
@@ -367,7 +367,7 @@ class FemViewerElement extends HTMLElement {
 	private applyField() {
 		if (!this.glState || !this.mesh) return;
 		const clear = () => {
-			if (this.glState) setSplatCloud(this.glState, new Float32Array(0), new Float32Array(0), new Float32Array(0));
+			if (this.glState) setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
 		};
 		if (!this.hasField || !this.fields) { clear(); return; }
 		const fi = Math.min(parseInt(this.getAttribute('field-freq') || '-1', 10), this.fields.length - 1);
@@ -387,14 +387,14 @@ class FemViewerElement extends HTMLElement {
 			cached = sampleFieldCloud(this.mesh, arr, n);
 			this.fieldCloudCache.set(key, cached);
 		}
-		setSplatCloud(this.glState, cached.positions, cached.abc, cached.sigma);
+		setPointCloud(this.glState, cached.positions, cached.abc);
 		const mode = (this.getAttribute('field-mode') || 'lin') === 'log' ? 'log' as const : 'lin' as const;
-		setSplatScaleMode(this.glState, mode);
+		setPointScaleMode(this.glState, mode);
 		if (mode === 'log') {
 			const log_max = Math.log10(Math.sqrt(Math.max(cached.maxE2, 1e-30)));
-			setSplatRange(this.glState, log_max - 4, 4);
+			setPointRange(this.glState, log_max - 4, 4);
 		} else {
-			setSplatRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
+			setPointRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
 		}
 	}
 
