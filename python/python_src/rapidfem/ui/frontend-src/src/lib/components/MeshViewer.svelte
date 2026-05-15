@@ -822,36 +822,37 @@
 				<path d="M13.66 10a6 6 0 1 1-1.41-6.24L15.3 6.7" />
 			</svg>
 		</button>
-<button class="tb" onclick={save_png}>
+		<button class="tb" onclick={save_png}>
 			<span class="tip">Save PNG<kbd>Ctrl+S</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
 				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
 			</svg>
 		</button>
-	</div>
-
-	{#if show_field}
-		<div class="field-overlay" role="toolbar" aria-label="Field viz controls">
-			<div class="seg">
-				{#each (['E', 'J', 'H'] as const) as ch}
-					{@const enabled = available_channels.includes(ch)}
-					<button
-						class:active={field_channel === ch}
-						disabled={!enabled}
-						title={ch === 'E' ? 'E-field (V/m)' :
-						       ch === 'J' ? 'Conduction current density σE (A/m²)' :
-						                    'Magnetic field ∇×E / (jωμ) (A/m)'}
-						onclick={() => { if (enabled) field_channel = ch; }}
-					>{ch}</button>
-				{/each}
-			</div>
+		{#if show_field}
+			<span class="tb-sep" aria-hidden="true"></span>
+			{#each (['E', 'J', 'H'] as const) as ch}
+				{@const enabled = available_channels.includes(ch)}
+				<button
+					class="tb tb-label"
+					class:active={field_channel === ch}
+					disabled={!enabled}
+					onclick={() => { if (enabled) field_channel = ch; }}
+				>
+					<span class="tip">{ch === 'E' ? 'E-field (V/m)' :
+					                   ch === 'J' ? 'Current density σE (A/m²)' :
+					                                'Magnetic field ∇×E/(jωμ) (A/m)'}</span>
+					{ch}
+				</button>
+			{/each}
 			<button
-				class="scale-toggle"
-				title={scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}
+				class="tb tb-label tb-scale"
 				onclick={() => (scale_mode = scale_mode === 'log' ? 'lin' : 'log')}
-			>{scale_mode}</button>
-		</div>
-	{/if}
+			>
+				<span class="tip">{scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}</span>
+				{scale_mode}
+			</button>
+		{/if}
+	</div>
 
 	<div class="hud">
 		<span class="coord">x {(cursor_world.x * 1e6).toFixed(1)} µm</span>
@@ -941,54 +942,35 @@
 		right: 10px;
 		z-index: 10;
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		gap: 2px;
+		max-width: calc(100% - 20px);
 	}
-
-	.field-overlay {
-		position: absolute;
-		top: 46px;            /* just below .viewer-toolbar */
-		right: 10px;
-		z-index: 10;
-		display: flex;
-		gap: 4px;
+	.tb-sep {
+		display: inline-block;
+		width: 1px;
+		height: 20px;
+		margin: 4px 4px;
+		background: var(--border);
+	}
+	.tb.tb-label {
 		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-	}
-	.field-overlay .seg {
-		display: inline-flex;
-		border: 1px solid var(--border);
-		background: var(--bg-surface);
-	}
-	.field-overlay .seg button,
-	.field-overlay .scale-toggle {
-		background: transparent;
-		color: var(--text-muted);
-		border: 0;
-		height: 28px;
-		min-width: 28px;
-		padding: 0 6px;
-		font-family: inherit;
-		font-size: inherit;
+		font-size: 11px;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
-		cursor: pointer;
-		transition: color var(--transition), background var(--transition);
 	}
-	.field-overlay .seg button + button { border-left: 1px solid var(--border); }
-	.field-overlay .seg button:hover:not(:disabled),
-	.field-overlay .scale-toggle:hover { color: var(--text); }
-	.field-overlay .seg button.active {
+	.tb.tb-label.active {
 		color: var(--accent);
 		background: var(--accent-dim);
+		border-color: var(--accent);
 	}
-	.field-overlay .seg button:disabled {
+	.tb.tb-label:disabled {
 		color: var(--text-dim);
 		cursor: default;
 		opacity: 0.4;
-	}
-	.field-overlay .scale-toggle {
-		border: 1px solid var(--border);
+		border-color: var(--border);
 		background: var(--bg-surface);
 	}
 	.tb {
