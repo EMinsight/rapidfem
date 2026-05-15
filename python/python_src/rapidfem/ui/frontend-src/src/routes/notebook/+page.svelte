@@ -734,6 +734,7 @@
 								{show_wireframe}
 								{show_field}
 								field={show_field ? field_abc : null}
+								{field_channel}
 								point_density={field_density}
 								scale_mode={field_scale_mode}
 							/>

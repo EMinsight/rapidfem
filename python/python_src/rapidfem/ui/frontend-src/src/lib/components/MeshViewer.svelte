@@ -19,6 +19,7 @@
 		show_wireframe = false,
 		show_field = false,
 		field = null,
+		field_channel = 'E',
 		point_density = 5,
 		scale_mode = 'lin',
 		animate_field = false,
@@ -30,11 +31,19 @@
 		show_wireframe?: boolean;
 		show_field?: boolean;
 		field?: Float32Array | null;
+		field_channel?: 'E' | 'J' | 'H';
 		point_density?: number;
 		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
 		anim_speed?: number;
 	} = $props();
+
+	// Channel metadata for the colourbar — title + SI unit per channel.
+	const CHANNEL_META: Record<'E' | 'J' | 'H', { sym: string; unit: string }> = {
+		E: { sym: '|E|', unit: 'V/m'  },
+		J: { sym: '|J|', unit: 'A/m²' },
+		H: { sym: '|H|', unit: 'A/m'  },
+	};
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let container = $state<HTMLDivElement | null>(null);
@@ -818,7 +827,7 @@
 
 	{#if show_field && field_range}
 		<div class="colorbar">
-			<div class="cb-title">|E| (V/m) · log scale</div>
+			<div class="cb-title">{CHANNEL_META[field_channel].sym} ({CHANNEL_META[field_channel].unit}) · {scale_mode} scale</div>
 			<div class="cb-body">
 				<div class="cb-gradient"></div>
 				<div class="cb-ticks">
