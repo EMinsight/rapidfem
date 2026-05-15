@@ -271,8 +271,9 @@ export function clearFieldCloud(state: GLState): void {
 // N random points across the mesh volume, drawn with per-tet probability
 // `volume × energy` so density follows the field.
 
-/** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. */
-const ENERGY_FLOOR = 0.08;
+/** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. Zero so vacuum
+ *  (where σ = 0 → J = 0) doesn't get samples in the J channel. */
+const ENERGY_FLOOR = 0.0;
 
 function buildTetVolumes(mesh: SceneMesh): Float64Array {
 	const tets = mesh.tets;
@@ -363,7 +364,6 @@ export function sampleFieldCloud(
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
-	let minE2 = Infinity, maxE2 = 0;
 	for (let i = 0; i < n; i++) {
 		const ti = bsearchCdf(cdf, Math.random() * totalWeight);
 		uniformBary(w);
@@ -385,12 +385,26 @@ export function sampleFieldCloud(
 		const B = w[0] * fieldAbc[a * 3 + 1] + w[1] * fieldAbc[b * 3 + 1] + w[2] * fieldAbc[c * 3 + 1] + w[3] * fieldAbc[d * 3 + 1];
 		const C = w[0] * fieldAbc[a * 3 + 2] + w[1] * fieldAbc[b * 3 + 2] + w[2] * fieldAbc[c * 3 + 2] + w[3] * fieldAbc[d * 3 + 2];
 		abc[i * 3] = A; abc[i * 3 + 1] = B; abc[i * 3 + 2] = C;
-		const e2 = 0.5 * (A + B);
-		if (e2 > 0) {
-			if (e2 < minE2) minE2 = e2;
-			if (e2 > maxE2) maxE2 = e2;
-		}
 	}
-	if (!isFinite(minE2) || maxE2 === 0) { minE2 = 1; maxE2 = 1; }
+	// Robust colormap range from the per-node energy distribution — see
+	// the matching helper in `viz.ts`. Avoids the embed's auto-range
+	// getting locked onto a single port-edge outlier.
+	const { minE2, maxE2 } = nodeEnergyPercentile(fieldAbc);
 	return { positions, abc, maxE2, minE2 };
+}
+
+/** 99th/1st percentile of per-node `|F|² ≈ (A + B)/2`. */
+function nodeEnergyPercentile(fieldAbc: number[] | Float32Array): { minE2: number; maxE2: number } {
+	const nNodes = fieldAbc.length / 3;
+	const energies: number[] = [];
+	for (let ni = 0; ni < nNodes; ni++) {
+		const e2 = 0.5 * (fieldAbc[ni * 3] + fieldAbc[ni * 3 + 1]);
+		if (e2 > 0) energies.push(e2);
+	}
+	if (energies.length === 0) return { minE2: 1, maxE2: 1 };
+	energies.sort((a, b) => a - b);
+	const last = energies.length - 1;
+	const lo = energies[Math.min(last, Math.floor(energies.length * 0.01))];
+	const hi = energies[Math.min(last, Math.floor(energies.length * 0.99))];
+	return { minE2: lo, maxE2: hi };
 }

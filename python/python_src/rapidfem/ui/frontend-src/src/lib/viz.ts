@@ -15,10 +15,18 @@
  */
 import type { MeshData } from './msh';
 
-/** Energy coverage floor: a tet with zero field still keeps this small
- *  fraction of its volume weight, so vacuum regions don't drop out entirely
- *  and the cloud stays continuous. The dominant term is still `volume × energy`. */
-const ENERGY_FLOOR = 0.08;
+/** Energy coverage floor: a tet with zero field gets exactly zero sampling
+ *  weight when this is 0. We want that: for the J channel, σ_eff = 0 in air
+ *  → J = 0 in air → no point in placing samples there. Same logic for any
+ *  channel — show what's there, don't pad vacuum. */
+const ENERGY_FLOOR = 0.0;
+
+/** Colormap upper percentile. The auto-range is dominated by a handful of
+ *  outlier nodes — typically the driven-port edges where the imposed E (and
+ *  therefore curl E → H) is far stronger than anywhere in the bulk. Clipping
+ *  at the 99th percentile lets the bulk use the full colour range while the
+ *  port saturates at the top. */
+const RANGE_PERCENTILE = 0.99;
 
 interface VizCache {
 	nodes: Float64Array;
@@ -144,8 +152,6 @@ export async function viz_sample(
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
-	let min_e2 = Infinity, max_e2 = 0;
-
 	for (let i = 0; i < n; i++) {
 		const t_idx = bsearch_cdf(cdf, Math.random());
 		uniform_bary(w);
@@ -168,31 +174,49 @@ export async function viz_sample(
 		abc[i * 3]     = A;
 		abc[i * 3 + 1] = B;
 		abc[i * 3 + 2] = C;
-		// Time-averaged |E|² = (A + B) / 2.
-		const e2 = 0.5 * (A + B);
-		if (e2 > 0) {
-			if (e2 < min_e2) min_e2 = e2;
-			if (e2 > max_e2) max_e2 = e2;
-		}
 	}
 
-	if (!isFinite(min_e2) || max_e2 === 0) {
-		min_e2 = 1; max_e2 = 1;
-	}
-	// Shader works in log10(|E|), not log10(|E|²). Convert.
-	const e_min_raw = Math.sqrt(Math.max(min_e2, 0));
-	const e_max_v = Math.sqrt(max_e2);
-	const e_min = Math.max(e_min_raw, e_max_v * 1e-3);
-	const log_max = Math.log10(e_max_v);
-	const log_min = Math.log10(e_min);
-	const log_floor = log_min;
-	const log_range = Math.max(log_max - log_min, 0.5);
-	const decades = log_max - log_min;
+	// Colormap range from the full per-node energy distribution (not from the
+	// energy-biased samples). The 99th percentile clips port-driven outliers
+	// so the bulk can use the full colour range; the small-end floor is the
+	// 1st percentile for symmetry. |E|²_avg = (A + B) / 2 per node.
+	const range = field_energy_range(field_abc);
 	return {
 		positions,
 		abc,
-		log_floor,
-		log_range,
-		field_range: { min: e_min, max: e_max_v, decades },
+		log_floor: range.log_floor,
+		log_range: range.log_range,
+		field_range: range.field_range,
+	};
+}
+
+function field_energy_range(field_abc: Float32Array): {
+	log_floor: number;
+	log_range: number;
+	field_range: { min: number; max: number; decades: number };
+} {
+	const n_nodes = field_abc.length / 3;
+	const energies: number[] = [];
+	for (let ni = 0; ni < n_nodes; ni++) {
+		const e2 = 0.5 * (field_abc[ni * 3] + field_abc[ni * 3 + 1]);
+		if (e2 > 0) energies.push(e2);
+	}
+	if (energies.length === 0) {
+		return { log_floor: 0, log_range: 1, field_range: { min: 1, max: 1, decades: 0 } };
+	}
+	energies.sort((a, b) => a - b);
+	const lo_idx = Math.min(energies.length - 1, Math.floor(energies.length * (1 - RANGE_PERCENTILE)));
+	const hi_idx = Math.min(energies.length - 1, Math.floor(energies.length * RANGE_PERCENTILE));
+	const e2_lo = energies[lo_idx];
+	const e2_hi = energies[hi_idx];
+	// Shader works in log10(|F|), not log10(|F|²). Convert.
+	const e_max = Math.sqrt(e2_hi);
+	const e_min = Math.max(Math.sqrt(e2_lo), e_max * 1e-3);
+	const log_max = Math.log10(e_max);
+	const log_min = Math.log10(e_min);
+	return {
+		log_floor: log_min,
+		log_range: Math.max(log_max - log_min, 0.5),
+		field_range: { min: e_min, max: e_max, decades: log_max - log_min },
 	};
 }
