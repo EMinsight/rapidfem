@@ -114,8 +114,14 @@ export interface SolveResponse {
 		n_dofs: number;
 		n_tets: number;
 		solve_time_s: number;
-		/** Per-(freq, port) flat [A0,B0,C0, A1,B1,C1, …] node phasor terms. */
+		/** Per-(freq, port) flat [A0,B0,C0, A1,B1,C1, …] node phasor terms
+		 *  for the E-field channel. */
 		fields?: (number[] | null)[][];
+		/** Same shape as `fields`, conduction current density J = σE. Zero
+		 *  in PEC / lossless regions; null when not computed. */
+		fields_j?: (number[] | null)[][] | null;
+		/** Same shape as `fields`, magnetic field H = ∇×E / (jωμ). */
+		fields_h?: (number[] | null)[][] | null;
 	};
 	mesh?: MeshPayload;
 	name?: string;
@@ -167,6 +173,8 @@ export interface CellResponse {
 		n_tets: number;
 		solve_time_s: number;
 		fields?: (number[] | null)[][];
+		fields_j?: (number[] | null)[][] | null;
+		fields_h?: (number[] | null)[][] | null;
 	} | null;
 }
 

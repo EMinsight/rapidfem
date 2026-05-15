@@ -50,6 +50,9 @@
 	let smats = $state<SMatrix[]>([]);
 	let freqs = $state<number[]>([]);
 	let fields_raw = $state<(number[] | null)[][] | null>(null);
+	let fields_j_raw = $state<(number[] | null)[][] | null>(null);
+	let fields_h_raw = $state<(number[] | null)[][] | null>(null);
+	let field_channel = $state<'E' | 'J' | 'H'>('E');
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
 	// Eigenmode mode: ResultsPanel S-param plots are hidden, the freq slider
@@ -61,9 +64,14 @@
 	let mode_q_factors = $state<(number | null)[]>([]);
 	let field_density = $state(3);
 	let field_scale_mode = $state<'log' | 'lin'>('lin');
+	let active_channel_raw = $derived<(number[] | null)[][] | null>(
+		field_channel === 'J' ? fields_j_raw :
+		field_channel === 'H' ? fields_h_raw :
+		fields_raw,
+	);
 	let field_abc = $derived<Float32Array | null>(
-		fields_raw && fields_raw[field_freq_idx] && fields_raw[field_freq_idx][field_port_idx]
-			? new Float32Array(fields_raw[field_freq_idx][field_port_idx] as number[])
+		active_channel_raw && active_channel_raw[field_freq_idx] && active_channel_raw[field_freq_idx][field_port_idx]
+			? new Float32Array(active_channel_raw[field_freq_idx][field_port_idx] as number[])
 			: null,
 	);
 
@@ -413,6 +421,8 @@
 
 	function clear_stale_results() {
 		fields_raw = null;
+		fields_j_raw = null;
+		fields_h_raw = null;
 		smats = [];
 		freqs = [];
 		eigenmode_mode = false;
@@ -467,8 +477,13 @@
 					freqs = res.frequencies;
 					smats = res.eigenmode ? [] : sparamsToSMatrices(res.sparams);
 					fields_raw = res.fields ?? null;
+					fields_j_raw = res.fields_j ?? null;
+					fields_h_raw = res.fields_h ?? null;
 					field_freq_idx = 0;
 					field_port_idx = 0;
+					// Snap back to E whenever a new result arrives — and avoid
+					// being stuck on J / H if the new run didn't compute them.
+					field_channel = 'E';
 					eigenmode_mode = !!res.eigenmode;
 					mode_q_factors = res.q_factors ?? [];
 					last_solve_stats = {
@@ -767,6 +782,27 @@
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
 								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
+							<div class="field-ctrl">
+								<span class="lbl">Channel</span>
+								<div class="seg">
+									<button
+										class:active={field_channel === 'E'}
+										onclick={() => (field_channel = 'E')}
+									>E</button>
+									<button
+										class:active={field_channel === 'J'}
+										disabled={!fields_j_raw}
+										title={fields_j_raw ? 'Conduction current density σE' : 'No lossy material in this run — J ≡ 0'}
+										onclick={() => (field_channel = 'J')}
+									>J</button>
+									<button
+										class:active={field_channel === 'H'}
+										disabled={!fields_h_raw}
+										title="Magnetic field ∇×E / (jωμ)"
+										onclick={() => (field_channel = 'H')}
+									>H</button>
+								</div>
+							</div>
 							<div class="field-ctrl">
 								<span class="lbl">Scale</span>
 								<div class="seg">

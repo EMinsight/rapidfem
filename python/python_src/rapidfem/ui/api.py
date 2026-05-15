@@ -435,6 +435,48 @@ def _find_capture(captures: list, kind: str, name: str | None):
     return None
 
 
+def _abc_phasor(vec_complex) -> list[float] | None:
+    """(n_nodes, 3) complex → flat [A, B, C, ...] per node.
+
+    Encodes |E(t)|² = A·cos²(ωt) + B·sin²(ωt) − 2·C·sin·cos with
+    A = |Re|², B = |Im|², C = Re·Im — the same animation-friendly form the
+    splat shader composites against a phase uniform. Returns `None` if the
+    backend produced no field for this (freq, port).
+    """
+    if vec_complex is None:
+        return None
+    import numpy as np
+    re = np.asarray(vec_complex.real)
+    im = np.asarray(vec_complex.imag)
+    A = np.sum(re * re, axis=1)
+    B = np.sum(im * im, axis=1)
+    C = np.sum(re * im, axis=1)
+    return np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
+
+
+def _build_channel_payloads(sim, result, n_freq: int, n_p: int) -> dict[str, list]:
+    """Build per-channel `[freq][port][flat_abc]` payloads for E, J, H.
+
+    Each channel uses the same (A, B, C) phasor encoding — the frontend picks
+    one channel at a time and feeds the flat array straight into the splat
+    sampler. Channels are computed eagerly so a UI toggle is a zero-roundtrip
+    switch.
+    """
+    out: dict[str, list] = {"E": [], "J": [], "H": []}
+    for fi in range(n_freq):
+        e_freq: list = []
+        j_freq: list = []
+        h_freq: list = []
+        for pi in range(n_p):
+            e_freq.append(_abc_phasor(sim.field_at_nodes(result, fi, pi)))
+            j_freq.append(_abc_phasor(sim.current_density_at_nodes(result, fi, pi)))
+            h_freq.append(_abc_phasor(sim.h_field_at_nodes(result, fi, pi)))
+        out["E"].append(e_freq)
+        out["J"].append(j_freq)
+        out["H"].append(h_freq)
+    return out
+
+
 def register(app: Flask) -> None:
     workdir: Path = app.config["RAPIDFEM_WORKDIR"]
 
@@ -545,28 +587,18 @@ def register(app: Flask) -> None:
                         f_mat.append(row)
                     sparams_payload.append(f_mat)
 
-                # ── Nodal field as A/B/C phasor terms ─────────────────────
-                # |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
-                # with A = |E_re|², B = |E_im|², C = E_re · E_im
+                # ── Nodal fields as A/B/C phasor terms, one per channel ───
+                # |F(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin
+                # with A = |F_re|², B = |F_im|², C = F_re · F_im
+                # Channels: E (E-field), J (σE conduction current), H (∇×E/(jωμ)).
                 fields_payload = None
+                fields_j_payload = None
+                fields_h_payload = None
                 if include_fields:
-                    n_nodes = sim.mesh_nodes.shape[0]
-                    fields_payload = []
-                    for fi in range(n_freq):
-                        per_freq = []
-                        for pi in range(n_p):
-                            E = sim.field_at_nodes(result, fi, pi)
-                            if E is None:
-                                per_freq.append(None)
-                                continue
-                            re = np.asarray(E.real)
-                            im = np.asarray(E.imag)
-                            A = np.sum(re * re, axis=1)
-                            B = np.sum(im * im, axis=1)
-                            C = np.sum(re * im, axis=1)
-                            abc = np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
-                            per_freq.append(abc)
-                        fields_payload.append(per_freq)
+                    ch = _build_channel_payloads(sim, result, n_freq, n_p)
+                    fields_payload = ch["E"]
+                    fields_j_payload = ch["J"]
+                    fields_h_payload = ch["H"]
 
                 # ── Mesh that the solver actually used ────────────────────
                 from rapidfem.ui.serialize import mesh_to_payload
@@ -592,6 +624,8 @@ def register(app: Flask) -> None:
                 "n_tets": sim.n_tets,
                 "solve_time_s": t_solve,
                 "fields": fields_payload,
+                "fields_j": fields_j_payload,
+                "fields_h": fields_h_payload,
             },
             "mesh": mesh_payload,
             "name": cap.name,
@@ -717,27 +751,16 @@ def register(app: Flask) -> None:
                             row.append([float(v.real), float(v.imag)])
                         f_mat.append(row)
                     sparams_payload.append(f_mat)
-                fields_payload = []
-                for fi in range(n_freq):
-                    per_freq = []
-                    for pi in range(n_p):
-                        E = last_sim.field_at_nodes(last_result, fi, pi)
-                        if E is None:
-                            per_freq.append(None)
-                            continue
-                        re = np.asarray(E.real); im = np.asarray(E.imag)
-                        A = np.sum(re * re, axis=1)
-                        B = np.sum(im * im, axis=1)
-                        C = np.sum(re * im, axis=1)
-                        per_freq.append(np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist())
-                    fields_payload.append(per_freq)
+                ch = _build_channel_payloads(last_sim, last_result, n_freq, n_p)
                 result_payload = {
                     "frequencies": last_result.frequencies.tolist(),
                     "sparams": sparams_payload,
                     "n_driven": n_p, "n_freq": n_freq,
                     "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
                     "solve_time_s": last_result.solve_time_s,
-                    "fields": fields_payload,
+                    "fields": ch["E"],
+                    "fields_j": ch["J"],
+                    "fields_h": ch["H"],
                 }
             except Exception as e:  # noqa: BLE001
                 result_payload = {"error": _format_exception(e)}

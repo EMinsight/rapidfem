@@ -254,3 +254,91 @@ fn find_containing_tet_brute(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usiz
 pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
     find_containing_tet_brute(mesh, x, y, z)
 }
+
+/// Curl of the FEM E-field inside a tet.
+///
+/// Analytic for the Nédélec-2 basis: edge-mode curls are constant per tet;
+/// face-mode curls are linear and approximated by their value at the tet
+/// centroid (sufficient for order-2 visualisation accuracy). Used by the
+/// error estimator and by the H-field channel (H = ∇×E / (−jωμ)).
+///
+/// Returns `[curl_x, curl_y, curl_z]` as complex amplitudes. The result does
+/// not depend on a specific evaluation point inside the tet (centroid value).
+pub fn eval_curl_in_tet(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    solution: &[C64],
+    tet_idx: usize,
+) -> [C64; 3] {
+    let tet = &mesh.tets[tet_idx];
+    let xs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][0]);
+    let ys: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][1]);
+    let zs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][2]);
+
+    let (_, bbs, ccs, dds, v) = tet_coefficients(&xs, &ys, &zs);
+
+    let grad = |i: usize| -> [f64; 3] { [bbs[i], ccs[i], dds[i]] };
+    let cross = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+        [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+    };
+
+    let mut ds = [[0.0f64; 4]; 4];
+    for i in 0..4 {
+        for j in i..4 {
+            let d = ((xs[i]-xs[j]).powi(2)+(ys[i]-ys[j]).powi(2)+(zs[i]-zs[j]).powi(2)).sqrt();
+            ds[i][j] = d; ds[j][i] = d;
+        }
+    }
+
+    let tet_edges = &mesh.tet_to_edge[tet_idx];
+    let global_edge_nodes: [[usize; 2]; 6] = std::array::from_fn(|i| mesh.edges[tet_edges[i]]);
+    let l_edge = crate::basis::local_mapping(tet, &global_edge_nodes);
+
+    let tet_tris = &mesh.tet_to_tri[tet_idx];
+    let global_tri_nodes: [[usize; 3]; 4] = std::array::from_fn(|i| mesh.tris[tet_tris[i]]);
+    let l_tri = crate::basis::local_mapping_tri(tet, &global_tri_nodes);
+
+    let field_ids = &basis.tet_to_field[tet_idx];
+    let v1 = 1.0 / (216.0 * v * v * v);
+
+    let mut curl = [C64::new(0.0, 0.0); 3];
+
+    // Edge modes: curl is constant per tet, proportional to ∇λ_i × ∇λ_j.
+    for ie in 0..6 {
+        let n1 = l_edge[ie][0];
+        let n2 = l_edge[ie][1];
+        let em1 = solution[field_ids[ie]];
+        let em2 = solution[field_ids[10 + ie]];
+        let le = ds[n1][n2];
+        let cr = cross(grad(n1), grad(n2));
+        let coeff = (em1 + em2) * C64::from(3.0 * le * v1);
+        for k in 0..3 {
+            curl[k] += coeff * C64::from(cr[k]);
+        }
+    }
+
+    // Face modes: linear in space, sampled at the centroid (λ_i = 1/4).
+    for ie in 0..4 {
+        let n1 = l_tri[ie][0];
+        let n2 = l_tri[ie][1];
+        let n3 = l_tri[ie][2];
+        let ef1 = solution[field_ids[6 + ie]];
+        let ef2 = solution[field_ids[16 + ie]];
+
+        let l1 = ds[l_tri[ie][2]][l_tri[ie][0]];
+        let l2 = ds[l_tri[ie][1]][l_tri[ie][0]];
+
+        let cr12 = cross(grad(n1), grad(n2));
+        let cr13 = cross(grad(n1), grad(n3));
+        let cr23 = cross(grad(n2), grad(n3));
+
+        let coeff1 = ef1 * C64::from(l1 * v1 * 0.5);
+        let coeff2 = ef2 * C64::from(l2 * v1 * 0.5);
+        for k in 0..3 {
+            curl[k] += coeff1 * C64::from(cr13[k] - cr12[k]);
+            curl[k] += coeff2 * C64::from(cr12[k] - cr23[k]);
+        }
+    }
+
+    curl
+}
