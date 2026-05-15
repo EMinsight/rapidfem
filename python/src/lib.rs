@@ -149,10 +149,11 @@ impl PySimulation {
         Some(arr.into_pyarray_bound(py))
     }
 
-    /// Conduction current density J = σE at every mesh node for a given
-    /// (freq_idx, port_idx). Returns a `(n_nodes, 3)` complex128 numpy array
-    /// (Jx, Jy, Jz per node) in A/m². Zero in PEC / lossless dielectric
-    /// regions where σ = 0.
+    /// Loss-equivalent current density J = σ_eff · E at every mesh node for
+    /// a given (freq_idx, port_idx). `σ_eff = ω·ε₀·εᵣ·tan(δ) + σ_bulk`
+    /// covers both dielectric (loss tangent) and Ohmic losses, so substrates
+    /// like Rogers with tan_δ but zero bulk σ also light up. Returns a
+    /// `(n_nodes, 3)` complex128 numpy array (Jx, Jy, Jz per node) in A/m².
     fn current_density_at_nodes<'py>(
         &self,
         py: Python<'py>,
