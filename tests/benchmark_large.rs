@@ -67,6 +67,7 @@ fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
 }
 
 #[test]
+#[ignore = "long-running benchmark; run with `cargo test --test benchmark_large -- --ignored`"]
 fn benchmark_large_models() {
     let a = 22.86e-3;
     let b = 10.16e-3;

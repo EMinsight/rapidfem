@@ -122,6 +122,7 @@ fn detect_cs(mesh: &rapidfem::mesh::Mesh, tri_ids: &[usize]) -> CoordinateSystem
 }
 
 #[test]
+#[ignore = "benchmark suite; run with `cargo test --test benchmark -- --ignored`"]
 fn benchmark_scaling() {
     eprintln!("\n=== RapidFEM Benchmark Suite (faer sparse LU) ===\n");
 
