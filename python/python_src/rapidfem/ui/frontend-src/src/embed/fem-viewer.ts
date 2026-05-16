@@ -28,7 +28,7 @@
 
 import {
 	initGL, disposeGL, createCamera, clearMeshes, setTagVisible,
-	setPointCloud, setPointLinRange, setPointLogRange, setPointScaleMode,
+	setPointCloud, setPointRange, setPointScaleMode,
 	render3D, fitCamera,
 	type Camera, type GLState,
 } from '../lib/render/canvas3d';
@@ -366,16 +366,16 @@ class FemViewerElement extends HTMLElement {
 
 	private applyField() {
 		if (!this.glState || !this.mesh) return;
-		if (!this.hasField || !this.fields) {
-			setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
-			return;
-		}
+		const clear = () => {
+			if (this.glState) setPointCloud(this.glState, new Float32Array(0), new Float32Array(0));
+		};
+		if (!this.hasField || !this.fields) { clear(); return; }
 		const fi = Math.min(parseInt(this.getAttribute('field-freq') || '-1', 10), this.fields.length - 1);
 		const fIdx = fi >= 0 ? fi : this.fields.length - 1;
 		const pIdx = parseInt(this.getAttribute('field-port') || '0', 10);
 		const row = this.fields[fIdx];
 		const arr = row && row[pIdx];
-		if (!arr) { setPointCloud(this.glState, new Float32Array(0), new Float32Array(0)); return; }
+		if (!arr) { clear(); return; }
 		const n = Math.max(500, parseInt(this.getAttribute('field-samples') || '8000', 10));
 
 		// Cache the sampled cloud per (freq, port, n) — cycle re-enters
@@ -392,9 +392,9 @@ class FemViewerElement extends HTMLElement {
 		setPointScaleMode(this.glState, mode);
 		if (mode === 'log') {
 			const log_max = Math.log10(Math.sqrt(Math.max(cached.maxE2, 1e-30)));
-			setPointLogRange(this.glState, log_max - 4, 4);
+			setPointRange(this.glState, log_max - 4, 4);
 		} else {
-			setPointLinRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
+			setPointRange(this.glState, 0, Math.sqrt(Math.max(cached.maxE2, 1e-30)));
 		}
 	}
 

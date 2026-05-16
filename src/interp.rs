@@ -254,3 +254,210 @@ fn find_containing_tet_brute(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usiz
 pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
     find_containing_tet_brute(mesh, x, y, z)
 }
+
+/// Analytic curl of the FEM E-field inside a known tet at point `(x, y, z)`.
+///
+/// Derived directly from the Nédélec-2 basis functions reconstructed by
+/// `eval_field_in_tet`:
+///
+///   φ_e1 = lv·(f1·f2·g1 − f1²·g2)
+///   φ_e2 = lv·(f2²·g1 − f1·f2·g2)
+///   φ_f1 = v1·l1·(f1·f2·g3 − f2·f3·g1)
+///   φ_f2 = v1·l2·(f2·f3·g1 − f1·f3·g2)
+///
+/// where f_i = a_i + b_i·x + c_i·y + d_i·z is the *unscaled* barycentric
+/// coordinate of node i (six times the tet volume × the normalised λ_i) and
+/// g_i = (b_i, c_i, d_i) is the unscaled gradient ∇λ_i. Applying
+/// `∇×(α·g) = ∇α × g` (g constant per tet) and simplifying:
+///
+///   curl(φ_e1) = −3·lv·f1·(g1×g2)
+///   curl(φ_e2) = −3·lv·f2·(g1×g2)
+///   curl(φ_f1) =  v1·l1·[f1·(g2×g3) + 2·f2·(g1×g3) + f3·(g1×g2)]
+///   curl(φ_f2) =  v1·l2·[f1·(g2×g3) −   f2·(g1×g3) − 2·f3·(g1×g2)]
+///
+/// All four pieces are linear in position via f1, f2, f3 — there is no
+/// constant-per-tet approximation. Used by the error estimator, the
+/// far-field integration, and the H-field channel (H = ∇×E / (jωμ)).
+pub fn eval_curl_in_tet(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    solution: &[C64],
+    tet_idx: usize,
+    x: f64, y: f64, z: f64,
+) -> [C64; 3] {
+    let tet = &mesh.tets[tet_idx];
+    let xs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][0]);
+    let ys: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][1]);
+    let zs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][2]);
+
+    let (a_s, b_s, c_s, d_s, v) = tet_coefficients(&xs, &ys, &zs);
+
+    // Unscaled barycentric coordinate of local node i at (x, y, z).
+    let lam = |i: usize| -> f64 { a_s[i] + b_s[i]*x + c_s[i]*y + d_s[i]*z };
+    let grad = |i: usize| -> [f64; 3] { [b_s[i], c_s[i], d_s[i]] };
+    let cross = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
+        [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+    };
+
+    let mut ds = [[0.0f64; 4]; 4];
+    for i in 0..4 {
+        for j in i..4 {
+            let d = ((xs[i]-xs[j]).powi(2)+(ys[i]-ys[j]).powi(2)+(zs[i]-zs[j]).powi(2)).sqrt();
+            ds[i][j] = d; ds[j][i] = d;
+        }
+    }
+
+    let tet_edges = &mesh.tet_to_edge[tet_idx];
+    let global_edge_nodes: [[usize; 2]; 6] = std::array::from_fn(|i| mesh.edges[tet_edges[i]]);
+    let l_edge = crate::basis::local_mapping(tet, &global_edge_nodes);
+
+    let tet_tris = &mesh.tet_to_tri[tet_idx];
+    let global_tri_nodes: [[usize; 3]; 4] = std::array::from_fn(|i| mesh.tris[tet_tris[i]]);
+    let l_tri = crate::basis::local_mapping_tri(tet, &global_tri_nodes);
+
+    let field_ids = &basis.tet_to_field[tet_idx];
+    let v1 = 1.0 / (216.0 * v * v * v);
+
+    let mut curl = [C64::new(0.0, 0.0); 3];
+
+    // Edge modes: curl(E_edge) = −3·lv·(em1·f1 + em2·f2)·(g_n1 × g_n2)
+    for ie in 0..6 {
+        let n1 = l_edge[ie][0];
+        let n2 = l_edge[ie][1];
+        let em1 = solution[field_ids[ie]];
+        let em2 = solution[field_ids[10 + ie]];
+        let le = ds[n1][n2];
+        let lv = le * v1;
+        let cr = cross(grad(n1), grad(n2));
+        let f3 = em1 * C64::from(lam(n1)) + em2 * C64::from(lam(n2));
+        let coeff = f3 * C64::from(-3.0 * lv);
+        for k in 0..3 {
+            curl[k] += coeff * C64::from(cr[k]);
+        }
+    }
+
+    // Face modes: linear in position, evaluated exactly at (x, y, z).
+    for ie in 0..4 {
+        let n1 = l_tri[ie][0];
+        let n2 = l_tri[ie][1];
+        let n3 = l_tri[ie][2];
+        let ef1 = solution[field_ids[6 + ie]];
+        let ef2 = solution[field_ids[16 + ie]];
+
+        let l1 = ds[l_tri[ie][2]][l_tri[ie][0]]; // distance n3 ↔ n1
+        let l2 = ds[l_tri[ie][1]][l_tri[ie][0]]; // distance n2 ↔ n1
+
+        let cr12 = cross(grad(n1), grad(n2));
+        let cr13 = cross(grad(n1), grad(n3));
+        let cr23 = cross(grad(n2), grad(n3));
+
+        let f1 = lam(n1);
+        let f2 = lam(n2);
+        let f3 = lam(n3);
+
+        let c1 = ef1 * C64::from(v1 * l1);
+        let c2 = ef2 * C64::from(v1 * l2);
+
+        for k in 0..3 {
+            // curl(φ_f1) = v1·l1·[ f1·(g2×g3) + 2·f2·(g1×g3) + f3·(g1×g2)]
+            let term1 = f1 * cr23[k] + 2.0 * f2 * cr13[k] + f3 * cr12[k];
+            // curl(φ_f2) = v1·l2·[ f1·(g2×g3) −   f2·(g1×g3) − 2·f3·(g1×g2)]
+            let term2 = f1 * cr23[k] - f2 * cr13[k] - 2.0 * f3 * cr12[k];
+            curl[k] += c1 * C64::from(term1);
+            curl[k] += c2 * C64::from(term2);
+        }
+    }
+
+    curl
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::basis::Nedelec2Basis;
+    use crate::mesh::Mesh;
+
+    /// Build a single-tet mesh with non-degenerate vertices.
+    fn single_tet_mesh() -> Mesh {
+        let nodes = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let tets = vec![[0, 1, 2, 3]];
+        Mesh::from_tets(nodes, tets)
+    }
+
+    /// Numerical 6-point central-difference curl of `eval_field_in_tet`. Used
+    /// as a ground-truth reference for the analytic curl: the Nédélec-2 field
+    /// is at most quadratic in position, so its curl is at most linear, and
+    /// central differences are EXACT (to FP rounding) for linear functions.
+    fn numerical_curl(
+        mesh: &Mesh,
+        basis: &Nedelec2Basis,
+        solution: &[C64],
+        tet_idx: usize,
+        x: f64, y: f64, z: f64,
+        h: f64,
+    ) -> [C64; 3] {
+        let eval = |x, y, z| eval_field_in_tet(mesh, basis, solution, tet_idx, x, y, z);
+        let (_, eyp_x, ezp_x) = eval(x + h, y, z);
+        let (_, eym_x, ezm_x) = eval(x - h, y, z);
+        let (exp_y, _, ezp_y) = eval(x, y + h, z);
+        let (exm_y, _, ezm_y) = eval(x, y - h, z);
+        let (exp_z, eyp_z, _) = eval(x, y, z + h);
+        let (exm_z, eym_z, _) = eval(x, y, z - h);
+        let inv2h = C64::from(0.5 / h);
+        let d_ez_dy = (ezp_y - ezm_y) * inv2h;
+        let d_ey_dz = (eyp_z - eym_z) * inv2h;
+        let d_ex_dz = (exp_z - exm_z) * inv2h;
+        let d_ez_dx = (ezp_x - ezm_x) * inv2h;
+        let d_ey_dx = (eyp_x - eym_x) * inv2h;
+        let d_ex_dy = (exp_y - exm_y) * inv2h;
+        [
+            d_ez_dy - d_ey_dz,
+            d_ex_dz - d_ez_dx,
+            d_ey_dx - d_ex_dy,
+        ]
+    }
+
+    /// Analytic curl must agree with the FD reference to FP precision at any
+    /// point inside the tet, for any DOF configuration. Sweeps several
+    /// (x, y, z) and a deterministic-pseudo-random DOF vector touching every
+    /// basis function (6 edges × 2 modes + 4 faces × 2 modes = 20 DOFs).
+    #[test]
+    fn analytic_curl_matches_numerical() {
+        let mesh = single_tet_mesh();
+        let basis = Nedelec2Basis::new(&mesh);
+        assert_eq!(basis.n_field, 20);
+
+        // Deterministic seed — every DOF gets a distinct, non-trivial complex value.
+        let solution: Vec<C64> = (0..20)
+            .map(|i| C64::new(0.37 + 0.11 * i as f64, -0.21 + 0.07 * i as f64))
+            .collect();
+
+        // Sample at several interior points, including off-centre ones that
+        // expose the linear position dependence.
+        let pts = [
+            (0.25, 0.25, 0.25),  // centroid
+            (0.10, 0.20, 0.50),
+            (0.50, 0.10, 0.10),
+            (0.05, 0.05, 0.85),
+        ];
+        let h = 1e-3;
+        for &(x, y, z) in &pts {
+            let analytic = eval_curl_in_tet(&mesh, &basis, &solution, 0, x, y, z);
+            let numerical = numerical_curl(&mesh, &basis, &solution, 0, x, y, z, h);
+            for k in 0..3 {
+                let diff = (analytic[k] - numerical[k]).norm();
+                let scale = analytic[k].norm().max(numerical[k].norm()).max(1e-12);
+                assert!(
+                    diff / scale < 1e-6,
+                    "component {k} at ({x},{y},{z}): analytic={:?}, numerical={:?}, rel_err={}",
+                    analytic[k], numerical[k], diff / scale,
+                );
+            }
+        }
+    }
+}

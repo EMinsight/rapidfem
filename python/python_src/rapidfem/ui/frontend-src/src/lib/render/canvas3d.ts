@@ -67,15 +67,21 @@ export interface GLState {
 	uPointZFlip: WebGLUniformLocation;
 	uPointScale: WebGLUniformLocation;
 	uPointPhase: WebGLUniformLocation;
-	uPointLogFloor: WebGLUniformLocation;
-	uPointLogRange: WebGLUniformLocation;
+	uPointRangeFloor: WebGLUniformLocation;
+	uPointRangeSpan: WebGLUniformLocation;
 	uPointLogScale: WebGLUniformLocation;
 	meshes: Mesh[];
 	lineMeshes: LineMesh[];
-	pointCloud: { vao: WebGLVertexArrayObject; buffers: WebGLBuffer[]; count: number } | null;
+	/** Volumetric field point cloud. Two interleaved float-3 attributes:
+	 *  position (x, y, z) and (A, B, C) phasor terms per sample. */
+	pointCloud: {
+		vao: WebGLVertexArrayObject;
+		buffers: WebGLBuffer[];
+		count: number;
+	} | null;
 	pointPhase: number;
-	pointLogFloor: number;
-	pointLogRange: number;
+	pointRangeFloor: number;
+	pointRangeSpan: number;
 	pointLogScale: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 }
@@ -153,7 +159,20 @@ uniform vec3 uColor;
 out vec4 fragColor;
 void main() { fragColor = vec4(uColor, 1.0); }`;
 
-// ── Volumetric point cloud (gl.POINTS) ──
+// ── Volumetric field as a gl.POINTS sprite cloud ──
+//
+// Each field sample is one gl.POINTS sprite, sized in *screen pixels* with a
+// clamp so the cloud stays performant at any zoom: small enough to never
+// flood fill rate, large enough to stay visible at typical distances. The
+// fragment shader emits a soft round disc that fades into the colour ramp.
+//
+// Blending is additive (ONE, ONE) with depth test OFF — every point adds
+// brightness, nothing is occluded, and you see *through* the whole volume
+// rather than just the front slab. That's what gives the cloud its
+// volumetric glow.
+//
+// (A, B, C) are phasor terms; the shader composites |E(t)|² per frame
+// against a phase uniform for the wave animation.
 const POINT_VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
@@ -162,8 +181,8 @@ uniform mat4 uMVP;
 uniform float uZFlip;
 uniform float uPointScale;                 // base size in pixels at unit clip-w
 uniform float uPhase;                      // current ωt in radians
-uniform float uLogFloor;                   // log10(min |E|) (log mode) or |E|min (lin mode)
-uniform float uLogRange;                   // log10(max/min) (log mode) or (|E|max - |E|min) (lin mode)
+uniform float uRangeFloor;                 // log10(|E|min) (log) or |E|min (lin)
+uniform float uRangeSpan;                  // log10(max/min) (log) or (|E|max−|E|min) (lin)
 uniform float uLogScale;                   // 1.0 = log color mapping, 0.0 = linear
 out float vScalar;
 void main() {
@@ -176,10 +195,9 @@ void main() {
 	float s = sin(uPhase);
 	float e2 = aABC.x * c * c + aABC.y * s * s - 2.0 * aABC.z * c * s;
 	float mag = sqrt(max(e2, 0.0));
-	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uLogFloor) / max(uLogRange, 1e-9);
-	float norm_lin = (mag - uLogFloor) / max(uLogRange, 1e-9);
-	float norm = mix(norm_lin, norm_log, uLogScale);
-	vScalar = clamp(norm, 0.0, 1.0);
+	float norm_log = (log(max(mag, 1e-30)) / 2.302585093 - uRangeFloor) / max(uRangeSpan, 1e-9);
+	float norm_lin = (mag - uRangeFloor) / max(uRangeSpan, 1e-9);
+	vScalar = clamp(mix(norm_lin, norm_log, uLogScale), 0.0, 1.0);
 
 	float w = max(gl_Position.w, 1e-6);
 	gl_PointSize = clamp(uPointScale / w * (0.4 + 0.6 * vScalar), 4.0, 96.0);
@@ -206,7 +224,7 @@ void main() {
 	if (r2 > 1.0) discard;
 	float falloff = pow(1.0 - r2, 2.0);
 	vec3 col = inferno(vScalar);
-	// Additive contribution: low-field points fade out, high-field accumulate brightness
+	// Additive: low-field points fade out, hotspots accumulate brightness.
 	fragColor = vec4(col * (vScalar * falloff), 1.0);
 }`;
 
@@ -345,16 +363,16 @@ export function initGL(canvas: HTMLCanvasElement): GLState | null {
 		uPointZFlip: gl.getUniformLocation(pointProgram, 'uZFlip')!,
 		uPointScale: gl.getUniformLocation(pointProgram, 'uPointScale')!,
 		uPointPhase: gl.getUniformLocation(pointProgram, 'uPhase')!,
-		uPointLogFloor: gl.getUniformLocation(pointProgram, 'uLogFloor')!,
-		uPointLogRange: gl.getUniformLocation(pointProgram, 'uLogRange')!,
+		uPointRangeFloor: gl.getUniformLocation(pointProgram, 'uRangeFloor')!,
+		uPointRangeSpan: gl.getUniformLocation(pointProgram, 'uRangeSpan')!,
 		uPointLogScale: gl.getUniformLocation(pointProgram, 'uLogScale')!,
 		meshes: [],
 		lineMeshes: [],
 		pointCloud: null,
 		pointPhase: 0,
-		pointLogFloor: -30,
-		pointLogRange: 6,
-		pointLogScale: 1,
+		pointRangeFloor: -30,
+		pointRangeSpan: 6,
+		pointLogScale: 0,
 		bbox: { min: [0, 0, 0], max: [0, 0, 0] }
 	};
 }
@@ -369,12 +387,17 @@ export function disposeGL(state: GLState): void {
 		gl.deleteVertexArray(m.vao);
 		for (const b of m.buffers) gl.deleteBuffer(b);
 	}
+	if (state.pointCloud) {
+		gl.deleteVertexArray(state.pointCloud.vao);
+		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
+	}
 	gl.deleteProgram(state.program);
 	gl.deleteProgram(state.lineProgram);
+	gl.deleteProgram(state.pointProgram);
 }
 
 /** Drop surface and line meshes. The point cloud has its own lifecycle
- *  (setPointCloud manages its GL buffers) and survives a rebuild so the
+ *  (setPointCloud manages its GL resources) and survives a rebuild so the
  *  field viz stays visible when the user toggles Geometry / Mesh layers. */
 export function clearMeshes(state: GLState): void {
 	const { gl } = state;
@@ -390,19 +413,26 @@ export function clearMeshes(state: GLState): void {
 	state.lineMeshes = [];
 }
 
-/** Replace the volumetric point cloud. positions: [x,y,z,...] in METERS,
- *  abc: [A,B,C, ...] per point — phasor terms the GPU shader composites
- *  with the current phase uniform to render the wave animation. */
-export function setPointCloud(state: GLState, positions: Float32Array, abc: Float32Array): void {
+/** Replace the volumetric field point cloud.
+ *
+ *  positions: [x,y,z,...] per sample in METERS
+ *  abc:       [A,B,C,...] per sample — phasor terms for |E(t)|² animation
+ *
+ *  Pure additive point-sprite cloud — no draw order, no sorting, no σ. */
+export function setPointCloud(
+	state: GLState,
+	positions: Float32Array,
+	abc: Float32Array,
+): void {
 	const { gl } = state;
 	if (state.pointCloud) {
 		gl.deleteVertexArray(state.pointCloud.vao);
 		for (const b of state.pointCloud.buffers) gl.deleteBuffer(b);
-	}
-	if (positions.length === 0) {
 		state.pointCloud = null;
-		return;
 	}
+	const count = positions.length / 3;
+	if (count === 0) return;
+
 	const vao = gl.createVertexArray()!;
 	gl.bindVertexArray(vao);
 	const posBuf = gl.createBuffer()!;
@@ -416,24 +446,21 @@ export function setPointCloud(state: GLState, positions: Float32Array, abc: Floa
 	gl.enableVertexAttribArray(1);
 	gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 	gl.bindVertexArray(null);
-	state.pointCloud = { vao, buffers: [posBuf, abcBuf], count: positions.length / 3 };
+	gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+	state.pointCloud = { vao, buffers: [posBuf, abcBuf], count };
 }
 
-/** Update the field log-range (after a new sample). */
-export function setPointLogRange(state: GLState, log_floor: number, log_range: number): void {
-	state.pointLogFloor = log_floor;
-	state.pointLogRange = log_range;
+/** Set the field colour-mapping range. floor/span are interpreted per mode:
+ *  log → (log10(|E|min), log10(max/min)); lin → (|E|min, |E|max−|E|min). */
+export function setPointRange(state: GLState, floor: number, span: number): void {
+	state.pointRangeFloor = floor;
+	state.pointRangeSpan = span;
 }
 
-/** Color-mapping mode for the field point cloud. */
+/** Colour-mapping mode for the field point cloud. */
 export function setPointScaleMode(state: GLState, mode: 'log' | 'lin'): void {
 	state.pointLogScale = mode === 'log' ? 1 : 0;
-}
-
-/** Linear-mode range. floor=|E|min, range=|E|max−|E|min. */
-export function setPointLinRange(state: GLState, lin_floor: number, lin_range: number): void {
-	state.pointLogFloor = lin_floor;
-	state.pointLogRange = lin_range;
 }
 
 /** Update the time phase (call from requestAnimationFrame for the wave anim). */
@@ -594,10 +621,9 @@ export function render3D(
 		}
 	}
 
-	// Point cloud pass (volumetric field) — additive blending so overlapping
-	// points accumulate brightness. Depth test off so points behind solid
-	// conductor surfaces still contribute to the cloud (we want to see the
-	// whole volume, not only the front-facing slab).
+	// Volumetric field point cloud — additive blending, depth test off,
+	// so every sample adds brightness and you see *through* the whole
+	// volume rather than just the front slab.
 	if (state.pointCloud && state.pointCloud.count > 0) {
 		gl.useProgram(state.pointProgram);
 		gl.uniformMatrix4fv(state.uPointMVP, false, vp);
@@ -606,11 +632,10 @@ export function render3D(
 		const dy = state.bbox.max[1] - state.bbox.min[1];
 		const xy = Math.max(dx, dy, 1e-9);
 		// Base size in pixels at unit clip-w, scaled by scene XY extent.
-		// 0.4 makes individual sprites ~visible at default zoom.
 		gl.uniform1f(state.uPointScale, xy * 0.4);
 		gl.uniform1f(state.uPointPhase, state.pointPhase);
-		gl.uniform1f(state.uPointLogFloor, state.pointLogFloor);
-		gl.uniform1f(state.uPointLogRange, state.pointLogRange);
+		gl.uniform1f(state.uPointRangeFloor, state.pointRangeFloor);
+		gl.uniform1f(state.uPointRangeSpan, state.pointRangeSpan);
 		gl.uniform1f(state.uPointLogScale, state.pointLogScale);
 		gl.disable(gl.DEPTH_TEST);
 		gl.depthMask(false);

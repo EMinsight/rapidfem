@@ -2,13 +2,15 @@
 	import { onMount, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
-		setPointCloud, setPointPhase, setPointLogRange, setPointLinRange, setPointScaleMode,
+		setPointCloud, setPointPhase, setPointRange, setPointScaleMode,
 		render3D, fitCamera, setTagVisible,
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
 	import { palette } from '$lib/theme';
 	import { viz_load_mesh, viz_sample } from '$lib/api';
+
+	const EMPTY_F32 = new Float32Array(0);
 
 	let {
 		mesh = null as MeshData | null,
@@ -17,8 +19,10 @@
 		show_wireframe = false,
 		show_field = false,
 		field = null,
+		field_channel = $bindable('E' as 'E' | 'J' | 'H'),
+		available_channels = ['E'] as ('E' | 'J' | 'H')[],
 		point_density = 5,
-		scale_mode = 'lin',
+		scale_mode = $bindable('lin' as 'log' | 'lin'),
 		animate_field = false,
 		anim_speed = 1
 	}: {
@@ -28,11 +32,20 @@
 		show_wireframe?: boolean;
 		show_field?: boolean;
 		field?: Float32Array | null;
+		field_channel?: 'E' | 'J' | 'H';
+		available_channels?: ('E' | 'J' | 'H')[];
 		point_density?: number;
 		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
 		anim_speed?: number;
 	} = $props();
+
+	// Channel metadata for the colourbar — title + SI unit per channel.
+	const CHANNEL_META: Record<'E' | 'J' | 'H', { sym: string; unit: string }> = {
+		E: { sym: '|E|', unit: 'V/m'  },
+		J: { sym: '|J|', unit: 'A/m²' },
+		H: { sym: '|H|', unit: 'A/m'  },
+	};
 
 	let canvas = $state<HTMLCanvasElement | null>(null);
 	let container = $state<HTMLDivElement | null>(null);
@@ -48,13 +61,14 @@
 	let hidden_tags = $state(new Set<number>());
 	let field_range = $state<{ min: number; max: number; decades: number } | null>(null);
 
+
 	function toggle_tag(tag: number) {
 		if (!gl_state) return;
 		const next = new Set(hidden_tags);
 		if (next.has(tag)) next.delete(tag); else next.add(tag);
 		hidden_tags = next;
 		setTagVisible(gl_state, tag, !next.has(tag));
-		render_frame();
+		schedule_render();
 	}
 	let is_dragging = false;
 	let is_right_drag = false;
@@ -83,7 +97,7 @@
 					start.target[2] + (target.target[2] - start.target[2]) * e
 				]
 			};
-			render_frame();
+			schedule_render();
 			if (t < 1) requestAnimationFrame(tick);
 			else anim_target = null;
 		}
@@ -109,7 +123,7 @@
 	}
 	export function flip_z() {
 		z_flip *= -1;
-		render_frame();
+		schedule_render();
 	}
 	export function save_png() {
 		if (!canvas) return;
@@ -341,11 +355,11 @@
 			addLineMesh(gl_state, Float32Array.from(edges), hex('#3a3a44'), -1);
 		}
 
-		// Field point cloud is sampled asynchronously in the worker (see the
-		// dedicated `$effect` below). rebuild() just clears any stale cloud
-		// here; the worker call repopulates it.
+		// Field splat cloud is sampled asynchronously (see the dedicated
+		// `$effect` below). rebuild() just clears any stale cloud here; the
+		// sampler repopulates it.
 		if (!useField) {
-			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 
@@ -462,12 +476,27 @@
 		render3D(gl_state, camera, w, h, z_flip);
 	}
 
+	// Coalesce renders onto a single rAF tick. Pointer events, the
+	// depth-sort worker callback, $effects and the ResizeObserver can all
+	// fire several times before the next display refresh — without this
+	// they each trigger a full render, e.g. orbiting drove TWO renders per
+	// move (one on pointermove, one on the sort result). One render/frame.
+	let render_scheduled = false;
+	function schedule_render() {
+		if (render_scheduled) return;
+		render_scheduled = true;
+		requestAnimationFrame(() => {
+			render_scheduled = false;
+			render_frame();
+		});
+	}
+
 	// ── Pointer / wheel handlers (orbit/pan/zoom analog rapidpassives) ──
 	function on_wheel(e: WheelEvent) {
 		e.preventDefault();
 		const factor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
 		camera = { ...camera, distance: camera.distance * factor };
-		render_frame();
+		schedule_render();
 	}
 	function on_pointer_down(e: PointerEvent) {
 		is_dragging = true;
@@ -513,7 +542,7 @@
 				phi: Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, camera.phi + dy * 0.005))
 			};
 		}
-		render_frame();
+		schedule_render();
 	}
 	function on_pointer_up() { is_dragging = false; is_right_drag = false; }
 	function on_context_menu(e: Event) { e.preventDefault(); }
@@ -526,7 +555,7 @@
 		gl_state = initGL(canvas);
 		if (!gl_state) return;
 
-		const ro = new ResizeObserver(() => mounted && render_frame());
+		const ro = new ResizeObserver(() => mounted && schedule_render());
 		if (container) ro.observe(container);
 
 		// Initial fit + render once mesh is available
@@ -549,7 +578,7 @@
 		mesh; wireframe; show_geometry; show_wireframe; show_field; field; point_density;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
-		render_frame();
+		schedule_render();
 	});
 
 
@@ -566,12 +595,12 @@
 	let viz_mesh_ready_for: MeshData | null = $state(null);
 	$effect(() => {
 		const m = mesh;
-		// Whenever the mesh changes (file load, regen), drop the old GPU point
+		// Whenever the mesh changes (file load, regen), drop the old GPU splat
 		// cloud immediately. Otherwise the previous file's field samples linger
-		// in their old coordinates on top of the new geometry until the worker
-		// finishes resampling.
+		// in their old coordinates on top of the new geometry until the
+		// sampler finishes resampling.
 		if (gl_state) {
-			setPointCloud(gl_state, new Float32Array(0), new Float32Array(0));
+			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
 		if (!m) { viz_mesh_ready_for = null; return; }
@@ -599,7 +628,7 @@
 			last_range = r;
 			apply_scale_mode(gl_state, scale_mode, r);
 			setPointCloud(gl_state, r.positions, r.abc);
-			render_frame();
+			schedule_render();
 		}).catch((e) => console.error('viz_sample', e));
 	});
 
@@ -611,14 +640,14 @@
 		r: { log_floor: number; log_range: number; field_range: { min: number; max: number } },
 	) {
 		setPointScaleMode(gl, mode);
-		if (mode === 'log') setPointLogRange(gl, r.log_floor, r.log_range);
-		else setPointLinRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
+		if (mode === 'log') setPointRange(gl, r.log_floor, r.log_range);
+		else setPointRange(gl, r.field_range.min, r.field_range.max - r.field_range.min);
 	}
 	$effect(() => {
 		const mode = scale_mode;
 		if (!gl_state || !last_range) return;
 		apply_scale_mode(gl_state, mode, last_range);
-		render_frame();
+		schedule_render();
 	});
 
 	// Wave animation: while `show_field` is on AND the `animate_field` prop is
@@ -629,7 +658,7 @@
 		const want = show_field && animate_field;
 		if (anim_raf != null) { cancelAnimationFrame(anim_raf); anim_raf = null; }
 		if (!want || !gl_state) {
-			if (gl_state) { setPointPhase(gl_state, 0); render_frame(); }
+			if (gl_state) { setPointPhase(gl_state, 0); schedule_render(); }
 			return;
 		}
 		const t0 = performance.now();
@@ -637,7 +666,7 @@
 			if (!gl_state) return;
 			const t = (performance.now() - t0) * 0.001;
 			setPointPhase(gl_state, t * 2 * Math.PI * anim_speed);
-			render_frame();
+			schedule_render();
 			anim_raf = requestAnimationFrame(tick);
 		};
 		anim_raf = requestAnimationFrame(tick);
@@ -755,7 +784,10 @@
 
 		{#if show_field && field_range}
 			<div class="overlay-panel cb-panel">
-				<div class="op-title">|E| · V/m <span class="cb-mode">({scale_mode})</span></div>
+				<div class="op-title">
+					{CHANNEL_META[field_channel].sym} · {CHANNEL_META[field_channel].unit}
+					<span class="cb-mode">({scale_mode})</span>
+				</div>
 				<div class="cb-body">
 					<div class="cb-gradient">
 						{#each colorbar_ticks as tk}
@@ -790,27 +822,37 @@
 				<path d="M13.66 10a6 6 0 1 1-1.41-6.24L15.3 6.7" />
 			</svg>
 		</button>
-<button class="tb" onclick={save_png}>
+		<button class="tb" onclick={save_png}>
 			<span class="tip">Save PNG<kbd>Ctrl+S</kbd></span>
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
 				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
 			</svg>
 		</button>
+		{#if show_field}
+			<span class="tb-sep" aria-hidden="true"></span>
+			{#each (['E', 'J', 'H'] as const) as ch}
+				{@const enabled = available_channels.includes(ch)}
+				<button
+					class="tb tb-label"
+					class:active={field_channel === ch}
+					disabled={!enabled}
+					onclick={() => { if (enabled) field_channel = ch; }}
+				>
+					<span class="tip">{ch === 'E' ? 'E-field (V/m)' :
+					                   ch === 'J' ? 'Current density σE (A/m²)' :
+					                                'Magnetic field ∇×E/(jωμ) (A/m)'}</span>
+					{ch}
+				</button>
+			{/each}
+			<button
+				class="tb tb-label tb-scale"
+				onclick={() => (scale_mode = scale_mode === 'log' ? 'lin' : 'log')}
+			>
+				<span class="tip">{scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}</span>
+				{scale_mode}
+			</button>
+		{/if}
 	</div>
-
-	{#if show_field && field_range}
-		<div class="colorbar">
-			<div class="cb-title">|E| (V/m) · log scale</div>
-			<div class="cb-body">
-				<div class="cb-gradient"></div>
-				<div class="cb-ticks">
-					{#each colorbar_ticks.toReversed() as tk}
-						<span class="cb-tick">{tk.label}</span>
-					{/each}
-				</div>
-			</div>
-		</div>
-	{/if}
 
 	<div class="hud">
 		<span class="coord">x {(cursor_world.x * 1e6).toFixed(1)} µm</span>
@@ -900,7 +942,36 @@
 		right: 10px;
 		z-index: 10;
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		gap: 2px;
+		max-width: calc(100% - 20px);
+	}
+	.tb-sep {
+		display: inline-block;
+		width: 1px;
+		height: 20px;
+		margin: 4px 4px;
+		background: var(--border);
+	}
+	.tb.tb-label {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+	}
+	.tb.tb-label.active {
+		color: var(--accent);
+		background: var(--accent-dim);
+		border-color: var(--accent);
+	}
+	.tb.tb-label:disabled {
+		color: var(--text-dim);
+		cursor: default;
+		opacity: 0.4;
+		border-color: var(--border);
+		background: var(--bg-surface);
 	}
 	.tb {
 		position: relative;

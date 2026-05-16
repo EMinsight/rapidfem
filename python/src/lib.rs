@@ -149,6 +149,43 @@ impl PySimulation {
         Some(arr.into_pyarray_bound(py))
     }
 
+    /// Loss-equivalent current density J = σ_eff · E at every mesh node for
+    /// a given (freq_idx, port_idx). `σ_eff = ω·ε₀·εᵣ·tan(δ) + σ_bulk`
+    /// covers both dielectric (loss tangent) and Ohmic losses, so substrates
+    /// like Rogers with tan_δ but zero bulk σ also light up. Returns a
+    /// `(n_nodes, 3)` complex128 numpy array (Jx, Jy, Jz per node) in A/m².
+    fn current_density_at_nodes<'py>(
+        &self,
+        py: Python<'py>,
+        result: &PySweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+    ) -> Option<Bound<'py, PyArray2<NpC64>>> {
+        let flat = self.inner.current_density_at_nodes(&result.inner, freq_idx, port_idx)?;
+        let n = self.inner.mesh.n_nodes();
+        let conv: Vec<NpC64> = flat.iter().map(|c| NpC64::new(c.re, c.im)).collect();
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), conv).expect("shape");
+        Some(arr.into_pyarray_bound(py))
+    }
+
+    /// Magnetic field H = ∇×E / (jωμ₀μ_r) at every mesh node for a given
+    /// (freq_idx, port_idx). Returns a `(n_nodes, 3)` complex128 numpy array
+    /// (Hx, Hy, Hz per node) in A/m. Derived from the analytic Nédélec-2
+    /// curl of the FEM solution.
+    fn h_field_at_nodes<'py>(
+        &self,
+        py: Python<'py>,
+        result: &PySweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+    ) -> Option<Bound<'py, PyArray2<NpC64>>> {
+        let flat = self.inner.h_field_at_nodes(&result.inner, freq_idx, port_idx)?;
+        let n = self.inner.mesh.n_nodes();
+        let conv: Vec<NpC64> = flat.iter().map(|c| NpC64::new(c.re, c.im)).collect();
+        let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), conv).expect("shape");
+        Some(arr.into_pyarray_bound(py))
+    }
+
     /// Same as ``field_at_nodes`` but for an :class:`Eigenmode`. Returns a
     /// `(n_nodes, 3)` complex128 numpy array of (Ex, Ey, Ez) at each mesh
     /// node. Field magnitude is not normalised — eigenmodes are defined up

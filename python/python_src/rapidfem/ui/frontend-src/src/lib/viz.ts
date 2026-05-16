@@ -1,20 +1,37 @@
 /**
  * Volumetric field point-cloud sampling.
  *
- * Replaces the WASM worker that used to do this. Given a mesh + per-node
- * (A, B, C) phasor coefficients, we draw N random points uniformly within
- * the tet volume (weighted by per-tet volume so density is uniform) and
- * interpolate (A, B, C) at each point via barycentric weights. Coefficients
- * encode the time-domain |E(t)|² as A cos²(ωt) + B sin²(ωt) − 2 C cos·sin,
- * which the GPU shader composites every frame against a phase uniform.
+ * N random points drawn across the mesh volume with (A, B, C) phasor
+ * coefficients interpolated by barycentric weights. The per-tet draw
+ * probability is `volume × energy` (not just `volume`), so sample density
+ * follows the field energy.
+ *
+ * Because the weighting depends on the field, the sampling CDF is built per
+ * `viz_sample` call — `viz_load_mesh` only caches the field-independent
+ * per-tet volumes.
+ *
+ * Coefficients encode |E(t)|² = A cos²(ωt) + B sin²(ωt) − 2 C cos·sin, which
+ * the point shader composites every frame against a phase uniform.
  */
 import type { MeshData } from './msh';
+
+/** Energy coverage floor: a tet with zero field gets exactly zero sampling
+ *  weight when this is 0. We want that: for the J channel, σ_eff = 0 in air
+ *  → J = 0 in air → no point in placing samples there. Same logic for any
+ *  channel — show what's there, don't pad vacuum. */
+const ENERGY_FLOOR = 0.0;
+
+/** Colormap upper percentile. The auto-range is dominated by a handful of
+ *  outlier nodes — typically the driven-port edges where the imposed E (and
+ *  therefore curl E → H) is far stronger than anywhere in the bulk. Clipping
+ *  at the 99th percentile lets the bulk use the full colour range while the
+ *  port saturates at the top. */
+const RANGE_PERCENTILE = 0.99;
 
 interface VizCache {
 	nodes: Float64Array;
 	tets: Uint32Array;
-	cdf: Float64Array;        // tet-volume CDF (length = n_tets)
-	total_vol: number;
+	vols: Float64Array;       // |tet volume|, per tet
 }
 
 let cache: VizCache | null = null;
@@ -26,7 +43,6 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 		return;
 	}
 	const vols = new Float64Array(n_tets);
-	let total = 0;
 	for (let t = 0; t < n_tets; t++) {
 		const a = m.tets[t * 4 + 0] * 3;
 		const b = m.tets[t * 4 + 1] * 3;
@@ -46,22 +62,9 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 			e1x * (e2y * e3z - e2z * e3y) -
 			e1y * (e2x * e3z - e2z * e3x) +
 			e1z * (e2x * e3y - e2y * e3x);
-		const v = Math.abs(det) / 6;
-		vols[t] = v;
-		total += v;
+		vols[t] = Math.abs(det) / 6;
 	}
-	const cdf = new Float64Array(n_tets);
-	let acc = 0;
-	for (let t = 0; t < n_tets; t++) {
-		acc += vols[t];
-		cdf[t] = acc / total;
-	}
-	cache = {
-		nodes: m.nodes,
-		tets: m.tets,
-		cdf,
-		total_vol: total,
-	};
+	cache = { nodes: m.nodes, tets: m.tets, vols };
 }
 
 /** Binary search for the smallest index `i` with cdf[i] >= u. */
@@ -80,7 +83,6 @@ function uniform_bary(out: [number, number, number, number]): void {
 	let s = Math.random();
 	let t = Math.random();
 	let u = Math.random();
-	// Sort ascending
 	if (s > t) [s, t] = [t, s];
 	if (t > u) [t, u] = [u, t];
 	if (s > t) [s, t] = [t, s];
@@ -90,6 +92,12 @@ function uniform_bary(out: [number, number, number, number]): void {
 	out[3] = 1 - u;
 }
 
+/**
+ * Energy-weighted sampling of N field splats.
+ *
+ * @param field_abc  per-node [A, B, C] phasor terms
+ * @param n          number of splats to draw
+ */
 export async function viz_sample(
 	field_abc: Float32Array,
 	n: number,
@@ -100,78 +108,115 @@ export async function viz_sample(
 	log_range: number;
 	field_range: { min: number; max: number; decades: number };
 }> {
-	if (!cache || n <= 0 || !field_abc || field_abc.length === 0) {
-		return {
-			positions: new Float32Array(0),
-			abc: new Float32Array(0),
-			log_floor: 0,
-			log_range: 1,
-			field_range: { min: 0, max: 1, decades: 0 },
-		};
+	const empty = {
+		positions: new Float32Array(0),
+		abc: new Float32Array(0),
+		log_floor: 0,
+		log_range: 1,
+		field_range: { min: 0, max: 1, decades: 0 },
+	};
+	if (!cache || n <= 0 || !field_abc || field_abc.length === 0) return empty;
+
+	const { nodes, tets, vols } = cache;
+	const n_tets = vols.length;
+
+	// ── Per-tet time-averaged energy from the phasor terms ──────────────
+	// |E|²_avg ≈ (A + B) / 2, averaged over the tet's 4 nodes.
+	const energy = new Float64Array(n_tets);
+	let e_max = 0;
+	for (let t = 0; t < n_tets; t++) {
+		let sum = 0;
+		for (let k = 0; k < 4; k++) {
+			const nd = tets[t * 4 + k] * 3;
+			sum += 0.5 * (field_abc[nd] + field_abc[nd + 1]);
+		}
+		const e = sum / 4;
+		energy[t] = e > 0 ? e : 0;
+		if (energy[t] > e_max) e_max = energy[t];
 	}
-	const { nodes, tets, cdf } = cache;
+	if (e_max <= 0) e_max = 1;
+
+	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm) ────
+	const cdf = new Float64Array(n_tets);
+	let acc = 0;
+	for (let t = 0; t < n_tets; t++) {
+		const e_norm = energy[t] / e_max;
+		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_norm);
+		cdf[t] = acc;
+	}
+	if (acc <= 0) return empty;
+	const inv_total = 1 / acc;
+	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
+
+	// ── Draw N points ───────────────────────────────────────────────────
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
-
-	// Track time-averaged |E|² ≈ (A + B) / 2 for log range.
-	let min_e2 = Infinity, max_e2 = 0;
-
 	for (let i = 0; i < n; i++) {
-		const u = Math.random();
-		const t_idx = bsearch_cdf(cdf, u);
+		const t_idx = bsearch_cdf(cdf, Math.random());
 		uniform_bary(w);
 		const a = tets[t_idx * 4 + 0];
 		const b = tets[t_idx * 4 + 1];
 		const c = tets[t_idx * 4 + 2];
 		const d = tets[t_idx * 4 + 3];
-		const px =
+		positions[i * 3] =
 			w[0] * nodes[a * 3]     + w[1] * nodes[b * 3]     +
 			w[2] * nodes[c * 3]     + w[3] * nodes[d * 3];
-		const py =
+		positions[i * 3 + 1] =
 			w[0] * nodes[a * 3 + 1] + w[1] * nodes[b * 3 + 1] +
 			w[2] * nodes[c * 3 + 1] + w[3] * nodes[d * 3 + 1];
-		const pz =
+		positions[i * 3 + 2] =
 			w[0] * nodes[a * 3 + 2] + w[1] * nodes[b * 3 + 2] +
 			w[2] * nodes[c * 3 + 2] + w[3] * nodes[d * 3 + 2];
-		positions[i * 3]     = px;
-		positions[i * 3 + 1] = py;
-		positions[i * 3 + 2] = pz;
-		const aA = field_abc[a * 3], aB = field_abc[a * 3 + 1], aC = field_abc[a * 3 + 2];
-		const bA = field_abc[b * 3], bB = field_abc[b * 3 + 1], bC = field_abc[b * 3 + 2];
-		const cA = field_abc[c * 3], cB = field_abc[c * 3 + 1], cC = field_abc[c * 3 + 2];
-		const dA = field_abc[d * 3], dB = field_abc[d * 3 + 1], dC = field_abc[d * 3 + 2];
-		const A = w[0] * aA + w[1] * bA + w[2] * cA + w[3] * dA;
-		const B = w[0] * aB + w[1] * bB + w[2] * cB + w[3] * dB;
-		const C = w[0] * aC + w[1] * bC + w[2] * cC + w[3] * dC;
+		const A = w[0] * field_abc[a * 3]     + w[1] * field_abc[b * 3]     + w[2] * field_abc[c * 3]     + w[3] * field_abc[d * 3];
+		const B = w[0] * field_abc[a * 3 + 1] + w[1] * field_abc[b * 3 + 1] + w[2] * field_abc[c * 3 + 1] + w[3] * field_abc[d * 3 + 1];
+		const C = w[0] * field_abc[a * 3 + 2] + w[1] * field_abc[b * 3 + 2] + w[2] * field_abc[c * 3 + 2] + w[3] * field_abc[d * 3 + 2];
 		abc[i * 3]     = A;
 		abc[i * 3 + 1] = B;
 		abc[i * 3 + 2] = C;
-		// Time-averaged |E|² = (A + B) / 2.
-		const e2 = 0.5 * (A + B);
-		if (e2 > 0) {
-			if (e2 < min_e2) min_e2 = e2;
-			if (e2 > max_e2) max_e2 = e2;
-		}
 	}
 
-	if (!isFinite(min_e2) || max_e2 === 0) {
-		min_e2 = 1; max_e2 = 1;
-	}
-	// Shader works in log10(|E|), not log10(|E|²). Convert.
-	const e_min_raw = Math.sqrt(Math.max(min_e2, 0));
-	const e_max = Math.sqrt(max_e2);
-	const e_min = Math.max(e_min_raw, e_max * 1e-3);
-	const log_max = Math.log10(e_max);
-	const log_min = Math.log10(e_min);
-	const log_floor = log_min;
-	const log_range = Math.max(log_max - log_min, 0.5);
-	const decades = log_max - log_min;
+	// Colormap range from the full per-node energy distribution (not from the
+	// energy-biased samples). The 99th percentile clips port-driven outliers
+	// so the bulk can use the full colour range; the small-end floor is the
+	// 1st percentile for symmetry. |E|²_avg = (A + B) / 2 per node.
+	const range = field_energy_range(field_abc);
 	return {
 		positions,
 		abc,
-		log_floor,
-		log_range,
-		field_range: { min: e_min, max: e_max, decades },
+		log_floor: range.log_floor,
+		log_range: range.log_range,
+		field_range: range.field_range,
+	};
+}
+
+function field_energy_range(field_abc: Float32Array): {
+	log_floor: number;
+	log_range: number;
+	field_range: { min: number; max: number; decades: number };
+} {
+	const n_nodes = field_abc.length / 3;
+	const energies: number[] = [];
+	for (let ni = 0; ni < n_nodes; ni++) {
+		const e2 = 0.5 * (field_abc[ni * 3] + field_abc[ni * 3 + 1]);
+		if (e2 > 0) energies.push(e2);
+	}
+	if (energies.length === 0) {
+		return { log_floor: 0, log_range: 1, field_range: { min: 1, max: 1, decades: 0 } };
+	}
+	energies.sort((a, b) => a - b);
+	const lo_idx = Math.min(energies.length - 1, Math.floor(energies.length * (1 - RANGE_PERCENTILE)));
+	const hi_idx = Math.min(energies.length - 1, Math.floor(energies.length * RANGE_PERCENTILE));
+	const e2_lo = energies[lo_idx];
+	const e2_hi = energies[hi_idx];
+	// Shader works in log10(|F|), not log10(|F|²). Convert.
+	const e_max = Math.sqrt(e2_hi);
+	const e_min = Math.max(Math.sqrt(e2_lo), e_max * 1e-3);
+	const log_max = Math.log10(e_max);
+	const log_min = Math.log10(e_min);
+	return {
+		log_floor: log_min,
+		log_range: Math.max(log_max - log_min, 0.5),
+		field_range: { min: e_min, max: e_max, decades: log_max - log_min },
 	};
 }

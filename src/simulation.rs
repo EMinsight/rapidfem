@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::basis::Nedelec2Basis;
 use crate::config::{Config, PortConfig};
-use crate::constants::{C0, PI};
+use crate::constants::{C0, EPS0, MU0, PI};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
 use crate::interp;
@@ -357,6 +357,115 @@ impl Simulation {
             out.push(ez);
         }
         out
+    }
+
+    /// Per-tet loss-equivalent conductivity at angular frequency `omega`:
+    ///
+    ///     σ_eff = ω · ε₀ · εᵣ · tan(δ) + σ_bulk
+    ///
+    /// The first term turns dielectric losses (loss tangent) into an
+    /// equivalent current density so substrates like Rogers — which carry
+    /// tan_δ but no bulk σ — still light up in the J channel. The second
+    /// term is the ordinary Ohmic conductivity. Together this matches the
+    /// total imaginary permittivity the solver uses for power dissipation.
+    fn per_tet_sigma_eff(&self, omega: f64) -> Vec<f64> {
+        let mut sigma = vec![0.0f64; self.mesh.n_tets()];
+        let w_eps0 = omega * EPS0;
+        for mat in &self.materials {
+            if mat.cond == 0.0 && mat.tand == 0.0 { continue; }
+            let s = w_eps0 * mat.er * mat.tand + mat.cond;
+            for &ti in &mat.tet_indices {
+                sigma[ti] = s;
+            }
+        }
+        sigma
+    }
+
+    /// Per-tet relative permeability μ_r, default 1.0 where no material applies.
+    fn per_tet_mur(&self) -> Vec<f64> {
+        let mut mur = vec![1.0f64; self.mesh.n_tets()];
+        for mat in &self.materials {
+            for &ti in &mat.tet_indices {
+                mur[ti] = mat.ur;
+            }
+        }
+        mur
+    }
+
+    /// Build the node → adjacent-tet map (first tet wins). Shared by all the
+    /// per-node samplers below so they pick the same tet at material interfaces.
+    fn node_to_tet_map(&self) -> Vec<usize> {
+        let n_nodes = self.mesh.n_nodes();
+        let mut node_to_tet = vec![usize::MAX; n_nodes];
+        for (itet, tet) in self.mesh.tets.iter().enumerate() {
+            for &ni in tet {
+                if node_to_tet[ni] == usize::MAX {
+                    node_to_tet[ni] = itet;
+                }
+            }
+        }
+        node_to_tet
+    }
+
+    /// Loss-equivalent current density J = σ_eff · E at each mesh node, in
+    /// (A/m²). `σ_eff = ω·ε₀·εᵣ·tan(δ) + σ_bulk` covers both Ohmic and
+    /// dielectric losses — so this is the actual dissipative current, not
+    /// just the bulk-conduction component. Zero in lossless regions.
+    /// Returns `Vec<C64>` of length `3 · n_nodes` (interleaved Jx, Jy, Jz).
+    pub fn current_density_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
+        let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
+        let freq = *result.frequencies.get(freq_idx)?;
+        let omega = 2.0 * PI * freq;
+        let sigma = self.per_tet_sigma_eff(omega);
+        let n_nodes = self.mesh.n_nodes();
+        let node_to_tet = self.node_to_tet_map();
+        let mut out: Vec<C64> = Vec::with_capacity(3 * n_nodes);
+        for ni in 0..n_nodes {
+            let tet_idx = node_to_tet[ni];
+            if tet_idx == usize::MAX || sigma[tet_idx] == 0.0 {
+                out.extend_from_slice(&[C64::new(0.0, 0.0); 3]);
+                continue;
+            }
+            let p = self.mesh.nodes[ni];
+            let (ex, ey, ez) = crate::interp::eval_field_in_tet(
+                &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
+            );
+            let s = C64::from(sigma[tet_idx]);
+            out.push(ex * s);
+            out.push(ey * s);
+            out.push(ez * s);
+        }
+        Some(out)
+    }
+
+    /// Magnetic field H = ∇×E / (jωμ₀μ_r) at each mesh node, in (A/m).
+    /// Returns `Vec<C64>` of length `3 · n_nodes` (interleaved Hx, Hy, Hz).
+    /// Uses the analytic Nédélec-2 curl evaluated at the node position.
+    pub fn h_field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
+        let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
+        let freq = *result.frequencies.get(freq_idx)?;
+        let omega = 2.0 * PI * freq;
+        let mur = self.per_tet_mur();
+        let n_nodes = self.mesh.n_nodes();
+        let node_to_tet = self.node_to_tet_map();
+        let j = C64::new(0.0, 1.0);
+        let mut out: Vec<C64> = Vec::with_capacity(3 * n_nodes);
+        for ni in 0..n_nodes {
+            let tet_idx = node_to_tet[ni];
+            if tet_idx == usize::MAX {
+                out.extend_from_slice(&[C64::new(0.0, 0.0); 3]);
+                continue;
+            }
+            let p = self.mesh.nodes[ni];
+            let curl = crate::interp::eval_curl_in_tet(
+                &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
+            );
+            let denom = j * C64::from(omega * MU0 * mur[tet_idx]);
+            out.push(curl[0] / denom);
+            out.push(curl[1] / denom);
+            out.push(curl[2] / denom);
+        }
+        Some(out)
     }
 
     /// Compute the far-field at a given (freq_idx, exc_port_idx). NFFT surface = config.output.nfft_tag

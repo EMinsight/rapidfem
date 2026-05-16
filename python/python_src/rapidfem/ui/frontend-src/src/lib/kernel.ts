@@ -42,6 +42,10 @@ export interface SolveResultPayload {
 	q_factors?: number[];
 	solve_time_s: number;
 	fields?: (number[] | null)[][];
+	/** Conduction current density J = σE per (freq, port), same shape as `fields`. */
+	fields_j?: (number[] | null)[][] | null;
+	/** Magnetic field H = ∇×E / (jωμ) per (freq, port), same shape as `fields`. */
+	fields_h?: (number[] | null)[][] | null;
 }
 
 export interface ExecuteOptions {
