@@ -215,72 +215,27 @@ pub fn assemble_and_solve_with_pml(
     }
     eprintln!("  COO: {} entries, built in {:.1}ms", coo_rows.len(), t2.elapsed().as_secs_f64()*1e3);
 
-    // Try PARDISO first, fall back to faer. RAPIDFEM_SOLVER=faer forces faer (useful for
-    // anisotropic-complex problems like PML where PARDISO has occasionally crashed on Windows).
-    let force_faer = std::env::var("RAPIDFEM_SOLVER").map(|v| v == "faer").unwrap_or(false);
-    let pardiso_opt = if force_faer { None } else { crate::pardiso::PardisoSolver::try_new() };
-    let solutions = if let Some(mut pardiso) = pardiso_opt {
-        // Build upper-triangle CSR for PARDISO (mtype=6: complex symmetric)
-        let t_par = web_time::Instant::now();
-        let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
-        eprintln!("  PARDISO: upper CSR {} nnz, built in {:.1}ms", a.len(), t_par.elapsed().as_secs_f64()*1e3);
+    // Backend-agnostic factor + solve via the SparseSolver trait. Selection
+    // honours RAPIDFEM_SOLVER (auto|pardiso|accelerate|faer).
+    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    let t_solve = web_time::Instant::now();
+    solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)
+        .expect("solver factorize failed");
+    eprintln!("  {}: factorized in {:.1}ms", solver.name(), t_solve.elapsed().as_secs_f64()*1e3);
 
-        pardiso.analyze_and_factorize(n_free as i32, &ia, &ja, &a)
-            .expect("PARDISO analyze+factorize failed");
-        eprintln!("  PARDISO: factorized in {:.1}ms", t_par.elapsed().as_secs_f64()*1e3);
-
-        let mut solutions = Vec::new();
-        for (pi, bvec) in port_vectors.iter().enumerate() {
-            let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
-            let x_free = pardiso.solve(n_free as i32, &ia, &ja, &a, &b_free)
-                .expect("PARDISO solve failed");
-
-            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-            for (fi, &d) in free_dofs.iter().enumerate() {
-                x_full[d] = x_free[fi];
-            }
-            let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
-            eprintln!("  Port {} solved (PARDISO) in {:.1}ms, ||x|| = {:.6e}",
-                pi, t_par.elapsed().as_secs_f64()*1e3, xnorm);
-            solutions.push(x_full);
+    let mut solutions = Vec::new();
+    for (pi, bvec) in port_vectors.iter().enumerate() {
+        let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+        let x_free = solver.solve(&b_free).expect("solver solve failed");
+        let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+        for (fi, &d) in free_dofs.iter().enumerate() {
+            x_full[d] = x_free[fi];
         }
-        solutions
-    } else {
-        // Fallback: faer sparse LU
-        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-        for i in 0..coo_rows.len() {
-            triplets.push(faer::sparse::Triplet {
-                row: coo_rows[i], col: coo_cols[i],
-                val: faer::c64 { re: coo_vals[i].re, im: coo_vals[i].im },
-            });
-        }
-        let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
-            n_free, n_free, &triplets,
-        ).expect("faer matrix");
-
-        let t_solve = web_time::Instant::now();
-        let lu = k_faer.sp_lu().expect("Sparse LU factorization failed");
-        eprintln!("  faer LU factorized in {:.1}ms", t_solve.elapsed().as_secs_f64()*1e3);
-
-        let mut solutions = Vec::new();
-        for (pi, bvec) in port_vectors.iter().enumerate() {
-            let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
-                let d = free_dofs[i];
-                faer::c64 { re: bvec[d].re, im: bvec[d].im }
-            });
-            faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
-            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-            for (fi, &d) in free_dofs.iter().enumerate() {
-                let v = x_mat[(fi, 0)];
-                x_full[d] = C64::new(v.re, v.im);
-            }
-            let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
-            eprintln!("  Port {} solved (faer) in {:.1}ms, ||x|| = {:.6e}",
-                pi, t_solve.elapsed().as_secs_f64()*1e3, xnorm);
-            solutions.push(x_full);
-        }
-        solutions
-    };
+        let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
+        eprintln!("  Port {} solved ({}) in {:.1}ms, ||x|| = {:.6e}",
+            pi, solver.name(), t_solve.elapsed().as_secs_f64()*1e3, xnorm);
+        solutions.push(x_full);
+    }
 
     SolveResult { solutions, n_field }
 }
@@ -376,11 +331,10 @@ pub fn frequency_sweep_with_pml(
         })
         .collect();
 
-    // Try PARDISO first, faer as fallback. RAPIDFEM_SOLVER=faer forces faer.
-    let force_faer_sweep = std::env::var("RAPIDFEM_SOLVER").map(|v| v == "faer").unwrap_or(false);
-    let mut pardiso_solver = if force_faer_sweep { None } else { crate::pardiso::PardisoSolver::try_new() };
-    let mut pardiso_analyzed = false;
-    let mut symbolic_lu: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>> = None;
+    // Pick backend once for the whole sweep — symbolic factorisation is
+    // amortised across frequencies via `solver.refactorize`.
+    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    let mut first_factor = true;
 
     let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
     let mut bempty = basis.empty_tri_matrix();
@@ -469,76 +423,36 @@ pub fn frequency_sweep_with_pml(
             });
         }
 
-        // Solve with PARDISO (if available) or faer fallback
-        let solutions = if let Some(ref mut pardiso) = pardiso_solver {
-            // Build upper-triangle CSR for PARDISO
-            let coo_rows: Vec<usize> = triplets.iter().map(|t| t.row).collect();
-            let coo_cols: Vec<usize> = triplets.iter().map(|t| t.col).collect();
-            let coo_vals: Vec<C64> = triplets.iter().map(|t| C64::new(t.val.re, t.val.im)).collect();
-            let (ia, ja, a) = crate::pardiso::build_upper_csr(n_free, &coo_rows, &coo_cols, &coo_vals);
-
-            if !pardiso_analyzed {
-                pardiso.analyze_and_factorize(n_free as i32, &ia, &ja, &a)
-                    .expect("PARDISO analyze+factorize");
-                pardiso_analyzed = true;
-            } else {
-                pardiso.factorize(n_free as i32, &ia, &ja, &a)
-                    .expect("PARDISO factorize");
-            }
-
-            let mut solutions = Vec::new();
-            for bvec in &port_bvecs {
-                let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
-                let x_free = pardiso.solve(n_free as i32, &ia, &ja, &a, &b_free)
-                    .expect("PARDISO solve");
-                let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-                for (fi_d, &d) in free_dofs.iter().enumerate() {
-                    x_full[d] = x_free[fi_d];
-                }
-                solutions.push(x_full);
-            }
-            solutions
+        // Factor (symbolic once via `factorize`, then `refactorize` per freq
+        // reusing the sparsity pattern) and solve via the backend-agnostic
+        // SparseSolver trait.
+        let coo_rows: Vec<usize> = triplets.iter().map(|t| t.row).collect();
+        let coo_cols: Vec<usize> = triplets.iter().map(|t| t.col).collect();
+        let coo_vals: Vec<C64> = triplets.iter().map(|t| C64::new(t.val.re, t.val.im)).collect();
+        if first_factor {
+            solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)
+                .expect("solver factorize failed");
+            first_factor = false;
         } else {
-            // faer fallback
-            let k_faer = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
-                n_free, n_free, &triplets,
-            ).expect("faer matrix");
+            solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)
+                .expect("solver refactorize failed");
+        }
 
-            let lu = if symbolic_lu.is_none() {
-                let sym = faer::sparse::linalg::solvers::SymbolicLu::try_new(k_faer.as_ref().symbolic())
-                    .expect("symbolic LU");
-                let lu = faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(sym.clone(), k_faer.as_ref())
-                    .expect("numeric LU");
-                symbolic_lu = Some(sym);
-                lu
-            } else {
-                faer::sparse::linalg::solvers::Lu::try_new_with_symbolic(
-                    symbolic_lu.as_ref().unwrap().clone(), k_faer.as_ref(),
-                ).expect("numeric LU")
-            };
-
-            let mut solutions = Vec::new();
-            for bvec in &port_bvecs {
-                let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
-                    let d = free_dofs[i];
-                    faer::c64 { re: bvec[d].re, im: bvec[d].im }
-                });
-                faer::linalg::solvers::SolveCore::solve_in_place_with_conj(&lu, faer::Conj::No, x_mat.as_mut());
-                let mut x_full = vec![C64::new(0.0, 0.0); n_field];
-                for (fi_d, &d) in free_dofs.iter().enumerate() {
-                    let v = x_mat[(fi_d, 0)];
-                    x_full[d] = C64::new(v.re, v.im);
-                }
-                solutions.push(x_full);
+        let mut solutions = Vec::new();
+        for bvec in &port_bvecs {
+            let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+            let x_free = solver.solve(&b_free).expect("solver solve failed");
+            let mut x_full = vec![C64::new(0.0, 0.0); n_field];
+            for (fi_d, &d) in free_dofs.iter().enumerate() {
+                x_full[d] = x_free[fi_d];
             }
-            solutions
-        };
+            solutions.push(x_full);
+        }
 
-        let solver_label = if pardiso_solver.is_some() { "pardiso" } else { "faer" };
         eprintln!(
             "  f={:>8.4e} Hz [{:>2}/{:>2}]  {:>6.1}ms  {}",
             freq, fi + 1, frequencies.len(), t_freq.elapsed().as_secs_f64() * 1e3,
-            solver_label,
+            solver.name(),
         );
         results.push(SolveResult { solutions, n_field });
     }

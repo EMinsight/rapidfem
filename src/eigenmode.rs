@@ -87,58 +87,13 @@ pub fn solve_eigenmode(
         }
     }
 
-    // Factorize (E - σB) with PARDISO or faer
+    // Factor (E - σB) via the backend-agnostic SparseSolver trait.
     let t1 = web_time::Instant::now();
-
-    // Build a trait-object-like solver to abstract PARDISO vs faer
-    let (ia_p, ja_p, a_p) = crate::pardiso::build_upper_csr(n_free, &shift_rows, &shift_cols, &shift_vals);
-    let mut pardiso_solver = crate::pardiso::PardisoSolver::try_new();
-
-    if let Some(ref mut ps) = pardiso_solver {
-        ps.analyze_and_factorize(n_free as i32, &ia_p, &ja_p, &a_p)
-            .expect("PARDISO factorize failed");
-        eprintln!("  Eigenmode: PARDISO shift-invert in {:.1}ms", t1.elapsed().as_secs_f64()*1e3);
-    } else {
-        eprintln!("  Eigenmode: falling back to faer LU");
-    }
-
-    // faer fallback LU (built only if PARDISO not available)
-    let faer_lu = if pardiso_solver.is_none() {
-        let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
-        for i in 0..shift_rows.len() {
-            triplets.push(faer::sparse::Triplet {
-                row: shift_rows[i], col: shift_cols[i],
-                val: faer::c64 { re: shift_vals[i].re, im: shift_vals[i].im },
-            });
-        }
-        let mat = faer::sparse::SparseColMat::<usize, faer::c64>::try_new_from_triplets(
-            n_free, n_free, &triplets).expect("faer matrix");
-        let lu = mat.sp_lu().expect("faer LU failed");
-        eprintln!("  Eigenmode: faer shift-invert in {:.1}ms", t1.elapsed().as_secs_f64()*1e3);
-        Some(lu)
-    } else {
-        None
-    };
-
-    // Inline solve helper
-    fn shift_solve(
-        rhs: &[C64], n_free: usize,
-        pardiso: &mut Option<crate::pardiso::PardisoSolver>,
-        faer_lu: &Option<faer::sparse::linalg::solvers::Lu<usize, faer::c64>>,
-        ia: &[i32], ja: &[i32], a: &[C64],
-    ) -> Vec<C64> {
-        if let Some(ps) = pardiso.as_mut() {
-            ps.solve(n_free as i32, ia, ja, a, rhs).expect("PARDISO solve failed")
-        } else if let Some(lu) = faer_lu.as_ref() {
-            let mut x_mat = faer::Mat::<faer::c64>::from_fn(n_free, 1, |i, _| {
-                faer::c64 { re: rhs[i].re, im: rhs[i].im }
-            });
-            faer::linalg::solvers::SolveCore::solve_in_place_with_conj(lu, faer::Conj::No, x_mat.as_mut());
-            (0..n_free).map(|i| C64::new(x_mat[(i,0)].re, x_mat[(i,0)].im)).collect()
-        } else {
-            unreachable!()
-        }
-    }
+    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    solver.factorize(n_free, &shift_rows, &shift_cols, &shift_vals)
+        .expect("eigenmode shift-invert factorize failed");
+    eprintln!("  Eigenmode: {} shift-invert in {:.1}ms",
+        solver.name(), t1.elapsed().as_secs_f64()*1e3);
 
     // Sparse mat-vec: y = B * x
     let b_matvec = |x: &[C64]| -> Vec<C64> {
@@ -173,7 +128,7 @@ pub fn solve_eigenmode(
 
         // w = (E - σB)⁻¹ * B * v
         let bv = b_matvec(&v);
-        let mut w = shift_solve(&bv, n_free, &mut pardiso_solver, &faer_lu, &ia_p, &ja_p, &a_p);
+        let mut w = solver.solve(&bv).expect("eigenmode shift-solve failed");
 
         // α = v^T * w (complex-symmetric inner product, NOT Hermitian)
         let alpha: C64 = v.iter().zip(w.iter()).map(|(vi, wi)| vi * wi).sum();
