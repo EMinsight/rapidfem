@@ -14,6 +14,9 @@ pardiso = ["dep:libloading"]
 parallel = ["dep:rayon"]
 vtk = ["dep:vtkio"]
 
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1.0"
+
 [dependencies]
 faer = { version = "0.24.0", default-features = false, features = ["std", "sparse-linalg"] }
 hashbrown = "0.16.1"

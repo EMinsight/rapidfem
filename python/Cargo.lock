@@ -1066,6 +1066,7 @@ dependencies = [
 name = "rapidfem"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "faer",
  "hashbrown 0.16.1",
  "libloading",
