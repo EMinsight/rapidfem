@@ -1,19 +1,12 @@
-"""Object-based physics — ports + BCs that attach directly to geometry entities.
+#########################################################################################
+##
+##                            PORTS AND BOUNDARY CONDITIONS
+##                                  (physics.py)
+##
+#########################################################################################
 
-Physics objects register themselves with the underlying :class:`Geometry`
-on construction; no setter / no method-chaining::
+# IMPORTS ===============================================================================
 
-    air = g.box(A, B, L, material=rf.Air())
-
-    rf.RectWaveguidePort(air.faces.min(axis='z'))
-    rf.RectWaveguidePort(air.faces.max(axis='z'))
-    rf.PEC(*air.faces.unassigned)
-
-Each physics object owns the entities it points at — the geometry's
-``mesh()`` step creates a physical group per object and stores the
-resulting tag in ``Geometry._physics_tags[id(obj)]``. :class:`Problem`
-walks the registry to assemble the TOML config the Rust solver consumes.
-"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -21,16 +14,35 @@ from typing import Sequence
 from .geometry import EntityCollection, GeoObject, _Entity
 
 
+# HELPERS ===============================================================================
+
 def _f64(x: float) -> str:
     return f"{float(x):.10g}"
 
 
 def _normalize(targets, *, expected_dim: int, cls_name: str):
-    """Flatten variadic geometry args to a list of _Entity + their Geometry.
+    """flatten variadic geometry args to a list of _Entity + their Geometry
 
-    Accepts ``GeoObject``, ``EntityCollection``, individual ``_Entity``,
-    and any iterable of those. All resolved entities must belong to the
-    same Geometry and (if ``expected_dim`` is set) carry that dim.
+    Accepts :class:`GeoObject`, :class:`EntityCollection`, individual
+    ``_Entity``, and any combination of those. All resolved entities
+    must belong to the same :class:`Geometry` and (if ``expected_dim``
+    is set) carry that dim.
+
+    Parameters
+    ----------
+    targets : iterable of GeoObject, EntityCollection, or _Entity
+        physics targets, variadic
+    expected_dim : int
+        2 for faces, 3 for volumes
+    cls_name : str
+        name of the calling physics class, for error messages
+
+    Returns
+    -------
+    entities : list[_Entity]
+        flattened target list
+    geom : Geometry
+        the geometry instance every target belongs to
     """
     entities: list[_Entity] = []
     geom = None
@@ -74,16 +86,31 @@ def _normalize(targets, *, expected_dim: int, cls_name: str):
     return entities, geom
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Base
-# ─────────────────────────────────────────────────────────────────────────────
+# BASE CLASS ============================================================================
 
 class _Physics:
-    """Common base for all ports and BCs.
+    """Common base for every driven port and boundary condition.
 
-    Subclasses set ``_expected_dim`` (2 for faces, 3 for volumes) and
-    ``_section`` ("ports", "pec", or "pml") so the :class:`Problem`
-    serialiser knows where to put the generated TOML.
+    Subclasses set two class attributes that drive the serialisation
+    pipeline:
+
+    - ``_expected_dim``: 2 for face physics, 3 for volume physics
+    - ``_section``: ``"ports"``, ``"pec"``, or ``"pml"`` — tells the
+      :class:`rapidfem.Problem` TOML assembler which block this object
+      belongs to
+
+
+    Note
+    ----
+    Constructors take their target entities as the first positional
+    arguments (variadic) and physics parameters as keyword arguments.
+    The object registers itself with the target's :class:`Geometry` on
+    ``__init__``; no further wiring step is required.
+
+    The physics object is purely declarative — it holds no state about
+    the mesh. The geometry's :meth:`Geometry.mesh` step turns it into a
+    gmsh physical group, and :class:`rapidfem.Problem` reads that group
+    tag back when assembling the TOML config.
     """
     _expected_dim: int = 2
     _section: str = "ports"
@@ -97,18 +124,70 @@ class _Physics:
         geom._physics.append(self)
 
     def _to_toml(self, tag: int) -> str:
-        """Return the TOML block for this physics object, given its
-        physical-group tag from the mesh step. ``[pec]`` aggregation is
-        handled by :class:`Problem`; PEC overrides to return ``""``."""
+        """render this physics object as a TOML block
+
+        Parameters
+        ----------
+        tag : int
+            physical-group tag assigned by ``Geometry.mesh()``
+
+        Returns
+        -------
+        str
+            TOML fragment; an empty string for :class:`PEC`, whose
+            tags are aggregated by :class:`Problem`
+        """
         return ""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Driven ports (live on faces)
-# ─────────────────────────────────────────────────────────────────────────────
+# DRIVEN PORTS ==========================================================================
 
 class RectWaveguidePort(_Physics):
-    """Analytic TE-mode driven port on a rectangular waveguide face."""
+    """Analytic TE-mode driven port on a rectangular waveguide face.
+
+    The port plane carries the closed-form
+    :math:`\\mathrm{TE}_{mn}` mode of a rectangular waveguide with
+    transverse dimensions :math:`(a, b)`. The transverse electric
+    field for the dominant :math:`\\mathrm{TE}_{10}` mode is
+
+    .. math::
+
+        \\mathbf{E}_t(x, y) = \\hat{\\mathbf{y}}
+            \\sin\\!\\left(\\frac{\\pi x}{a}\\right)
+
+    with cutoff
+    :math:`f_{c, mn} = \\frac{c}{2 \\sqrt{\\varepsilon_r}}
+    \\sqrt{(m/a)^2 + (n/b)^2}`. Cross-section dimensions auto-detect
+    from the port face bounding-box when ``width`` and ``height`` are
+    left at 0.
+
+
+    Example
+    -------
+    WR-90 with TE10 ports on both ends of an air box:
+
+    .. code-block:: python
+
+        air = g.box(A, B, L, material=rf.Air())
+        rf.RectWaveguidePort(air.faces.min(axis="z"))
+        rf.RectWaveguidePort(air.faces.max(axis="z"))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    mode : tuple[int, int]
+        :math:`(m, n)` TE-mode indices (defaults to :math:`(1, 0)`)
+    er : float
+        relative permittivity inside the waveguide
+    power : float
+        incident power in watts
+    width : float
+        cross-section width override in metres (0 means auto-detect)
+    height : float
+        cross-section height override in metres (0 means auto-detect)
+    """
 
     def __init__(self, *targets,
                  mode: tuple[int, int] = (1, 0),
@@ -133,7 +212,51 @@ class RectWaveguidePort(_Physics):
 
 
 class LumpedPort(_Physics):
-    """Lumped voltage-source driven port on a face."""
+    """Lumped voltage-source driven port between two PEC conductors.
+
+    Models a delta-gap source bridging two conductors (e.g. a ground
+    plane and a microstrip trace). The port plane spans the gap;
+    the integration of :math:`\\mathbf{E}` along ``direction`` defines
+    the port voltage,
+
+    .. math::
+
+        V = \\int_{\\text{port}} \\mathbf{E} \\cdot \\mathbf{d}\\ell
+
+    and the S-parameter normalisation uses the reference impedance
+    :math:`Z_0`. Lumped ports are inherently broadband but assume the
+    line under the port carries a clean travelling-wave mode at
+    :math:`Z_0`; off-resonance reflections show up as standing-wave
+    artefacts in :math:`|S_{11}|^2 + |S_{21}|^2 > 1`.
+
+
+    Example
+    -------
+    Vertical feed plate bridging substrate to a patch antenna:
+
+    .. code-block:: python
+
+        feed = g.plate(p0=(0, -L/2, 0),
+                       width=(W, 0, 0),
+                       height=(0, 0, H))
+        rf.LumpedPort(feed, direction=(0, 0, 1), z0=50.0)
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    direction : Sequence[float]
+        voltage-integration axis (3-vector)
+    z0 : float
+        reference port impedance in ohms
+    power : float
+        incident power in watts
+    width : float
+        port extent override in metres (0 means auto-detect)
+    height : float
+        port extent override in metres (0 means auto-detect)
+    """
 
     def __init__(self, *targets,
                  direction: Sequence[float],
@@ -159,7 +282,52 @@ class LumpedPort(_Physics):
 
 
 class CoaxPort(_Physics):
-    """TEM-mode driven port on a coaxial annular face."""
+    """TEM-mode driven port on a coaxial annular face.
+
+    Drives the analytic TEM mode of a coaxial transmission line with
+    inner radius :math:`r_i` and outer radius :math:`r_o`. The
+    transverse electric field is purely radial,
+
+    .. math::
+
+        \\mathbf{E}_t(\\rho) = \\frac{\\hat{\\boldsymbol{\\rho}}}
+            {\\rho \\ln(r_o / r_i)}
+
+    and the characteristic impedance is
+    :math:`Z_0 = \\frac{\\eta_0}{2 \\pi \\sqrt{\\varepsilon_r}}
+    \\ln(r_o / r_i)`. Origin and axis default to the port face
+    bounding-box centre and +z.
+
+
+    Example
+    -------
+    50 Ω air coax section with ports at both flat ends:
+
+    .. code-block:: python
+
+        air = g.cylinder(radius=ro, height=L, material=rf.Air())
+        rf.CoaxPort(air.faces.min(axis="z"), ri=ri, ro=ro)
+        rf.CoaxPort(air.faces.max(axis="z"), ri=ri, ro=ro,
+                    origin=(0, 0, L))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    ri : float
+        inner coax radius in metres
+    ro : float
+        outer coax radius in metres
+    origin : Sequence[float], optional
+        a point on the coax axis (defaults to the port-face centroid)
+    z_axis : Sequence[float], optional
+        coax axis direction (defaults to +z)
+    er : float
+        relative permittivity of the coax dielectric
+    power : float
+        incident power in watts
+    """
 
     def __init__(self, *targets,
                  ri: float,
@@ -192,7 +360,33 @@ class CoaxPort(_Physics):
 
 
 class UserDefinedPort(_Physics):
-    """Driven port with user-supplied uniform E-field on the face."""
+    """Driven port with a user-supplied uniform E-field on the face.
+
+    Escape hatch for non-standard cross-sections where the analytic
+    rectangular / coaxial / Floquet ports do not apply. The user
+    specifies a constant electric field vector that's imposed across
+    the port face, plus a normalisation power.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        rf.UserDefinedPort(face,
+            e_field=(0, 1, 0),
+            power=1.0,
+        )
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    e_field : Sequence[float]
+        imposed electric field vector on the port face
+    power : float
+        normalisation power in watts
+    """
 
     def __init__(self, *targets,
                  e_field: Sequence[float],
@@ -211,7 +405,49 @@ class UserDefinedPort(_Physics):
 
 
 class FloquetPort(_Physics):
-    """Floquet plane-wave port for periodic unit cells."""
+    """Floquet plane-wave port for periodic unit cells.
+
+    Drives a periodic structure with an oblique plane wave at scan
+    angles :math:`(\\theta, \\phi)`. The Floquet mode has the form
+
+    .. math::
+
+        \\mathbf{E}(x, y, z) = \\mathbf{E}_0
+            e^{-j(k_x x + k_y y + k_z z)}
+
+    with :math:`(k_x, k_y) = k_0 \\sin\\theta\\,(\\cos\\phi,
+    \\sin\\phi)` and :math:`k_z` chosen for the desired Floquet mode
+    index. Useful for frequency-selective surfaces, reflectarrays, and
+    phased-array unit cells.
+
+
+    Example
+    -------
+    Normal-incidence Floquet port on the top face of a unit cell:
+
+    .. code-block:: python
+
+        rf.FloquetPort(air.faces.max(axis="z"),
+            scan_theta_deg=0,
+            scan_phi_deg=0,
+        )
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s) (typically the top or bottom of the unit cell)
+    scan_theta_deg : float
+        elevation scan angle :math:`\\theta` in degrees
+    scan_phi_deg : float
+        azimuth scan angle :math:`\\phi` in degrees
+    mode_nr : int
+        Floquet mode index (1 = fundamental)
+    er : float
+        relative permittivity of the port medium
+    power : float
+        incident power in watts
+    """
 
     def __init__(self, *targets,
                  scan_theta_deg: float = 0.0,
@@ -236,12 +472,44 @@ class FloquetPort(_Physics):
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Boundary conditions
-# ─────────────────────────────────────────────────────────────────────────────
+# BOUNDARY CONDITIONS ===================================================================
 
 class PEC(_Physics):
-    """Perfect electric conductor on one or more faces."""
+    """Perfect electric conductor.
+
+    Enforces the tangential-field condition
+
+    .. math::
+
+        \\hat{\\mathbf{n}} \\times \\mathbf{E} = \\mathbf{0}
+
+    on every targeted face. Variadic constructor: pass any mix of
+    :class:`GeoObject`, :class:`EntityCollection`, or single faces;
+    they all share one :class:`Problem`-level ``[pec]`` block.
+
+
+    Note
+    ----
+    Multiple ``rf.PEC(...)`` calls in the same problem are aggregated
+    into one TOML ``[pec]`` block when :class:`Problem` assembles the
+    config — so you can spread declarations across several lines for
+    readability without worrying about runtime overhead.
+
+
+    Example
+    -------
+    Patch antenna's conductors plus the substrate's ground plane:
+
+    .. code-block:: python
+
+        rf.PEC(patch_plate, sub.faces.min(axis="z"))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) to mark as PEC, variadic
+    """
     _section = "pec"
 
     def _to_toml(self, tag: int) -> str:
@@ -250,14 +518,80 @@ class PEC(_Physics):
 
 
 class PMC(_Physics):
-    """Perfect magnetic conductor — symmetry boundary."""
+    """Perfect magnetic conductor — symmetry boundary.
+
+    Dual to :class:`PEC`, enforcing
+
+    .. math::
+
+        \\hat{\\mathbf{n}} \\times \\mathbf{H} = \\mathbf{0}
+
+    Mostly useful as a symmetry plane when the problem's magnetic
+    field is tangential to a plane (so it doesn't penetrate). Lets
+    you mesh only half of a symmetric structure.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        rf.PMC(air.faces.min(axis="y"))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) to mark as PMC, variadic
+    """
 
     def _to_toml(self, tag: int) -> str:
         return f'[[ports]]\ntype = "pmc"\ntag = {tag}\n'
 
 
 class ABC(_Physics):
-    """First/second-order absorbing boundary condition on a face."""
+    """First- or second-order absorbing boundary condition.
+
+    Surface-level radiation boundary that approximates outgoing-wave
+    behaviour without the cost of a volumetric absorber. The first-order
+    Sommerfeld ABC enforces
+
+    .. math::
+
+        \\hat{\\mathbf{n}} \\times (\\nabla \\times \\mathbf{E})
+            + j k_0\\, \\hat{\\mathbf{n}} \\times
+            (\\hat{\\mathbf{n}} \\times \\mathbf{E}) = \\mathbf{0}
+
+    Order 2 adds a tangential-second-derivative correction for better
+    accuracy at oblique incidence, at the cost of additional matrix
+    fill-in.
+
+
+    Note
+    ----
+    For strong absorption at the radiating face of an antenna prefer
+    :class:`PML`. ABC works best when the boundary sees nearly normal
+    incidence (e.g. outer faces several wavelengths away from the
+    source).
+
+
+    Example
+    -------
+    First-order ABC on the air-box outer hull:
+
+    .. code-block:: python
+
+        rf.ABC(*air.faces.outer, order=1)
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) to terminate
+    order : int
+        ABC order, 1 or 2
+    abctype : str
+        coefficient family A-E (defaults to ``"B"``)
+    """
 
     def __init__(self, *targets,
                  order: int = 1,
@@ -274,8 +608,54 @@ class ABC(_Physics):
 
 
 class SurfaceImpedance(_Physics):
-    """Surface-impedance BC. Pass either (conductivity, mur, er[, thickness])
-    or an explicit ``zs`` tuple."""
+    """Surface impedance boundary for thin lossy conductors.
+
+    Replaces the volumetric mesh of a thin metal sheet by a 2-D
+    impedance condition
+
+    .. math::
+
+        \\mathbf{E}_t = Z_s\\,(\\hat{\\mathbf{n}} \\times \\mathbf{H})
+
+    For a good conductor with skin depth
+    :math:`\\delta = \\sqrt{2 / (\\omega \\mu \\sigma)}` and
+    thickness :math:`t \\gg \\delta` the analytic surface impedance is
+
+    .. math::
+
+        Z_s = (1 + j) \\sqrt{\\frac{\\omega \\mu}{2 \\sigma}}
+
+    Pass either the bulk parameters (``conductivity``, ``mur``,
+    ``er``, optional ``thickness`` for a finite sheet) and let
+    the solver compute :math:`Z_s` analytically, or override with
+    an explicit ``zs = (re, im)`` in :math:`\\Omega/\\square`.
+
+
+    Example
+    -------
+    Copper surface on a stripline ground:
+
+    .. code-block:: python
+
+        rf.SurfaceImpedance(ground_face, conductivity=5.8e7)
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) to apply the BC to
+    conductivity : float
+        bulk conductivity in S/m
+    mur : float
+        relative permeability
+    er : float
+        relative permittivity
+    thickness : float, optional
+        physical sheet thickness in metres (lossy thin-sheet model)
+    zs : tuple[float, float], optional
+        explicit ``(Re, Im)`` surface impedance in :math:`\\Omega/\\square`,
+        overrides the analytic value
+    """
 
     def __init__(self, *targets,
                  conductivity: float = 0.0,
@@ -304,7 +684,46 @@ class SurfaceImpedance(_Physics):
 
 
 class LumpedElement(_Physics):
-    """Chip series-RLC element on a 2D footprint."""
+    """Series chip R-L-C element on a 2-D footprint.
+
+    Embeds a series-RLC element across a named face — typically used
+    for isolation resistors (Wilkinson dividers), shunt caps to ground,
+    or matching networks. The element impedance is
+
+    .. math::
+
+        Z(\\omega) = R + j \\omega L + \\frac{1}{j \\omega C}
+
+    with C optional. The current-flow direction across the element
+    must be supplied explicitly via ``direction``.
+
+
+    Example
+    -------
+    100 Ω isolation resistor across a Wilkinson port gap:
+
+    .. code-block:: python
+
+        rf.LumpedElement(gap_face, r=100.0, direction=(0, 1, 0))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) hosting the element
+    r : float
+        series resistance in ohms
+    l : float
+        series inductance in henries
+    c : float, optional
+        series capacitance in farads (``None`` means no capacitor)
+    direction : Sequence[float]
+        current-flow direction across the element
+    width : float
+        element footprint width override in metres (0 = auto-detect)
+    height : float
+        element footprint height override in metres (0 = auto-detect)
+    """
 
     def __init__(self, *targets,
                  r: float = 0.0,
@@ -337,7 +756,74 @@ class LumpedElement(_Physics):
 
 
 class PML(_Physics):
-    """Coordinate-stretched anisotropic Perfectly Matched Layer on a volume."""
+    """Coordinate-stretched anisotropic Perfectly Matched Layer.
+
+    Volumetric absorbing region that terminates the computational
+    domain with vastly less reflection than a surface ABC. The PML
+    applies a complex coordinate stretch along ``direction``,
+
+    .. math::
+
+        s(\\rho) = 1 + \\delta_{\\max}
+            \\left( \\frac{\\rho - \\rho_0}{d} \\right)^n
+
+    with :math:`\\rho_0` the inner-face coordinate, :math:`d` the
+    slab thickness, :math:`n` the polynomial exponent (typical 1.5-3),
+    and :math:`\\delta_{\\max}` the peak stretch magnitude at the
+    outer face (typical 5-12).
+
+
+    Note
+    ----
+    PML lives on a *volume* (dim=3), not a surface. Build it as an
+    extra cuboid attached to the air region; assign a placeholder
+    material (e.g. :class:`Air`) so the volume gets meshed, then
+    declare the PML BC on the volume — the BC's stretch overrides the
+    bulk permittivity for the absorption profile.
+
+    For a closed enclosure around an antenna use one PML slab per
+    outer face; the slabs must not overlap (each volume can only carry
+    one absorption direction).
+
+
+    Example
+    -------
+    Single-sided +x PML in front of a horn antenna:
+
+    .. code-block:: python
+
+        pml_xp = g.box(PML_T, AIR_W, AIR_H,
+                       position=(AIR_X1, 0, 0),
+                       material=rf.Air(),
+                       maxh=2 * MAXH)
+        rf.PML(pml_xp,
+               direction=(1, 0, 0),
+               inner_face=AIR_X1,
+               thickness=PML_T)
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        volume(s) to turn into PML
+    direction : Sequence[float]
+        outward-pointing unit vector along the absorption axis
+        (axis-aligned: one of :math:`\\pm\\hat{\\mathbf{x}},
+        \\pm\\hat{\\mathbf{y}}, \\pm\\hat{\\mathbf{z}}`)
+    inner_face : float
+        coordinate of the PML's inner face along ``direction`` (m)
+    thickness : float
+        PML extent in metres beyond ``inner_face``
+    er_base : float
+        base relative permittivity inside the PML
+    ur_base : float
+        base relative permeability inside the PML
+    exponent : float
+        polynomial profile exponent (typical 1.5-3)
+    delta_max : float
+        peak stretch magnitude :math:`\\delta_{\\max}` at the outer
+        face (typical 5-12)
+    """
     _expected_dim = 3
     _section = "pml"
 

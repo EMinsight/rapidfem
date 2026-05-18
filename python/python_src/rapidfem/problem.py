@@ -1,26 +1,12 @@
-"""Problem — generic FEM problem definition (geometry + materials + ports + BCs).
+#########################################################################################
+##
+##                                  PROBLEM
+##                                 (problem.py)
+##
+#########################################################################################
 
-Multiple analyses can run on the same problem::
+# IMPORTS ===============================================================================
 
-    g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
-    air = g.box(A, B, L, position=(-A/2, -B/2, 0), material=rf.Air())
-    rf.RectWaveguidePort(air.faces.min(axis='z'))
-    rf.RectWaveguidePort(air.faces.max(axis='z'))
-    rf.PEC(*air.faces.unassigned)
-    g.mesh()
-
-    prob = rf.Problem(g)
-    result  = prob.sweep(np.linspace(8e9, 12e9, 21))
-    modes   = prob.eigenmode(target_frequency=10e9, n_modes=6)
-    pattern = prob.farfield(result, freq_idx=10, port_idx=0)
-
-Implementation: each analysis call re-assembles the TOML config from the
-geometry's physics registry, then constructs an in-memory native
-:class:`Simulation` and dispatches to its ``run_sweep`` /
-``run_eigenmode`` / ``compute_farfield`` method. The native instance is
-cached on the Problem so follow-ups like ``farfield`` can reuse it
-without re-assembly.
-"""
 from __future__ import annotations
 
 from typing import Iterable
@@ -32,27 +18,112 @@ from .geometry import Geometry
 from .physics import PEC, PML
 
 
+# HELPERS ===============================================================================
+
 def _f64(x: float) -> str:
     return f"{float(x):.10g}"
 
 
+# ADAPTIVE REFINEMENT ===================================================================
+
 class Adaptive:
-    """Adaptive-mesh-refinement settings for ``prob.sweep(adaptive=...)``."""
+    """Adaptive-mesh-refinement settings for :meth:`Problem.sweep`.
+
+    Drives a Dörfler-marking loop on top of the driven sweep — elements
+    carrying the highest residual error get their local mesh size cut
+    by ``refinement_ratio`` and the sweep is repeated. The default
+    parameters mirror the rapidfem CLI's standard adaptive flow.
+
+
+    Note
+    ----
+    The adaptive loop runs inside the Rust solver and is reported via
+    the regular ``stderr`` log stream — there's no separate Python
+    progress callback yet.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        result = prob.sweep(freqs, adaptive=rf.Adaptive(theta=0.6))
+
+
+    Parameters
+    ----------
+    theta : float
+        Dörfler-marking fraction (elements carrying the top
+        :math:`\\theta` of the residual error are marked)
+    refinement_ratio : float
+        local size reduction applied to marked elements
+    """
 
     def __init__(self, *, theta: float = 0.5, refinement_ratio: float = 0.5):
         self.theta = float(theta)
         self.refinement_ratio = float(refinement_ratio)
 
 
+# PROBLEM ===============================================================================
+
 class Problem:
-    """A meshed problem ready for analysis.
+    """Frequency-domain FEM problem ready for analysis.
+
+    Generic container around a meshed :class:`Geometry`, its attached
+    materials, ports, and BCs. Multiple analyses can run on the same
+    problem instance without re-meshing:
+
+    - :meth:`sweep` for driven S-parameter sweeps
+    - :meth:`eigenmode` for modal / resonator analysis
+    - :meth:`farfield` for post-sweep radiation patterns
+
+    Each analysis re-assembles the TOML config from the geometry's
+    physics registry and hands it to the native Rust solver. The most
+    recent native :class:`Simulation` instance is cached so follow-ups
+    like :meth:`farfield` reuse the same assembly without re-solving.
+
+
+    Note
+    ----
+    The geometry must already be meshed (via ``g.mesh()``) before the
+    Problem is constructed — the Problem snapshot copies the mesh
+    bytes on init. Re-meshing the geometry afterwards has no effect on
+    an existing Problem; construct a new one instead.
+
+
+    Example
+    -------
+    Three analyses on a single dielectric resonator problem:
+
+    .. code-block:: python
+
+        g = rf.Geometry(maxh=rf.lambda_maxh(f_max=3e9))
+        air = g.box(W, W, H, material=rf.Air())
+        rf.PEC(air.faces.min(axis="x"), air.faces.max(axis="x"),
+               air.faces.min(axis="y"), air.faces.max(axis="y"),
+               air.faces.min(axis="z"), air.faces.max(axis="z"))
+        g.mesh()
+
+        prob = rf.Problem(g)
+        modes  = prob.eigenmode(target_frequency=2e9, n_modes=5)
+        result = prob.sweep(np.linspace(1.8e9, 2.2e9, 21))
+        pattern = prob.farfield(result, freq_idx=10, port_idx=0)
+
 
     Parameters
     ----------
     geometry : rapidfem.Geometry
-        A geometry on which ``g.mesh()`` has been called. The Problem
-        snapshots the mesh bytes and a reference to the geometry so it
-        can rebuild the TOML config per analysis call.
+        a geometry on which ``g.mesh()`` has already been called
+
+
+    Attributes
+    ----------
+    native : rapidfem._native.Simulation
+        the underlying native solver instance, populated after the
+        first analysis call (raises if accessed before)
+    n_dofs : int
+        FEM degree-of-freedom count of the last assembled solver
+    n_tets : int
+        tetrahedra in the mesh used by the last assembled solver
     """
 
     def __init__(self, geometry: Geometry):
@@ -68,7 +139,36 @@ class Problem:
     def sweep(self, frequencies: Iterable[float], *,
               z0: float = 50.0,
               adaptive: Adaptive | None = None):
-        """Driven frequency sweep. Returns a :class:`SweepResult`."""
+        """run a driven frequency sweep and return the SweepResult
+
+        Assembles the FEM operator from the geometry's material /
+        port / BC registry, then factors and solves at each frequency
+        in ``frequencies``. The returned :class:`SweepResult` has
+        ``.frequencies``, ``.sparams`` (complex array of shape
+        ``[n_freq, n_port, n_port]``), and ``.solve_time_s``.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            result = prob.sweep(np.linspace(8e9, 12e9, 21))
+
+
+        Parameters
+        ----------
+        frequencies : iterable of float
+            sweep points in Hz, in evaluation order
+        z0 : float
+            reference impedance for S-parameter normalisation in ohms
+        adaptive : Adaptive, optional
+            adaptive-mesh-refinement settings (``None`` disables it)
+
+        Returns
+        -------
+        SweepResult
+            native solver result handle
+        """
         freqs = [float(f) for f in frequencies]
         if not freqs:
             raise ValueError("sweep needs at least one frequency")
@@ -79,7 +179,42 @@ class Problem:
     def eigenmode(self, target_frequency: float, *,
                   n_modes: int = 6,
                   z0: float = 50.0):
-        """Modal solve around ``target_frequency``. Returns list of Eigenmode."""
+        """run a modal solve around ``target_frequency``
+
+        Uses shift-invert Lanczos with the configured direct factoriser
+        (PARDISO when available, faer otherwise) as the inner solver.
+        Returns the list of :class:`Eigenmode` instances ordered by
+        distance from the shift frequency.
+
+
+        Example
+        -------
+        Cavity resonator's first 5 modes near 2 GHz:
+
+        .. code-block:: python
+
+            modes = prob.eigenmode(target_frequency=2e9, n_modes=5)
+            for m in modes:
+                print(m.frequency_hz, m.q_factor)
+
+
+        Parameters
+        ----------
+        target_frequency : float
+            spectral shift in Hz; modes nearest this frequency are
+            returned
+        n_modes : int
+            number of eigenpairs requested
+        z0 : float
+            reference impedance (only affects the output block in TOML;
+            eigenmodes themselves don't depend on it)
+
+        Returns
+        -------
+        list[Eigenmode]
+            n_modes solver results, sorted by proximity to
+            ``target_frequency``
+        """
         toml = self._assemble_toml(
             frequencies=[float(target_frequency)],
             z0=z0,
@@ -93,7 +228,54 @@ class Problem:
                  port_idx: int,
                  n_theta: int = 91,
                  n_phi: int = 72):
-        """Far-field pattern derived from a prior :meth:`sweep` result."""
+        """compute a far-field radiation pattern from a sweep result
+
+        Evaluates the near-field-to-far-field transform on the NFFT
+        surface for the chosen (frequency, driven port) combination
+        and samples the result on a uniform :math:`(\\theta, \\phi)`
+        grid.
+
+
+        Note
+        ----
+        Must be called after :meth:`sweep`; raises otherwise. The far-field
+        uses the most recent native solver instance, so calling
+        :meth:`sweep` again invalidates earlier ``result`` handles for
+        far-field purposes.
+
+
+        Example
+        -------
+        Pattern at the resonance frequency of a patch antenna:
+
+        .. code-block:: python
+
+            result = prob.sweep(freqs)
+            fi = int(np.argmin([abs(result.sparams[i, 0, 0])
+                                for i in range(len(freqs))]))
+            pattern = prob.farfield(result, freq_idx=fi, port_idx=0)
+            print(pattern.peak_directivity_dbi)
+
+
+        Parameters
+        ----------
+        result : SweepResult
+            return value of a prior :meth:`sweep` call
+        freq_idx : int
+            frequency index into ``result.frequencies``
+        port_idx : int
+            driven-port index into ``result.sparams``
+        n_theta : int
+            number of elevation samples
+        n_phi : int
+            number of azimuth samples
+
+        Returns
+        -------
+        RadiationPattern
+            native pattern object with ``peak_directivity_dbi``,
+            ``peak_gain_dbi``, and per-direction arrays
+        """
         if self._native is None:
             raise ValueError(
                 "call .sweep(...) before .farfield(...) — far-field needs a solved problem")
@@ -102,35 +284,36 @@ class Problem:
     # ── Introspection ─────────────────────────────────────────────────────
 
     @property
-    def n_dofs(self) -> int:
-        """DoF count of the last-assembled native simulation."""
-        if self._native is None:
-            raise ValueError("run an analysis first to assemble the FEM operator")
-        return self._native.n_dofs
-
-    @property
-    def n_tets(self) -> int:
-        """Tetrahedra in the mesh (assembled lazily)."""
-        if self._native is None:
-            raise ValueError("run an analysis first to assemble the FEM operator")
-        return self._native.n_tets
-
-    @property
     def native(self):
-        """The underlying native :class:`Simulation` after an analysis has run.
+        """the underlying native :class:`Simulation` after an analysis
 
         Used by the UI serialiser (``rapidfem.ui.api``) to reach the
-        low-level mesh / field accessors (``mesh_nodes``, ``field_at_nodes``,
-        ``current_density_at_nodes``, ``compute_farfield``, ...) that live
-        on the Rust side. Raises if no analysis has run yet — show()ing a
-        Problem before any ``.sweep()`` / ``.eigenmode()`` call has nothing
-        to render.
+        low-level mesh / field accessors (``mesh_nodes``,
+        ``field_at_nodes``, ``current_density_at_nodes``,
+        ``compute_farfield``, ...) that live on the Rust side. Raises
+        :class:`RuntimeError` if no analysis has run yet — show()ing a
+        Problem before any ``.sweep()`` / ``.eigenmode()`` call has
+        nothing to render.
         """
         if self._native is None:
             raise RuntimeError(
                 "Problem.native is not available — run .sweep() or "
                 ".eigenmode() first to assemble the native solver")
         return self._native
+
+    @property
+    def n_dofs(self) -> int:
+        """FEM degree-of-freedom count of the last-assembled solver"""
+        if self._native is None:
+            raise ValueError("run an analysis first to assemble the FEM operator")
+        return self._native.n_dofs
+
+    @property
+    def n_tets(self) -> int:
+        """tetrahedron count of the mesh used by the last-assembled solver"""
+        if self._native is None:
+            raise ValueError("run an analysis first to assemble the FEM operator")
+        return self._native.n_tets
 
     # ── TOML assembly ─────────────────────────────────────────────────────
 
@@ -139,6 +322,28 @@ class Problem:
                        z0: float,
                        adaptive: Adaptive | None = None,
                        eigenmode: tuple[float, int] | None = None) -> str:
+        """build the TOML config string the Rust solver expects
+
+        Walks the geometry's material and physics registries; skips
+        materials on PML-targeted volumes (their permittivity comes
+        from the PML's stretch profile instead).
+
+        Parameters
+        ----------
+        frequencies : list[float]
+            sweep points to embed in the ``[frequency]`` block
+        z0 : float
+            S-parameter reference impedance for the ``[output]`` block
+        adaptive : Adaptive, optional
+            adaptive-refinement parameters
+        eigenmode : tuple[float, int], optional
+            ``(target_frequency, n_modes)`` for an ``[eigenmode]`` block
+
+        Returns
+        -------
+        str
+            TOML config text
+        """
         g = self._geometry
         parts: list[str] = ['[mesh]\nfile = "(in-memory)"\n']
 

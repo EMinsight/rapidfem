@@ -1,24 +1,65 @@
-"""Volume materials for the object-based API.
+#########################################################################################
+##
+##                                  MATERIALS
+##                                (materials.py)
+##
+#########################################################################################
 
-A ``Material`` is attached to a primitive at construction time::
+# IMPORTS ===============================================================================
 
-    sub = g.box(60e-3, 60e-3, 1.6e-3, material=rf.Dielectric(er=4.4, tand=0.02))
-    air = g.box(...,                  material=rf.Air())
-
-Multiple volumes can share one ``Material`` instance — they then end up in
-the same physical group at mesh time.
-"""
 from __future__ import annotations
 
 from typing import Sequence
 
 
+# HELPERS ===============================================================================
+
 def _f64(x: float) -> str:
     return f"{float(x):.10g}"
 
 
+# DISPERSIVE MODELS =====================================================================
+
 class Debye:
-    """First-order Debye dispersion."""
+    """First-order Debye dispersion model for polar dielectrics.
+
+    The complex relative permittivity follows
+
+    .. math::
+
+        \\varepsilon_r(\\omega) = \\varepsilon_\\infty
+            + \\frac{\\varepsilon_s - \\varepsilon_\\infty}
+                   {1 + j \\omega \\tau}
+
+    where :math:`\\varepsilon_\\infty` is the high-frequency limit,
+    :math:`\\varepsilon_s` is the static permittivity, and :math:`\\tau`
+    is the relaxation time. Suitable for water-like dipolar relaxation
+    in the microwave band.
+
+
+    Example
+    -------
+    Pass to a :class:`Dielectric`-like volume material wrapper, or
+    directly to the generic :class:`Material` constructor:
+
+    .. code-block:: python
+
+        water = rf.Material(debye=rf.Debye(
+            er_inf=4.5,
+            er_static=80.1,
+            tau_s=8.27e-12,
+        ))
+
+
+    Parameters
+    ----------
+    er_inf : float
+        high-frequency permittivity :math:`\\varepsilon_\\infty`
+    er_static : float
+        static / DC permittivity :math:`\\varepsilon_s`
+    tau_s : float
+        relaxation time in seconds
+    """
 
     def __init__(self, *, er_inf: float, er_static: float, tau_s: float):
         self.er_inf = float(er_inf)
@@ -35,9 +76,46 @@ class Debye:
 
 
 class Drude:
-    """Drude dispersion for metals."""
+    """Drude dispersion model for metals and free-electron media.
 
-    def __init__(self, *, plasma_freq_hz: float, damping_freq_hz: float,
+    The complex relative permittivity follows
+
+    .. math::
+
+        \\varepsilon_r(\\omega) = \\varepsilon_\\infty
+            - \\frac{\\omega_p^2}{\\omega (\\omega + j \\gamma)}
+
+    where :math:`\\omega_p` is the plasma frequency and :math:`\\gamma`
+    is the damping rate. At optical and infrared frequencies gold,
+    silver, and aluminium are well described by this model.
+
+
+    Example
+    -------
+    A Drude fit for gold near 200 THz:
+
+    .. code-block:: python
+
+        gold = rf.Material(drude=rf.Drude(
+            er_inf=1.0,
+            plasma_freq_hz=2.18e15,
+            damping_freq_hz=6.46e12,
+        ))
+
+
+    Parameters
+    ----------
+    plasma_freq_hz : float
+        plasma frequency :math:`\\omega_p / 2 \\pi` in Hz
+    damping_freq_hz : float
+        damping rate :math:`\\gamma / 2 \\pi` in Hz
+    er_inf : float
+        high-frequency permittivity (defaults to 1)
+    """
+
+    def __init__(self, *,
+                 plasma_freq_hz: float,
+                 damping_freq_hz: float,
                  er_inf: float = 1.0):
         self.plasma_freq_hz = float(plasma_freq_hz)
         self.damping_freq_hz = float(damping_freq_hz)
@@ -52,11 +130,85 @@ class Drude:
         )
 
 
-class Material:
-    """Generic isotropic / anisotropic linear material.
+# BULK MATERIAL =========================================================================
 
-    The named subclasses (``Air``, ``Dielectric``, ``Conductor``,
-    ``Anisotropic``) just preset constructor defaults for readability.
+class Material:
+    """Generic linear material assigned to a volume in the geometry.
+
+    Captures isotropic and diagonally anisotropic linear media. The
+    constitutive relation seen by the Maxwell solver is
+
+    .. math::
+
+        \\mathbf{D} = \\varepsilon_0 \\varepsilon_r^\\ast \\mathbf{E},
+        \\qquad
+        \\mathbf{B} = \\mu_0 \\mu_r \\mathbf{H}
+
+    with the complex relative permittivity
+
+    .. math::
+
+        \\varepsilon_r^\\ast = \\varepsilon_r (1 - j \\tan\\delta)
+            - j \\frac{\\sigma}{\\omega \\varepsilon_0}
+
+    Use the named subclasses (:class:`Air`, :class:`Dielectric`,
+    :class:`Conductor`, :class:`Anisotropic`) for readability; this
+    base class is the union of every parameter the solver supports.
+
+
+    Note
+    ----
+    Materials are attached to volumes at construction time via the
+    primitive's ``material=`` keyword. Multiple volumes can share one
+    ``Material`` instance — they then end up in the same physical
+    group at mesh time, which compresses the TOML config the Rust
+    solver consumes.
+
+
+    Example
+    -------
+    Direct construction with a custom mix of properties:
+
+    .. code-block:: python
+
+        lossy_pcb = rf.Material(
+            er=4.4,
+            tand=0.02,
+            conductivity=0.0,
+        )
+        sub = g.box(W, H, T, material=lossy_pcb)
+
+
+    Parameters
+    ----------
+    er : float
+        relative permittivity :math:`\\varepsilon_r`
+    ur : float
+        relative permeability :math:`\\mu_r`
+    tand : float
+        electric loss tangent :math:`\\tan\\delta`
+    conductivity : float
+        bulk conductivity :math:`\\sigma` in S/m
+    er_diag : Sequence[float], optional
+        diagonal anisotropic permittivity ``(εxx, εyy, εzz)``,
+        overrides scalar ``er`` when set
+    ur_diag : Sequence[float], optional
+        diagonal anisotropic permeability ``(μxx, μyy, μzz)``,
+        overrides scalar ``ur`` when set
+    debye : Debye, optional
+        first-order dispersive component
+    drude : Drude, optional
+        Drude-model dispersive component
+
+
+    Attributes
+    ----------
+    er, ur, tand, conductivity : float
+        scalar isotropic parameters
+    er_diag, ur_diag : tuple[float, float, float] or None
+        anisotropic overrides
+    debye, drude : Debye or Drude or None
+        dispersive components
     """
 
     def __init__(self, *,
@@ -78,6 +230,13 @@ class Material:
         self.drude = drude
 
     def _to_toml(self, volume_tag: int) -> str:
+        """render this material as a ``[[materials]]`` block
+
+        Parameters
+        ----------
+        volume_tag : int
+            physical-group tag of the volume this material is attached to
+        """
         s = (
             f"[[materials]]\nvolume_tag = {volume_tag}\n"
             f"er = {_f64(self.er)}\nur = {_f64(self.ur)}\n"
@@ -94,15 +253,75 @@ class Material:
         return s
 
 
+# NAMED PRESETS =========================================================================
+
 class Air(Material):
-    """Vacuum / air — εr = μr = 1, lossless."""
+    """Vacuum or lossless air — :math:`\\varepsilon_r = \\mu_r = 1`,
+    :math:`\\tan\\delta = \\sigma = 0`.
+
+    The simplest material; sets every permittivity, permeability, and
+    loss term to its free-space default. Convenient as a placeholder
+    for air boxes, padding regions, and inside :class:`PML` slabs
+    (the PML's coordinate stretch overrides the bulk permittivity, so
+    the material here only fills the volume role).
+
+
+    Example
+    -------
+    Air-filled inner region of a waveguide:
+
+    .. code-block:: python
+
+        air = g.box(A, B, L, material=rf.Air())
+
+
+    Parameters
+    ----------
+    None — fixed at free-space values.
+    """
 
     def __init__(self):
         super().__init__()
 
 
 class Dielectric(Material):
-    """Isotropic dielectric. ``er`` is required; loss via ``tand``."""
+    """Isotropic lossy dielectric.
+
+    Models a homogeneous insulator with relative permittivity
+    :math:`\\varepsilon_r` and an optional loss tangent
+    :math:`\\tan\\delta` or bulk conductivity. The effective
+    complex permittivity is
+
+    .. math::
+
+        \\varepsilon_r^\\ast = \\varepsilon_r (1 - j \\tan\\delta)
+            - j \\frac{\\sigma}{\\omega \\varepsilon_0}
+
+
+    Example
+    -------
+    FR-4 PCB substrate:
+
+    .. code-block:: python
+
+        sub = g.box(W, L, H, material=rf.Dielectric(
+            er=4.4,
+            tand=0.02,
+        ))
+
+
+    Parameters
+    ----------
+    er : float
+        relative permittivity (required, must be > 0)
+    tand : float
+        electric loss tangent (defaults to lossless)
+    ur : float
+        relative permeability (defaults to 1; rarely non-unit in
+        microwave work)
+    conductivity : float
+        bulk conductivity in S/m, added on top of ``tand``
+    """
 
     def __init__(self, er: float, *,
                  tand: float = 0.0,
@@ -112,14 +331,87 @@ class Dielectric(Material):
 
 
 class Conductor(Material):
-    """Bulk lossy conductor — σ in S/m."""
+    """Bulk lossy conductor.
+
+    Models thick metal where the wave penetrates a non-negligible
+    fraction of the skin depth — the bulk conductivity :math:`\\sigma`
+    drives Ohmic loss via the volume current
+    :math:`\\mathbf{J} = \\sigma \\mathbf{E}`.
+
+
+    Note
+    ----
+    For thin metal sheets where the skin depth is much smaller than
+    the conductor thickness, use :class:`SurfaceImpedance` on the face
+    instead — it captures the loss in a 2-D boundary condition without
+    paying for volumetric mesh inside the metal.
+
+
+    Example
+    -------
+    Lossy copper plug filling a coaxial section:
+
+    .. code-block:: python
+
+        copper = g.cylinder(radius=r, height=h,
+                            material=rf.Conductor(conductivity=5.8e7))
+
+
+    Parameters
+    ----------
+    conductivity : float
+        bulk conductivity :math:`\\sigma` in S/m
+    ur : float
+        relative permeability (defaults to 1)
+    er : float
+        relative permittivity (defaults to 1; metal-bulk runs are
+        dominated by the conductivity term so this rarely matters)
+    """
 
     def __init__(self, *, conductivity: float, ur: float = 1.0, er: float = 1.0):
         super().__init__(er=er, ur=ur, conductivity=conductivity)
 
 
 class Anisotropic(Material):
-    """Diagonal anisotropy via ``er_diag`` / ``ur_diag``."""
+    """Diagonally anisotropic linear material.
+
+    Permittivity and/or permeability are diagonal tensors with
+    independent ``(xx, yy, zz)`` components,
+
+    .. math::
+
+        \\varepsilon_r = \\operatorname{diag}
+            (\\varepsilon_{xx}, \\varepsilon_{yy}, \\varepsilon_{zz}),
+        \\qquad
+        \\mu_r = \\operatorname{diag}
+            (\\mu_{xx}, \\mu_{yy}, \\mu_{zz})
+
+    Useful for uniaxial composites, ferrite biasing, and engineered
+    metamaterial substrates.
+
+
+    Example
+    -------
+    Uniaxial substrate with εzz different from εxx = εyy:
+
+    .. code-block:: python
+
+        sub = g.box(W, L, H, material=rf.Anisotropic(
+            er_diag=(3.0, 3.0, 3.4),
+        ))
+
+
+    Parameters
+    ----------
+    er_diag : Sequence[float], optional
+        diagonal permittivity ``(εxx, εyy, εzz)``
+    ur_diag : Sequence[float], optional
+        diagonal permeability ``(μxx, μyy, μzz)``
+    tand : float
+        electric loss tangent applied on top of ``er_diag``
+    conductivity : float
+        bulk conductivity in S/m
+    """
 
     def __init__(self, *,
                  er_diag: Sequence[float] | None = None,
