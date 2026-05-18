@@ -73,37 +73,52 @@ def lambda_maxh(*, f_max: float, er_max: float = 1.0,
     """Wavelength-based mesh size cap.
 
     Picks the largest tet edge length that still resolves the shortest
-    wavelength in the model with ``per_lambda`` elements per wavelength::
+    wavelength in the model with ``per_lambda`` elements per wavelength,
 
-        maxh = c0 / (sqrt(er_max · mu_max) · f_max · per_lambda)
+    .. math::
+
+        \\mathrm{maxh} = \\frac{c_0}{
+            \\sqrt{\\varepsilon_{r,\\max}\\, \\mu_{r,\\max}}\\,
+            f_{\\max}\\,
+            n_{\\lambda}
+        }
+
+    where the smallest local wavelength lives in the highest-εᵣ
+    material — that's what bounds the global cap.
+
+
+    Note
+    ----
+    For second-kind Nédélec-2 (rapidfem's basis) ``per_lambda = 8-12``
+    is the usual range. Raise to 15 for stringent accuracy near a
+    feature, drop to 6-8 for fast preview meshes.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        # Patch antenna on FR-4 at 2.8 GHz
+        maxh = rf.lambda_maxh(f_max=2.8e9, er_max=4.4)
+        g = rf.Geometry(maxh=maxh)
+
 
     Parameters
     ----------
     f_max : float
-        Highest frequency in the planned sweep, in Hz.
-    er_max : float, optional
-        Largest relative permittivity in the model. The smallest local
-        wavelength lives in the highest-εᵣ material, so this is the one
-        that bounds the mesh size. Default 1.0 (air only).
-    mu_max : float, optional
-        Largest relative permeability (rarely > 1 in microwave work).
-        Default 1.0.
-    per_lambda : int, optional
-        Target elements per wavelength. For second-kind Nédélec-2,
-        ``8–12`` is the usual range; raise to ``15`` for stringent
-        accuracy, drop to ``6–8`` for fast preview meshes. Default 12.
+        highest frequency in the planned sweep, in Hz
+    er_max : float
+        largest relative permittivity in the model (defaults to 1)
+    mu_max : float
+        largest relative permeability (rarely > 1 in microwave work)
+    per_lambda : int
+        target elements per wavelength
 
     Returns
     -------
     float
-        Mesh size cap in metres, ready to pass to ``g.mesh(maxh=...)``.
-
-    Examples
-    --------
-    >>> import rapidfem
-    >>> # Patch antenna on FR-4 at 2.8 GHz
-    >>> maxh = rapidfem.lambda_maxh(f_max=2.8e9, er_max=4.4)
-    >>> g.mesh(maxh=maxh)                                  # doctest: +SKIP
+        mesh size cap in metres, ready to pass to
+        :class:`rapidfem.Geometry` or :meth:`Geometry.mesh`
     """
     if f_max <= 0:
         raise ValueError(f"f_max must be positive, got {f_max}")
@@ -117,28 +132,44 @@ def lambda_maxh(*, f_max: float, er_max: float = 1.0,
 def show(obj, name: str = "default"):
     """Hand an object to the rapidfem viewer (no-op outside ``rapidfem serve``).
 
-    In a plain Python run, ``show`` prints a one-line summary and returns
-    ``obj`` unchanged — scripts behave the same on the command line.
-    Under ``rapidfem serve`` (or during a static-demo bake), the kernel
-    activates a capture slot; ``show`` forwards the object to the live
-    3D viewer / S-parameter plot.
+    In a plain Python run, ``show`` prints a one-line summary and
+    returns ``obj`` unchanged — scripts behave the same on the command
+    line. Under ``rapidfem serve`` (or during a static-demo bake), the
+    kernel activates a capture slot; ``show`` forwards the object to
+    the live 3-D viewer / S-parameter plot.
+
+
+    Note
+    ----
+    Composes with assignment — ``show`` returns its argument unchanged,
+    so the typical pattern is ``result = rf.show(prob.sweep(freqs))``.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        rf.show(g)                  # OCC preview pre-mesh, tet mesh post-mesh
+        rf.show(prob)               # E-field point cloud (after .sweep())
+        rf.show(result)             # |S-params| plot
+
 
     Parameters
     ----------
-    obj : Geometry | SimulationBuilder | Simulation | SweepResult
-        Anything renderable by the UI. Geometry pre-mesh shows a coarse
-        OCC-surface preview; post-mesh shows the FEM tet mesh. Simulation
-        and SweepResult render |E(t,r)|² point clouds + S-parameters.
-    name : str, optional
-        Display slot name. Repeated ``show`` calls with the same name
-        overwrite earlier outputs; different names allocate separate
-        viewers. Default ``"default"``.
+    obj : Geometry, Problem, SweepResult, or list[Eigenmode]
+        anything renderable by the UI; pre-mesh geometries render a
+        coarse OCC surface preview, post-mesh ones render the FEM tet
+        mesh; Problem + SweepResult render :math:`|\\mathbf{E}(t, r)|^2`
+        point clouds plus an S-parameter plot
+    name : str
+        display slot name; repeated ``show`` calls with the same name
+        overwrite earlier outputs, different names allocate separate
+        viewers
 
     Returns
     -------
-    The same ``obj``, so calls compose with assignment::
-
-        result = rapidfem.show(sim.run_sweep())
+    obj
+        the same object, unchanged
     """
     kind = _show_capture.classify(obj)
     if _show_capture.is_capturing():

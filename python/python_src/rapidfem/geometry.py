@@ -1,34 +1,41 @@
-"""
-Geometry + meshing builder for rapidfem, NGSolve-style.
+#########################################################################################
+##
+##                              GEOMETRY + MESHING
+##                                 (geometry.py)
+##
+#########################################################################################
 
-Wraps gmsh's OpenCASCADE kernel with named entities that survive boolean ops:
+"""Geometry + meshing builder for rapidfem, NGSolve-style.
 
-    g = Geometry()
-    sub = g.box(60e-3, 60e-3, 1.6e-3, position=(-30e-3, -30e-3, 0))
+Wraps gmsh's OpenCASCADE kernel with tracked entities that survive
+boolean ops, plus a per-entity registry that carries materials, mesh
+sizes, and physics targets through to the FEM solver. The user-facing
+flow is
+
+.. code-block:: python
+
+    g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+    sub = g.box(60e-3, 60e-3, 1.6e-3, position=(-30e-3, -30e-3, 0),
+                material=rf.Dielectric(er=4.4))
     patch = g.xy_plate(38e-3, 29e-3, position=(-19e-3, -14.5e-3, 1.6e-3))
 
-    g.fragment(sub, patch)         # bool op, names survive
+    g.fragment(sub, patch)         # bool op, names + materials survive
+    g.mesh()                       # generate tet mesh
 
-    sub.faces.min(axis="z").name = "ground"   # selector + attribute write
-    patch.name = "patch_pec"
-    sub.material = "fr4"
 
-    sub.maxh = 5e-3
-    patch.maxh = 1.5e-3
-
-    mesh_bytes, name_to_tag = g.mesh(maxh=10e-3)
-
-The `name_to_tag` dict feeds into rapidfem.SimulationBuilder so users never write
-integer physical group tags by hand.
-
-Tracking strategy (per spike findings, see python/spike_geometry.py):
-- Each named entity stores (cog, bbox, dim) at registration time.
-- After every boolean op, the geometry walks its registry and re-resolves each
-  entity by matching (cog, bbox) against current gmsh entities. COG-only is
-  ambiguous for coplanar overlapping faces (e.g. annulus + sub-region after
-  embedding a plate); bbox disambiguates.
-- `fuse` is supported but warned: face merging shifts COGs, names cannot survive.
+Note
+----
+Tracking strategy: each named entity stores (cog, bbox, dim) at
+registration time. After every boolean op, the geometry walks its
+registry and re-resolves each entity by matching (cog, bbox) against
+current gmsh entities. COG-only is ambiguous for coplanar overlapping
+faces (e.g. annulus + sub-region after embedding a plate); bbox
+disambiguates. ``fuse`` is supported but warned about — face merging
+shifts COGs, so names cannot survive.
 """
+
+# IMPORTS ===============================================================================
+
 from __future__ import annotations
 
 import io
@@ -41,14 +48,14 @@ from typing import Callable, Iterable
 
 import gmsh
 
-# ── Tolerances ────────────────────────────────────────────────────────────────
+
+# TOLERANCES ============================================================================
+
 _COG_TOL = 1e-9   # distance tol for matching center-of-mass (m)
 _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal entity tracking
-# ─────────────────────────────────────────────────────────────────────────────
+# INTERNAL ENTITY TRACKING ==============================================================
 
 @dataclass
 class _Entity:
@@ -118,21 +125,51 @@ def _resolve_entity(target: _Entity) -> int | None:
     return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Entity collection with selectors and attribute writes
-# ─────────────────────────────────────────────────────────────────────────────
+# ENTITY COLLECTION =====================================================================
 
 class EntityCollection:
-    """A collection of sub-entities (faces or edges) with selectors and bulk
-    attribute writes.
+    """A collection of sub-entities (faces or edges) with selectors and
+    bulk attribute writes.
 
-    Setting ``.name = "..."`` or ``.maxh = ...`` applies to all members.
-    Selectors return *new* collections so chains compose.
+    Returned by ``obj.faces`` and ``obj.edges`` on a :class:`GeoObject`,
+    and by selector methods (:meth:`min`, :meth:`max`, :meth:`where`,
+    :attr:`unassigned`, :attr:`outer`) on existing collections. Every
+    selector returns a *new* collection so chains compose:
 
-    Examples
-    --------
-    >>> box.faces.where(lambda c, b: c[2] < 0.5).min(axis="x").name = "port"
-    >>> box.edges.where(lambda c, _: c[2] == 0).maxh = 1e-3
+    .. code-block:: python
+
+        port_face   = air.faces.min(axis="z")
+        top_corner  = air.faces.where(lambda c, b: c[2] > 0.5).max(axis="x")
+        loose_ends  = air.faces.outer.unassigned
+
+
+    Note
+    ----
+    Bulk attribute writes (``coll.name = "..."`` / ``coll.maxh = ...``)
+    apply to every member. The old-API pattern of assigning names this
+    way still works (used by ``rfic.Stack`` and the ``from_gds``
+    importer); the object-API path goes through physics constructors
+    (``rf.PEC(coll)`` / ``rf.RectWaveguidePort(coll)``) and does not
+    require names.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        # Pick the bottom face of an air box and drive it as a port
+        rf.RectWaveguidePort(air.faces.min(axis="z"))
+
+        # All un-targeted outer faces become PEC
+        rf.PEC(*air.faces.outer.unassigned)
+
+
+    Parameters
+    ----------
+    geometry : Geometry
+        owning geometry (for back-references to the physics registry)
+    entities : list[_Entity]
+        the underlying tracked entity records
     """
 
     def __init__(self, geometry: "Geometry", entities: list[_Entity]):
@@ -147,18 +184,30 @@ class EntityCollection:
 
     # Selectors
     def min(self, axis: str = "z") -> "EntityCollection":
-        """Keep only entities whose centroid is at the minimum along ``axis``.
+        """keep only entities whose centroid is at the minimum along ``axis``
+
+        For a convex primitive (box, cylinder) this usually returns a
+        single-face collection — exactly what you want for picking
+        ports or specific walls.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            port_face = air.faces.min(axis="z")
+            rf.RectWaveguidePort(port_face)
+
 
         Parameters
         ----------
-        axis : {'x', 'y', 'z'}, optional
-            Axis to compare centroids on. Default ``'z'``.
+        axis : {'x', 'y', 'z'}
+            axis to compare centroids on
 
         Returns
         -------
         EntityCollection
-            Subset of this collection at the min coordinate. Usually one
-            face for a convex primitive.
+            subset of this collection at the min coordinate
         """
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
@@ -168,9 +217,20 @@ class EntityCollection:
         return EntityCollection(self._geometry, kept)
 
     def max(self, axis: str = "z") -> "EntityCollection":
-        """Keep only entities whose centroid is at the maximum along ``axis``.
+        """keep only entities whose centroid is at the maximum along ``axis``
 
-        Mirror of :meth:`min`. See that method for parameters/returns.
+        Mirror of :meth:`min`; see that method for the worked example.
+
+
+        Parameters
+        ----------
+        axis : {'x', 'y', 'z'}
+            axis to compare centroids on
+
+        Returns
+        -------
+        EntityCollection
+            subset of this collection at the max coordinate
         """
         ax = {"x": 0, "y": 1, "z": 2}[axis.lower()]
         if not self._entities:
@@ -180,18 +240,33 @@ class EntityCollection:
         return EntityCollection(self._geometry, kept)
 
     def where(self, predicate: Callable[[tuple, tuple], bool]) -> "EntityCollection":
-        """Filter entities by an arbitrary predicate on centroid + bbox.
+        """filter entities by a user-supplied predicate on centroid + bbox
+
+        The most flexible selector — escape hatch for selecting faces
+        by region or orientation that don't reduce to a simple ``min``
+        / ``max`` along an axis.
+
+
+        Example
+        -------
+        Horn antenna's trapezoidal side flares (faces strictly inside
+        the horn region in x):
+
+        .. code-block:: python
+
+            rf.PEC(*horn.faces.where(lambda c, b: 1e-6 < c[0] < Lhorn - 1e-6))
+
 
         Parameters
         ----------
         predicate : Callable[[tuple, tuple], bool]
-            Function ``(centroid, bbox) -> bool``. Both arguments are
-            3-tuples; ``bbox`` is ``(xmin, ymin, zmin, xmax, ymax, zmax)``.
+            function ``(centroid, bbox) -> bool``; ``centroid`` is a
+            3-tuple and ``bbox`` is ``(xmin, ymin, zmin, xmax, ymax, zmax)``
 
         Returns
         -------
         EntityCollection
-            Entities for which the predicate returned True.
+            entities for which the predicate returned True
         """
         kept = [e for e in self._entities if predicate(e.cog, e.bbox)]
         return EntityCollection(self._geometry, kept)
@@ -223,13 +298,27 @@ class EntityCollection:
 
     @property
     def unassigned(self) -> "EntityCollection":
-        """Subset of entities with no physics object pointing at them yet.
+        """subset of entities with no physics object pointing at them yet
 
-        Used to assign a catch-all BC after the explicit ones, e.g.::
+        Filters this collection against the geometry's physics registry
+        and drops any entity already targeted by a port or BC. The
+        canonical use is a catch-all PEC declaration after the explicit
+        port faces have been declared.
 
-            rf.RectWaveguidePort(air.faces.min(axis='z'))
-            rf.RectWaveguidePort(air.faces.max(axis='z'))
+
+        Example
+        -------
+        .. code-block:: python
+
+            rf.RectWaveguidePort(air.faces.min(axis="z"))
+            rf.RectWaveguidePort(air.faces.max(axis="z"))
             rf.PEC(*air.faces.unassigned)   # everything else
+
+
+        Returns
+        -------
+        EntityCollection
+            entities not yet referenced by any physics object
         """
         targeted: set[int] = set()
         for phys in self._geometry._physics:
@@ -240,17 +329,40 @@ class EntityCollection:
 
     @property
     def outer(self) -> "EntityCollection":
-        """Axis-aligned faces lying on the outer hull of the gmsh model.
+        """axis-aligned faces lying on the outer hull of the gmsh model
 
-        A face is "outer" iff one of its axes is degenerate (zero extent,
-        i.e. the face is planar and perpendicular to that axis) AND the
-        face's coordinate along that axis matches the model bounding-box
-        extremum within tolerance. Interior fragmented interfaces — which
-        share the model's x/y bbox extents but sit at some inner z — are
-        correctly excluded.
+        A face is "outer" iff one of its axes is degenerate (zero
+        extent — i.e. the face is planar and perpendicular to that
+        axis) AND the face's coordinate along that axis matches the
+        model bounding-box extremum within tolerance.
 
-        Useful for tagging the external walls of a PML enclosure where the
-        inner interface to the air region must stay free.
+        Interior fragmented interfaces — which share the model's x/y
+        bbox extents but sit at some inner z — are correctly excluded.
+        Useful for tagging the external walls of a PML enclosure where
+        the inner air↔PML interface must stay free.
+
+
+        Note
+        ----
+        Uses a 1e-6 m tolerance to absorb gmsh's ``getBoundingBox``
+        inflation (gmsh adds ~1e-7 m of fluff on each side, which is
+        much larger than the 1e-9 m tolerance used elsewhere for
+        cog/bbox identity matching).
+
+
+        Example
+        -------
+        ABC on every external face of the air box:
+
+        .. code-block:: python
+
+            rf.ABC(*air.faces.outer, order=1)
+
+
+        Returns
+        -------
+        EntityCollection
+            entities on the model bounding box
         """
         try:
             bb = gmsh.model.getBoundingBox(-1, -1)
@@ -287,37 +399,54 @@ FaceCollection = EntityCollection
 EdgeCollection = EntityCollection
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Top-level geometric object
-# ─────────────────────────────────────────────────────────────────────────────
+# GEOMETRIC OBJECT ======================================================================
 
 class GeoObject:
-    """A primitive (volume or 2D plate) in the geometry.
+    """A primitive (volume or 2-D plate) in the geometry.
+
+    The return type of every :class:`Geometry` factory method
+    (:meth:`Geometry.box`, :meth:`Geometry.cylinder`, ...). Carries a
+    reference to its owning geometry plus the tracked
+    :class:`_Entity` record that survives boolean ops.
+
+
+    Note
+    ----
+    The recommended path to attach materials and per-entity mesh
+    sizes is the constructor kwarg form
+    (``g.box(..., material=rf.Air(), maxh=2e-3)``). The
+    ``obj.material = ...`` / ``obj.maxh = ...`` setters still work and
+    are used by legacy paths like ``from_gds`` and ``rfic.Stack``, but
+    new code should prefer the kwarg form.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        substrate = g.box(60e-3, 60e-3, 1.6e-3,
+                          material=rf.Dielectric(er=4.4),
+                          maxh=0.5e-3)
+        ground_face = substrate.faces.min(axis="z")
+
 
     Attributes
     ----------
-    name : str | None
-        Physical-group name the entity gets when meshed. Setting this
-        makes the entity reachable through the builder's name resolver.
-    material : str | None
-        Material name (volume-only). Must be wired to a
-        ``SimulationBuilder.material(...)`` call later.
-    maxh : float | None
-        Per-entity mesh size override in metres.
+    name : str or None
+        physical-group name applied at mesh time (legacy / GDS path);
+        the object-API path attaches physics directly and does not
+        require names
+    material : rapidfem.Material or str or None
+        volume material — a :class:`Material` instance under the new
+        object API, or a string under the legacy ``rfic.Stack`` path
+    maxh : float or None
+        per-entity mesh size override in metres
     dim : int
-        Topological dimension: 3 for volumes, 2 for plates.
+        topological dimension (3 for volumes, 2 for plates)
     faces : EntityCollection
-        Bounding faces of a volume (or self, for a plate).
+        bounding faces of a volume (or self, for a plate)
     edges : EntityCollection
-        Bounding edges of the entity.
-
-    Examples
-    --------
-    >>> substrate = g.box(60e-3, 60e-3, 1.6e-3)
-    >>> substrate.name = "fr4_volume"
-    >>> substrate.material = "fr4"
-    >>> substrate.maxh = 5e-3
-    >>> substrate.faces.min(axis="z").name = "ground"
+        bounding edges of the entity
     """
 
     def __init__(self, geometry: "Geometry", entity: _Entity):
@@ -414,31 +543,69 @@ class GeoObject:
         return self._entity.dim
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Geometry — top-level builder owning a gmsh session
-# ─────────────────────────────────────────────────────────────────────────────
+# GEOMETRY ==============================================================================
 
 class Geometry:
     """Top-level geometry builder. Owns a gmsh OCC model for its lifetime.
 
-    Build with primitives (:meth:`box`, :meth:`cylinder`, ...), tag
-    faces / edges / volumes with names, assign materials, then call
-    :meth:`mesh` to produce the FEM mesh. Hand the meshed geometry to
-    :class:`rapidfem.SimulationBuilder` to assemble a :class:`Simulation`.
+    Build with primitive factory methods (:meth:`box`, :meth:`cylinder`,
+    :meth:`xy_plate`, ...) each of which returns a :class:`GeoObject`.
+    Attach physics via the object-API constructors
+    (:class:`rapidfem.RectWaveguidePort`, :class:`rapidfem.PEC`, ...)
+    pointing at faces or volumes. When the description is complete,
+    call :meth:`mesh` and feed the geometry to a
+    :class:`rapidfem.Problem` for analysis.
 
-    Examples
-    --------
-    >>> import rapidfem
-    >>> g = rapidfem.Geometry()
-    >>> air = g.box(22.86e-3, 10.16e-3, 30e-3,
-    ...             position=(-11.43e-3, -5.08e-3, 0))
-    >>> air.material = "air"
-    >>> air.faces.min(axis="z").name = "port_in"
-    >>> air.faces.max(axis="z").name = "port_out"
-    >>> for f in air.faces:
-    ...     if f.name is None:
-    ...         f.name = "pec"
-    >>> g.mesh(maxh=3e-3)
+
+    Note
+    ----
+    The Geometry holds the global gmsh OCC model exclusive while it
+    lives. Constructing two ``Geometry`` instances back-to-back is
+    fine (the second wipes the first's model state), but they cannot
+    coexist.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+        air = g.box(22.86e-3, 10.16e-3, 30e-3,
+                    position=(-11.43e-3, -5.08e-3, 0),
+                    material=rf.Air())
+
+        rf.RectWaveguidePort(air.faces.min(axis="z"))
+        rf.RectWaveguidePort(air.faces.max(axis="z"))
+        rf.PEC(*air.faces.unassigned)
+
+        g.mesh()
+
+
+    Parameters
+    ----------
+    maxh : float, optional
+        global maximum tet edge length in metres; used by
+        :meth:`mesh` when no explicit override is passed
+    name : str, optional
+        gmsh model name (for diagnostic / log output)
+
+
+    Attributes
+    ----------
+    _objects : list[GeoObject]
+        every primitive ever added via this builder
+    _entities : list[_Entity]
+        tracked sub-entity registry (volumes + faces + edges)
+    _physics : list
+        object-API physics registry (ports + BCs + PML)
+    _material_tags : dict[int, int]
+        ``id(Material) → physical-group tag`` map populated by
+        :meth:`mesh`
+    _physics_tags : dict[int, int]
+        ``id(physics_obj) → physical-group tag`` map populated by
+        :meth:`mesh`
+    _last_mesh : tuple[bytes, dict] or None
+        ``(mesh_bytes, name_to_tag)`` cache populated by :meth:`mesh`
     """
 
     def __init__(self, *, maxh: float | None = None, name: str = "rapidfem"):
@@ -671,7 +838,7 @@ class Geometry:
             gmsh.finalize()
             self._owns_gmsh = False
 
-    # ── Primitives ──────────────────────────────────────────────────────────
+    # PRIMITIVES ───────────────────────────────────────────────────────────
 
     def _wrap_volume(self, tag: int, *,
                      material=None,
@@ -702,23 +869,39 @@ class Geometry:
             *,
             material=None,
             maxh: float | None = None) -> GeoObject:
-        """Add an axis-aligned box primitive.
+        """add an axis-aligned box primitive
+
+        The workhorse volume primitive — used for substrates, air
+        regions, waveguide cavities, and PML slabs. The returned
+        :class:`GeoObject` has 6 ``.faces`` and 12 ``.edges`` selectable
+        via :class:`EntityCollection`.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            air = g.box(22.86e-3, 10.16e-3, 30e-3,
+                        position=(-11.43e-3, -5.08e-3, 0),
+                        material=rf.Air())
+
 
         Parameters
         ----------
         width, depth, height : float
-            Extents along x, y, z respectively (m).
-        position : tuple[float, float, float], optional
-            Lower corner ``(xmin, ymin, zmin)``. Default origin.
+            extents along x, y, z respectively in metres
+        position : tuple[float, float, float]
+            lower corner ``(xmin, ymin, zmin)`` (defaults to origin)
         material : rapidfem.Material, optional
-            Volume material (``rf.Air()``, ``rf.Dielectric(er=...)``, ...).
+            volume material (``rf.Air()``, ``rf.Dielectric(er=...)``,
+            ...)
         maxh : float, optional
-            Per-volume mesh size override.
+            per-volume mesh size override in metres
 
         Returns
         -------
         GeoObject
-            Volume with 6 ``.faces`` and 12 ``.edges``.
+            volume with 6 ``.faces`` and 12 ``.edges``
         """
         x, y, z = position
         tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)
@@ -731,25 +914,46 @@ class Geometry:
                  *,
                  material=None,
                  maxh: float | None = None) -> GeoObject:
-        """Add a (partial-sweep) cylinder primitive.
+        """add a (partial-sweep) cylinder primitive
+
+        Curved surfaces honour ``Mesh.MeshSizeFromCurvature`` so the
+        cylinder side wall meshes into geometry-accurate facets without
+        manual refinement.
+
+
+        Example
+        -------
+        Outer dielectric of a coax line:
+
+        .. code-block:: python
+
+            air = g.cylinder(radius=ro, height=L,
+                             position=(0, 0, 0),
+                             material=rf.Air())
+
 
         Parameters
         ----------
         radius : float
-            Cylinder radius in metres.
+            cylinder radius in metres
         height : float
-            Extent along ``axis``.
-        position : tuple[float, float, float], optional
-            Base centre. Default origin.
-        axis : tuple[float, float, float], optional
-            Cylinder axis direction. Default +z.
-        angle : float, optional
-            Sweep angle in radians. Default 2π (full cylinder).
+            extent along ``axis``
+        position : tuple[float, float, float]
+            base centre (defaults to origin)
+        axis : tuple[float, float, float]
+            cylinder axis direction (defaults to +z)
+        angle : float
+            sweep angle in radians; defaults to :math:`2\\pi` (full
+            cylinder), :math:`<2\\pi` gives a partial cylinder
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            Volume.
+            volume
         """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
@@ -760,19 +964,23 @@ class Geometry:
                *,
                material=None,
                maxh: float | None = None) -> GeoObject:
-        """Add a sphere primitive.
+        """add a sphere primitive
 
         Parameters
         ----------
         radius : float
-            Sphere radius in metres.
-        center : tuple[float, float, float], optional
-            Sphere centre. Default origin.
+            sphere radius in metres
+        center : tuple[float, float, float]
+            sphere centre (defaults to origin)
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            Volume.
+            volume
         """
         cx, cy, cz = center
         tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)
@@ -785,25 +993,29 @@ class Geometry:
              *,
              material=None,
              maxh: float | None = None) -> GeoObject:
-        """Add a truncated cone (or cylinder if ``r1 == r2``).
+        """add a truncated cone (or cylinder if ``r1 == r2``)
 
         Parameters
         ----------
         r1, r2 : float
-            Base and top radii in metres.
+            base and top radii in metres
         height : float
-            Extent along ``axis``.
-        position : tuple[float, float, float], optional
-            Base centre. Default origin.
-        axis : tuple[float, float, float], optional
-            Cone axis direction. Default +z.
-        angle : float, optional
-            Sweep angle in radians. Default 2π.
+            extent along ``axis``
+        position : tuple[float, float, float]
+            base centre (defaults to origin)
+        axis : tuple[float, float, float]
+            cone axis direction (defaults to +z)
+        angle : float
+            sweep angle in radians (defaults to :math:`2\\pi`)
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            Volume.
+            volume
         """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
@@ -816,25 +1028,31 @@ class Geometry:
               *,
               material=None,
               maxh: float | None = None) -> GeoObject:
-        """Add a rectangular-base prism (wedge).
+        """add a rectangular-base prism (wedge)
 
-        The base is ``dx × dy`` at z = 0; the top edge runs from x = 0 to
-        x = ``top_x`` at height ``dz``, parallel to y.
+        The base is ``dx × dy`` at z = 0; the top edge runs from x = 0
+        to x = ``top_x`` at height ``dz``, parallel to y. Useful for
+        symmetric horn walls and tapered ridge waveguides.
+
 
         Parameters
         ----------
         dx, dy, dz : float
-            Base width, base depth, height in metres.
-        top_x : float, optional
-            x-extent of the top edge. ``0`` = triangular wedge; ``dx`` =
-            ordinary box. Default 0.
-        position : tuple[float, float, float], optional
-            Lower-left corner of the base. Default origin.
+            base width, base depth, height in metres
+        top_x : float
+            x-extent of the top edge; ``0`` gives a triangular wedge,
+            ``dx`` an ordinary box
+        position : tuple[float, float, float]
+            lower-left corner of the base (defaults to origin)
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            Volume.
+            volume
         """
         x, y, z = position
         tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)
@@ -846,23 +1064,27 @@ class Geometry:
               *,
               material=None,
               maxh: float | None = None) -> GeoObject:
-        """Add a torus primitive.
+        """add a torus primitive
 
         Parameters
         ----------
         major_radius : float
-            Donut radius (centre of the tube to torus axis).
+            donut radius (tube-centre to torus-axis distance) in metres
         minor_radius : float
-            Tube radius.
-        center : tuple[float, float, float], optional
-            Torus centre. Default origin. Axis is along +z.
-        angle : float, optional
-            Sweep angle in radians. ``< 2π`` gives a partial torus.
+            tube radius in metres
+        center : tuple[float, float, float]
+            torus centre (defaults to origin); axis is along +z
+        angle : float
+            sweep angle in radians; :math:`<2\\pi` gives a partial torus
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            Volume.
+            volume
         """
         cx, cy, cz = center
         tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)
@@ -872,22 +1094,47 @@ class Geometry:
                  position: tuple[float, float, float] = (0, 0, 0),
                  *,
                  maxh: float | None = None) -> GeoObject:
-        """Add a thin rectangular plate in the xy-plane.
+        """add a thin rectangular plate in the xy-plane
+
+        2-D primitive — used for thin conductors like patch antennas,
+        microstrip traces, and lumped-port footprints. The returned
+        object carries dim = 2 and a single ``.faces`` selector that
+        points at itself.
+
+
+        Note
+        ----
+        ``height`` here is the y-extent, *not* a vertical (z) extent.
+        For an arbitrarily oriented plate (e.g. a vertical feed sheet)
+        use :meth:`plate` with explicit width/height vectors.
+
+
+        Example
+        -------
+        A patch antenna on top of a substrate:
+
+        .. code-block:: python
+
+            patch = g.xy_plate(38e-3, 29e-3,
+                               position=(-19e-3, -14.5e-3, SUB_H))
+            rf.PEC(patch)
+
 
         Parameters
         ----------
         width : float
-            x-extent in metres.
+            x-extent in metres
         height : float
-            y-extent in metres (note: not a vertical extent).
-        position : tuple[float, float, float], optional
-            Lower corner. Default origin.
+            y-extent in metres
+        position : tuple[float, float, float]
+            lower corner (defaults to origin)
+        maxh : float, optional
+            per-plate mesh size override
 
         Returns
         -------
         GeoObject
-            2D face (dim=2). Typically used for thin conductors like
-            patch antennas or microstrip traces.
+            2-D face
         """
         x, y, z = position
         tag = gmsh.model.occ.addRectangle(x, y, z, width, height)
@@ -897,9 +1144,28 @@ class Geometry:
                  position: tuple[float, float, float] = (0, 0, 0),
                  *,
                  maxh: float | None = None) -> GeoObject:
-        """Add a thin rectangular plate in the xz-plane.
+        """add a thin rectangular plate in the xz-plane
 
-        See :meth:`xy_plate`. ``width`` runs along x, ``height`` along z.
+        Convenience wrapper around :meth:`plate` for the most common
+        axis-aligned vertical plate. ``width`` runs along x,
+        ``height`` along z.
+
+
+        Parameters
+        ----------
+        width : float
+            x-extent in metres
+        height : float
+            z-extent in metres
+        position : tuple[float, float, float]
+            lower corner (defaults to origin)
+        maxh : float, optional
+            per-plate mesh size override
+
+        Returns
+        -------
+        GeoObject
+            2-D face
         """
         return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height), maxh=maxh)
 
@@ -907,9 +1173,28 @@ class Geometry:
                  position: tuple[float, float, float] = (0, 0, 0),
                  *,
                  maxh: float | None = None) -> GeoObject:
-        """Add a thin rectangular plate in the yz-plane.
+        """add a thin rectangular plate in the yz-plane
 
-        See :meth:`xy_plate`. ``width`` runs along y, ``height`` along z.
+        Convenience wrapper around :meth:`plate` for the most common
+        axis-aligned vertical plate. ``width`` runs along y,
+        ``height`` along z.
+
+
+        Parameters
+        ----------
+        width : float
+            y-extent in metres
+        height : float
+            z-extent in metres
+        position : tuple[float, float, float]
+            lower corner (defaults to origin)
+        maxh : float, optional
+            per-plate mesh size override
+
+        Returns
+        -------
+        GeoObject
+            2-D face
         """
         return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height), maxh=maxh)
 
@@ -918,27 +1203,48 @@ class Geometry:
               height: tuple[float, float, float],
               *,
               maxh: float | None = None) -> GeoObject:
-        """Add a thin rectangular plate at arbitrary orientation.
+        """add a thin rectangular plate at arbitrary orientation
+
+        Used for vertical lumped-port sheets, oblique feed plates, and
+        any flat 2-D region whose sides are not axis-aligned.
+
+
+        Note
+        ----
+        gmsh OCC has no direct arbitrary-rectangle API; we build a
+        four-vertex wire and plane surface internally. The four edge
+        vectors ``width`` and ``height`` should be orthogonal — if
+        they are not, you get a planar parallelogram, not a rectangle.
+
+
+        Example
+        -------
+        Vertical lumped-port plate bridging substrate to a trace:
+
+        .. code-block:: python
+
+            port = g.plate(
+                p0=(FEED_X - W/2, FEED_Y, 0),
+                width=(W, 0, 0),
+                height=(0, 0, SUB_H),
+            )
+
 
         Parameters
         ----------
         p0 : tuple[float, float, float]
-            One corner of the rectangle.
+            one corner of the rectangle
         width : tuple[float, float, float]
-            Edge vector from ``p0`` defining one side.
+            edge vector from ``p0`` defining one side
         height : tuple[float, float, float]
-            Edge vector from ``p0`` defining the perpendicular side.
+            edge vector from ``p0`` defining the perpendicular side
+        maxh : float, optional
+            per-plate mesh size override
 
         Returns
         -------
         GeoObject
-            2D face. Used for vertical lumped-port sheets, oblique feed
-            plates, etc.
-
-        Notes
-        -----
-        gmsh OCC has no direct arbitrary-rectangle API; we build a
-        four-vertex wire and plane-surface internally.
+            2-D face
         """
         x0, y0, z0 = p0
         wx, wy, wz = width
@@ -959,39 +1265,47 @@ class Geometry:
                 position: tuple[float, float, float] = (0, 0, 0),
                 *,
                 maxh: float | None = None) -> GeoObject:
-        """Add a planar polygon face.
+        """add a planar polygon face
+
+        2-D primitive for arbitrary outlines — combine with
+        :meth:`extrude` for a non-axis-aligned trace, :meth:`revolve`
+        for an axisymmetric solid, or :meth:`loft` to bridge two
+        profiles into a horn-style frustum.
+
+
+        Note
+        ----
+        2-tuple vertices are placed in the xy-plane at ``z = 0`` plus
+        the ``position`` offset; 3-tuple vertices must all be coplanar
+        — gmsh OCC errors on non-planar input.
+
+
+        Example
+        -------
+        Rectangular waveguide aperture (yz-plane at ``x = L``) for a
+        horn loft:
+
+        .. code-block:: python
+
+            aperture = g.polygon([
+                (L, -W/2, -H/2), (L,  W/2, -H/2),
+                (L,  W/2,  H/2), (L, -W/2,  H/2),
+            ])
+
 
         Parameters
         ----------
         points : iterable of (x, y) or (x, y, z) tuples
-            Vertices in CCW order. Polygon closes automatically. 2-tuples
-            are placed in the xy-plane (z=0); 3-tuples must all be
-            coplanar — gmsh OCC errors on non-planar input.
-        position : tuple[float, float, float], optional
-            Offset added to every vertex. Default origin.
+            vertices in CCW order; polygon closes automatically
+        position : tuple[float, float, float]
+            offset added to every vertex (defaults to origin)
+        maxh : float, optional
+            per-face mesh size override
 
         Returns
         -------
         GeoObject
-            2D face. Combine with :meth:`extrude` for a microstrip-style
-            volume, :meth:`revolve` for an axisymmetric solid, or
-            :meth:`loft` to bridge two profiles.
-
-        Examples
-        --------
-        Hexagonal xy-plane trace footprint:
-
-        >>> import math
-        >>> pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))
-        ...        for t in (i * math.pi / 3 for i in range(6))]
-        >>> hex_face = g.polygon(pts)
-
-        Rectangle in the yz-plane at ``x = L`` (waveguide aperture):
-
-        >>> aperture = g.polygon([
-        ...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),
-        ...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),
-        ... ])
+            2-D face
         """
         pts = list(points)
         if len(pts) < 3:
@@ -1015,20 +1329,27 @@ class Geometry:
              position: tuple[float, float, float] = (0, 0, 0),
              *,
              maxh: float | None = None) -> GeoObject:
-        """Add a circular face in the xy-plane.
+        """add a circular face in the xy-plane
+
+        Smooth NURBS circle (gmsh OCC ``addDisk``) — meshes into curved
+        triangles when ``MeshSizeFromCurvature`` is active. Pair with
+        :meth:`extrude` for a circular post or :meth:`revolve` for a
+        spherical cap.
+
 
         Parameters
         ----------
         radius : float
-            Disc radius in metres.
-        position : tuple[float, float, float], optional
-            Disc centre. Default origin.
+            disc radius in metres
+        position : tuple[float, float, float]
+            disc centre (defaults to origin)
+        maxh : float, optional
+            per-face mesh size override
 
         Returns
         -------
         GeoObject
-            2D face. Smooth NURBS circle (gmsh OCC ``addDisk``) — meshes
-            into curved triangles with ``MeshSizeFromCurvature``.
+            2-D face
         """
         x, y, z = position
         tag = gmsh.model.occ.addDisk(x, y, z, radius, radius)
@@ -1041,27 +1362,42 @@ class Geometry:
                 *,
                 material=None,
                 maxh: float | None = None) -> GeoObject:
-        """Extrude a 2D face along ``axis * height`` into a 3D volume.
+        """extrude a 2-D face along ``axis * height`` into a 3-D volume
+
+        The source ``face`` becomes the bottom cap of the new volume
+        and remains tracked in the entity registry (so names and per-
+        entity mesh sizes set on it survive).
+
+
+        Example
+        -------
+        A 35 µm copper trace from a polygon footprint:
+
+        .. code-block:: python
+
+            poly = g.polygon([(0, 0), (1e-3, 0), (1e-3, 0.5e-3), (0, 0.5e-3)])
+            trace = g.extrude(poly, height=35e-6)
+
 
         Parameters
         ----------
         face : GeoObject
-            2D face (e.g. from :meth:`polygon`, :meth:`disc`, :meth:`plate`).
+            2-D face from :meth:`polygon`, :meth:`disc`, :meth:`plate`,
+            etc.
         height : float
-            Sweep distance along ``axis``.
-        axis : tuple[float, float, float], optional
-            Sweep direction (will be scaled by ``height``). Default +z.
+            sweep distance along ``axis``
+        axis : tuple[float, float, float]
+            sweep direction, will be scaled by ``height`` (defaults
+            to +z)
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            New volume. The source ``face`` becomes the bottom cap and
-            remains tracked (boundary of the new volume).
-
-        Examples
-        --------
-        >>> poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])
-        >>> trace = g.extrude(poly, height=0.035e-3)   # 35 µm copper
+            new volume
         """
         if face.dim != 2:
             raise ValueError(f"extrude expects a 2D face, got dim={face.dim}")
@@ -1078,38 +1414,51 @@ class Geometry:
              *,
              material=None,
              maxh: float | None = None) -> GeoObject:
-        """Loft a volume between two coplanar / parallel 2D faces.
+        """loft a volume between two coplanar / parallel 2-D faces
 
         Linearly interpolates the perimeter of ``face_a`` onto the
-        perimeter of ``face_b``. Both faces must have the same number of
-        edges in their outer boundary (a 4-edge rectangle lofts to a
-        4-edge rectangle, producing a frustum with 4 trapezoidal sides).
+        perimeter of ``face_b``. Both faces must have the same number
+        of edges in their outer boundary (a 4-edge rectangle lofts to
+        a 4-edge rectangle, producing a frustum with 4 trapezoidal
+        sides).
+
+
+        Note
+        ----
+        The input faces are absorbed into the new volume's boundary
+        and remain tracked as cap faces.
+
+
+        Example
+        -------
+        Pyramidal horn between a WR-90 throat and a flared aperture:
+
+        .. code-block:: python
+
+            throat = g.polygon([(0, -wga/2, -wgb/2), (0,  wga/2, -wgb/2),
+                                (0,  wga/2,  wgb/2), (0, -wga/2,  wgb/2)])
+            aper   = g.polygon([(L, -WH/2, -HH/2),   (L,  WH/2, -HH/2),
+                                (L,  WH/2,  HH/2),   (L, -WH/2,  HH/2)])
+            horn = g.loft(throat, aper)
+
 
         Parameters
         ----------
         face_a, face_b : GeoObject
-            Two 2D faces to bridge. The result is a closed solid bounded
-            by the two faces plus ruled side surfaces.
-        ruled : bool, optional
-            When ``True`` (default), produce flat (ruled) side surfaces —
-            the right choice for pyramidal / frustum-style horns. When
-            ``False``, gmsh fits a spline through the section profiles.
+            two 2-D faces to bridge
+        ruled : bool
+            ``True`` (default) gives flat side surfaces — the right
+            choice for pyramidal / frustum-style horns; ``False`` fits
+            a spline through the section profiles
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            New volume. The input faces are absorbed into its boundary
-            and remain tracked as the cap faces.
-
-        Examples
-        --------
-        Pyramidal horn between a throat and an aperture rectangle:
-
-        >>> throat = g.polygon([(0, -wga/2, -wgb/2), (0,  wga/2, -wgb/2),
-        ...                     (0,  wga/2,  wgb/2), (0, -wga/2,  wgb/2)])
-        >>> aper = g.polygon([(L, -WH/2, -HH/2), (L,  WH/2, -HH/2),
-        ...                   (L,  WH/2,  HH/2), (L, -WH/2,  HH/2)])
-        >>> horn = g.loft(throat, aper)
+            new volume
         """
         if face_a.dim != 2 or face_b.dim != 2:
             raise ValueError("loft expects two 2D faces")
@@ -1143,32 +1492,42 @@ class Geometry:
                 *,
                 material=None,
                 maxh: float | None = None) -> GeoObject:
-        """Revolve a 2D face around an axis to create a 3D volume.
+        """revolve a 2-D face around an axis to create a 3-D volume
+
+        For a full :math:`2\\pi` sweep the profile typically touches
+        the axis to close the body; partial sweeps produce a wedge-shaped
+        volume.
+
+
+        Example
+        -------
+        Conical horn from a 4-point profile revolved around the x-axis:
+
+        .. code-block:: python
+
+            profile = g.polygon([(L, 0), (L+a, 0), (L+a, R), (L, r)])
+            horn = g.revolve(profile, axis_point=(0, 0, 0), axis_dir=(1, 0, 0))
+
 
         Parameters
         ----------
         face : GeoObject
-            2D face. For ``angle == 2π`` the profile typically touches
-            the axis; otherwise you get a torus-shaped sweep.
-        axis_point : tuple[float, float, float], optional
-            A point on the rotation axis. Default origin.
-        axis_dir : tuple[float, float, float], optional
-            Axis direction. Default +z.
-        angle : float, optional
-            Sweep angle in radians. Default 2π.
+            2-D face to revolve
+        axis_point : tuple[float, float, float]
+            a point on the rotation axis (defaults to origin)
+        axis_dir : tuple[float, float, float]
+            axis direction (defaults to +z)
+        angle : float
+            sweep angle in radians (defaults to :math:`2\\pi`)
+        material : rapidfem.Material, optional
+            volume material
+        maxh : float, optional
+            per-volume mesh size override
 
         Returns
         -------
         GeoObject
-            New volume. The source ``face`` becomes one cap (if the sweep
-            is partial) or is absorbed (if full 2π) and remains tracked.
-
-        Examples
-        --------
-        Conical horn from a 4-point profile revolved around the x-axis:
-
-        >>> profile = g.polygon([(L, 0), (L+a, 0), (L+a, R), (L, r)])
-        >>> horn = g.revolve(profile, axis_point=(0, 0, 0), axis_dir=(1, 0, 0))
+            new volume
         """
         if face.dim != 2:
             raise ValueError(f"revolve expects a 2D face, got dim={face.dim}")
@@ -1183,32 +1542,43 @@ class Geometry:
             raise RuntimeError("revolve produced no volume")
         return self._wrap_volume(vol_tag, material=material, maxh=maxh)
 
-    # ── Boolean ops ─────────────────────────────────────────────────────────
+    # BOOLEAN OPS ──────────────────────────────────────────────────────────
 
     def fragment(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean fragment: make all overlaps conformal.
+        """make every overlap between ``target`` and ``tools`` conformal
 
-        Splits each overlap into a shared face / volume that both
-        operands keep, so meshing produces a single mesh across the
-        interfaces. Names assigned on the operands survive.
+        Splits each overlap into a shared face or volume that both
+        operands keep. Meshing then produces a single conformal tet
+        mesh across every interface — exactly what the FEM solver
+        needs. Names and per-entity mesh sizes assigned on the
+        operands survive.
+
+
+        Note
+        ----
+        Uses gmsh's ``occ.fragment`` ``out_map`` to update each input's
+        tag directly — robust against COG drift that can break naive
+        name-tracking after boolean ops. Child faces and edges are
+        re-resolved by ``(centroid, bbox)`` matching against the
+        registry.
+
+
+        Example
+        -------
+        Substrate + air + thin patch + lumped-port plate, all
+        conformally fragmented in one call:
+
+        .. code-block:: python
+
+            g.fragment(air, sub, patch, feed)
+
 
         Parameters
         ----------
         target : GeoObject
-            First operand.
+            first operand
         *tools : GeoObject
-            Additional operands to fragment with ``target``.
-
-        Notes
-        -----
-        Uses gmsh's ``occ.fragment`` ``out_map`` to update each input's
-        tag directly — robust against the COG drift that can break naive
-        name-tracking after boolean ops. Child faces / edges are
-        re-resolved by ``(centroid, bbox)`` matching.
-
-        Examples
-        --------
-        >>> g.fragment(air, substrate, patch, feed)
+            additional operands to fragment with ``target``
         """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
@@ -1219,15 +1589,26 @@ class Geometry:
         self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
 
     def cut(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean subtract ``tools`` from ``target``.
+        """boolean subtract ``tools`` from ``target``
+
+        Carves the volumes / faces of ``tools`` out of ``target``. The
+        target survives (possibly as several pieces); tools are
+        consumed by the operation.
+
+
+        Note
+        ----
+        Tools are **consumed** by ``cut`` — do not reference them after
+        the call. Use :meth:`fragment` instead if you need both
+        operands to survive (e.g. for a substrate-in-air model).
+
 
         Parameters
         ----------
         target : GeoObject
-            Object to subtract from. Survives (possibly as several pieces).
+            object to subtract from
         *tools : GeoObject
-            Objects to subtract. **Consumed** by the operation — do not
-            reference them afterwards.
+            objects to subtract (consumed)
         """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
@@ -1284,30 +1665,38 @@ class Geometry:
                 )
         self._entities = survived
 
-    # ── Transforms ──────────────────────────────────────────────────────────
+    # TRANSFORMS ───────────────────────────────────────────────────────────
 
     def rotate(self, obj: GeoObject, angle: float,
                axis: tuple[float, float, float] = (0, 0, 1),
                center: tuple[float, float, float] = (0, 0, 0)) -> None:
-        """Rotate ``obj`` (and all its child faces / edges) in place.
+        """rotate ``obj`` (and all its child faces / edges) in place
+
+        gmsh dimtags survive the transform unchanged; only the
+        geometric attributes (COG, bbox) of every tracked entity
+        descending from ``obj`` are refreshed. Named selectors keep
+        working — the resolver sees the new positions.
+
+
+        Example
+        -------
+        Rotate a horn 30° around y:
+
+        .. code-block:: python
+
+            g.rotate(horn, math.pi / 6, axis=(0, 1, 0))
+
 
         Parameters
         ----------
         obj : GeoObject
-            Volume or face to rotate.
+            volume or face to rotate
         angle : float
-            Rotation angle in radians (right-hand rule about ``axis``).
-        axis : tuple[float, float, float], optional
-            Axis direction. Default +z.
-        center : tuple[float, float, float], optional
-            Point on the rotation axis. Default origin.
-
-        Notes
-        -----
-        gmsh dimtags survive the transform unchanged; only the geometric
-        attributes (COG, bbox) of every tracked entity descending from
-        ``obj`` are refreshed. Named selectors keep working — the resolver
-        sees the new positions.
+            rotation angle in radians (right-hand rule about ``axis``)
+        axis : tuple[float, float, float]
+            axis direction (defaults to +z)
+        center : tuple[float, float, float]
+            a point on the rotation axis (defaults to origin)
         """
         cx, cy, cz = center
         ax, ay, az = axis
@@ -1318,22 +1707,29 @@ class Geometry:
     def stretch(self, obj: GeoObject,
                 fx: float = 1.0, fy: float = 1.0, fz: float = 1.0,
                 center: tuple[float, float, float] = (0, 0, 0)) -> None:
-        """Anisotropic scale ``obj`` about ``center`` by ``(fx, fy, fz)``.
+        """anisotropic scale ``obj`` about ``center`` by ``(fx, fy, fz)``
+
+        Per-axis dilation. The scaling centre stays fixed; everything
+        else moves by :math:`(f_x x, f_y y, f_z z)` relative to it.
+
+
+        Example
+        -------
+        Squash a circular waveguide by 0.1 % to split degenerate modes:
+
+        .. code-block:: python
+
+            g.stretch(feed, fy=1.001)
+
 
         Parameters
         ----------
         obj : GeoObject
-            Volume or face to scale.
-        fx, fy, fz : float, optional
-            Scale factors along each axis. Default 1 (no change).
-        center : tuple[float, float, float], optional
-            Scaling centre — stays fixed. Default origin.
-
-        Examples
-        --------
-        Squash a circular waveguide by 0.1% to split degenerate modes:
-
-        >>> g.stretch(feed, fy=1.001)
+            volume or face to scale
+        fx, fy, fz : float
+            scale factors along each axis (default 1 = no change)
+        center : tuple[float, float, float]
+            scaling centre (defaults to origin)
         """
         cx, cy, cz = center
         gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)], cx, cy, cz, fx, fy, fz)
@@ -1361,19 +1757,34 @@ class Geometry:
                 ent.bbox = tuple(gmsh.model.getBoundingBox(ent.dim, ent.tag))
 
     def intersect(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean intersect ``target ∩ tools``.
+        """boolean intersect ``target ∩ tools``
+
+        Carves the intersection of ``target`` with every member of
+        ``tools`` and assigns it back to ``target``. The tools are
+        consumed by the operation.
+
+
+        Note
+        ----
+        Tools are **consumed** by ``intersect`` — do not reference
+        them after the call.
+
+
+        Example
+        -------
+        Clip a horn to the upper half-space:
+
+        .. code-block:: python
+
+            g.intersect(horn, halfspace)
+
 
         Parameters
         ----------
         target : GeoObject
-            Object to intersect. Survives as the intersection region.
+            object to intersect (survives as the intersection region)
         *tools : GeoObject
-            Objects to intersect with. **Consumed** by the operation —
-            do not reference them afterwards.
-
-        Examples
-        --------
-        >>> g.intersect(horn, halfspace)   # clip horn to z >= 0
+            objects to intersect with (consumed)
         """
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
@@ -1384,21 +1795,27 @@ class Geometry:
         self._reresolve_children(top_level={id(target._entity)})
 
     def fuse(self, target: GeoObject, *tools: GeoObject) -> None:
-        """Boolean union ``target ∪ tools``.
+        """boolean union ``target ∪ tools``
+
+        Merges the operands into a single connected body assigned back
+        to ``target``.
+
+
+        Note
+        ----
+        Face names on the operands are **not** preserved (faces merge
+        and centroids shift). Top-level volume names survive via the
+        gmsh ``out_map``, but set face names AFTER ``fuse`` — or use
+        :meth:`fragment` if you need the interfaces themselves to
+        survive as named entities.
+
 
         Parameters
         ----------
         target : GeoObject
-            First operand. Survives as the merged object.
+            first operand (survives as the merged object)
         *tools : GeoObject
-            Operands to merge in.
-
-        Warnings
-        --------
-        Face names on the operands are NOT preserved (faces merge and
-        centroids shift). Top-level volume names survive via the gmsh
-        out_map, but **set face names AFTER fuse**, or use
-        :meth:`fragment` if interface preservation matters.
+            operands to merge in
         """
         warnings.warn(
             "fuse() merges faces and shifts their COGs; named faces on the "
@@ -1414,7 +1831,7 @@ class Geometry:
         self._apply_out_map(inputs, out_map)
         self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
 
-    # ── Mesh emit ───────────────────────────────────────────────────────────
+    # MESH EMIT ────────────────────────────────────────────────────────────
 
     def auto_refine_features(
         self,
@@ -1422,36 +1839,60 @@ class Geometry:
         resolution: int = 3,
         min_maxh: float | None = None,
     ) -> dict[str, float]:
-        """Auto-assign per-volume ``maxh`` for any volume thinner than ``base_maxh``.
+        """auto-assign per-volume ``maxh`` for any volume thinner than
+        ``base_maxh``
 
-        Walks every 3D volume in the geometry. For each, computes the smallest
-        bbox dimension (the "feature size"). If that dimension is smaller than
-        ``base_maxh`` *and* the user hasn't already set ``vol.maxh`` explicitly,
-        sets ``vol.maxh = max(min_dim / resolution, min_maxh)`` so the volume
-        is resolved with at least ``resolution`` tets across its thinnest axis.
+        Walks every 3-D volume in the geometry. For each, computes the
+        smallest bbox dimension (the "feature size"). If that dimension
+        is smaller than ``base_maxh`` *and* the user hasn't already
+        set ``vol.maxh`` explicitly, sets
 
-        Idempotent — only writes ``maxh`` when it's currently ``None``, so
-        explicit per-volume sizes always win.
+        .. math::
+
+            \\mathrm{vol.maxh} = \\max\\!\\left(
+                \\frac{d_{\\min}}{\\mathrm{resolution}},
+                \\mathrm{min\\_maxh}
+            \\right)
+
+        so the volume is resolved with at least ``resolution`` tets
+        across its thinnest axis.
+
+
+        Note
+        ----
+        Idempotent — only writes ``maxh`` when it's currently ``None``,
+        so explicit per-volume sizes (set via ``g.box(..., maxh=...)``
+        or ``obj.maxh = ...``) always win.
+
+
+        Example
+        -------
+        Resolve a 0.5 mm thin substrate against a 12 mm global cap:
+
+        .. code-block:: python
+
+            g.auto_refine_features(base_maxh=12e-3, resolution=3)
+
 
         Parameters
         ----------
         base_maxh : float
-            Reference size (typically what you'll pass to ``g.mesh(maxh=...)``).
-            Volumes wider than this in all directions are left untouched.
-        resolution : int, optional
-            Target number of tets across the thinnest dimension. Default 3 —
-            enough for ND-2 to capture per-element gradients; bump to 4–5 for
-            very high accuracy near a specific feature. Default 3.
+            reference size — volumes wider than this in all directions
+            are left untouched
+        resolution : int
+            target number of tets across the thinnest dimension (3 is
+            enough for ND-2 to capture per-element gradients; bump to
+            4-5 for very high accuracy near a specific feature)
         min_maxh : float, optional
-            Floor on the auto-assigned size, to avoid catastrophic refinement
-            on micron-scale features. ``None`` means no floor.
+            floor on the auto-assigned size, to avoid catastrophic
+            refinement on micron-scale features
 
         Returns
         -------
         dict[str, float]
-            Map ``{volume_descriptor: assigned_maxh}`` for the volumes touched,
-            for logging. The descriptor is ``name`` if the volume has one, else
-            ``"vol@(cx,cy,cz)"`` from its centroid.
+            map ``{volume_descriptor: assigned_maxh}`` for the volumes
+            touched (descriptor is the volume's ``name`` if set, else
+            ``"vol@(cx,cy,cz)"``)
         """
         assigned: dict[str, float] = {}
         for obj in self._objects:
@@ -1472,46 +1913,60 @@ class Geometry:
         return assigned
 
     def mesh(self, maxh: float | None = None, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
-        """Generate the 3D tet mesh of the current geometry.
+        """generate the 3-D tet mesh of the current geometry
 
         Calls gmsh's OCC mesher with the configured per-entity sizes
         and global cap. Per-entity ``obj.maxh = h`` is honoured via
         gmsh ``Distance + Threshold`` background fields so refinement
         transitions are smooth, not abrupt.
 
-        Physical-group creation:
 
-        * Every :class:`Material` instance attached via ``g.box(..., material=...)``
-          gets its own physical group on dim 3; the resulting tag is stored
-          in ``self._material_tags[id(material)]``.
-        * Every physics object in ``self._physics`` (created by
-          ``rf.PEC(...)``, ``rf.LumpedPort(...)``, ...) gets its own physical
-          group containing all its target entities; the tag is stored in
-          ``self._physics_tags[id(physics_obj)]``.
-        * Legacy string materials/names (``obj.material = "fr4"``,
-          ``obj.name = "ground"``) continue to work — they produce
-          name-keyed groups in the returned ``name_to_tag`` dict for the
-          deprecated ``SimulationBuilder`` flow.
+        Note
+        ----
+        Three sources of physical groups are created at mesh time:
+
+        - Every :class:`rapidfem.Material` instance attached via
+          ``g.box(..., material=...)`` gets its own physical group
+          on dim 3; the resulting tag is stored in
+          ``self._material_tags[id(material)]``.
+        - Every physics object in ``self._physics`` (created by
+          ``rf.PEC(...)``, ``rf.LumpedPort(...)``, ...) gets its own
+          physical group containing all its target entities; the tag is
+          stored in ``self._physics_tags[id(physics_obj)]``.
+        - Legacy string materials/names (``obj.material = "fr4"``,
+          ``obj.name = "ground"``) continue to work for the GDS
+          import / ``rfic.Stack`` flow — they produce name-keyed groups
+          in the returned ``name_to_tag`` dict.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+            # ... primitives + physics ...
+            g.mesh()                      # uses the geometry's maxh
+            g.mesh(maxh=1e-3)             # one-off override
+
 
         Parameters
         ----------
         maxh : float, optional
-            Global mesh size cap override (m). When ``None``, falls back
-            to the ``maxh=`` passed to ``Geometry(...)``. Raises if neither
-            is set.
+            global mesh size cap override in metres; falls back to the
+            ``maxh=`` passed to :class:`Geometry` when ``None`` (raises
+            if neither is set)
         transition_distance : float, optional
-            Distance over which a refined region's element size grows
-            from its local ``h`` to the global cap. Default ``5 · h``
-            per-entity.
+            distance over which a refined region's element size grows
+            from its local ``h`` to the global cap (defaults to
+            :math:`5h` per-entity)
 
         Returns
         -------
         mesh_bytes : bytes
-            gmsh ``.msh`` v4 file as bytes — cached on ``self._last_mesh``
-            for the :class:`rapidfem.Problem` to pick up.
+            gmsh ``.msh`` v4 file as bytes, also cached on
+            ``self._last_mesh`` for :class:`rapidfem.Problem`
         name_to_tag : dict[str, int]
-            Legacy name → tag map (empty unless ``obj.name``/``obj.material``
-            strings were used). The object-API path does not need this dict.
+            legacy name → tag map (empty under the object-API path)
         """
         if maxh is None:
             maxh = self._maxh
