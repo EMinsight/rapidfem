@@ -1624,7 +1624,21 @@ class Geometry:
         If an input was split into multiple pieces, the first piece keeps the
         original GeoObject; the others are registered as additional `_Entity`s
         carrying the same name/material/maxh.
+
+        When tools sit fully inside the target (e.g. iris-strips inside an air
+        box), gmsh's out_map[0] for the target enumerates EVERY piece of the
+        partition that covers it — including the pieces each tool claims as
+        its own primary. Without de-duplication, those tool pieces would also
+        appear as "extras" under the target with the wrong material, producing
+        overlapping physical groups in gmsh and ambiguous material tagging in
+        the Rust solver. We collect the primary tags first and skip them when
+        creating extras.
         """
+        primary_tags: set[tuple[int, int]] = set()
+        for input_obj, new_dimtags in zip(inputs, out_map):
+            if new_dimtags:
+                d0, t0 = new_dimtags[0]
+                primary_tags.add((int(d0), int(t0)))
         for input_obj, new_dimtags in zip(inputs, out_map):
             if not new_dimtags:
                 warnings.warn(
@@ -1638,6 +1652,8 @@ class Geometry:
             input_obj._entity.cog = tuple(gmsh.model.occ.getCenterOfMass(d0, t0))
             input_obj._entity.bbox = tuple(gmsh.model.getBoundingBox(d0, t0))
             for d, t in new_dimtags[1:]:
+                if (int(d), int(t)) in primary_tags:
+                    continue
                 extra = _Entity.from_dimtag(d, t)
                 extra.name = input_obj._entity.name
                 extra.material = input_obj._entity.material
@@ -2052,7 +2068,13 @@ class Geometry:
         self._material_tags = {}
         self._physics_tags = {}
         name_to_tag: dict[str, int] = {}
-        next_tag = 1
+        # Start physical-group tags well above every entity tag — the Rust
+        # mesh loader (`src/mesh_io.rs::tris_for_tag`) keys tris by either
+        # the entity's physical-group tag OR (fallback) the entity tag
+        # itself when no group is assigned. Sharing the integer namespace
+        # means a physical-group tag like 9 collides with face entity 9
+        # and Port "9" picks up the unrelated entity's triangles.
+        next_tag = 100_000
 
         # Collect volume entities targeted by PML — they go into the PML
         # physical group (step 2) and must NOT also land in a material group,
@@ -2063,6 +2085,29 @@ class Geometry:
             if type(phys).__name__ == "PML":
                 for ent in getattr(phys, "_entities", ()):
                     pml_volume_ids.add(id(ent))
+
+        # Per-class counters keep physical-group names unique without leaking
+        # python id()s into the viewer legend. Class lower-case + 1-based index.
+        # Example: two Dielectric() instances → "dielectric_1", "dielectric_2".
+        # Driven ports collapse onto a shared "port_<N>" namespace so the legend
+        # reads Port 1 / Port 2 regardless of waveguide/lumped/coax mix.
+        mat_class_count: dict[str, int] = {}
+        phys_class_count: dict[str, int] = {}
+        port_classes = {
+            "RectWaveguidePort", "LumpedPort", "CoaxPort",
+            "UserDefinedPort", "FloquetPort",
+        }
+
+        def _mat_group_name(mat) -> str:
+            cls = type(mat).__name__.lower()
+            mat_class_count[cls] = mat_class_count.get(cls, 0) + 1
+            return f"{cls}_{mat_class_count[cls]}"
+
+        def _phys_group_name(phys) -> str:
+            cls_name = type(phys).__name__
+            key = "port" if cls_name in port_classes else cls_name.lower()
+            phys_class_count[key] = phys_class_count.get(key, 0) + 1
+            return f"{key}_{phys_class_count[key]}"
 
         # 1) Material instances → volume groups (skipping PML-targeted volumes).
         mat_to_volumes: dict[int, tuple[object, list[int]]] = {}
@@ -2082,7 +2127,7 @@ class Geometry:
         for mat_id, (mat, tags) in mat_to_volumes.items():
             phys_tag = next_tag
             next_tag += 1
-            gmsh.model.addPhysicalGroup(3, tags, tag=phys_tag, name=f"_mat_{mat_id}")
+            gmsh.model.addPhysicalGroup(3, tags, tag=phys_tag, name=_mat_group_name(mat))
             self._material_tags[mat_id] = phys_tag
 
         # 2) Physics objects → faces or volume groups.
@@ -2096,7 +2141,7 @@ class Geometry:
             phys_tag = next_tag
             next_tag += 1
             phys_id = id(phys)
-            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=f"_phys_{phys_id}")
+            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=_phys_group_name(phys))
             self._physics_tags[phys_id] = phys_tag
 
         # 3) Legacy: name/material strings (rfic.Stack + builder workflow).

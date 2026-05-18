@@ -141,45 +141,85 @@
 
 	// ── Mesh classification & coloring ──────────────────────────────────
 	type Kind = 'dielectric' | 'conductor' | 'port' | 'gnd';
+
+	/** Strip a trailing `_<digits>` index suffix so "air_1", "dielectric_2"
+	 *  classify the same as "air", "dielectric". Returns the base name. */
+	function base(name: string): string {
+		return name.replace(/_\d+$/, '');
+	}
+
+	/** Render a physical-group name into a human-readable legend label.
+	 *  Drops the per-class index for singletons (Air, PEC) and keeps it
+	 *  for repeatable kinds (Port 1, Port 2, Dielectric 1, Dielectric 2). */
+	function pretty_label(name: string): string {
+		const b = base(name);
+		const m = name.match(/_(\d+)$/);
+		const idx = m ? parseInt(m[1], 10) : 0;
+		const display: Record<string, string> = {
+			air: 'Air',
+			conductor: 'Conductor',
+			dielectric: 'Dielectric',
+			anisotropic: 'Anisotropic',
+			port: 'Port',
+			pec: 'PEC',
+			pmc: 'PMC',
+			abc: 'ABC',
+			pml: 'PML',
+			surfaceimpedance: 'Surface Impedance',
+			lumpedelement: 'Lumped Element',
+		};
+		const d = display[b];
+		if (!d) return name;
+		// Repeatable kinds keep their index; conceptually-unique ones drop it.
+		const repeatable = b === 'port' || b === 'dielectric' || b === 'anisotropic' || b === 'pml';
+		return repeatable && idx > 0 ? `${d} ${idx}` : d;
+	}
+
 	function classify(name: string): Kind | null {
-		if (name === 'abc' || name.startsWith('_mat_')) return null;
-		if (name === 'substrate' || name === 'oxide' || name === 'air') return 'dielectric';
+		const b = base(name);
+		// Object-API material names — emitted by geometry.py as
+		// "<class_lower>_<idx>" (air, dielectric, conductor, anisotropic).
+		if (b === 'air' || b === 'dielectric' || b === 'anisotropic') return 'dielectric';
+		if (b === 'conductor') return 'conductor';   // bulk metal volume
+		// Object-API physics names — driven ports share a "port_<N>" prefix.
+		if (b === 'port') return 'port';
+		if (b === 'pec' || b === 'pmc' || b === 'surfaceimpedance' || b === 'lumpedelement') return 'conductor';
+		if (b === 'abc') return null;                // absorbing → transparent
+		if (b === 'pml') return 'dielectric';
+		// Legacy (rfic.Stack / builder string-named physical groups).
+		if (name.startsWith('_mat_')) return null;
+		if (name === 'substrate' || name === 'oxide') return 'dielectric';
 		if (name.endsWith('_gnd') || name === 'gnd' || name === 'ground') return 'gnd';
-		if (
-			name === 'p1' || name === 'p2' || /^p\d+$/.test(name) ||
-			name.startsWith('port') || name.endsWith('_port')
-		) return 'port';
+		if (name === 'p1' || name === 'p2' || /^p\d+$/.test(name) || name.endsWith('_port')) return 'port';
 		return 'conductor';
 	}
 
+	// Dielectric cycle — distinct hues so multiple dielectrics are
+	// distinguishable. Keep air on its own neutral gray channel.
+	const DIELECTRIC_CYCLE = ['#4a9ec2', '#6bbf8a', '#7b5e8a', '#a78bd9', '#c4c46b'];
+
 	function color_for(kind: Kind, name: string): [number, number, number] {
-		if (kind === 'dielectric') {
-			if (name === 'substrate') return hex('#4a9ec2');
-			if (name === 'oxide') return hex('#7b5e8a');
-			if (name === 'air') return hex('#5a6470');
-			return hex('#5a6470');
+		const b = base(name);
+		// Materials get type-specific colors regardless of kind classification.
+		if (b === 'air') return hex('#5a5a62');                   // neutral gray
+		if (b === 'conductor') return hex(palette.accentSecondary); // bulk metal → signature yellow
+		if (b === 'dielectric' || b === 'anisotropic') {
+			const m = name.match(/_(\d+)$/);
+			const idx = m ? Math.max(0, parseInt(m[1], 10) - 1) : 0;
+			return hex(DIELECTRIC_CYCLE[idx % DIELECTRIC_CYCLE.length]);
 		}
+		if (b === 'pml') return hex('#7b5e8a');                   // muted purple
+		// Physics objects.
+		if (kind === 'port') return hex(palette.accent);          // lava
+		if (kind === 'conductor') return hex(palette.accentSecondary);
 		if (kind === 'gnd') return hex('#5aad78');
-		// Ports use the brand lava accent so they read as the primary
-		// excitation surfaces in the geometry.
-		if (kind === 'port') return hex(palette.accent);
-		// Per-layer conductor coloring so a multi-layer design (met5 + met4
-		// + via4 + ...) is visually distinguishable instead of one orange
-		// blob. Specific metal/via names get fixed hues; anything else
-		// falls through to the warm accent default.
+		if (kind === 'dielectric') return hex('#5a5a62');
+		// Legacy rfic-style explicit layer names.
 		const fixed: Record<string, string> = {
-			met5: '#e8944a',     // top metal — copper-orange (accent secondary)
-			met4: '#f0b86a',     // lighter
-			met3: '#c4c46b',     // yellowish
-			met2: '#9bc28b',     // greenish
-			met1: '#7b9fb8',     // bluish
-			li1:  '#5a8caa',
-			via5: '#d9513c',     // vias get accent red so the connector tubes stand out
-			via4: '#e5634f',
-			via3: '#bf4233',
-			via2: '#9d3526',
-			via1: '#7c281b',
-			mcon: '#aa6b40',
+			met5: '#e8944a', met4: '#f0b86a', met3: '#c4c46b',
+			met2: '#9bc28b', met1: '#7b9fb8', li1: '#5a8caa',
+			via5: '#d9513c', via4: '#e5634f', via3: '#bf4233',
+			via2: '#9d3526', via1: '#7c281b', mcon: '#aa6b40',
 		};
 		return hex(fixed[name] ?? palette.accentSecondary);
 	}
@@ -326,8 +366,10 @@
 			const vol_b = build_volume_boundaries(mesh);
 			for (const [vtag, idx] of vol_b.entries()) {
 				const name = mesh.phys_names.get(vtag) ?? '';
-				if (!name || name.startsWith('_mat_')) continue;
-				push_group(idx, 'dielectric', name, vtag);
+				if (!name) continue;
+				const kind = classify(name);
+				if (!kind) continue;     // e.g. ABC → transparent
+				push_group(idx, kind, name, vtag);
 			}
 		}
 
@@ -726,11 +768,13 @@
 			if (seen.has(tag)) return;
 			seen.add(tag);
 			const name = mesh!.phys_names.get(tag) ?? '';
-			if (!name || name === 'abc' || name.startsWith('_mat_')) return;
+			if (!name) return;
+			// ABC is rendered transparently; suppress from the legend too.
+			if (classify(name) === null) return;
 			const c = color_for(kind, name);
 			const rank = kind === 'conductor' ? 0 : kind === 'port' ? 1 : kind === 'gnd' ? 2 : 3;
 			items.push({
-				name,
+				name: pretty_label(name),
 				color: `rgb(${(c[0] * 255) | 0},${(c[1] * 255) | 0},${(c[2] * 255) | 0})`,
 				kind, rank, tag
 			});
@@ -744,7 +788,8 @@
 		for (let i = 0; i < mesh.tet_phys.length; i++) {
 			const tag = mesh.tet_phys[i];
 			const name = mesh.phys_names.get(tag) ?? '';
-			if (name && !name.startsWith('_mat_')) add(tag, 'dielectric');
+			const k = classify(name);
+			if (k) add(tag, k);
 		}
 		items.sort((a, b) => a.rank - b.rank);
 		return items;
