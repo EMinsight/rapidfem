@@ -57,14 +57,19 @@ class _Entity:
     `tag` is the *current* gmsh tag — may be updated by Geometry._reresolve()
     after fragment/cut. The (cog, bbox, dim) triple is the stable identity used
     for re-resolution.
+
+    ``material`` can be either a :class:`rapidfem.Material` instance (object-API
+    path, set via ``g.box(..., material=...)``) or a string (legacy, set via
+    ``obj.material = "fr4"`` — used by rfic.Stack et al.).
     """
     dim: int
     tag: int
     cog: tuple[float, float, float]
     bbox: tuple[float, float, float, float, float, float]
     name: str | None = None
-    material: str | None = None
+    material: object = None    # rapidfem.Material | str | None
     maxh: float | None = None
+    _geometry: object = None   # back-ref to Geometry, set by registration
 
     @staticmethod
     def from_dimtag(dim: int, tag: int) -> "_Entity":
@@ -216,6 +221,48 @@ class EntityCollection:
         for e in self._entities:
             e.maxh = value
 
+    @property
+    def unassigned(self) -> "EntityCollection":
+        """Subset of entities with no physics object pointing at them yet.
+
+        Used to assign a catch-all BC after the explicit ones, e.g.::
+
+            rf.RectWaveguidePort(air.faces.min(axis='z'))
+            rf.RectWaveguidePort(air.faces.max(axis='z'))
+            rf.PEC(*air.faces.unassigned)   # everything else
+        """
+        targeted: set[int] = set()
+        for phys in self._geometry._physics:
+            for ent in getattr(phys, "_entities", ()):
+                targeted.add(id(ent))
+        kept = [e for e in self._entities if id(e) not in targeted]
+        return EntityCollection(self._geometry, kept)
+
+    @property
+    def outer(self) -> "EntityCollection":
+        """Faces lying on the outer hull of their parent volume.
+
+        Specifically: faces that touch the bounding box of the underlying
+        gmsh model (within tolerance). Useful for tagging the *external*
+        walls of a PML slab where the inner interface should stay free.
+        """
+        try:
+            bb = gmsh.model.getBoundingBox(-1, -1)
+        except Exception:
+            return EntityCollection(self._geometry, list(self._entities))
+        xmin, ymin, zmin, xmax, ymax, zmax = bb
+        kept = []
+        for e in self._entities:
+            ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
+            on_outer = (
+                abs(ex0 - xmin) < _BBOX_TOL or abs(ex1 - xmax) < _BBOX_TOL or
+                abs(ey0 - ymin) < _BBOX_TOL or abs(ey1 - ymax) < _BBOX_TOL or
+                abs(ez0 - zmin) < _BBOX_TOL or abs(ez1 - zmax) < _BBOX_TOL
+            )
+            if on_outer:
+                kept.append(e)
+        return EntityCollection(self._geometry, kept)
+
 
 # Back-compat aliases (and clearer naming for users)
 FaceCollection = EntityCollection
@@ -308,6 +355,7 @@ class GeoObject:
                 ent.tag = tag       # refresh tag (may have changed after fragment)
                 return ent
         new_ent = _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)
+        new_ent._geometry = self._geometry
         self._geometry._entities.append(new_ent)
         return new_ent
 
@@ -375,7 +423,7 @@ class Geometry:
     >>> g.mesh(maxh=3e-3)
     """
 
-    def __init__(self, name: str = "rapidfem"):
+    def __init__(self, *, maxh: float | None = None, name: str = "rapidfem"):
         if not gmsh.isInitialized():
             gmsh.initialize()
         gmsh.option.setNumber("General.Terminal", 0)
@@ -383,6 +431,12 @@ class Geometry:
         self._objects: list[GeoObject] = []
         self._entities: list[_Entity] = []  # all named-or-trackable entities
         self._owns_gmsh = True  # we'll finalize on close
+        self._maxh = maxh                   # global mesh size cap
+        # Object-API state: physics registry + post-mesh tag maps.
+        self._physics: list = []            # rapidfem.physics.* instances
+        self._material_tags: dict[int, int] = {}  # id(Material) -> phys group tag
+        self._physics_tags: dict[int, int] = {}   # id(physics_obj) -> phys group tag
+        self._last_mesh = None              # (mesh_bytes, name_to_tag) after .mesh()
 
     # ── GDS-driven extrusion ────────────────────────────────────────────────
 
@@ -601,24 +655,35 @@ class Geometry:
 
     # ── Primitives ──────────────────────────────────────────────────────────
 
-    def _wrap_volume(self, tag: int) -> GeoObject:
+    def _wrap_volume(self, tag: int, *,
+                     material=None,
+                     maxh: float | None = None) -> GeoObject:
         gmsh.model.occ.synchronize()
         ent = _Entity.from_dimtag(3, tag)
+        ent._geometry = self
+        ent.material = material
+        ent.maxh = maxh
         obj = GeoObject(self, ent)
         self._objects.append(obj)
         self._entities.append(ent)
         return obj
 
-    def _wrap_face(self, tag: int) -> GeoObject:
+    def _wrap_face(self, tag: int, *,
+                   maxh: float | None = None) -> GeoObject:
         gmsh.model.occ.synchronize()
         ent = _Entity.from_dimtag(2, tag)
+        ent._geometry = self
+        ent.maxh = maxh
         obj = GeoObject(self, ent)
         self._objects.append(obj)
         self._entities.append(ent)
         return obj
 
     def box(self, width: float, depth: float, height: float,
-            position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+            position: tuple[float, float, float] = (0, 0, 0),
+            *,
+            material=None,
+            maxh: float | None = None) -> GeoObject:
         """Add an axis-aligned box primitive.
 
         Parameters
@@ -627,6 +692,10 @@ class Geometry:
             Extents along x, y, z respectively (m).
         position : tuple[float, float, float], optional
             Lower corner ``(xmin, ymin, zmin)``. Default origin.
+        material : rapidfem.Material, optional
+            Volume material (``rf.Air()``, ``rf.Dielectric(er=...)``, ...).
+        maxh : float, optional
+            Per-volume mesh size override.
 
         Returns
         -------
@@ -635,12 +704,15 @@ class Geometry:
         """
         x, y, z = position
         tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def cylinder(self, radius: float, height: float,
                  position: tuple[float, float, float] = (0, 0, 0),
                  axis: tuple[float, float, float] = (0, 0, 1),
-                 angle: float = 2 * math.pi) -> GeoObject:
+                 angle: float = 2 * math.pi,
+                 *,
+                 material=None,
+                 maxh: float | None = None) -> GeoObject:
         """Add a (partial-sweep) cylinder primitive.
 
         Parameters
@@ -664,9 +736,12 @@ class Geometry:
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
         tag = gmsh.model.occ.addCylinder(x, y, z, ax, ay, az, radius, angle=angle)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
-    def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+    def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0),
+               *,
+               material=None,
+               maxh: float | None = None) -> GeoObject:
         """Add a sphere primitive.
 
         Parameters
@@ -683,12 +758,15 @@ class Geometry:
         """
         cx, cy, cz = center
         tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def cone(self, r1: float, r2: float, height: float,
              position: tuple[float, float, float] = (0, 0, 0),
              axis: tuple[float, float, float] = (0, 0, 1),
-             angle: float = 2 * math.pi) -> GeoObject:
+             angle: float = 2 * math.pi,
+             *,
+             material=None,
+             maxh: float | None = None) -> GeoObject:
         """Add a truncated cone (or cylinder if ``r1 == r2``).
 
         Parameters
@@ -712,11 +790,14 @@ class Geometry:
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
         tag = gmsh.model.occ.addCone(x, y, z, ax, ay, az, r1, r2, angle=angle)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def wedge(self, dx: float, dy: float, dz: float,
               top_x: float = 0.0,
-              position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+              position: tuple[float, float, float] = (0, 0, 0),
+              *,
+              material=None,
+              maxh: float | None = None) -> GeoObject:
         """Add a rectangular-base prism (wedge).
 
         The base is ``dx × dy`` at z = 0; the top edge runs from x = 0 to
@@ -739,11 +820,14 @@ class Geometry:
         """
         x, y, z = position
         tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def torus(self, major_radius: float, minor_radius: float,
               center: tuple[float, float, float] = (0, 0, 0),
-              angle: float = 2 * math.pi) -> GeoObject:
+              angle: float = 2 * math.pi,
+              *,
+              material=None,
+              maxh: float | None = None) -> GeoObject:
         """Add a torus primitive.
 
         Parameters
@@ -764,10 +848,12 @@ class Geometry:
         """
         cx, cy, cz = center
         tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)
-        return self._wrap_volume(tag)
+        return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def xy_plate(self, width: float, height: float,
-                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+                 position: tuple[float, float, float] = (0, 0, 0),
+                 *,
+                 maxh: float | None = None) -> GeoObject:
         """Add a thin rectangular plate in the xy-plane.
 
         Parameters
@@ -787,27 +873,33 @@ class Geometry:
         """
         x, y, z = position
         tag = gmsh.model.occ.addRectangle(x, y, z, width, height)
-        return self._wrap_face(tag)
+        return self._wrap_face(tag, maxh=maxh)
 
     def xz_plate(self, width: float, height: float,
-                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+                 position: tuple[float, float, float] = (0, 0, 0),
+                 *,
+                 maxh: float | None = None) -> GeoObject:
         """Add a thin rectangular plate in the xz-plane.
 
         See :meth:`xy_plate`. ``width`` runs along x, ``height`` along z.
         """
-        return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height))
+        return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height), maxh=maxh)
 
     def yz_plate(self, width: float, height: float,
-                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+                 position: tuple[float, float, float] = (0, 0, 0),
+                 *,
+                 maxh: float | None = None) -> GeoObject:
         """Add a thin rectangular plate in the yz-plane.
 
         See :meth:`xy_plate`. ``width`` runs along y, ``height`` along z.
         """
-        return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height))
+        return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height), maxh=maxh)
 
     def plate(self, p0: tuple[float, float, float],
               width: tuple[float, float, float],
-              height: tuple[float, float, float]) -> GeoObject:
+              height: tuple[float, float, float],
+              *,
+              maxh: float | None = None) -> GeoObject:
         """Add a thin rectangular plate at arbitrary orientation.
 
         Parameters
@@ -843,10 +935,12 @@ class Geometry:
         l4 = gmsh.model.occ.addLine(v4, v1)
         loop = gmsh.model.occ.addCurveLoop([l1, l2, l3, l4])
         tag = gmsh.model.occ.addPlaneSurface([loop])
-        return self._wrap_face(tag)
+        return self._wrap_face(tag, maxh=maxh)
 
     def polygon(self, points: Iterable[tuple[float, ...]],
-                position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+                position: tuple[float, float, float] = (0, 0, 0),
+                *,
+                maxh: float | None = None) -> GeoObject:
         """Add a planar polygon face.
 
         Parameters
@@ -897,10 +991,12 @@ class Geometry:
         ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]
         loop = gmsh.model.occ.addCurveLoop(ltags)
         tag = gmsh.model.occ.addPlaneSurface([loop])
-        return self._wrap_face(tag)
+        return self._wrap_face(tag, maxh=maxh)
 
     def disc(self, radius: float,
-             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:
+             position: tuple[float, float, float] = (0, 0, 0),
+             *,
+             maxh: float | None = None) -> GeoObject:
         """Add a circular face in the xy-plane.
 
         Parameters
@@ -918,12 +1014,15 @@ class Geometry:
         """
         x, y, z = position
         tag = gmsh.model.occ.addDisk(x, y, z, radius, radius)
-        return self._wrap_face(tag)
+        return self._wrap_face(tag, maxh=maxh)
 
     # ── Extrude / revolve ───────────────────────────────────────────────────
 
     def extrude(self, face: GeoObject, height: float,
-                axis: tuple[float, float, float] = (0, 0, 1)) -> GeoObject:
+                axis: tuple[float, float, float] = (0, 0, 1),
+                *,
+                material=None,
+                maxh: float | None = None) -> GeoObject:
         """Extrude a 2D face along ``axis * height`` into a 3D volume.
 
         Parameters
@@ -954,10 +1053,13 @@ class Geometry:
         vol_tag = next((t for d, t in out if d == 3), None)
         if vol_tag is None:
             raise RuntimeError("extrude produced no volume")
-        return self._wrap_volume(vol_tag)
+        return self._wrap_volume(vol_tag, material=material, maxh=maxh)
 
     def loft(self, face_a: GeoObject, face_b: GeoObject,
-             ruled: bool = True) -> GeoObject:
+             ruled: bool = True,
+             *,
+             material=None,
+             maxh: float | None = None) -> GeoObject:
         """Loft a volume between two coplanar / parallel 2D faces.
 
         Linearly interpolates the perimeter of ``face_a`` onto the
@@ -1002,7 +1104,7 @@ class Geometry:
         vol_tag = next((t for d, t in out if d == 3), None)
         if vol_tag is None:
             raise RuntimeError("loft produced no volume")
-        return self._wrap_volume(vol_tag)
+        return self._wrap_volume(vol_tag, material=material, maxh=maxh)
 
     def _face_outer_wire(self, face: GeoObject) -> int:
         """Return a wire tag for the outer boundary of ``face``.
@@ -1019,7 +1121,10 @@ class Geometry:
     def revolve(self, face: GeoObject,
                 axis_point: tuple[float, float, float] = (0, 0, 0),
                 axis_dir: tuple[float, float, float] = (0, 0, 1),
-                angle: float = 2 * math.pi) -> GeoObject:
+                angle: float = 2 * math.pi,
+                *,
+                material=None,
+                maxh: float | None = None) -> GeoObject:
         """Revolve a 2D face around an axis to create a 3D volume.
 
         Parameters
@@ -1058,7 +1163,7 @@ class Geometry:
         vol_tag = next((t for d, t in out if d == 3), None)
         if vol_tag is None:
             raise RuntimeError("revolve produced no volume")
-        return self._wrap_volume(vol_tag)
+        return self._wrap_volume(vol_tag, material=material, maxh=maxh)
 
     # ── Boolean ops ─────────────────────────────────────────────────────────
 
@@ -1348,7 +1453,7 @@ class Geometry:
             assigned[desc] = h
         return assigned
 
-    def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
+    def mesh(self, maxh: float | None = None, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
         """Generate the 3D tet mesh of the current geometry.
 
         Calls gmsh's OCC mesher with the configured per-entity sizes
@@ -1356,11 +1461,26 @@ class Geometry:
         gmsh ``Distance + Threshold`` background fields so refinement
         transitions are smooth, not abrupt.
 
+        Physical-group creation:
+
+        * Every :class:`Material` instance attached via ``g.box(..., material=...)``
+          gets its own physical group on dim 3; the resulting tag is stored
+          in ``self._material_tags[id(material)]``.
+        * Every physics object in ``self._physics`` (created by
+          ``rf.PEC(...)``, ``rf.LumpedPort(...)``, ...) gets its own physical
+          group containing all its target entities; the tag is stored in
+          ``self._physics_tags[id(physics_obj)]``.
+        * Legacy string materials/names (``obj.material = "fr4"``,
+          ``obj.name = "ground"``) continue to work — they produce
+          name-keyed groups in the returned ``name_to_tag`` dict for the
+          deprecated ``SimulationBuilder`` flow.
+
         Parameters
         ----------
         maxh : float, optional
-            Global maximum tet edge length in metres. Default 1.0
-            (always pass a real value).
+            Global mesh size cap override (m). When ``None``, falls back
+            to the ``maxh=`` passed to ``Geometry(...)``. Raises if neither
+            is set.
         transition_distance : float, optional
             Distance over which a refined region's element size grows
             from its local ``h`` to the global cap. Default ``5 · h``
@@ -1369,19 +1489,18 @@ class Geometry:
         Returns
         -------
         mesh_bytes : bytes
-            gmsh ``.msh`` v4 file as bytes — feed to
-            :meth:`SimulationBuilder.mesh` or use ``.mesh_from(g)`` to
-            pick it up from the geometry's cache.
+            gmsh ``.msh`` v4 file as bytes — cached on ``self._last_mesh``
+            for the :class:`rapidfem.Problem` to pick up.
         name_to_tag : dict[str, int]
-            Map from every user-supplied name (face / edge / volume,
-            and ``material=``) to its physical-group integer tag.
-
-        Notes
-        -----
-        Side effect: caches ``(mesh_bytes, name_to_tag)`` on
-        ``self._last_mesh`` so ``SimulationBuilder.mesh_from(g)`` can
-        find it without re-meshing.
+            Legacy name → tag map (empty unless ``obj.name``/``obj.material``
+            strings were used). The object-API path does not need this dict.
         """
+        if maxh is None:
+            maxh = self._maxh
+        if maxh is None:
+            raise ValueError(
+                "no maxh set — pass it to Geometry(maxh=...) or g.mesh(maxh=...)"
+            )
         gmsh.model.occ.synchronize()
         # Wipe any prior mesh state AND physical groups. Without the latter,
         # re-running this cell hits "Physical surface 1 already exists".
@@ -1451,19 +1570,59 @@ class Geometry:
         # error already). User can override before calling .mesh().
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
 
-        # Assign physical groups by name. Group entities of the same name+dim.
+        # Assign physical groups. Three sources, in order:
+        #   1. Object-API Material instances (one group per instance)
+        #   2. Object-API physics objects (one group per rf.PEC/Port/... call)
+        #   3. Legacy string materials/names (rfic.Stack and old code paths)
+        # Each source produces independent physical-group tags, so the
+        # registries stay self-contained and Problem can read them by id.
+        self._material_tags = {}
+        self._physics_tags = {}
+        name_to_tag: dict[str, int] = {}
+        next_tag = 1
+
+        # 1) Material instances → volume groups.
+        mat_to_volumes: dict[int, tuple[object, list[int]]] = {}
+        for ent in self._entities:
+            mat = ent.material
+            # Skip strings (handled in step 3) and None.
+            if mat is None or isinstance(mat, str):
+                continue
+            if ent.dim != 3:
+                continue
+            key = id(mat)
+            if key not in mat_to_volumes:
+                mat_to_volumes[key] = (mat, [])
+            mat_to_volumes[key][1].append(ent.tag)
+        for mat_id, (mat, tags) in mat_to_volumes.items():
+            phys_tag = next_tag
+            next_tag += 1
+            gmsh.model.addPhysicalGroup(3, tags, tag=phys_tag, name=f"_mat_{mat_id}")
+            self._material_tags[mat_id] = phys_tag
+
+        # 2) Physics objects → faces or volume groups.
+        for phys in self._physics:
+            ents = getattr(phys, "_entities", None)
+            if not ents:
+                continue
+            # All entities in one physics object share dim by construction.
+            dim = ents[0].dim
+            tags = [e.tag for e in ents]
+            phys_tag = next_tag
+            next_tag += 1
+            phys_id = id(phys)
+            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=f"_phys_{phys_id}")
+            self._physics_tags[phys_id] = phys_tag
+
+        # 3) Legacy: name/material strings (rfic.Stack + builder workflow).
         by_dim_name: dict[tuple[int, str], list[int]] = {}
         for ent in self._entities:
             if ent.name:
                 by_dim_name.setdefault((ent.dim, ent.name), []).append(ent.tag)
-        # Material → physical group on volumes (dim=3)
         for ent in self._entities:
-            if ent.material and ent.dim == 3:
+            if isinstance(ent.material, str) and ent.dim == 3:
                 key = (3, f"_mat_{ent.material}")
                 by_dim_name.setdefault(key, []).append(ent.tag)
-
-        name_to_tag: dict[str, int] = {}
-        next_tag = 1
         for (dim, name), tags in by_dim_name.items():
             phys_tag = next_tag
             next_tag += 1
