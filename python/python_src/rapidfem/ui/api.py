@@ -164,8 +164,12 @@ def _capture_native_streams(stage: str):
 
 
 def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
-    """Render captured Geometry/Builder/Simulation/Result into a flat list
-    of display events (`{kind, payload, name}`) for the WS kernel protocol.
+    """Render captured Geometry/Problem/Result into a flat list of display
+    events (`{kind, payload, name}`) for the WS kernel protocol.
+
+    ``kind="simulation"`` covers :class:`rapidfem.Problem`; we extract its
+    ``.native`` here once, so the rest of the function works with the
+    Rust-side accessors directly (``mesh_nodes``, ``field_at_nodes``, ...).
     """
     from rapidfem.ui.serialize import geometry_to_payload, mesh_to_payload
     import numpy as np
@@ -189,7 +193,15 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             else:
                 out.append({"kind": "geometry", "name": item.name, "payload": p})
         elif item.kind == "simulation":
-            last_sim = item.obj
+            # Captured object is a rapidfem.Problem; reach into its native
+            # solver for mesh + field accessors. If the user show()ed the
+            # Problem before running any analysis, .native raises — surface
+            # that as a display-level error rather than crashing the bake.
+            try:
+                last_sim = item.obj.native
+            except (AttributeError, RuntimeError) as e:
+                out.append({"kind": "error", "name": item.name,
+                            "error": _format_exception(e)})
         elif item.kind == "result":
             last_result = item.obj
         elif item.kind == "eigenmodes":
@@ -693,10 +705,14 @@ def register(app: Flask) -> None:
                         entry["payload"] = out
                 except Exception as e:  # noqa: BLE001
                     entry["error"] = _format_exception(e)
-            elif item.kind == "builder":
-                pass
             elif item.kind == "simulation":
-                last_sim = item.obj
+                # rapidfem.Problem → reach into its native solver. .native
+                # raises if no analysis has run yet; treat that as a no-op
+                # at this level (the user gets nothing meaningful to render).
+                try:
+                    last_sim = item.obj.native
+                except (AttributeError, RuntimeError):
+                    last_sim = None
             elif item.kind == "result":
                 last_result = item.obj
             rendered.append(entry)

@@ -115,6 +115,23 @@ class Problem:
             raise ValueError("run an analysis first to assemble the FEM operator")
         return self._native.n_tets
 
+    @property
+    def native(self):
+        """The underlying native :class:`Simulation` after an analysis has run.
+
+        Used by the UI serialiser (``rapidfem.ui.api``) to reach the
+        low-level mesh / field accessors (``mesh_nodes``, ``field_at_nodes``,
+        ``current_density_at_nodes``, ``compute_farfield``, ...) that live
+        on the Rust side. Raises if no analysis has run yet — show()ing a
+        Problem before any ``.sweep()`` / ``.eigenmode()`` call has nothing
+        to render.
+        """
+        if self._native is None:
+            raise RuntimeError(
+                "Problem.native is not available — run .sweep() or "
+                ".eigenmode() first to assemble the native solver")
+        return self._native
+
     # ── TOML assembly ─────────────────────────────────────────────────────
 
     def _assemble_toml(self, *,

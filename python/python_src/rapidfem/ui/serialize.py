@@ -17,6 +17,28 @@ import gmsh
 # ── Geometry → triangle payload ───────────────────────────────────────────────
 
 
+def _material_label(material) -> str | None:
+    """Render a tracked entity's ``.material`` into a JSON-safe display string.
+
+    Accepts a legacy string (``"fr4"``), a :class:`rapidfem.Material`
+    instance, or ``None``. For Material instances we return a short label
+    like ``"Dielectric (εr=4.4)"`` so the UI legend shows something
+    meaningful without dragging the whole object into the JSON payload.
+    """
+    if material is None:
+        return None
+    if isinstance(material, str):
+        return material
+    cls = type(material).__name__
+    er = getattr(material, "er", None)
+    er_diag = getattr(material, "er_diag", None)
+    if er_diag is not None:
+        return f"{cls} (εr=[{er_diag[0]:.2g},{er_diag[1]:.2g},{er_diag[2]:.2g}])"
+    if er is not None and abs(er - 1.0) > 1e-9:
+        return f"{cls} (εr={er:.3g})"
+    return cls
+
+
 def _color_from_name(name: str) -> list[float]:
     """Stable, evenly-distributed RGB color in [0,1] from a name."""
     if not name:
@@ -179,7 +201,7 @@ def _surface_preview(g: Any) -> dict:
             "color": _color_from_name(name),
             "positions": pos,
             "normals": nor,
-            "material": ent.material,
+            "material": _material_label(ent.material),
         })
 
     return {
@@ -289,7 +311,7 @@ def _wireframe_payload(g: Any) -> dict:
             "dim": int(ent.dim),
             "color": _color_from_name(name),
             "lines": lines,
-            "material": ent.material,
+            "material": _material_label(ent.material),
         })
 
     return {
