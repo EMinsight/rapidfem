@@ -80,8 +80,9 @@ the viewer.
 - **Lossy materials** — complex permittivity with loss tangent + conductivity;
   frequency-independent caching speeds up sweeps
 - **Sparse solvers** — pure-Rust [`faer`](https://github.com/sarah-quinones/faer-rs)
-  LU as the default in the PyPI wheel; optional MKL PARDISO
-  (complex-symmetric LDLᵀ) for the fastest path
+  LU as a no-dependency baseline; optional MKL PARDISO
+  (complex-symmetric LDLᵀ) on Windows / Linux; Apple Accelerate
+  Bunch-Kaufman on macOS (~3× faster than faer)
 - **Frequency sweep** — assembles E/B once, refactors only the frequency-
   dependent K per point, reuses the symbolic LU pattern
 - **Eigenmode solver** — shift-invert Lanczos on the complex-symmetric system
@@ -94,11 +95,14 @@ the viewer.
 
 | Solver | Type | Notes |
 |--------|------|-------|
-| faer | General sparse LU | Pure Rust, no native dependencies — **the default** in the PyPI wheel |
-| MKL PARDISO | Complex-symmetric LDLᵀ | Fastest path; opt-in, requires `mkl_rt` on PATH |
+| faer | General sparse LU | Pure Rust, no native dependencies — always available |
+| MKL PARDISO | Complex-symmetric LDLᵀ | Fastest path on Windows / Linux; opt-in, requires `mkl_rt` on PATH |
+| Apple Accelerate | Sparse Bunch-Kaufman LDLᵀ | macOS only; ~3× faster than faer, no extra install (ships with macOS) |
 
 Choose at simulation time with the `RAPIDFEM_SOLVER` environment variable
-(`"faer"`, `"pardiso"`, or `"auto"`) — set before `import rapidfem`.
+(`"auto"`, `"pardiso"`, `"accelerate"`, `"faer"`) — set before
+`import rapidfem`. The default `"auto"` tries PARDISO → Accelerate → faer
+in that order, picking the first one that loads.
 
 ### Installing MKL (optional)
 
