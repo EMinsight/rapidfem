@@ -33,9 +33,14 @@ sub_W   = max(WIDTHS) + 2 * PAD_Y
 
 g = rf.Geometry(maxh=MAXH)
 
+# Substrate is RO-style 62-mil. The narrow 8-mil trace section drives the
+# surface refinement separately via auto_refine_features; for the
+# substrate volume itself ~1.5× thickness gives 3-4 cells through the
+# board.
+ro = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
+
 sub = g.box(total_L, sub_W, SUB_H, position=(-total_L / 2, -sub_W / 2, 0),
-            material=rf.Dielectric(er=ER_SUB),
-            maxh=rf.lambda_maxh(f_max=8.0e9, er_max=ER_SUB))
+            material=ro)
 air = g.box(total_L, sub_W, AIR_H, position=(-total_L / 2, -sub_W / 2, SUB_H),
             material=rf.Air())
 

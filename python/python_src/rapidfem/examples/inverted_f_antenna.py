@@ -45,9 +45,13 @@ SUB_DY = SUB_Y1 - SUB_Y0
 
 g = rf.Geometry(maxh=MAXH)
 
+# Substrate refinement is set by thickness, not wavelength — at 3 GHz in FR-4
+# λ is ~50 mm but SUB_H = 1 mm, so the box would be ~1 cell thick at the
+# wavelength cap. Pin the dielectric at ~1.5× thickness.
+fr4 = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
+
 sub = g.box(SUB_DX, SUB_DY, SUB_H, position=(SUB_X0, SUB_Y0, -SUB_H),
-            material=rf.Dielectric(er=ER_SUB),
-            maxh=rf.lambda_maxh(f_max=3.0e9, er_max=ER_SUB))
+            material=fr4)
 
 AIR_X0, AIR_X1 = SUB_X0 - PAD, SUB_X1 + PAD
 AIR_Y0, AIR_Y1 = SUB_Y0 - PAD, SUB_Y1 + PAD

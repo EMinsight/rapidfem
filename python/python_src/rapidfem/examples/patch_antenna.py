@@ -44,28 +44,31 @@ Y_OUT = total_l / 2
 
 g = rf.Geometry(maxh=MAXH)
 
+# Material-level sizing: one Dielectric for the substrate (FR-4),
+# one Air for the bulk near-field region, and one PML-side Air at 2×
+# coarser. The PML stretch makes a fine PML mesh wasteful — the
+# absorber's accuracy is set by the polynomial profile, not the cell
+# count, so we relax it.
+fr4     = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
+bulk_air = rf.Air()
+pml_air  = rf.Air(maxh=2 * MAXH)
+
 air = g.box(total_w, total_l, AIR_TOP, position=(-X_OUT, -Y_OUT, 0),
-            material=rf.Air())
+            material=bulk_air)
 
 pml_xp = g.box(PML_T, total_l + 2 * PML_T, AIR_TOP,
-               position=(X_OUT, -Y_OUT - PML_T, 0),
-               material=rf.Air(), maxh=2 * MAXH)
+               position=(X_OUT, -Y_OUT - PML_T, 0), material=pml_air)
 pml_xm = g.box(PML_T, total_l + 2 * PML_T, AIR_TOP,
-               position=(-X_OUT - PML_T, -Y_OUT - PML_T, 0),
-               material=rf.Air(), maxh=2 * MAXH)
+               position=(-X_OUT - PML_T, -Y_OUT - PML_T, 0), material=pml_air)
 pml_yp = g.box(total_w, PML_T, AIR_TOP,
-               position=(-X_OUT, Y_OUT, 0),
-               material=rf.Air(), maxh=2 * MAXH)
+               position=(-X_OUT, Y_OUT, 0), material=pml_air)
 pml_ym = g.box(total_w, PML_T, AIR_TOP,
-               position=(-X_OUT, -Y_OUT - PML_T, 0),
-               material=rf.Air(), maxh=2 * MAXH)
+               position=(-X_OUT, -Y_OUT - PML_T, 0), material=pml_air)
 pml_zp = g.box(total_w + 2 * PML_T, total_l + 2 * PML_T, PML_T,
-               position=(-X_OUT - PML_T, -Y_OUT - PML_T, AIR_TOP),
-               material=rf.Air(), maxh=2 * MAXH)
+               position=(-X_OUT - PML_T, -Y_OUT - PML_T, AIR_TOP), material=pml_air)
 
 sub = g.box(SUB_W, SUB_L, SUB_H, position=(-SUB_W / 2, -SUB_L / 2, 0),
-            material=rf.Dielectric(er=ER_SUB),
-            maxh=rf.lambda_maxh(f_max=2.8e9, er_max=ER_SUB))
+            material=fr4)
 
 patch = g.xy_plate(PATCH_W, PATCH_L,
                    position=(-PATCH_W / 2, -PATCH_L / 2, SUB_H))

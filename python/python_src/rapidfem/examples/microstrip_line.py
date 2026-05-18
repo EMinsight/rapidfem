@@ -30,8 +30,12 @@ MAXH = rf.lambda_maxh(f_max=3.3e9, er_max=ER_SUB)
 # %% Geometry + Materials
 g = rf.Geometry(maxh=MAXH)
 
-sub = g.box(SUB_W, LINE_L, SUB_H, position=(-SUB_W / 2, 0, 0),
-            material=rf.Dielectric(er=ER_SUB, tand=TAND))
+# Substrate is the thin feature — fix its mesh at ~1.5× its own thickness so
+# the dielectric carries 3-4 cells through. Air can stay on the global
+# wavelength cap.
+fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=1.5 * SUB_H)
+
+sub = g.box(SUB_W, LINE_L, SUB_H, position=(-SUB_W / 2, 0, 0), material=fr4)
 air = g.box(SUB_W, LINE_L, AIR_H, position=(-SUB_W / 2, 0, SUB_H),
             material=rf.Air())
 
