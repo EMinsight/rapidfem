@@ -29,7 +29,7 @@ import numpy as np
 
 from ._native import Simulation as _NativeSimulation
 from .geometry import Geometry
-from .physics import PEC
+from .physics import PEC, PML
 
 
 def _f64(x: float) -> str:
@@ -128,11 +128,25 @@ class Problem:
         freqs_str = ", ".join(_f64(f) for f in frequencies)
         parts.append(f"[frequency]\nvalues = [{freqs_str}]\n")
 
+        # Collect volume entities targeted by PML — they get a [[pml]] block
+        # and must NOT also generate a [[materials]] entry (the PML carries
+        # its own er_base/ur_base, and double-tagging volumes confuses the
+        # Rust solver). Mirrors the old builder workflow where a PML volume
+        # had no .material at all.
+        pml_volume_ids: set[int] = set()
+        for phys in g._physics:
+            if isinstance(phys, PML):
+                for ent in phys._entities:
+                    pml_volume_ids.add(id(ent))
+
         # Materials — group volumes by Material instance; tag came from mesh().
+        # Skip Material instances whose every-volume is a PML target.
         seen_materials: set[int] = set()
         for ent in g._entities:
             mat = ent.material
             if mat is None or isinstance(mat, str) or ent.dim != 3:
+                continue
+            if id(ent) in pml_volume_ids:
                 continue
             mat_id = id(mat)
             if mat_id in seen_materials:

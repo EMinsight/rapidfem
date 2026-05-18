@@ -240,25 +240,43 @@ class EntityCollection:
 
     @property
     def outer(self) -> "EntityCollection":
-        """Faces lying on the outer hull of their parent volume.
+        """Axis-aligned faces lying on the outer hull of the gmsh model.
 
-        Specifically: faces that touch the bounding box of the underlying
-        gmsh model (within tolerance). Useful for tagging the *external*
-        walls of a PML slab where the inner interface should stay free.
+        A face is "outer" iff one of its axes is degenerate (zero extent,
+        i.e. the face is planar and perpendicular to that axis) AND the
+        face's coordinate along that axis matches the model bounding-box
+        extremum within tolerance. Interior fragmented interfaces — which
+        share the model's x/y bbox extents but sit at some inner z — are
+        correctly excluded.
+
+        Useful for tagging the external walls of a PML enclosure where the
+        inner interface to the air region must stay free.
         """
         try:
             bb = gmsh.model.getBoundingBox(-1, -1)
         except Exception:
             return EntityCollection(self._geometry, list(self._entities))
         xmin, ymin, zmin, xmax, ymax, zmax = bb
+        # gmsh's getBoundingBox inflates the box by ~1e-7 m on each side, so
+        # face-bbox extents that should be "zero" come back as ±1e-7. The
+        # COG/BBOX matcher used elsewhere can keep its 1e-9 tolerance (it's
+        # comparing two getBoundingBox results to each other, where the fluff
+        # cancels). Here we compare against the actual model bbox extremum,
+        # so use a tolerance large enough to absorb that fluff.
+        tol = 1e-6
         kept = []
         for e in self._entities:
             ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
-            on_outer = (
-                abs(ex0 - xmin) < _BBOX_TOL or abs(ex1 - xmax) < _BBOX_TOL or
-                abs(ey0 - ymin) < _BBOX_TOL or abs(ey1 - ymax) < _BBOX_TOL or
-                abs(ez0 - zmin) < _BBOX_TOL or abs(ez1 - zmax) < _BBOX_TOL
-            )
+            on_outer = False
+            if abs(ex1 - ex0) < tol:
+                if abs(ex0 - xmin) < tol or abs(ex0 - xmax) < tol:
+                    on_outer = True
+            if abs(ey1 - ey0) < tol:
+                if abs(ey0 - ymin) < tol or abs(ey0 - ymax) < tol:
+                    on_outer = True
+            if abs(ez1 - ez0) < tol:
+                if abs(ez0 - zmin) < tol or abs(ez0 - zmax) < tol:
+                    on_outer = True
             if on_outer:
                 kept.append(e)
         return EntityCollection(self._geometry, kept)
@@ -1581,7 +1599,17 @@ class Geometry:
         name_to_tag: dict[str, int] = {}
         next_tag = 1
 
-        # 1) Material instances → volume groups.
+        # Collect volume entities targeted by PML — they go into the PML
+        # physical group (step 2) and must NOT also land in a material group,
+        # otherwise the Rust solver sees them tagged twice and the PML's
+        # coordinate stretch is overridden by the bulk material assignment.
+        pml_volume_ids: set[int] = set()
+        for phys in self._physics:
+            if type(phys).__name__ == "PML":
+                for ent in getattr(phys, "_entities", ()):
+                    pml_volume_ids.add(id(ent))
+
+        # 1) Material instances → volume groups (skipping PML-targeted volumes).
         mat_to_volumes: dict[int, tuple[object, list[int]]] = {}
         for ent in self._entities:
             mat = ent.material
@@ -1589,6 +1617,8 @@ class Geometry:
             if mat is None or isinstance(mat, str):
                 continue
             if ent.dim != 3:
+                continue
+            if id(ent) in pml_volume_ids:
                 continue
             key = id(mat)
             if key not in mat_to_volumes:

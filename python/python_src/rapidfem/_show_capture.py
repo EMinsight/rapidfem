@@ -53,8 +53,8 @@ def classify(obj: Any) -> str:
     mod = getattr(type(obj), "__module__", "") or ""
     if cls == "Geometry" and mod.startswith("rapidfem"):
         return "geometry"
-    if cls == "SimulationBuilder" and mod.startswith("rapidfem"):
-        return "builder"
+    if cls == "Problem" and mod.startswith("rapidfem"):
+        return "simulation"
     if cls == "Simulation":
         return "simulation"
     if cls == "SweepResult":
