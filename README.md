@@ -22,34 +22,32 @@ provides the OpenCASCADE-based geometry + mesher used by `rapidfem.Geometry`.
 
 ```python
 import numpy as np
-import rapidfem
+import rapidfem as rf
 
-# Build geometry with named, tracked entities
-g = rapidfem.Geometry()
-sub = g.box(60e-3, 60e-3, 1.6e-3, position=(-30e-3, -30e-3, 0))
-patch = g.xy_plate(38e-3, 29e-3, position=(-19e-3, -14.5e-3, 1.6e-3))
-g.fragment(sub, patch)
+# Build geometry; attach materials + physics directly to entities
+g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+air = g.box(22.86e-3, 10.16e-3, 30e-3, position=(-11.43e-3, -5.08e-3, 0),
+            material=rf.Air())
 
-sub.faces.min(axis="z").name = "ground"
-patch.name = "patch_pec"
-sub.material = "fr4"
+rf.RectWaveguidePort(air.faces.min(axis="z"))
+rf.RectWaveguidePort(air.faces.max(axis="z"))
+rf.PEC(*air.faces.unassigned)
 
-# Mesh + simulate
-mesh_bytes, name_to_tag = g.mesh(maxh=5e-3)
-sim = (
-    rapidfem.SimulationBuilder()
-    .mesh(mesh_bytes, name_to_tag)
-    .frequencies(np.linspace(2.3e9, 2.5e9, 21))
-    .pec("ground", "patch_pec")
-    .lumped_port("feed", direction=(0, 0, 1), z0=50.0)
-    .material("fr4", er=4.4)
-    .material("air", er=1.0)
-    .build()
-)
+g.mesh()
 
-result = sim.run_sweep()
+# Define the problem once, run any number of analyses on it
+prob = rf.Problem(g)
+result = prob.sweep(np.linspace(8e9, 12e9, 21))
 print(result.frequencies.shape, result.sparams.shape)
+
+# Same Problem can also drive an eigenmode solve or a far-field pattern:
+# modes  = prob.eigenmode(target_frequency=10e9, n_modes=6)
+# pattern = prob.farfield(result, freq_idx=10, port_idx=0)
 ```
+
+See `python_src/rapidfem/examples/` for end-to-end runs of microstrip lines,
+patch antennas (with PML enclosure + far-field), pyramidal horns, iris
+filters, dielectric resonators, and more.
 
 ## Local UI
 
@@ -99,8 +97,8 @@ the viewer.
 | faer | General sparse LU | Pure Rust, no native dependencies — **the default** in the PyPI wheel |
 | MKL PARDISO | Complex-symmetric LDLᵀ | Fastest path; opt-in, requires `mkl_rt` on PATH |
 
-Choose at simulation time via the builder or with the `RAPIDFEM_SOLVER`
-environment variable.
+Choose at simulation time with the `RAPIDFEM_SOLVER` environment variable
+(`"faer"`, `"pardiso"`, or `"auto"`) — set before `import rapidfem`.
 
 ### Installing MKL (optional)
 
