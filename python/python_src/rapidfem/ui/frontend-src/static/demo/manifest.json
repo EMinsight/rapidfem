@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779110627,
+  "baked_at": 1779132392,
   "examples": [
     {
       "name": "coax_step",
@@ -49,9 +49,9 @@
           "stream_lines": 44
         }
       ],
-      "json_bytes": 4401687,
+      "json_bytes": 4484188,
       "bin_bytes": 940500,
-      "bake_seconds": 3.33
+      "bake_seconds": 3.1
     },
     {
       "name": "dielectric_resonator",
@@ -100,9 +100,9 @@
           "stream_lines": 18
         }
       ],
-      "json_bytes": 1102631,
+      "json_bytes": 1221223,
       "bin_bytes": 127048,
-      "bake_seconds": 3.27
+      "bake_seconds": 2.82
     },
     {
       "name": "inverted_f_antenna",
@@ -151,9 +151,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 4406950,
-      "bin_bytes": 515384,
-      "bake_seconds": 9.12
+      "json_bytes": 6385661,
+      "bin_bytes": 752012,
+      "bake_seconds": 11.37
     },
     {
       "name": "iris_filter",
@@ -202,9 +202,9 @@
           "stream_lines": 57
         }
       ],
-      "json_bytes": 15056013,
+      "json_bytes": 14406350,
       "bin_bytes": 2445344,
-      "bake_seconds": 8.4
+      "bake_seconds": 7.98
     },
     {
       "name": "microstrip_line",
@@ -253,9 +253,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 9375147,
+      "json_bytes": 9458351,
       "bin_bytes": 919360,
-      "bake_seconds": 5.33
+      "bake_seconds": 4.49
     },
     {
       "name": "patch_antenna",
@@ -304,9 +304,9 @@
           "stream_lines": 37
         }
       ],
-      "json_bytes": 8658840,
-      "bin_bytes": 1005020,
-      "bake_seconds": 19.15
+      "json_bytes": 12322437,
+      "bin_bytes": 1440476,
+      "bake_seconds": 22.1
     },
     {
       "name": "pyramidal_horn",
@@ -355,9 +355,9 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 12341553,
+      "json_bytes": 12782717,
       "bin_bytes": 1372356,
-      "bake_seconds": 41.11
+      "bake_seconds": 37.57
     },
     {
       "name": "stepped_impedance_filter",
@@ -406,9 +406,9 @@
           "stream_lines": 55
         }
       ],
-      "json_bytes": 26952986,
-      "bin_bytes": 3900680,
-      "bake_seconds": 27.73
+      "json_bytes": 66289438,
+      "bin_bytes": 9680696,
+      "bake_seconds": 69.07
     },
     {
       "name": "wr90",
@@ -457,9 +457,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3679878,
+      "json_bytes": 3734647,
       "bin_bytes": 522712,
-      "bake_seconds": 2.18
+      "bake_seconds": 2.1
     },
     {
       "name": "wr90_pml",
@@ -508,9 +508,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3599870,
+      "json_bytes": 3696449,
       "bin_bytes": 456416,
-      "bake_seconds": 3.59
+      "bake_seconds": 3.4
     }
   ]
 }
