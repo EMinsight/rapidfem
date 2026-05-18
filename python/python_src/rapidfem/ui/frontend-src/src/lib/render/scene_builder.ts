@@ -274,9 +274,10 @@ export function clearFieldCloud(state: GLState): void {
 // tet faces (the "visible tet edges" artifact of the old per-tet-mean
 // weighting). See `viz.ts` for the full derivation.
 
-/** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. Zero so vacuum
- *  (where σ = 0 → J = 0) doesn't get samples in the J channel. */
-const ENERGY_FLOOR = 0.0;
+/** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. Close to 1 means
+ *  almost-uniform spatial coverage with only a small linear bias toward
+ *  high-energy regions; see `viz.ts` for the full derivation. */
+const ENERGY_FLOOR = 0.9;
 
 function buildTetVolumes(mesh: SceneMesh): Float64Array {
 	const tets = mesh.tets;

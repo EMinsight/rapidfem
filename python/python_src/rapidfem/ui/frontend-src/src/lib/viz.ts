@@ -29,11 +29,16 @@
  */
 import type { MeshData } from './msh';
 
-/** Energy coverage floor: a tet with zero field gets exactly zero sampling
- *  weight when this is 0. We want that: for the J channel, σ_eff = 0 in air
- *  → J = 0 in air → no point in placing samples there. Same logic for any
- *  channel — show what's there, don't pad vacuum. */
-const ENERGY_FLOOR = 0.0;
+/** Mixing weight between uniform spatial coverage and energy-following
+ *  density. Final per-unit-volume density is
+ *      w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x) / e_global_max.
+ *  Floor 1.0 = perfectly uniform; floor 0.0 = vacuum gets zero samples
+ *  (strong bias). The current default sits high so the cloud "fills the
+ *  geometry" first and only nudges a fraction of extra samples toward
+ *  hot regions — peak-to-floor density ratio is 1/floor (≈ 1.11× at 0.9).
+ *  Caveat: in non-radiating channels like J, vacuum samples carry e = 0
+ *  and show up as the lowest colormap value (visible but dim). */
+const ENERGY_FLOOR = 0.9;
 
 /** Colormap upper percentile. The auto-range is dominated by a handful of
  *  outlier nodes — typically the driven-port edges where the imposed E (and
