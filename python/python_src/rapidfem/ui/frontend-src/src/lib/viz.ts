@@ -2,11 +2,25 @@
  * Volumetric field point-cloud sampling.
  *
  * N random points drawn across the mesh volume with (A, B, C) phasor
- * coefficients interpolated by barycentric weights. The per-tet draw
- * probability is `volume × energy` (not just `volume`), so sample density
- * follows the field energy.
+ * coefficients interpolated by barycentric weights. Target sample density
+ * per unit volume is the linear-interpolated weight
+ *     w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x)/e_global_max,
+ * where e(x) = 0.5·(A(x)+B(x)) is the time-averaged |E|².
  *
- * Because the weighting depends on the field, the sampling CDF is built per
+ * Two-stage draw to make the density piecewise-LINEAR across the volume
+ * (not piecewise-constant as in the old per-tet-mean weighting):
+ *   1. Pick tet ∝ vol[t] · w_max[t]  with  w_max[t] = max over the 4 corners.
+ *   2. Inside the tet: uniform barycentric proposal, accept with
+ *      prob = w(x) / w_max[t].
+ * Marginal density per unit volume reduces to w(x) exactly.
+ *
+ * Why this matters: with the old per-tet-mean weight, the point count per
+ * tet was piecewise-constant → visible density jumps at shared faces (the
+ * "tet edges" artifact). Rejection inside the tet gives a density that
+ * agrees on both sides of a shared face because the 3 face nodes evaluate
+ * to the same linear value from either tet.
+ *
+ * Because the weighting depends on the field, the CDF is built per
  * `viz_sample` call — `viz_load_mesh` only caches the field-independent
  * per-tet volumes.
  *
@@ -119,46 +133,71 @@ export async function viz_sample(
 
 	const { nodes, tets, vols } = cache;
 	const n_tets = vols.length;
+	const n_nodes = field_abc.length / 3;
 
-	// ── Per-tet time-averaged energy from the phasor terms ──────────────
-	// |E|²_avg ≈ (A + B) / 2, averaged over the tet's 4 nodes.
-	const energy = new Float64Array(n_tets);
-	let e_max = 0;
-	for (let t = 0; t < n_tets; t++) {
-		let sum = 0;
-		for (let k = 0; k < 4; k++) {
-			const nd = tets[t * 4 + k] * 3;
-			sum += 0.5 * (field_abc[nd] + field_abc[nd + 1]);
-		}
-		const e = sum / 4;
-		energy[t] = e > 0 ? e : 0;
-		if (energy[t] > e_max) e_max = energy[t];
+	// ── Per-node time-averaged energy e_i = 0.5·(A_i + B_i) ─────────────
+	const e_node = new Float64Array(n_nodes);
+	let e_global_max = 0;
+	for (let i = 0; i < n_nodes; i++) {
+		const e = 0.5 * (field_abc[i * 3] + field_abc[i * 3 + 1]);
+		const ec = e > 0 ? e : 0;
+		e_node[i] = ec;
+		if (ec > e_global_max) e_global_max = ec;
 	}
-	if (e_max <= 0) e_max = 1;
+	if (e_global_max <= 0) return empty;
+	const inv_e_global = 1 / e_global_max;
 
-	// ── Energy-weighted CDF: weight = volume × (floor + energy_norm) ────
+	// ── Per-tet max weight (upper bound for rejection inside the tet) ───
+	// w(x) = ENERGY_FLOOR + (1−ENERGY_FLOOR)·e(x)/e_global_max is affine in
+	// the barycentric coords, so w_max_in_tet = w at the corner with
+	// max e_node.
+	const w_max_tet = new Float64Array(n_tets);
+	for (let t = 0; t < n_tets; t++) {
+		let em = 0;
+		for (let k = 0; k < 4; k++) {
+			const en = e_node[tets[t * 4 + k]];
+			if (en > em) em = en;
+		}
+		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_global;
+	}
+
+	// ── Tet-pick CDF: weight = vol · w_max_tet  (so the marginal density
+	//    per unit volume after rejection is exactly w(x)) ────────────────
 	const cdf = new Float64Array(n_tets);
 	let acc = 0;
 	for (let t = 0; t < n_tets; t++) {
-		const e_norm = energy[t] / e_max;
-		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_norm);
+		acc += vols[t] * w_max_tet[t];
 		cdf[t] = acc;
 	}
 	if (acc <= 0) return empty;
 	const inv_total = 1 / acc;
 	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
 
-	// ── Draw N points ───────────────────────────────────────────────────
+	// ── Draw N points with rejection inside the picked tet ──────────────
+	// Rejection budget: w_max_tet caps acceptance from below by 1/4
+	// (energy concentrated in one corner of a 4-node element), so the
+	// expected proposal count per sample is at most ~4. Cap iterations
+	// to keep numerical edge cases bounded.
+	const MAX_PROPOSALS = 64;
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
 	for (let i = 0; i < n; i++) {
 		const t_idx = bsearch_cdf(cdf, Math.random());
-		uniform_bary(w);
 		const a = tets[t_idx * 4 + 0];
 		const b = tets[t_idx * 4 + 1];
 		const c = tets[t_idx * 4 + 2];
 		const d = tets[t_idx * 4 + 3];
+		const ea = e_node[a], eb = e_node[b], ec_ = e_node[c], ed = e_node[d];
+		const wmax = w_max_tet[t_idx];
+
+		for (let attempt = 0; attempt < MAX_PROPOSALS; attempt++) {
+			uniform_bary(w);
+			const e_local = w[0] * ea + w[1] * eb + w[2] * ec_ + w[3] * ed;
+			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_global;
+			if (Math.random() * wmax <= w_local) break;
+		}
+
 		positions[i * 3] =
 			w[0] * nodes[a * 3]     + w[1] * nodes[b * 3]     +
 			w[2] * nodes[c * 3]     + w[3] * nodes[d * 3];

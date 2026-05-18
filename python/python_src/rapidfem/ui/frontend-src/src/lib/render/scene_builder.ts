@@ -268,8 +268,11 @@ export function clearFieldCloud(state: GLState): void {
 //
 // Same algorithm as `$lib/viz.ts` (the sampler the in-app MeshViewer uses),
 // but in-line and synchronous for the embed which doesn't carry a worker.
-// N random points across the mesh volume, drawn with per-tet probability
-// `volume × energy` so density follows the field.
+// Two-stage draw: tet ∝ vol·w_max[t], then uniform-barycentric proposal
+// inside the tet accepted with prob w(x)/w_max[t]. Marginal density per
+// unit volume is the piecewise-linear w(x) — no density jumps at shared
+// tet faces (the "visible tet edges" artifact of the old per-tet-mean
+// weighting). See `viz.ts` for the full derivation.
 
 /** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. Zero so vacuum
  *  (where σ = 0 → J = 0) doesn't get samples in the J channel. */
@@ -335,40 +338,64 @@ export function sampleFieldCloud(
 	const tets = mesh.tets;
 	const nodes = mesh.nodes;
 	const nTets = vols.length;
+	const nNodes = fieldAbc.length / 3;
 
-	// Per-tet time-averaged energy ≈ (A + B) / 2 averaged over the 4 nodes.
-	const energy = new Float64Array(nTets);
-	let eMax = 0;
-	for (let t = 0; t < nTets; t++) {
-		let sum = 0;
-		for (let k = 0; k < 4; k++) {
-			const nd = tets[t * 4 + k] * 3;
-			sum += 0.5 * (fieldAbc[nd] + fieldAbc[nd + 1]);
-		}
-		const e = sum / 4;
-		energy[t] = e > 0 ? e : 0;
-		if (energy[t] > eMax) eMax = energy[t];
+	// Per-node time-averaged energy e_i = 0.5·(A_i + B_i).
+	const eNode = new Float64Array(nNodes);
+	let eGlobalMax = 0;
+	for (let i = 0; i < nNodes; i++) {
+		const e = 0.5 * (fieldAbc[i * 3] + fieldAbc[i * 3 + 1]);
+		const ec = e > 0 ? e : 0;
+		eNode[i] = ec;
+		if (ec > eGlobalMax) eGlobalMax = ec;
 	}
-	if (eMax <= 0) eMax = 1;
+	if (eGlobalMax <= 0) {
+		return {
+			positions: new Float32Array(0),
+			abc: new Float32Array(0),
+			maxE2: 1, minE2: 1,
+		};
+	}
+	const invEGlobal = 1 / eGlobalMax;
 
-	// Energy-weighted CDF: weight = volume × (floor + energy_norm).
+	// w(x) = ENERGY_FLOOR + (1−ENERGY_FLOOR)·e(x)/e_global_max  is affine in
+	// the barycentric coords, so w_max inside a tet = w at its hottest corner.
+	const wMaxTet = new Float64Array(nTets);
+	for (let t = 0; t < nTets; t++) {
+		let em = 0;
+		for (let k = 0; k < 4; k++) {
+			const en = eNode[tets[t * 4 + k]];
+			if (en > em) em = en;
+		}
+		wMaxTet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * invEGlobal;
+	}
+
+	// Tet-pick CDF: weight = vol · w_max_tet.
 	const cdf = new Float64Array(nTets);
 	let acc = 0;
 	for (let t = 0; t < nTets; t++) {
-		const eNorm = energy[t] / eMax;
-		acc += vols[t] * (ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eNorm);
+		acc += vols[t] * wMaxTet[t];
 		cdf[t] = acc;
 	}
 	const totalWeight = acc || 1;
 
+	const MAX_PROPOSALS = 64;
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
 	const w: [number, number, number, number] = [0, 0, 0, 0];
 	for (let i = 0; i < n; i++) {
 		const ti = bsearchCdf(cdf, Math.random() * totalWeight);
-		uniformBary(w);
 		const a = tets[ti * 4], b = tets[ti * 4 + 1],
 		      c = tets[ti * 4 + 2], d = tets[ti * 4 + 3];
+		const ea = eNode[a], eb = eNode[b], ec_ = eNode[c], ed = eNode[d];
+		const wmax = wMaxTet[ti];
+
+		for (let attempt = 0; attempt < MAX_PROPOSALS; attempt++) {
+			uniformBary(w);
+			const eLocal = w[0] * ea + w[1] * eb + w[2] * ec_ + w[3] * ed;
+			const wLocal = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * eLocal * invEGlobal;
+			if (Math.random() * wmax <= wLocal) break;
+		}
 		positions[i * 3] = (
 			w[0] * nodes[a * 3] + w[1] * nodes[b * 3] +
 			w[2] * nodes[c * 3] + w[3] * nodes[d * 3]
