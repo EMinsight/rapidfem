@@ -188,4 +188,4 @@ __all__ = [
     "Problem", "Adaptive",
     "io", "rfic", "show", "lambda_maxh",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"
