@@ -277,7 +277,7 @@ export function clearFieldCloud(state: GLState): void {
 /** Energy coverage floor — matches `viz.ts:ENERGY_FLOOR`. Close to 1 means
  *  almost-uniform spatial coverage with only a small linear bias toward
  *  high-energy regions; see `viz.ts` for the full derivation. */
-const ENERGY_FLOOR = 0.9;
+const ENERGY_FLOOR = 0.7;
 
 function buildTetVolumes(mesh: SceneMesh): Float64Array {
 	const tets = mesh.tets;

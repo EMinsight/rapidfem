@@ -38,7 +38,7 @@ import type { MeshData } from './msh';
  *  hot regions — peak-to-floor density ratio is 1/floor (≈ 1.11× at 0.9).
  *  Caveat: in non-radiating channels like J, vacuum samples carry e = 0
  *  and show up as the lowest colormap value (visible but dim). */
-const ENERGY_FLOOR = 0.9;
+const ENERGY_FLOOR = 0.7;
 
 /** Colormap upper percentile. The auto-range is dominated by a handful of
  *  outlier nodes — typically the driven-port edges where the imposed E (and
