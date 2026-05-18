@@ -23,6 +23,26 @@ README for install options.
 import os
 import sys
 
+# Windows: switch the console to UTF-8 *before* the native module starts
+# emitting log lines. The Rust side writes UTF-8 (Ω, ε, μ, σ, em-dash,
+# etc.); a default cp1252/cp850 console mojibakes those into "Î©", "â€"",
+# and friends. SetConsoleOutputCP is per-process and per-console, so
+# this is the right knob — no effect when stderr is a pipe/file.
+# Stdout/stderr's own decoder is also reconfigured so any Python text
+# (Geometry repr, etc.) round-trips cleanly.
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except (AttributeError, OSError):
+        pass
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except (AttributeError, OSError, ValueError):
+            pass
+
 # Make MKL loadable for PARDISO. Rust's libloading uses LoadLibraryA which
 # doesn't honour os.add_dll_directory — but if mkl_rt is already in the
 # process's loaded-module table, LoadLibraryA returns that handle by name.
