@@ -271,7 +271,7 @@ pub fn frequency_sweep_with_pml(
         .map(|m| m.iter().any(|x| x.dispersion.is_dispersive()))
         .unwrap_or(false);
     if materials_dispersive {
-        eprintln!("  Frequency-dependent materials detected — rebuilding K every frequency");
+        eprintln!("  Frequency-dependent materials detected - rebuilding K every frequency");
     }
 
     // Cache E, B for frequency-independent materials

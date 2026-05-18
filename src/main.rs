@@ -18,7 +18,7 @@ fn main() {
     let config = config::load_config(&args[1]).expect("Failed to load config");
     let mesh = load_mesh(&config.mesh.file).expect("Failed to load mesh");
     let frequencies = config.frequency.frequencies();
-    eprintln!("RapidFEM — {} frequencies", frequencies.len());
+    eprintln!("RapidFEM - {} frequencies", frequencies.len());
 
     let sim = Simulation::new(mesh, config);
 

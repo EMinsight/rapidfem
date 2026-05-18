@@ -64,7 +64,7 @@ impl Simulation {
     pub fn new(mesh: Mesh, config: Config) -> Self {
         let basis = Nedelec2Basis::new(&mesh);
         eprintln!(
-            "RapidFEM — {} tets, {} DOFs",
+            "RapidFEM - {} tets, {} DOFs",
             mesh.n_tets(),
             basis.n_field
         );
@@ -565,7 +565,7 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                     port_number: port_num,
                     power: *power, er: *er, ri: *ri, ro: *ro, cs,
                 };
-                eprintln!("  Port {}: coax, tag={}, Ri={:.3}mm, Ro={:.3}mm, εr={:.2}, Z₀={:.2}Ω",
+                eprintln!("  Port {}: coax, tag={}, Ri={:.3}mm, Ro={:.3}mm, er={:.2}, Z0={:.2}Ohm",
                     port_num, tag, ri * 1e3, ro * 1e3, er, port.port_z());
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
@@ -588,7 +588,7 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                     height: h,
                     direction: *direction,
                 };
-                eprintln!("  Port {}: lumped, tag={}, Z0={:.0}Ω, dir=({:.1},{:.1},{:.1})",
+                eprintln!("  Port {}: lumped, tag={}, Z0={:.0}Ohm, dir=({:.1},{:.1},{:.1})",
                     port_num, tag, z0, direction[0], direction[1], direction[2]);
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
@@ -623,7 +623,7 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                     mode_nr: *mode_nr,
                     cs: cs_detected,
                 };
-                eprintln!("  Port {}: floquet, tag={}, mode={} ({}), θ={:.1}°, φ={:.1}°, A={:.2}mm²",
+                eprintln!("  Port {}: floquet, tag={}, mode={} ({}), theta={:.1}deg, phi={:.1}deg, A={:.2}mm^2",
                     port_num, tag, mode_nr,
                     if *mode_nr == 1 { "TE/S" } else { "TM/P" },
                     scan_theta_deg, scan_phi_deg, area * 1e6);
@@ -644,7 +644,7 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                 let w = if *width > 0.0 { *width } else { det_w };
                 let h = if *height > 0.0 { *height } else { det_h };
                 let bc = LumpedElement { r: *r, l: *l, c: *c, width: w, height: h };
-                eprintln!("  LumpedElement: tag={}, R={:.2}Ω, L={:.2e}H, C={:?}F, w={:.2}mm, h={:.2}mm",
+                eprintln!("  LumpedElement: tag={}, R={:.2}Ohm, L={:.2e}H, C={:?}F, w={:.2}mm, h={:.2}mm",
                     tag, r, l, c, w * 1e3, h * 1e3);
                 port_tris.push(tri_ids);
                 ports.push(Box::new(bc));
@@ -664,7 +664,7 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                     s.mur = *mur; s.er = *er; s.thickness = *thickness;
                     s
                 };
-                eprintln!("  SurfaceImpedance: tag={}, σ={:.2e}S/m, μr={:.2}, εr={:.2}, t={:?}",
+                eprintln!("  SurfaceImpedance: tag={}, sigma={:.2e}S/m, ur={:.2}, er={:.2}, t={:?}",
                     tag, conductivity, mur, er, thickness);
                 port_tris.push(tri_ids);
                 ports.push(Box::new(bc));
@@ -720,7 +720,7 @@ fn build_materials(mesh: &Mesh, config: &Config) -> Vec<Material> {
             materials::Dispersion::None
         };
         if dispersion.is_dispersive() {
-            eprintln!("    (dispersive: εr(f) recomputed per frequency)");
+            eprintln!("    (dispersive: er(f) recomputed per frequency)");
         }
         Material {
             er: mc.er, ur: mc.ur, tand: mc.tand, cond: mc.conductivity,
@@ -742,7 +742,7 @@ fn build_pml_regions(mesh: &Mesh, config: &Config) -> Vec<PmlRegion> {
         if tet_indices.is_empty() {
             eprintln!("  WARNING: PML volume tag {} has no tets", pc.volume_tag);
         } else {
-            eprintln!("  PML: tag={}, dir=({:.0},{:.0},{:.0}), inner={:.3}m, t={:.3}m, n={:.1}, δmax={:.1}, {} tets",
+            eprintln!("  PML: tag={}, dir=({:.0},{:.0},{:.0}), inner={:.3}m, t={:.3}m, n={:.1}, delta_max={:.1}, {} tets",
                 pc.volume_tag, pc.direction[0], pc.direction[1], pc.direction[2],
                 pc.inner_face, pc.thickness, pc.exponent, pc.delta_max, tet_indices.len());
         }
@@ -817,7 +817,7 @@ fn build_lumped_lines(
             }
             lines.push(pts);
         }
-        eprintln!("  Lumped port {}: {} integration lines × {} pts, height={:.4}mm",
+        eprintln!("  Lumped port {}: {} integration lines x {} pts, height={:.4}mm",
             port.port_number(), lines.len(), n_pts, height * 1e3);
         lines_map.insert(pi, lines);
     }
