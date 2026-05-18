@@ -2006,9 +2006,16 @@ class Geometry:
             pass
 
         # ── Per-entity mesh size: gmsh Distance + Threshold background fields ──
+        # Effective per-entity maxh = explicit `ent.maxh` first, then the
+        # entity's Material.maxh as a per-material refinement floor (lets
+        # users tag every conductor or thin dielectric without touching the
+        # primitives that carry that material).
         threshold_field_ids: list[int] = []
         for ent in self._entities:
-            if ent.maxh is None:
+            eff_maxh = ent.maxh
+            if eff_maxh is None:
+                eff_maxh = getattr(ent.material, "maxh", None)
+            if eff_maxh is None:
                 continue
             dist_id = gmsh.model.mesh.field.add("Distance")
             if ent.dim == 0:
@@ -2029,12 +2036,12 @@ class Geometry:
 
             thr_id = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thr_id, "InField", dist_id)
-            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", ent.maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", eff_maxh)
             gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", maxh)
             gmsh.model.mesh.field.setNumber(thr_id, "DistMin", 0.0)
             gmsh.model.mesh.field.setNumber(
                 thr_id, "DistMax",
-                transition_distance if transition_distance is not None else 5 * ent.maxh,
+                transition_distance if transition_distance is not None else 5 * eff_maxh,
             )
             threshold_field_ids.append(thr_id)
 

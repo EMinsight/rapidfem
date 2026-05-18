@@ -199,6 +199,14 @@ class Material:
         first-order dispersive component
     drude : Drude, optional
         Drude-model dispersive component
+    maxh : float, optional
+        max tet edge length (m) applied to every volume carrying this
+        material. Acts as a per-material refinement floor — useful for
+        forcing finer cells inside thin conductors, narrow dielectric
+        slabs, or any structure where the global ``maxh`` would
+        under-resolve the field. An explicit ``maxh=`` on the primitive
+        (``g.box(..., maxh=...)``) still wins; the material's value is
+        the fallback when the primitive doesn't carry its own.
 
 
     Attributes
@@ -209,6 +217,8 @@ class Material:
         anisotropic overrides
     debye, drude : Debye or Drude or None
         dispersive components
+    maxh : float or None
+        per-material mesh-size refinement floor (m)
     """
 
     def __init__(self, *,
@@ -219,7 +229,8 @@ class Material:
                  er_diag: Sequence[float] | None = None,
                  ur_diag: Sequence[float] | None = None,
                  debye: Debye | None = None,
-                 drude: Drude | None = None):
+                 drude: Drude | None = None,
+                 maxh: float | None = None):
         self.er = float(er)
         self.ur = float(ur)
         self.tand = float(tand)
@@ -228,6 +239,7 @@ class Material:
         self.ur_diag = tuple(float(v) for v in ur_diag) if ur_diag is not None else None
         self.debye = debye
         self.drude = drude
+        self.maxh = float(maxh) if maxh is not None else None
 
     def _to_toml(self, volume_tag: int) -> str:
         """render this material as a ``[[materials]]`` block
@@ -277,11 +289,12 @@ class Air(Material):
 
     Parameters
     ----------
-    None — fixed at free-space values.
+    maxh : float, optional
+        per-material mesh-size refinement floor (m); see :class:`Material`
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *, maxh: float | None = None):
+        super().__init__(maxh=maxh)
 
 
 class Dielectric(Material):
@@ -321,13 +334,16 @@ class Dielectric(Material):
         microwave work)
     conductivity : float
         bulk conductivity in S/m, added on top of ``tand``
+    maxh : float, optional
+        per-material mesh-size refinement floor (m); see :class:`Material`
     """
 
     def __init__(self, er: float, *,
                  tand: float = 0.0,
                  ur: float = 1.0,
-                 conductivity: float = 0.0):
-        super().__init__(er=er, ur=ur, tand=tand, conductivity=conductivity)
+                 conductivity: float = 0.0,
+                 maxh: float | None = None):
+        super().__init__(er=er, ur=ur, tand=tand, conductivity=conductivity, maxh=maxh)
 
 
 class Conductor(Material):
@@ -366,10 +382,14 @@ class Conductor(Material):
     er : float
         relative permittivity (defaults to 1; metal-bulk runs are
         dominated by the conductivity term so this rarely matters)
+    maxh : float, optional
+        per-material mesh-size refinement floor (m); see :class:`Material`
     """
 
-    def __init__(self, *, conductivity: float, ur: float = 1.0, er: float = 1.0):
-        super().__init__(er=er, ur=ur, conductivity=conductivity)
+    def __init__(self, *, conductivity: float,
+                 ur: float = 1.0, er: float = 1.0,
+                 maxh: float | None = None):
+        super().__init__(er=er, ur=ur, conductivity=conductivity, maxh=maxh)
 
 
 class Anisotropic(Material):
@@ -411,15 +431,18 @@ class Anisotropic(Material):
         electric loss tangent applied on top of ``er_diag``
     conductivity : float
         bulk conductivity in S/m
+    maxh : float, optional
+        per-material mesh-size refinement floor (m); see :class:`Material`
     """
 
     def __init__(self, *,
                  er_diag: Sequence[float] | None = None,
                  ur_diag: Sequence[float] | None = None,
                  tand: float = 0.0,
-                 conductivity: float = 0.0):
+                 conductivity: float = 0.0,
+                 maxh: float | None = None):
         super().__init__(tand=tand, conductivity=conductivity,
-                         er_diag=er_diag, ur_diag=ur_diag)
+                         er_diag=er_diag, ur_diag=ur_diag, maxh=maxh)
 
 
 __all__ = [
