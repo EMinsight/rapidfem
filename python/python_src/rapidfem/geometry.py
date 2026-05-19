@@ -651,6 +651,14 @@ class Geometry:
         if not gmsh.isInitialized():
             gmsh.initialize()
         gmsh.option.setNumber("General.Terminal", 0)
+        # gmsh OCC's default Geometry.Tolerance is 1e-7 m — fine for mm-scale
+        # mechanical CAD, ~10% of a µm-scale RFIC feature. At RF / micron
+        # scale that's enough to bite booleans (sliver edges in fragment) and
+        # mesh generation ("PLC Error: segment and facet intersect"). Drop to
+        # 1e-12 m (pm) so the tolerance lives well below any feature the FEM
+        # cares about. Same for the boolean-specific tolerance.
+        gmsh.option.setNumber("Geometry.Tolerance", 1e-9)
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-9)
         gmsh.model.add(name)
         self._objects: list[GeoObject] = []
         self._entities: list[_Entity] = []  # all named-or-trackable entities
