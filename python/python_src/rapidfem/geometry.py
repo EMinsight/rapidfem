@@ -1211,7 +1211,10 @@ class Geometry:
             2-D face
         """
         x, y, z = position
-        tag = gmsh.model.occ.addRectangle(x, y, z, width, height)
+        s = self._s
+        tag = gmsh.model.occ.addRectangle(
+            s(x), s(y), s(z), s(width), s(height)
+        )
         return self._wrap_face(tag, maxh=maxh)
 
     def xz_plate(self, width: float, height: float,
@@ -2109,6 +2112,19 @@ class Geometry:
                 "no maxh set — pass it to Geometry(maxh=...) or g.mesh(maxh=...)"
             )
         gmsh.model.occ.synchronize()
+        # Dilate every OCC entity from the internal scaled coords back to
+        # user units BEFORE any mesh setup. Threshold fields, mesh size
+        # hints and the mesher itself then all see real-meter geometry; the
+        # resulting .msh ends up in user units without needing a post-mesh
+        # transform. Idempotent — flag guards re-runs of mesh().
+        if self._scale != 1.0 and not getattr(self, "_dilated", False):
+            s = self._scale
+            all_dt = gmsh.model.getEntities()
+            if all_dt:
+                gmsh.model.occ.dilate(all_dt, 0, 0, 0, s, s, s)
+                gmsh.model.occ.synchronize()
+            self._dilated = True
+
         # Wipe any prior mesh state AND physical groups. Without the latter,
         # re-running this cell hits "Physical surface 1 already exists".
         # Without the former, gmsh reuses stale 1D/2D meshes and partially
@@ -2154,14 +2170,15 @@ class Geometry:
 
             thr_id = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thr_id, "InField", dist_id)
-            # gmsh is in SCALED coords (entities + Distance field output)
-            # → set thresholds in scaled coords too.
-            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", self._s(eff_maxh))
-            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", self._s(maxh))
+            # Post-dilate, gmsh is in user units → set thresholds in user
+            # units too.
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", eff_maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", maxh)
             gmsh.model.mesh.field.setNumber(thr_id, "DistMin", 0.0)
-            dist_max = (transition_distance if transition_distance is not None
-                        else 5 * eff_maxh)
-            gmsh.model.mesh.field.setNumber(thr_id, "DistMax", self._s(dist_max))
+            gmsh.model.mesh.field.setNumber(
+                thr_id, "DistMax",
+                transition_distance if transition_distance is not None else 5 * eff_maxh,
+            )
             threshold_field_ids.append(thr_id)
 
         if threshold_field_ids:
@@ -2288,22 +2305,10 @@ class Geometry:
 
         # Generate. SaveAll=1 ensures volumes without explicit material/name still
         # land in the .msh (otherwise gmsh writes only physical-group elements).
-        gmsh.option.setNumber("Mesh.MeshSizeMax", self._s(maxh))
+        # Post-dilate, gmsh is in user units → no further scaling needed.
+        gmsh.option.setNumber("Mesh.MeshSizeMax", maxh)
         gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.model.mesh.generate(3)
-
-        # Scale the mesh nodes back to user units so the .msh lands at real
-        # meter coordinates the FEM solver expects.
-        if self._scale != 1.0:
-            s = self._scale
-            try:
-                gmsh.model.mesh.affineTransform(
-                    [s, 0, 0, 0,
-                     0, s, 0, 0,
-                     0, 0, s, 0,
-                     0, 0, 0, 1])
-            except Exception:
-                pass
 
         # Write to a temp file, read bytes back
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
