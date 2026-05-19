@@ -647,28 +647,40 @@ class Geometry:
         ``(mesh_bytes, name_to_tag)`` cache populated by :meth:`mesh`
     """
 
-    def __init__(self, *, maxh: float | None = None, name: str = "rapidfem"):
+    def __init__(self, *, maxh: float | None = None, scale: float = 1.0,
+                 name: str = "rapidfem"):
         if not gmsh.isInitialized():
             gmsh.initialize()
         gmsh.option.setNumber("General.Terminal", 0)
-        # gmsh OCC's default Geometry.Tolerance is 1e-7 m — fine for mm-scale
-        # mechanical CAD, ~10% of a µm-scale RFIC feature. At RF / micron
-        # scale that's enough to bite booleans (sliver edges in fragment) and
-        # mesh generation ("PLC Error: segment and facet intersect"). Drop to
-        # 1e-12 m (pm) so the tolerance lives well below any feature the FEM
-        # cares about. Same for the boolean-specific tolerance.
-        gmsh.option.setNumber("Geometry.Tolerance", 1e-9)
-        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-9)
+        # Working scale: gmsh internally works in (user_meters / scale) units.
+        # Default scale=1.0 means gmsh sees meters directly. Set scale=1e-6
+        # for µm-scale RFIC geometries so a 1 µm feature becomes 1.0 in gmsh
+        # units — way above gmsh's default 1e-7 tolerance, so booleans and
+        # meshing on dense layouts (interleaved combs, via clusters, …) stay
+        # robust. Just before meshing every entity is dilated back to user
+        # units so the resulting mesh nodes land at the original meter
+        # coordinates the FEM solver expects.
+        self._scale = float(scale)
+        gmsh.option.setNumber("Geometry.Tolerance", 1e-7)
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-7)
         gmsh.model.add(name)
         self._objects: list[GeoObject] = []
         self._entities: list[_Entity] = []  # all named-or-trackable entities
         self._owns_gmsh = True  # we'll finalize on close
-        self._maxh = maxh                   # global mesh size cap
+        self._maxh = maxh                   # global mesh size cap (USER units)
         # Object-API state: physics registry + post-mesh tag maps.
         self._physics: list = []            # rapidfem.physics.* instances
         self._material_tags: dict[int, int] = {}  # id(Material) -> phys group tag
         self._physics_tags: dict[int, int] = {}   # id(physics_obj) -> phys group tag
         self._last_mesh = None              # (mesh_bytes, name_to_tag) after .mesh()
+
+    # ── Scale helpers ──────────────────────────────────────────────────────
+    # Every coord that goes INTO gmsh is divided by self._scale; every coord
+    # read BACK from gmsh stays in the scaled space (entity bbox/cog are
+    # stored scaled). mesh() dilates everything back to user units before
+    # tessellation so the .msh nodes are in real meters.
+    def _s(self, v: float) -> float:
+        return v / self._scale
 
     # ── GDS-driven extrusion ────────────────────────────────────────────────
 
@@ -789,13 +801,14 @@ class Geometry:
         layer-name physical group lands on FACES (PEC-compatible).
         """
         import numpy as np
+        s = self._s
         # Rectangle fast path
         if pts.shape[0] in (4, 5):
             p = pts[:4]
             xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))
             if len(xs) == 2 and len(ys) == 2:
                 tag = gmsh.model.occ.addRectangle(
-                    xs[0], ys[0], z, xs[1] - xs[0], ys[1] - ys[0]
+                    s(xs[0]), s(ys[0]), s(z), s(xs[1] - xs[0]), s(ys[1] - ys[0])
                 )
                 return self._wrap_face(tag)
         # General polygon
@@ -811,7 +824,7 @@ class Geometry:
         pts = np.asarray(keep)
         if len(pts) < 3:
             raise ValueError(f"Polygon collapsed to {len(pts)} unique vertices")
-        pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]
+        pt_tags = [gmsh.model.occ.addPoint(s(p[0]), s(p[1]), s(z)) for p in pts]
         line_tags = [
             gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])
             for i in range(len(pt_tags))
@@ -833,14 +846,15 @@ class Geometry:
         """
         import numpy as np
 
+        s = self._s
         # Detect axis-aligned rectangle (4 points, 90° corners)
         if pts.shape[0] in (4, 5):
             p = pts[:4]
             xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))
             if len(xs) == 2 and len(ys) == 2:
                 tag = gmsh.model.occ.addBox(
-                    xs[0], ys[0], z,
-                    xs[1] - xs[0], ys[1] - ys[0], thickness,
+                    s(xs[0]), s(ys[0]), s(z),
+                    s(xs[1] - xs[0]), s(ys[1] - ys[0]), s(thickness),
                 )
                 return self._wrap_volume(tag)
 
@@ -862,7 +876,7 @@ class Geometry:
         pts = np.asarray(keep)
         if len(pts) < 3:
             raise ValueError(f"Polygon collapsed to {len(pts)} unique vertices")
-        pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]
+        pt_tags = [gmsh.model.occ.addPoint(s(p[0]), s(p[1]), s(z)) for p in pts]
         line_tags = [
             gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])
             for i in range(len(pt_tags))
@@ -870,7 +884,7 @@ class Geometry:
         loop = gmsh.model.occ.addCurveLoop(line_tags)
         surf = gmsh.model.occ.addPlaneSurface([loop])
         # Extrude vertically by thickness; second elt of return is the top cap
-        out = gmsh.model.occ.extrude([(2, surf)], 0, 0, thickness)
+        out = gmsh.model.occ.extrude([(2, surf)], 0, 0, s(thickness))
         # gmsh's extrude returns: [top_face, volume, side_faces...]
         vol_tag = next(t for d, t in out if d == 3)
         return self._wrap_volume(vol_tag)
@@ -952,7 +966,8 @@ class Geometry:
             volume with 6 ``.faces`` and 12 ``.edges``
         """
         x, y, z = position
-        tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)
+        s = self._s
+        tag = gmsh.model.occ.addBox(s(x), s(y), s(z), s(width), s(depth), s(height))
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def cylinder(self, radius: float, height: float,
@@ -1005,7 +1020,9 @@ class Geometry:
         """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
-        tag = gmsh.model.occ.addCylinder(x, y, z, ax, ay, az, radius, angle=angle)
+        s = self._s
+        tag = gmsh.model.occ.addCylinder(s(x), s(y), s(z),
+                                         s(ax), s(ay), s(az), s(radius), angle=angle)
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0),
@@ -1031,7 +1048,8 @@ class Geometry:
             volume
         """
         cx, cy, cz = center
-        tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)
+        s = self._s
+        tag = gmsh.model.occ.addSphere(s(cx), s(cy), s(cz), s(radius))
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def cone(self, r1: float, r2: float, height: float,
@@ -1067,7 +1085,9 @@ class Geometry:
         """
         x, y, z = position
         ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)
-        tag = gmsh.model.occ.addCone(x, y, z, ax, ay, az, r1, r2, angle=angle)
+        s = self._s
+        tag = gmsh.model.occ.addCone(s(x), s(y), s(z),
+                                     s(ax), s(ay), s(az), s(r1), s(r2), angle=angle)
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def wedge(self, dx: float, dy: float, dz: float,
@@ -1103,7 +1123,8 @@ class Geometry:
             volume
         """
         x, y, z = position
-        tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)
+        s = self._s
+        tag = gmsh.model.occ.addWedge(s(x), s(y), s(z), s(dx), s(dy), s(dz), ltx=s(top_x))
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def torus(self, major_radius: float, minor_radius: float,
@@ -1135,7 +1156,9 @@ class Geometry:
             volume
         """
         cx, cy, cz = center
-        tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)
+        s = self._s
+        tag = gmsh.model.occ.addTorus(s(cx), s(cy), s(cz), s(major_radius), s(minor_radius),
+                                      angle=angle)
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def xy_plate(self, width: float, height: float,
@@ -1297,10 +1320,11 @@ class Geometry:
         x0, y0, z0 = p0
         wx, wy, wz = width
         hx, hy, hz = height
-        v1 = gmsh.model.occ.addPoint(x0, y0, z0)
-        v2 = gmsh.model.occ.addPoint(x0 + wx, y0 + wy, z0 + wz)
-        v3 = gmsh.model.occ.addPoint(x0 + wx + hx, y0 + wy + hy, z0 + wz + hz)
-        v4 = gmsh.model.occ.addPoint(x0 + hx, y0 + hy, z0 + hz)
+        s = self._s
+        v1 = gmsh.model.occ.addPoint(s(x0), s(y0), s(z0))
+        v2 = gmsh.model.occ.addPoint(s(x0 + wx), s(y0 + wy), s(z0 + wz))
+        v3 = gmsh.model.occ.addPoint(s(x0 + wx + hx), s(y0 + wy + hy), s(z0 + wz + hz))
+        v4 = gmsh.model.occ.addPoint(s(x0 + hx), s(y0 + hy), s(z0 + hz))
         l1 = gmsh.model.occ.addLine(v1, v2)
         l2 = gmsh.model.occ.addLine(v2, v3)
         l3 = gmsh.model.occ.addLine(v3, v4)
@@ -1359,12 +1383,13 @@ class Geometry:
         if len(pts) < 3:
             raise ValueError("polygon needs at least 3 vertices")
         x0, y0, z0 = position
+        s = self._s
         vtags = []
         for p in pts:
             if len(p) == 2:
-                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0))
+                vtags.append(gmsh.model.occ.addPoint(s(p[0] + x0), s(p[1] + y0), s(z0)))
             elif len(p) == 3:
-                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, p[2] + z0))
+                vtags.append(gmsh.model.occ.addPoint(s(p[0] + x0), s(p[1] + y0), s(p[2] + z0)))
             else:
                 raise ValueError(f"polygon point must be (x,y) or (x,y,z), got {p!r}")
         n = len(vtags)
@@ -1400,7 +1425,8 @@ class Geometry:
             2-D face
         """
         x, y, z = position
-        tag = gmsh.model.occ.addDisk(x, y, z, radius, radius)
+        s = self._s
+        tag = gmsh.model.occ.addDisk(s(x), s(y), s(z), s(radius), s(radius))
         return self._wrap_face(tag, maxh=maxh)
 
     # ── Extrude / revolve ───────────────────────────────────────────────────
@@ -1450,7 +1476,8 @@ class Geometry:
         if face.dim != 2:
             raise ValueError(f"extrude expects a 2D face, got dim={face.dim}")
         dx, dy, dz = axis[0] * height, axis[1] * height, axis[2] * height
-        out = gmsh.model.occ.extrude([(face.dim, face._entity.tag)], dx, dy, dz)
+        s = self._s
+        out = gmsh.model.occ.extrude([(face.dim, face._entity.tag)], s(dx), s(dy), s(dz))
         gmsh.model.occ.synchronize()
         vol_tag = next((t for d, t in out if d == 3), None)
         if vol_tag is None:
@@ -1581,8 +1608,9 @@ class Geometry:
             raise ValueError(f"revolve expects a 2D face, got dim={face.dim}")
         cx, cy, cz = axis_point
         ax, ay, az = axis_dir
+        s = self._s
         out = gmsh.model.occ.revolve(
-            [(face.dim, face._entity.tag)], cx, cy, cz, ax, ay, az, angle
+            [(face.dim, face._entity.tag)], s(cx), s(cy), s(cz), ax, ay, az, angle
         )
         gmsh.model.occ.synchronize()
         vol_tag = next((t for d, t in out if d == 3), None)
@@ -1764,7 +1792,9 @@ class Geometry:
         """
         cx, cy, cz = center
         ax, ay, az = axis
-        gmsh.model.occ.rotate([(obj.dim, obj._entity.tag)], cx, cy, cz, ax, ay, az, angle)
+        s = self._s
+        gmsh.model.occ.rotate([(obj.dim, obj._entity.tag)],
+                              s(cx), s(cy), s(cz), ax, ay, az, angle)
         gmsh.model.occ.synchronize()
         self._refresh_descendants(obj)
 
@@ -1796,7 +1826,9 @@ class Geometry:
             scaling centre (defaults to origin)
         """
         cx, cy, cz = center
-        gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)], cx, cy, cz, fx, fy, fz)
+        s = self._s
+        gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)],
+                              s(cx), s(cy), s(cz), fx, fy, fz)
         gmsh.model.occ.synchronize()
         self._refresh_descendants(obj)
 
@@ -2084,13 +2116,14 @@ class Geometry:
 
             thr_id = gmsh.model.mesh.field.add("Threshold")
             gmsh.model.mesh.field.setNumber(thr_id, "InField", dist_id)
-            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", eff_maxh)
-            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", maxh)
+            # gmsh is in SCALED coords (entities + Distance field output)
+            # → set thresholds in scaled coords too.
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", self._s(eff_maxh))
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", self._s(maxh))
             gmsh.model.mesh.field.setNumber(thr_id, "DistMin", 0.0)
-            gmsh.model.mesh.field.setNumber(
-                thr_id, "DistMax",
-                transition_distance if transition_distance is not None else 5 * eff_maxh,
-            )
+            dist_max = (transition_distance if transition_distance is not None
+                        else 5 * eff_maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "DistMax", self._s(dist_max))
             threshold_field_ids.append(thr_id)
 
         if threshold_field_ids:
@@ -2217,9 +2250,22 @@ class Geometry:
 
         # Generate. SaveAll=1 ensures volumes without explicit material/name still
         # land in the .msh (otherwise gmsh writes only physical-group elements).
-        gmsh.option.setNumber("Mesh.MeshSizeMax", maxh)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", self._s(maxh))
         gmsh.option.setNumber("Mesh.SaveAll", 1)
         gmsh.model.mesh.generate(3)
+
+        # Scale the mesh nodes back to user units so the .msh lands at real
+        # meter coordinates the FEM solver expects.
+        if self._scale != 1.0:
+            s = self._scale
+            try:
+                gmsh.model.mesh.affineTransform(
+                    [s, 0, 0, 0,
+                     0, s, 0, 0,
+                     0, 0, s, 0,
+                     0, 0, 0, 1])
+            except Exception:
+                pass
 
         # Write to a temp file, read bytes back
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
