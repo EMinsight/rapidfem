@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rapidfem"
-version = "0.7.0"
+version = "0.7.1"
 description = "Frequency-domain electromagnetic FEM solver in Rust, with a Python API and an optional local web UI."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
@@ -53,4 +53,10 @@ module-name = "rapidfem._native"
 python-source = "python_src"
 include = [
     { path = "python_src/rapidfem/ui/frontend/dist/**/*", format = ["sdist", "wheel"] },
+]
+# Pre-baked demo cases (~150 MB) are only consumed by the static GitHub Pages
+# build; the locally-served UI computes its own examples. Excluded here so the
+# wheel stays under PyPI's 100 MB per-file cap.
+exclude = [
+    { path = "python_src/rapidfem/ui/frontend/dist/demo/**/*", format = ["sdist", "wheel"] },
 ]
