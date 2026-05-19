@@ -20,6 +20,7 @@ whose port-plate shunt capacitance dominates Z11 ≈ Z21.
 
 # %% Load + build the geometry from JSON
 import math
+from importlib.resources import files
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +28,10 @@ import numpy as np
 import rapidfem as rf
 import rapidfem.rfic as rfic
 
-JSON_PATH = Path(__file__).with_name("rfic_spiral_from_json.fem.json")
+# Resolve relative to the installed examples package so this works inside the
+# wheel, inside the bake-demo runner (which leaves __file__ bare), and from a
+# checked-out source tree alike.
+JSON_PATH = Path(str(files("rapidfem.examples") / "rfic_spiral_from_json.fem.json"))
 
 layout = rfic.from_fem_json(JSON_PATH)
 

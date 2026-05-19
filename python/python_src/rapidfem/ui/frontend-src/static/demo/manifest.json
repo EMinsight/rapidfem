@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779132392,
+  "baked_at": 1779181039,
   "examples": [
     {
       "name": "coax_step",
@@ -49,9 +49,9 @@
           "stream_lines": 44
         }
       ],
-      "json_bytes": 4484188,
+      "json_bytes": 4484156,
       "bin_bytes": 940500,
-      "bake_seconds": 3.1
+      "bake_seconds": 3.66
     },
     {
       "name": "dielectric_resonator",
@@ -100,9 +100,9 @@
           "stream_lines": 18
         }
       ],
-      "json_bytes": 1221223,
+      "json_bytes": 1221218,
       "bin_bytes": 127048,
-      "bake_seconds": 2.82
+      "bake_seconds": 3.19
     },
     {
       "name": "inverted_f_antenna",
@@ -151,9 +151,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 6385661,
+      "json_bytes": 6385660,
       "bin_bytes": 752012,
-      "bake_seconds": 11.37
+      "bake_seconds": 12.11
     },
     {
       "name": "iris_filter",
@@ -202,9 +202,9 @@
           "stream_lines": 57
         }
       ],
-      "json_bytes": 14406350,
+      "json_bytes": 14406361,
       "bin_bytes": 2445344,
-      "bake_seconds": 7.98
+      "bake_seconds": 8.18
     },
     {
       "name": "microstrip_line",
@@ -253,9 +253,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 9458351,
+      "json_bytes": 9458339,
       "bin_bytes": 919360,
-      "bake_seconds": 4.49
+      "bake_seconds": 4.72
     },
     {
       "name": "patch_antenna",
@@ -304,9 +304,9 @@
           "stream_lines": 37
         }
       ],
-      "json_bytes": 12322437,
+      "json_bytes": 12322423,
       "bin_bytes": 1440476,
-      "bake_seconds": 22.1
+      "bake_seconds": 23.17
     },
     {
       "name": "pyramidal_horn",
@@ -355,9 +355,129 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 12782717,
+      "json_bytes": 12782710,
       "bin_bytes": 1372356,
-      "bake_seconds": 37.57
+      "bake_seconds": 41.57
+    },
+    {
+      "name": "rfic_spiral_from_json",
+      "filename": "rfic_spiral_from_json.py",
+      "json": "rfic_spiral_from_json.json",
+      "bin_files": [
+        "rfic_spiral_from_json_c4_d1.bin"
+      ],
+      "n_cells": 6,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Load + build the geometry from JSON",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 7
+        },
+        {
+          "marker": "# %% Wire BCs: every conductor surface PEC, ports lumped, outer air ABC",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Sweep across the RF band",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 33
+        },
+        {
+          "marker": "# %% Series-L extraction (de-embedded from common-mode shunt)",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 22
+        }
+      ],
+      "json_bytes": 23328272,
+      "bin_bytes": 4007100,
+      "bake_seconds": 41.42
+    },
+    {
+      "name": "rfic_spiral_inductor",
+      "filename": "rfic_spiral_inductor.py",
+      "json": "rfic_spiral_inductor.json",
+      "bin_files": [
+        "rfic_spiral_inductor_c5_d1.bin"
+      ],
+      "n_cells": 7,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Generate the spiral layout",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: stack-up + 2-layer spiral + vias + ports",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Mesh",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Solve across the frequency band",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 38
+        },
+        {
+          "marker": "# %% Extract L(f) from S \u2192 Z (series-L extraction with shunt de-embedding)",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 29
+        }
+      ],
+      "json_bytes": 18733078,
+      "bin_bytes": 3174672,
+      "bake_seconds": 21.83
     },
     {
       "name": "stepped_impedance_filter",
@@ -406,9 +526,9 @@
           "stream_lines": 55
         }
       ],
-      "json_bytes": 66289438,
+      "json_bytes": 66289401,
       "bin_bytes": 9680696,
-      "bake_seconds": 69.07
+      "bake_seconds": 69.41
     },
     {
       "name": "wr90",
@@ -457,9 +577,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3734647,
+      "json_bytes": 3734637,
       "bin_bytes": 522712,
-      "bake_seconds": 2.1
+      "bake_seconds": 2.14
     },
     {
       "name": "wr90_pml",
@@ -508,9 +628,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3696449,
+      "json_bytes": 3696446,
       "bin_bytes": 456416,
-      "bake_seconds": 3.4
+      "bake_seconds": 3.53
     }
   ]
 }
