@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779183423,
+  "baked_at": 1779186367,
   "examples": [
     {
       "name": "coax_step",
@@ -49,9 +49,9 @@
           "stream_lines": 44
         }
       ],
-      "json_bytes": 4484156,
+      "json_bytes": 4484157,
       "bin_bytes": 940500,
-      "bake_seconds": 3.21
+      "bake_seconds": 3.25
     },
     {
       "name": "dielectric_resonator",
@@ -100,9 +100,9 @@
           "stream_lines": 18
         }
       ],
-      "json_bytes": 1221219,
+      "json_bytes": 1221218,
       "bin_bytes": 127048,
-      "bake_seconds": 2.86
+      "bake_seconds": 2.88
     },
     {
       "name": "inverted_f_antenna",
@@ -151,9 +151,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 6385657,
+      "json_bytes": 6385655,
       "bin_bytes": 752012,
-      "bake_seconds": 11.58
+      "bake_seconds": 11.53
     },
     {
       "name": "iris_filter",
@@ -202,9 +202,9 @@
           "stream_lines": 57
         }
       ],
-      "json_bytes": 14406352,
+      "json_bytes": 14406358,
       "bin_bytes": 2445344,
-      "bake_seconds": 8.01
+      "bake_seconds": 7.95
     },
     {
       "name": "microstrip_line",
@@ -253,9 +253,9 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 9458324,
+      "json_bytes": 9458336,
       "bin_bytes": 919360,
-      "bake_seconds": 4.52
+      "bake_seconds": 4.51
     },
     {
       "name": "patch_antenna",
@@ -304,9 +304,9 @@
           "stream_lines": 37
         }
       ],
-      "json_bytes": 12322424,
+      "json_bytes": 12322426,
       "bin_bytes": 1440476,
-      "bake_seconds": 22.43
+      "bake_seconds": 21.81
     },
     {
       "name": "pyramidal_horn",
@@ -357,7 +357,7 @@
       ],
       "json_bytes": 12782711,
       "bin_bytes": 1372356,
-      "bake_seconds": 45.91
+      "bake_seconds": 41.02
     },
     {
       "name": "rfic_spiral_from_json",
@@ -412,9 +412,9 @@
           "stream_lines": 22
         }
       ],
-      "json_bytes": 23328276,
+      "json_bytes": 23335021,
       "bin_bytes": 4007100,
-      "bake_seconds": 44.66
+      "bake_seconds": 34.88
     },
     {
       "name": "rfic_symmetric_inductor_from_json",
@@ -469,9 +469,9 @@
           "stream_lines": 18
         }
       ],
-      "json_bytes": 17924561,
-      "bin_bytes": 3147316,
-      "bake_seconds": 40.41
+      "json_bytes": 18038424,
+      "bin_bytes": 3158068,
+      "bake_seconds": 41.9
     },
     {
       "name": "rfic_symmetric_transformer_from_json",
@@ -526,9 +526,9 @@
           "stream_lines": 37
         }
       ],
-      "json_bytes": 36009613,
-      "bin_bytes": 5731848,
-      "bake_seconds": 399.24
+      "json_bytes": 36428561,
+      "bin_bytes": 5785848,
+      "bake_seconds": 403.55
     },
     {
       "name": "stepped_impedance_filter",
@@ -577,9 +577,9 @@
           "stream_lines": 55
         }
       ],
-      "json_bytes": 66289415,
+      "json_bytes": 66289398,
       "bin_bytes": 9680696,
-      "bake_seconds": 70.62
+      "bake_seconds": 70.34
     },
     {
       "name": "wr90",
@@ -628,7 +628,7 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3734647,
+      "json_bytes": 3734639,
       "bin_bytes": 522712,
       "bake_seconds": 2.14
     },
@@ -679,9 +679,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 3696440,
+      "json_bytes": 3696444,
       "bin_bytes": 456416,
-      "bake_seconds": 3.59
+      "bake_seconds": 3.49
     }
   ]
 }
