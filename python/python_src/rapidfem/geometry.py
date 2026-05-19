@@ -639,8 +639,9 @@ class Geometry:
 
         Each polygon on a (gds, datatype) tuple in `stack` becomes a 3D box
         (rectangles) or extruded prism (general polygons) at the layer's z with
-        the layer's thickness. All polygons of one layer get the layer's name
-        as a physical-group tag so the SimulationBuilder can wire them by name.
+        the layer's thickness. All polygons of one layer share the layer's
+        name on the resulting GeoObject so they can be batch-selected and
+        passed to `rf.PEC`/`rf.LumpedPort` together.
 
         Args:
             path: Path to the .gds(.gz) file.

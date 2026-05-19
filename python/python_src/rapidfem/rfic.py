@@ -12,15 +12,21 @@ the same JSON describes geometry on both sides:
 
 Typical workflow::
 
-    import rapidfem
+    import rapidfem as rf
     import rapidfem.rfic as rfic
 
-    stack = rfic.Stack.sky130()              # PDK preset
-    g = rapidfem.Geometry.from_gds(           # GDS-driven extrusion (see geometry.py)
+    stack = rfic.Stack.sky130()                       # PDK preset
+    g = rf.Geometry.from_gds(                         # GDS-driven extrusion
         "inductor.gds", stack=stack, top_cell="ind_3turn",
     )
-    air = g.add_air_box(extent=200e-6)        # convenience over the stack
-    sim = rapidfem.SimulationBuilder()...     # standard pipeline
+    subs = stack.create_substrate(g, footprint=(400e-6, 400e-6))
+    air = g.box(400e-6, 400e-6, 200e-6,               # ABC enclosure
+                position=(-200e-6, -200e-6, stack.top_z),
+                material=rf.Air())
+    rf.PEC(...)                                       # trace + ground BCs
+    rf.LumpedPort(...)
+    g.mesh()
+    result = rf.Problem(g).sweep([1e9, 5e9, 10e9])
 
 For hand-coded layouts, primitives live below: ``microstrip``, ``via``,
 ``gsg_port``, ``differential_port``.
@@ -258,12 +264,20 @@ class Stack:
         """Instantiate the silicon substrate slab and a bulk-oxide slab spanning
         from the substrate top to the stack's top.
 
-        Returns a dict of named GeoObjects (`substrate`, `oxide`). Materials are
-        auto-assigned from the stack parameters. If ``fragment_existing=True``
-        (the default) and the geometry already contains 3D primitives (e.g. metal
-        traces from `Geometry.from_gds`), they are fragmented into the new oxide
-        slab so the resulting mesh is conformal at every interface.
+        Each block is created with a fully-instantiated ``rf.Dielectric``
+        derived from the stack constants — drop the returned objects straight
+        into the Problem API, no extra material wiring needed.
+
+        Returns a dict of named GeoObjects (`substrate`, `oxide`). If
+        ``fragment_existing=True`` (the default) and the geometry already
+        contains 3D primitives (e.g. metal traces from `Geometry.from_gds`),
+        they are fragmented into the new oxide slab so the resulting mesh is
+        conformal at every interface.
         """
+        # Local import — avoids a circular at module load (rapidfem.__init__
+        # imports rapidfem.rfic).
+        from rapidfem.materials import Dielectric
+
         wx, wy = footprint
         x0 = -wx / 2 if center else 0.0
         y0 = -wy / 2 if center else 0.0
@@ -272,17 +286,20 @@ class Stack:
         # Snapshot existing 3D objects BEFORE adding substrate/oxide
         existing_3d = [o for o in g._objects if o.dim == 3]
 
+        silicon = Dielectric(er=self.substrate_er, conductivity=self.substrate_sigma)
+        sio2 = Dielectric(er=self.oxide_er, tand=self.oxide_tand)
+
         sub = g.box(wx, wy, self.substrate_thickness,
-                    position=(x0, y0, z_top - self.substrate_thickness))
+                    position=(x0, y0, z_top - self.substrate_thickness),
+                    material=silicon)
         sub.name = "substrate"
-        sub.material = "substrate"
 
         oxide_height = self.top_z - z_top
         ox = None
         if oxide_height > 0:
-            ox = g.box(wx, wy, oxide_height, position=(x0, y0, z_top))
+            ox = g.box(wx, wy, oxide_height, position=(x0, y0, z_top),
+                       material=sio2)
             ox.name = "oxide"
-            ox.material = "oxide"
 
         # Fragment with all pre-existing 3D primitives so interfaces are conformal.
         # Critical: do this in ONE call. Two sequential fragment ops carve the
@@ -294,15 +311,6 @@ class Stack:
             g.fragment(sub, *others)
 
         return {"substrate": sub} | ({"oxide": ox} if ox is not None else {})
-
-    def material_specs(self) -> list[dict]:
-        """Material dicts for the SimulationBuilder. One for substrate, one for
-        oxide. Metal materials are usually wired as PEC at this scale, but you
-        can also add a per-metal `surface_impedance` BC manually."""
-        return [
-            dict(name="substrate", er=self.substrate_er, conductivity=self.substrate_sigma),
-            dict(name="oxide", er=self.oxide_er, tand=self.oxide_tand),
-        ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,10 +372,17 @@ def via(
 
 @dataclass
 class TracePort:
-    """Result of `rfic.trace_port`: ground patch + port plate, ready to be wired
-    into the SimulationBuilder. Both top and bottom edges of the port plate
-    fully touch a PEC piece (the trace's bottom face above, the ground patch
-    below) so the lumped-port BC sees a clean voltage gap."""
+    """Result of `rfic.trace_port`: extension pad on the trace layer, a ground
+    patch below, and a vertical port plate. Both top and bottom edges of the
+    port plate fully touch PEC (extension pad above, ground pad below) so the
+    lumped-port BC sees a clean voltage gap.
+
+    Wire it as::
+
+        tp = rfic.trace_port(g, stack, layer="met5", position=(...))
+        rf.PEC(trace, tp.trace_extension, tp.ground_pad)
+        rf.LumpedPort(tp.port_plate, direction=(0, 0, 1), z0=50.0)
+    """
     trace_extension: "GeoObject"   # small pad welded onto the trace at port location
     ground_pad: "GeoObject"
     port_plate: "GeoObject"
@@ -381,7 +396,6 @@ def trace_port(
     position: tuple[float, float],
     gnd_layer: str = "li1",
     extension_size: float = 4e-6,
-    name: str = "port",
     fragment_with: Iterable["GeoObject"] = (),
 ) -> TracePort:
     """Place a vertical lumped-port plate at a trace's edge with proper
@@ -405,11 +419,10 @@ def trace_port(
     cx, cy = position
     half = extension_size / 2
 
-    # 1. Extension pad on the trace layer — must inherit the trace's `layer`
-    # name so the SimulationBuilder marks it PEC alongside the rest of the trace
+    # 1. Extension pad on the trace layer — co-PEC with the rest of the trace,
+    # so the port plate's top edge always lands on metal.
     extension = g.box(extension_size, extension_size, pdk_trace.thickness,
                       position=(cx - half, cy - half, z_trace))
-    extension.name = layer
 
     # 2. Ground pad
     ground = g.xy_plate(extension_size, extension_size,
@@ -421,8 +434,6 @@ def trace_port(
         width=(0, extension_size, 0),
         height=(0, 0, z_trace - z_gnd_top),
     )
-    port_plate.name = name
-    ground.name = f"{name}_gnd"
 
     # 4. Fragment with surrounding volumes so all interfaces are conformal.
     # Always fragment ground+port with oxide at minimum.
@@ -453,9 +464,11 @@ def gsg_port(
     """Coplanar Ground-Signal-Ground probe pad on a named metal layer.
 
     Three coplanar pads (signal centered, two grounds at ``±pitch``) plus a
-    vertical lumped-port plate spanning the pad-to-pad gap. Mark the pads with
-    ``signal_pec``/``ground_pec`` and the port plate with a ``feed`` name in
-    your SimulationBuilder.
+    vertical lumped-port plate spanning the signal-to-ground gap. Wire up as::
+
+        gp = rfic.gsg_port(g, stack, layer="met5", center=(0, 0))
+        rf.PEC(gp.signal_pad, *gp.ground_pads)
+        rf.LumpedPort(gp.port_plate, direction=(1, 0, 0), z0=50.0)
     """
     pdk_layer = stack.by_name(layer)
     z_metal = pdk_layer.z
