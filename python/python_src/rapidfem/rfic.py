@@ -735,7 +735,12 @@ def from_fem_json(
 
     # Build the enclosure. Global maxh = ~10% of the smaller in-plane span —
     # finer-than-bulk meshing of conductors is set per-volume via maxh.
-    g = _Geometry(maxh=min(foot_w, foot_h) / 10)
+    # scale=1e-6: gmsh OCC stores coords in µm internally (dilated back to
+    # metres before meshing) so the kernel's relative tolerances apply to
+    # µm-scale features. Without normalisation, tight RFIC structures
+    # (mom_cap fingers, fine spacings) trip OCC's "segment/facet intersect"
+    # error during mesh.generate.
+    g = _Geometry(maxh=min(foot_w, foot_h) / 10, scale=1e-6)
 
     substrate = g.box(foot_w, foot_h, sub_thickness_um * 1e-6,
                       position=(cx_m - foot_w / 2, cy_m - foot_h / 2,
