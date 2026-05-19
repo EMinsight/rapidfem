@@ -45,7 +45,7 @@ rf.show(layout.geometry)
 
 # %% Wire BCs: every conductor PEC, all 5 ports lumped, outer air ABC
 all_volumes = [v for vols in layout.conductors.values() for v in vols]
-rf.PEC(*(v.faces for v in all_volumes), layout.ground)
+rf.PEC(*(v.faces for v in all_volumes), *layout.ground_patches)
 
 for port in layout.ports.values():
     rf.LumpedPort(port, direction=(0, 0, 1), z0=50.0)

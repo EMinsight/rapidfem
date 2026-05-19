@@ -586,7 +586,8 @@ class FemLayoutResult:
     geometry: "Geometry"
     conductors: dict[str, list["GeoObject"]]   # stack-layer id → 3-D conductor volumes
     ports: dict[str, "GeoObject"]               # port name → 2-D port plate
-    ground: "GeoObject"                         # shared local ground patch on the lowest metal
+    ground: "GeoObject"                         # alias for the first ground patch
+    ground_patches: list                        # one local ground per port (may merge)
     substrate: "GeoObject"
     oxide: "GeoObject"
     air: "GeoObject"
@@ -808,42 +809,91 @@ def from_fem_json(
 
         resolved_ports.append((p["name"], lay, px, py, z_top))
 
-    # Ground patch covering every port footprint with a margin.
-    if resolved_ports:
-        pxs = [r[2] for r in resolved_ports]
-        pys = [r[3] for r in resolved_ports]
-        gpad = max(port_tab_m, 4e-6)
-        g_xmin = min(pxs) - gpad
-        g_xmax = max(pxs) + gpad
-        g_ymin = min(pys) - gpad
-        g_ymax = max(pys) + gpad
-        ground = g.xy_plate(g_xmax - g_xmin, g_ymax - g_ymin,
-                            position=(g_xmin, g_ymin, gnd_z),
-                            maxh=port_maxh)
-    else:
-        # No ports → caller will wire their own; give a dummy 1-µm patch.
-        ground = g.xy_plate(1e-6, 1e-6,
-                            position=(cx_m, cy_m, gnd_z), maxh=port_maxh)
-
+    # Port plates with width TANGENT to the layout edge. A port on the right
+    # of the layout (radial ≈ +x) gets width in y; one on the bottom
+    # (radial ≈ -y) gets width in x.
     port_objects: dict[str, "GeoObject"] = {}
     for name, _lay, px, py, z_top in resolved_ports:
+        rx, ry = px - cx_m, py - cy_m
+        rnorm = math.hypot(rx, ry)
+        if rnorm > 1e-15:
+            tx, ty = -ry / rnorm, rx / rnorm
+        else:
+            tx, ty = 0.0, 1.0     # fallback for port at the layout centre
+
+        w_x = tx * port_tab_m
+        w_y = ty * port_tab_m
+        p0 = (px - tx * port_tab_m / 2,
+              py - ty * port_tab_m / 2,
+              gnd_z)
         port = g.plate(
-            p0=(px, py - port_tab_m / 2, gnd_z),
-            width=(0, port_tab_m, 0),
+            p0=p0,
+            width=(w_x, w_y, 0),
             height=(0, 0, z_top - gnd_z),
             maxh=port_maxh,
         )
         port.name = name
         port_objects[name] = port
 
+    # Cluster ports by proximity so co-located ports (e.g. spiral inductor
+    # outer + inner tabs) share a common ground reference, while ports on
+    # opposite ends of the layout (transformer primary vs secondary) keep
+    # independent local grounds. Threshold = 4× port-tab — close enough that
+    # GSG-style adjacent ports cluster, far enough that ports separated by
+    # the layout body don't.
+    cluster_dist = 4 * port_tab_m
+    parent = list(range(len(resolved_ports)))
+    def _find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    def _union(i, j):
+        ri, rj = _find(i), _find(j)
+        if ri != rj:
+            parent[ri] = rj
+    for i, (_, _, xi, yi, _) in enumerate(resolved_ports):
+        for j in range(i + 1, len(resolved_ports)):
+            _, _, xj, yj, _ = resolved_ports[j]
+            if math.hypot(xi - xj, yi - yj) < cluster_dist:
+                _union(i, j)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(len(resolved_ports)):
+        clusters.setdefault(_find(i), []).append(i)
+
+    # One ground patch per cluster, sized to contain every cluster member
+    # plus a tab-pitch margin so port plates land cleanly inside it.
+    gpad = max(port_tab_m, 4e-6)
+    ground_patches: list = []
+    for members in clusters.values():
+        xs = [resolved_ports[i][2] for i in members]
+        ys = [resolved_ports[i][3] for i in members]
+        gx_min, gx_max = min(xs) - gpad, max(xs) + gpad
+        gy_min, gy_max = min(ys) - gpad, max(ys) + gpad
+        gnd_patch = g.xy_plate(
+            gx_max - gx_min, gy_max - gy_min,
+            position=(gx_min, gy_min, gnd_z),
+            maxh=port_maxh,
+        )
+        gnd_patch.name = "gnd_" + "_".join(resolved_ports[i][0] for i in members)
+        ground_patches.append(gnd_patch)
+
+    # `ground` is the first cluster's patch for back-compat; users wanting
+    # every cluster iterate FemLayoutResult.ground_patches.
+    ground = ground_patches[0] if ground_patches else g.xy_plate(
+        1e-6, 1e-6, position=(cx_m, cy_m, gnd_z), maxh=port_maxh)
+
     # One conformal fragment over everything that lives inside oxide + air.
-    g.fragment(oxide, substrate, *all_conductors, ground, *port_objects.values(), air)
+    g.fragment(oxide, substrate, *all_conductors,
+               *ground_patches, *port_objects.values(), air)
 
     return FemLayoutResult(
         geometry=g,
         conductors=conductor_objects,
         ports=port_objects,
         ground=ground,
+        ground_patches=ground_patches,
         substrate=substrate,
         oxide=oxide,
         air=air,
