@@ -369,6 +369,45 @@ class EntityCollection:
         except Exception:
             return EntityCollection(self._geometry, list(self._entities))
         xmin, ymin, zmin, xmax, ymax, zmax = bb
+        # gmsh's getBoundingBox(-1, -1) returns ±1e+106 on any axis whenever
+        # the model contains a degenerate or unbounded entity (we hit this
+        # with the mom-cap 200-via cluster — fragment leaves slivers that
+        # gmsh's bbox accumulator treats as infinite). When that happens the
+        # naive extremum-match below filters every face out and the caller
+        # gets an empty collection, which torpedoes any `rf.ABC(*air.faces
+        # .outer, ...)` wiring downstream. Fall back to the union of every
+        # tracked entity's bbox — those are real getBoundingBox results for
+        # specific entities so they don't carry the infinity.
+        _UNBOUNDED = 1e10
+        def _is_finite_bbox(b):
+            return all(abs(v) < _UNBOUNDED for v in b)
+        if not _is_finite_bbox((xmin, ymin, zmin, xmax, ymax, zmax)):
+            # gmsh.getBoundingBox(-1, -1) returns ±1e100 when the model has
+            # degenerate entities (e.g. mom-cap's 200-via cluster leaves
+            # fragment slivers gmsh treats as infinite). Substituting a
+            # global union over all tracked entities doesn't help either —
+            # those same slivers carry the infinite bbox, AND non-sliver
+            # volumes like substrate/oxide/air sometimes end up with
+            # different post-fragment footprints from each other.
+            # Best fallback: pick extremes from THIS collection's faces
+            # only. For `air.faces.outer`, that means we compare air's
+            # outer faces against the bbox of air alone — exactly what the
+            # caller intuitively expects.
+            xs0, ys0, zs0, xs1, ys1, zs1 = (
+                math.inf, math.inf, math.inf, -math.inf, -math.inf, -math.inf)
+            for e in self._entities:
+                if not _is_finite_bbox(e.bbox):
+                    continue
+                ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
+                if ex0 < xs0: xs0 = ex0
+                if ey0 < ys0: ys0 = ey0
+                if ez0 < zs0: zs0 = ez0
+                if ex1 > xs1: xs1 = ex1
+                if ey1 > ys1: ys1 = ey1
+                if ez1 > zs1: zs1 = ez1
+            if math.isfinite(xs0):
+                xmin, ymin, zmin = xs0, ys0, zs0
+                xmax, ymax, zmax = xs1, ys1, zs1
         # gmsh's getBoundingBox inflates the box by ~1e-7 m on each side, so
         # face-bbox extents that should be "zero" come back as ±1e-7. The
         # COG/BBOX matcher used elsewhere can keep its 1e-9 tolerance (it's
