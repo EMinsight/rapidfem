@@ -15,8 +15,8 @@ jobs:
     name: Build SvelteKit frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -27,7 +27,7 @@ jobs:
           npm ci
           npm run build
       - name: Upload frontend dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: python/python_src/rapidfem/ui/frontend/dist
@@ -43,14 +43,14 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.10']  # abi3 wheel covers >=3.10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Download frontend dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: python/python_src/rapidfem/ui/frontend/dist
@@ -59,7 +59,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -84,7 +84,7 @@ jobs:
         run: maturin build --release --strip --out dist
 
       - name: Upload wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
@@ -95,12 +95,12 @@ jobs:
     needs: build-frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Download frontend dist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: frontend-dist
           path: python/python_src/rapidfem/ui/frontend/dist
@@ -110,7 +110,7 @@ jobs:
       - name: Build sdist
         working-directory: python
         run: maturin sdist --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: python/dist/*.tar.gz
@@ -131,14 +131,14 @@ jobs:
       id-token: write  # OIDC token for PyPI Trusted Publishing
     steps:
       - name: Download all wheels + sdist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: 'wheel-*'
           merge-multiple: true
 
       - name: Download sdist
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist
