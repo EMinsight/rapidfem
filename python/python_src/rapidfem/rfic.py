@@ -832,6 +832,47 @@ def from_fem_json(
                 return True
         return False
 
+    def _polygon_at(layer_id, px, py):
+        """Return the (xs, ys) of the conductor polygon on `layer_id` whose
+        bbox covers (px, py), or None."""
+        for c in conductors_doc:
+            if c["layer"] != layer_id:
+                continue
+            poly = c["polygon"]
+            xs = [pt[0] * 1e-6 for pt in poly]
+            ys = [pt[1] * 1e-6 for pt in poly]
+            if min(xs) <= px <= max(xs) and min(ys) <= py <= max(ys):
+                return (min(xs), max(xs), min(ys), max(ys))
+        return None
+
+    def _polygons_same_net(top_id, top_xy, bot_id, bot_xy):
+        """True if the polygons (top_xy on top_id, bot_xy on bot_id) are
+        bridged by a via polygon (on any via-type layer between them)
+        that sits inside BOTH bboxes. Means electrically same-net → not a
+        valid lumped-port ground reference."""
+        if top_xy is None or bot_xy is None:
+            return False
+        top_layer = layer_by_id[top_id]
+        bot_layer = layer_by_id[bot_id]
+        z_lo, z_hi = bot_layer["z_um"], top_layer["z_um"]
+        for vl in layers_doc:
+            if vl["type"] != "via" or not (z_lo < vl["z_um"] < z_hi):
+                continue
+            for c in conductors_doc:
+                if c["layer"] != vl["id"]:
+                    continue
+                poly = c["polygon"]
+                vxs = [pt[0] * 1e-6 for pt in poly]
+                vys = [pt[1] * 1e-6 for pt in poly]
+                cx = 0.5 * (min(vxs) + max(vxs))
+                cy = 0.5 * (min(vys) + max(vys))
+                tx0, tx1, ty0, ty1 = top_xy
+                bx0, bx1, by0, by1 = bot_xy
+                if (tx0 <= cx <= tx1 and ty0 <= cy <= ty1 and
+                        bx0 <= cx <= bx1 and by0 <= cy <= by1):
+                    return True
+        return False
+
     resolved_ports = []
     for p in ports_doc:
         lay = _resolve_port_layer(p["layer"])
@@ -858,13 +899,22 @@ def from_fem_json(
                       + metal_below_by_z[0]["thickness_um"]) * 1e-6
         port_needs_local_patch = True
         port_z = port_layer["z_um"]
+        port_xy_box = _polygon_at(lay, px, py)
         for cand in reversed(metal_below_by_z):
             if cand["z_um"] >= port_z:
                 continue
-            if _conductor_covers(cand["id"], px, py):
-                port_gnd_z = (cand["z_um"] + cand["thickness_um"]) * 1e-6
-                port_needs_local_patch = False
-                break
+            cand_xy_box = _polygon_at(cand["id"], px, py)
+            if cand_xy_box is None:
+                continue
+            # Skip same-net candidates: a via polygon between port_metal and
+            # cand that lands inside both polygons connects them
+            # electrically — using cand's top face as the port reference
+            # would short the lumped port.
+            if _polygons_same_net(lay, port_xy_box, cand["id"], cand_xy_box):
+                continue
+            port_gnd_z = (cand["z_um"] + cand["thickness_um"]) * 1e-6
+            port_needs_local_patch = False
+            break
 
         resolved_ports.append((p["name"], lay, px, py, z_top,
                                port_gnd_z, port_needs_local_patch))
