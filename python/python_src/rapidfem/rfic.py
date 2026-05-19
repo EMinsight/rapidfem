@@ -768,12 +768,26 @@ def from_fem_json(
         if via_mode == "cells" and c.get("polygon_cells"):
             polys = c["polygon_cells"]
 
+        # Holes (annular conductors: rat-race ring, guard ring) — only the
+        # primary `polygon` entry carries holes; per-cell arrays are
+        # individual solid pieces with no holes.
+        holes_um = c.get("holes") if polys is not c.get("polygon_cells") else None
+
         for poly_um in polys:
             cleaned = _clean_polygon_um(poly_um)
             if len(cleaned) < 3:
                 continue
             pts_3d = [(x * 1e-6, y * 1e-6, z_lo) for x, y in cleaned]
-            face = g.polygon(pts_3d)
+            poly_kwargs = {}
+            if holes_um:
+                cleaned_holes = [_clean_polygon_um(h) for h in holes_um]
+                cleaned_holes = [
+                    [(x * 1e-6, y * 1e-6, z_lo) for x, y in h]
+                    for h in cleaned_holes if len(h) >= 3
+                ]
+                if cleaned_holes:
+                    poly_kwargs["holes"] = cleaned_holes
+            face = g.polygon(pts_3d, **poly_kwargs)
             vol = g.extrude(face, height=thick, material=oxide.material,
                             maxh=cond_maxh)
             vol.name = layer_id
@@ -790,10 +804,34 @@ def from_fem_json(
                    else port_tab_um / 2) * 1e-6
     port_maxh  = port_maxh_um * 1e-6
 
+    # Per-port ground reference: walk z-stack down from each port's metal
+    # and use the topmost lower metal that has a conductor covering the
+    # port's (inset) xy. That way ratrace / patch / microstrip pick up the
+    # generator's own ground plane (port plate stays in the substrate-to-
+    # trace gap), while sparser layouts like spiral fall through to the
+    # lowest metal and get a synthesised local ground patch added below.
+    metal_below_by_z = sorted(
+        (l for l in layers_doc if l["type"] == "metal"),
+        key=lambda l: l["z_um"],
+    )
+
+    def _conductor_covers(layer_id, px, py):
+        """Naive bbox-in-polygons check on conductors emitted on `layer_id`."""
+        for c in conductors_doc:
+            if c["layer"] != layer_id:
+                continue
+            poly = c["polygon"]
+            xs = [pt[0] * 1e-6 for pt in poly]
+            ys = [pt[1] * 1e-6 for pt in poly]
+            if min(xs) <= px <= max(xs) and min(ys) <= py <= max(ys):
+                return True
+        return False
+
     resolved_ports = []
     for p in ports_doc:
         lay = _resolve_port_layer(p["layer"])
-        z_top = layer_by_id[lay]["z_um"] * 1e-6     # bottom of the port's metal
+        port_layer = layer_by_id[lay]
+        z_top = port_layer["z_um"] * 1e-6     # bottom of the port's metal
         px_raw = p["x_um"] * 1e-6
         py_raw = p["y_um"] * 1e-6
 
@@ -807,13 +845,31 @@ def from_fem_json(
         else:
             px, py = px_raw, py_raw
 
-        resolved_ports.append((p["name"], lay, px, py, z_top))
+        # Find this port's local ground: highest metal below the port's
+        # metal that has a conductor covering (px, py). Fall back to the
+        # lowest metal (li1 / poly) if none — we synthesise a local gnd
+        # patch on that.
+        port_gnd_z = (metal_below_by_z[0]["z_um"]
+                      + metal_below_by_z[0]["thickness_um"]) * 1e-6
+        port_needs_local_patch = True
+        port_z = port_layer["z_um"]
+        for cand in reversed(metal_below_by_z):
+            if cand["z_um"] >= port_z:
+                continue
+            if _conductor_covers(cand["id"], px, py):
+                port_gnd_z = (cand["z_um"] + cand["thickness_um"]) * 1e-6
+                port_needs_local_patch = False
+                break
 
-    # Port plates with width TANGENT to the layout edge. A port on the right
-    # of the layout (radial ≈ +x) gets width in y; one on the bottom
-    # (radial ≈ -y) gets width in x.
+        resolved_ports.append((p["name"], lay, px, py, z_top,
+                               port_gnd_z, port_needs_local_patch))
+
+    # Port plates with width TANGENT to the layout edge and PER-PORT gnd_z.
+    # A port that sits over an existing ground plane stops at that plane;
+    # a port without anything beneath drops to the lowest metal and we
+    # synthesise a local ground patch there.
     port_objects: dict[str, "GeoObject"] = {}
-    for name, _lay, px, py, z_top in resolved_ports:
+    for name, _lay, px, py, z_top, port_gnd_z, _needs in resolved_ports:
         rx, ry = px - cx_m, py - cy_m
         rnorm = math.hypot(rx, ry)
         if rnorm > 1e-15:
@@ -825,22 +881,22 @@ def from_fem_json(
         w_y = ty * port_tab_m
         p0 = (px - tx * port_tab_m / 2,
               py - ty * port_tab_m / 2,
-              gnd_z)
+              port_gnd_z)
         port = g.plate(
             p0=p0,
             width=(w_x, w_y, 0),
-            height=(0, 0, z_top - gnd_z),
+            height=(0, 0, z_top - port_gnd_z),
             maxh=port_maxh,
         )
         port.name = name
         port_objects[name] = port
 
-    # Cluster ports by proximity so co-located ports (e.g. spiral inductor
-    # outer + inner tabs) share a common ground reference, while ports on
-    # opposite ends of the layout (transformer primary vs secondary) keep
-    # independent local grounds. Threshold = 4× port-tab — close enough that
-    # GSG-style adjacent ports cluster, far enough that ports separated by
-    # the layout body don't.
+    # Only synthesise local ground patches for ports that have no real
+    # ground plane below them. Cluster those by proximity so co-located
+    # ports share a patch (GSG-style).
+    needs_local = [
+        i for i, rp in enumerate(resolved_ports) if rp[6]   # _needs flag
+    ]
     cluster_dist = 4 * port_tab_m
     parent = list(range(len(resolved_ports)))
     def _find(i):
@@ -852,18 +908,18 @@ def from_fem_json(
         ri, rj = _find(i), _find(j)
         if ri != rj:
             parent[ri] = rj
-    for i, (_, _, xi, yi, _) in enumerate(resolved_ports):
-        for j in range(i + 1, len(resolved_ports)):
-            _, _, xj, yj, _ = resolved_ports[j]
+    for ii in range(len(needs_local)):
+        for jj in range(ii + 1, len(needs_local)):
+            i, j = needs_local[ii], needs_local[jj]
+            xi, yi = resolved_ports[i][2], resolved_ports[i][3]
+            xj, yj = resolved_ports[j][2], resolved_ports[j][3]
             if math.hypot(xi - xj, yi - yj) < cluster_dist:
                 _union(i, j)
 
     clusters: dict[int, list[int]] = {}
-    for i in range(len(resolved_ports)):
+    for i in needs_local:
         clusters.setdefault(_find(i), []).append(i)
 
-    # One ground patch per cluster, sized to contain every cluster member
-    # plus a tab-pitch margin so port plates land cleanly inside it.
     gpad = max(port_tab_m, 4e-6)
     ground_patches: list = []
     for members in clusters.values():
@@ -871,18 +927,22 @@ def from_fem_json(
         ys = [resolved_ports[i][3] for i in members]
         gx_min, gx_max = min(xs) - gpad, max(xs) + gpad
         gy_min, gy_max = min(ys) - gpad, max(ys) + gpad
+        # All ports in a cluster share the same gnd_z (they routed there
+        # because nothing covered them on any higher metal).
+        cluster_gnd_z = resolved_ports[members[0]][5]
         gnd_patch = g.xy_plate(
             gx_max - gx_min, gy_max - gy_min,
-            position=(gx_min, gy_min, gnd_z),
+            position=(gx_min, gy_min, cluster_gnd_z),
             maxh=port_maxh,
         )
         gnd_patch.name = "gnd_" + "_".join(resolved_ports[i][0] for i in members)
         ground_patches.append(gnd_patch)
 
-    # `ground` is the first cluster's patch for back-compat; users wanting
-    # every cluster iterate FemLayoutResult.ground_patches.
     ground = ground_patches[0] if ground_patches else g.xy_plate(
-        1e-6, 1e-6, position=(cx_m, cy_m, gnd_z), maxh=port_maxh)
+        1e-6, 1e-6,
+        position=(cx_m, cy_m,
+                  (metals_by_z[0]['z_um'] + metals_by_z[0]['thickness_um']) * 1e-6),
+        maxh=port_maxh)
 
     # One conformal fragment over everything that lives inside oxide + air.
     g.fragment(oxide, substrate, *all_conductors,

@@ -661,8 +661,11 @@ class Geometry:
         # units so the resulting mesh nodes land at the original meter
         # coordinates the FEM solver expects.
         self._scale = float(scale)
-        gmsh.option.setNumber("Geometry.Tolerance", 1e-7)
-        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-7)
+        # Default tolerance is 1e-7 m — comparable to a µm feature, which
+        # makes boolean ops/mesh struggle at RFIC scale. Drop two orders so
+        # the tolerance lives well below any feature the FEM cares about.
+        gmsh.option.setNumber("Geometry.Tolerance", 1e-9)
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-9)
         gmsh.model.add(name)
         self._objects: list[GeoObject] = []
         self._entities: list[_Entity] = []  # all named-or-trackable entities
@@ -1336,6 +1339,7 @@ class Geometry:
     def polygon(self, points: Iterable[tuple[float, ...]],
                 position: tuple[float, float, float] = (0, 0, 0),
                 *,
+                holes: "list[list[tuple]] | None" = None,
                 maxh: float | None = None) -> GeoObject:
         """add a planar polygon face
 
@@ -1384,19 +1388,53 @@ class Geometry:
             raise ValueError("polygon needs at least 3 vertices")
         x0, y0, z0 = position
         s = self._s
-        vtags = []
-        for p in pts:
-            if len(p) == 2:
-                vtags.append(gmsh.model.occ.addPoint(s(p[0] + x0), s(p[1] + y0), s(z0)))
-            elif len(p) == 3:
-                vtags.append(gmsh.model.occ.addPoint(s(p[0] + x0), s(p[1] + y0), s(p[2] + z0)))
-            else:
-                raise ValueError(f"polygon point must be (x,y) or (x,y,z), got {p!r}")
-        n = len(vtags)
-        ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]
-        loop = gmsh.model.occ.addCurveLoop(ltags)
-        tag = gmsh.model.occ.addPlaneSurface([loop])
-        return self._wrap_face(tag, maxh=maxh)
+
+        def _build_loop(loop_pts):
+            vtags = []
+            for p in loop_pts:
+                if len(p) == 2:
+                    vtags.append(gmsh.model.occ.addPoint(
+                        s(p[0] + x0), s(p[1] + y0), s(z0)))
+                elif len(p) == 3:
+                    vtags.append(gmsh.model.occ.addPoint(
+                        s(p[0] + x0), s(p[1] + y0), s(p[2] + z0)))
+                else:
+                    raise ValueError(
+                        f"polygon point must be (x,y) or (x,y,z), got {p!r}")
+            n = len(vtags)
+            lt = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n])
+                  for i in range(n)]
+            return gmsh.model.occ.addCurveLoop(lt)
+
+        outer_loop = _build_loop(pts)
+        if not holes:
+            tag = gmsh.model.occ.addPlaneSurface([outer_loop])
+            return self._wrap_face(tag, maxh=maxh)
+
+        # For polygon-with-holes we go through Boolean cut: build the outer
+        # disc and each hole as separate plane surfaces, then subtract.
+        # gmsh's multi-loop addPlaneSurface form is brittle when followed by
+        # extrude (PLC errors at facet intersections); cut delivers a clean
+        # BREP that meshes reliably.
+        outer_surf = gmsh.model.occ.addPlaneSurface([outer_loop])
+        hole_surfs = []
+        for h in holes:
+            hp = list(h)
+            if len(hp) < 3:
+                continue
+            hl = _build_loop(hp)
+            hole_surfs.append(gmsh.model.occ.addPlaneSurface([hl]))
+        if not hole_surfs:
+            return self._wrap_face(outer_surf, maxh=maxh)
+        out, _ = gmsh.model.occ.cut(
+            [(2, outer_surf)],
+            [(2, hs) for hs in hole_surfs],
+        )
+        gmsh.model.occ.synchronize()
+        result_tag = next((t for d_, t in out if d_ == 2), None)
+        if result_tag is None:
+            raise RuntimeError("polygon-with-holes cut produced no surface")
+        return self._wrap_face(result_tag, maxh=maxh)
 
     def disc(self, radius: float,
              position: tuple[float, float, float] = (0, 0, 0),
