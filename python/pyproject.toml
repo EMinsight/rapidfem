@@ -53,6 +53,7 @@ module-name = "rapidfem._native"
 python-source = "python_src"
 include = [
     { path = "python_src/rapidfem/ui/frontend/dist/**/*", format = ["sdist", "wheel"] },
+    { path = "python_src/rapidfem/examples/*.fem.json", format = ["sdist", "wheel"] },
 ]
 # Pre-baked demo cases (~150 MB) are only consumed by the static GitHub Pages
 # build; the locally-served UI computes its own examples. Excluded here so the
