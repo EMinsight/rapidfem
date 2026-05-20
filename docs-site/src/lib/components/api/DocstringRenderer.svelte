@@ -197,7 +197,6 @@
 	/* Parameter / attribute tables */
 	.docstring-content :global(.param-table-wrapper) {
 		margin: var(--space-md) 0;
-		overflow-x: auto;
 	}
 
 	.docstring-content :global(.param-table) {
@@ -223,7 +222,7 @@
 	}
 
 	.docstring-content :global(.param-table tbody tr:last-child td) {
-		border-bottom: none;
+		border-bottom: 1px solid var(--border);
 	}
 
 	.docstring-content :global(.param-table .param-name code) {

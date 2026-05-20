@@ -442,6 +442,7 @@ input::placeholder {
 .install-card {
 	display: flex;
 	flex-direction: column;
+	gap: 0;
 	border: 1px solid var(--border);
 	overflow: hidden;
 	background: transparent;
@@ -521,27 +522,23 @@ input::placeholder {
 	letter-spacing: 0.5px;
 }
 
-/* Scrollbar */
+/* Scrollbar — matches the RapidPassives / RapidFEM app */
 * {
-	scrollbar-color: var(--border-focus) transparent;
+	scrollbar-color: var(--border) var(--surface);
 	scrollbar-width: thin;
 }
 
 ::-webkit-scrollbar {
-	width: 8px;
-	height: 8px;
+	width: 6px;
+	height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-	background: transparent;
+	background: var(--surface);
 }
 
 ::-webkit-scrollbar-thumb {
-	background: var(--border-focus);
-}
-
-::-webkit-scrollbar-thumb:hover {
-	background: var(--text-muted);
+	background: var(--border);
 }
 
 /* Selection */
