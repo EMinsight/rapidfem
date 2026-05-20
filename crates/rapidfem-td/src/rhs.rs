@@ -299,6 +299,65 @@ impl MaxwellOperator {
     }
 }
 
+/// Compressed-sparse-row matrix — the explicit state-space operator `A`.
+pub struct CsrMatrix {
+    /// Dimension.
+    pub n: usize,
+    /// Row offsets, length `n + 1`.
+    pub row_ptr: Vec<usize>,
+    /// Column index of each stored entry.
+    pub col_idx: Vec<usize>,
+    /// Stored values.
+    pub values: Vec<f64>,
+}
+
+impl CsrMatrix {
+    /// Number of stored nonzeros.
+    pub fn nnz(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Sparse matrix-vector product `A·x`.
+    pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
+        let mut y = vec![0.0; self.n];
+        for i in 0..self.n {
+            let mut acc = 0.0;
+            for k in self.row_ptr[i]..self.row_ptr[i + 1] {
+                acc += self.values[k] * x[self.col_idx[k]];
+            }
+            y[i] = acc;
+        }
+        y
+    }
+}
+
+impl MaxwellOperator {
+    /// Assemble the operator as an explicit sparse CSR matrix — the
+    /// state-space `A`. Entries below `1e-12` of the largest magnitude are
+    /// dropped. For handing `A` to external tools / model-order reduction.
+    pub fn assemble_sparse(&self) -> CsrMatrix {
+        let n = self.n_dof();
+        let dense = self.assemble_dense();
+        let max = dense.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        let tol = 1e-12 * max;
+        let mut row_ptr = Vec::with_capacity(n + 1);
+        let mut col_idx = Vec::new();
+        let mut values = Vec::new();
+        row_ptr.push(0);
+        for i in 0..n {
+            for j in 0..n {
+                let v = dense[i * n + j];
+                if v.abs() > tol {
+                    col_idx.push(j);
+                    values.push(v);
+                }
+            }
+            row_ptr.push(values.len());
+        }
+        CsrMatrix { n, row_ptr, col_idx, values }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +489,36 @@ mod tests {
         assert!(
             err < 0.05,
             "fundamental |Im| = {im:.4}, analytic π√2 = {want:.4}, rel.err {err:.3}"
+        );
+    }
+
+    #[test]
+    fn sparse_assembly_matches_matrix_free_apply() {
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let csr = op.assemble_sparse();
+        assert_eq!(csr.n, n);
+
+        let v: Vec<f64> =
+            (0..n).map(|i| (1.0 + i as f64 * 0.07).cos()).collect();
+        let sp = csr.matvec(&v);
+        let mf = op.apply(&v);
+        let err: f64 = sp
+            .iter()
+            .zip(&mf)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = mf.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(err < 1e-10 * scale, "sparse vs matrix-free: err {err}");
+        // The DG operator couples only neighbouring elements — genuinely sparse.
+        assert!(
+            csr.nnz() < n * n / 4,
+            "operator not sparse: nnz {} of {}",
+            csr.nnz(),
+            n * n
         );
     }
 }
