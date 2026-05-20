@@ -225,6 +225,32 @@ impl MaxwellOperator {
         6 * self.re.n_nodes * self.n_elem
     }
 
+    /// Global DOF index for a field component at the mesh node nearest
+    /// `point` — the hook for a soft source or a field probe.
+    /// `field`: 0 = E, 1 = H. `comp`: 0 = x, 1 = y, 2 = z.
+    pub fn nearest_node_dof(
+        &self,
+        point: [f64; 3],
+        field: usize,
+        comp: usize,
+    ) -> usize {
+        let np = self.re.n_nodes;
+        let (mut best_d, mut best) = (f64::MAX, 0);
+        for e in 0..self.n_elem {
+            for node in 0..np {
+                let p = self.geom[e].map(self.re.nodes[node]);
+                let d = (p[0] - point[0]).powi(2)
+                    + (p[1] - point[1]).powi(2)
+                    + (p[2] - point[2]).powi(2);
+                if d < best_d {
+                    best_d = d;
+                    best = (e * np + node) * 6 + field * 3 + comp;
+                }
+            }
+        }
+        best
+    }
+
     /// Evaluate `dy/dt = A·y`.
     pub fn apply(&self, y: &[f64]) -> Vec<f64> {
         let np = self.re.n_nodes;
@@ -787,6 +813,42 @@ mod tests {
             "weak convergence — error ratio only {:.1}",
             coarse / fine
         );
+    }
+
+    #[test]
+    fn soft_source_injects_energy() {
+        // A soft source driven from rest by a Gaussian pulse injects field
+        // energy into the cavity.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+
+        // Source: E_z at the cavity centre — which is a node, so exact.
+        let sdof = op.nearest_node_dof([0.5, 0.5, 0.5], 0, 2);
+        assert!(sdof < n);
+        let mut s = vec![0.0; n];
+        s[sdof] = 1.0;
+
+        let mut y = vec![0.0; n];
+        let (t0, tau, h) = (0.3, 0.08, 0.01);
+        for k in 0..80 {
+            let t = k as f64 * h;
+            let g = (-((t - t0) / tau).powi(2)).exp();
+            let b: Vec<f64> = s.iter().map(|x| x * g).collect();
+            y = etd_step(|x| op.apply(x), &y, &b, h, 30);
+        }
+        assert!(y.iter().all(|v| v.is_finite()));
+
+        let mm = op.assemble_energy_mass();
+        let mut energy = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                energy += y[i] * mm[i * n + j] * y[j];
+            }
+        }
+        assert!(energy > 1e-6, "soft source injected no energy: {energy:e}");
     }
 
     #[test]
