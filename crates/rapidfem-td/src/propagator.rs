@@ -132,6 +132,71 @@ where
     r[..n].to_vec()
 }
 
+/// Matrix-free `exp(t·A)·v` with an **automatically chosen** Krylov dimension.
+///
+/// The subspace grows one vector at a time; after each step the Arnoldi
+/// a-posteriori error estimate `β·h_{m+1,m}·|(exp(t·H_m))_{m,1}|` is checked,
+/// and the process stops once it drops below `tol` (or on a lucky breakdown,
+/// or at `max_dim`). Returns the result and the dimension actually used.
+pub fn expmv_adaptive<F>(
+    matvec: F,
+    v: &[f64],
+    t: f64,
+    tol: f64,
+    max_dim: usize,
+) -> (Vec<f64>, usize)
+where
+    F: Fn(&[f64]) -> Vec<f64>,
+{
+    let n = v.len();
+    let beta = norm2(v);
+    if beta == 0.0 {
+        return (vec![0.0; n], 0);
+    }
+    let md = max_dim.max(1);
+    let mut basis: Vec<Vec<f64>> =
+        vec![v.iter().map(|x| x / beta).collect()];
+    let mut h = vec![0.0; md * md];
+
+    for j in 0..md {
+        let mut w = matvec(&basis[j]);
+        for i in 0..=j {
+            let hij = dot(&w, &basis[i]);
+            h[i * md + j] = hij;
+            for k in 0..n {
+                w[k] -= hij * basis[i][k];
+            }
+        }
+        let hn = norm2(&w);
+        let m = j + 1;
+
+        // exp(t·H_m) on the m×m leading block.
+        let mut th = vec![0.0; m * m];
+        for a in 0..m {
+            for b in 0..m {
+                th[a * m + b] = t * h[a * md + b];
+            }
+        }
+        let e = expm(&th, m);
+        let estimate = beta * hn * e[(m - 1) * m].abs();
+
+        if estimate < tol || hn < 1e-12 || m == md {
+            let mut out = vec![0.0; n];
+            for i in 0..m {
+                let c = beta * e[i * m];
+                for k in 0..n {
+                    out[k] += c * basis[i][k];
+                }
+            }
+            return (out, m);
+        }
+
+        h[(j + 1) * md + j] = hn;
+        basis.push(w.iter().map(|x| x / hn).collect());
+    }
+    unreachable!("loop returns at m == md")
+}
+
 fn identity(n: usize) -> Vec<f64> {
     let mut m = vec![0.0; n * n];
     for i in 0..n {
@@ -292,5 +357,40 @@ mod tests {
         }
         let drift = ((energy(&y) - e0) / e0).abs();
         assert!(drift < 1e-7, "energy drift {drift:e}");
+    }
+
+    #[test]
+    fn adaptive_krylov_dimension_meets_tolerance() {
+        // expmv_adaptive picks the Krylov dimension itself; the result must
+        // match the dense reference, and the chosen dimension stay modest.
+        use crate::mesh_gen::structured_box;
+        use crate::rhs::MaxwellOperator;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let t = 0.05;
+
+        let a = op.assemble_dense();
+        let ta: Vec<f64> = a.iter().map(|x| x * t).collect();
+        let dense_exp = expm(&ta, n);
+        let v: Vec<f64> =
+            (0..n).map(|i| (0.3 + i as f64 * 0.017).sin()).collect();
+        let mut want = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                want[i] += dense_exp[i * n + j] * v[j];
+            }
+        }
+
+        let (got, dim) = expmv_adaptive(|x| op.apply(x), &v, t, 1e-9, 200);
+        let err: f64 = got
+            .iter()
+            .zip(&want)
+            .map(|(g, w)| (g - w).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = want.iter().map(|w| w * w).sum::<f64>().sqrt();
+        assert!(err < 1e-7 * scale, "adaptive expmv err {}", err / scale);
+        assert!(dim > 0 && dim < n, "chosen Krylov dim {dim}");
     }
 }
