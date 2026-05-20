@@ -237,7 +237,10 @@ impl KrylovWorkspace {
         }
         self.h[..m * m].fill(0.0);
 
-        // Arnoldi — modified Gram-Schmidt.
+        // Arnoldi — modified Gram-Schmidt. Kept serial: blocked CGS2 and
+        // per-vector parallel dot/axpy were both measured slower here — at
+        // these vector lengths the orthogonalisation is memory-bound and
+        // the rayon fan-out costs more than it saves.
         let mut dim = m;
         for j in 0..m {
             matvec(&self.basis[j * n..j * n + n], &mut self.w[..n]);
@@ -584,6 +587,46 @@ mod tests {
         let scale: f64 =
             want.iter().map(|w| w * w).sum::<f64>().sqrt();
         assert!(err < 1e-8 * scale, "Krylov vs dense: err {err}, scale {scale}");
+    }
+
+    #[test]
+    fn workspace_expmv_matches_serial_arnoldi_on_a_larger_mesh() {
+        // The reusable-workspace expmv must agree with the independent
+        // serial Arnoldi of expmv_adaptive on a mesh well past the small
+        // cavities the other tests use.
+        use crate::mesh_gen::structured_box;
+        use crate::rhs::MaxwellOperator;
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+
+        let v: Vec<f64> =
+            (0..n).map(|i| (0.4 + i as f64 * 0.013).sin()).collect();
+        let t = 0.01;
+
+        let mut ws = KrylovWorkspace::new();
+        let mut got = vec![0.0; n];
+        ws.expmv_into(
+            |x, ax| ax.copy_from_slice(&op.apply(x)),
+            &v,
+            t,
+            150,
+            &mut got,
+        );
+        let (want, _) = expmv_adaptive(|x| op.apply(x), &v, t, 1e-11, 200);
+
+        let err: f64 = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = want.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(
+            err < 1e-8 * scale,
+            "blocked CGS2 vs serial Arnoldi: rel.err {}",
+            err / scale
+        );
     }
 
     #[test]
