@@ -23,6 +23,11 @@ _FLUX = {"upwind": 1.0, "central": 0.0}
 _FIELD = {"E": 0, "H": 1}
 _COMP = {"x": 0, "y": 1, "z": 2}
 
+# Speed of light (m/s). The DG operator runs in normalised units (c = 1, time
+# measured in metres); `c` maps operator results to physical SI units —
+# `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
+C_LIGHT = 299_792_458.0
+
 
 def _aslist(y):
     return np.asarray(y, dtype=float).ravel().tolist()
@@ -69,7 +74,7 @@ class ProblemTD:
     cavity, used for validation.
     """
 
-    def __init__(self, geometry, *, order=2, flux="upwind"):
+    def __init__(self, geometry, *, order=2, flux="upwind", c=C_LIGHT):
         """
         Parameters
         ----------
@@ -80,6 +85,9 @@ class ProblemTD:
         flux : {"upwind", "central"}
             Numerical flux. ``central`` is exactly energy-conserving;
             ``upwind`` additionally damps the discontinuous spurious modes.
+        c : float
+            Speed of light in the mesh's length units (default SI, metres);
+            sets the operator↔physical time/frequency mapping.
         """
         if flux not in _FLUX:
             raise ValueError(f"flux must be one of {sorted(_FLUX)}")
@@ -96,9 +104,10 @@ class ProblemTD:
         self._geometry = geometry
         self.order = order
         self.flux = flux
+        self.c = float(c)
 
     @classmethod
-    def box(cls, *, size, cells, order=2, flux="upwind"):
+    def box(cls, *, size, cells, order=2, flux="upwind", c=1.0):
         """Build directly on a structured box cavity, bypassing the geometry
         API — handy for validation and quick experiments.
 
@@ -108,6 +117,8 @@ class ProblemTD:
             Cavity dimensions.
         cells : (nx, ny, nz)
             Structured-mesh cell counts per axis.
+        c : float
+            Speed of light in the box's length units (default 1, normalised).
         """
         if flux not in _FLUX:
             raise ValueError(f"flux must be one of {sorted(_FLUX)}")
@@ -118,6 +129,7 @@ class ProblemTD:
         obj._geometry = None
         obj.order = order
         obj.flux = flux
+        obj.c = float(c)
         obj.size = tuple(size)
         obj.cells = tuple(cells)
         return obj
@@ -144,11 +156,36 @@ class ProblemTD:
         n, row_ptr, col_idx, values = self._op.state_space()
         return csr_matrix((values, col_idx, row_ptr), shape=(n, n))
 
+    def resonances(self, *, n=8):
+        """Cavity resonant frequencies (Hz) from the operator's spectrum.
+
+        The DG Maxwell operator's eigenvalues are `±iω`; with the upwind flux
+        the physical modes are the least-damped ones — `f = c·|ω|/(2π)`.
+        Dense eigenvalue solve, so for modest meshes only.
+        """
+        a = self.state_space().toarray()
+        ev = np.linalg.eigvals(a)
+        omega = np.abs(ev.imag)
+        phys = omega > 1e-3 * omega.max()  # drop the near-static modes
+        ev_p = ev[phys]
+        out = []
+        for idx in np.argsort(-ev_p.real):  # least-damped first
+            f = abs(ev_p[idx].imag) * self.c / (2.0 * np.pi)
+            if any(abs(f - g) <= 1e-3 * g for g in out):
+                continue
+            out.append(f)
+            if len(out) >= n:
+                break
+        return np.array(sorted(out))
+
     # -- mid level: stepping ------------------------------------------------
     def step(self, y, h, krylov_dim=40):
-        """Advance the state by ``h`` with the matrix-free exponential
-        propagator — exact for the linear homogeneous system at any ``h``."""
-        return np.asarray(self._op.step(_aslist(y), float(h), int(krylov_dim)))
+        """Advance the state by ``h`` (in the same time units as ``c``) with
+        the matrix-free exponential propagator — exact for the linear
+        homogeneous system at any ``h``."""
+        return np.asarray(
+            self._op.step(_aslist(y), float(self.c * h), int(krylov_dim))
+        )
 
     # -- ports: soft sources & field probes --------------------------------
     def probe_dof(self, point, *, field="E", component="z"):
@@ -194,7 +231,7 @@ class ProblemTD:
             g = float(waveform(s * dt))
             y = np.asarray(
                 self._op.step_driven(
-                    y.tolist(), sdof, g, float(dt), krylov_dim
+                    y.tolist(), sdof, g, float(self.c * dt), krylov_dim
                 )
             )
             for k, d in enumerate(pdofs):
