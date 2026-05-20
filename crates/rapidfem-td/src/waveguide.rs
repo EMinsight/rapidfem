@@ -58,13 +58,18 @@ impl RectPort {
         (dot(d, self.u_hat), dot(d, self.v_hat))
     }
 
-    /// Transverse electric-field profile of the `TE_mn` mode at a global
-    /// point on the port face, in global coordinates and normalised so the
-    /// dominant component peaks at unit amplitude.
+    /// Transverse electric-field profile of the mode at a global point on
+    /// the port face, in global coordinates and normalised so the dominant
+    /// component peaks at unit amplitude.
     ///
     /// `TE_mn`: `E_u ∝ (n/b)·cos(mπu/a)·sin(nπv/b)`,
-    /// `E_v ∝ −(m/a)·sin(mπu/a)·cos(nπv/b)`.
+    /// `E_v ∝ −(m/a)·sin(mπu/a)·cos(nπv/b)`. The sentinel mode `(0, 0)` is
+    /// a **lumped / TEM port** — a uniform transverse field along `v_hat`,
+    /// with zero cutoff and a flat (non-dispersive) `Z = 1` impedance.
     pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
+        if self.mode == (0, 0) {
+            return self.v_hat;
+        }
         let (u, v) = self.local(x);
         let (m, n) = (self.mode.0 as f64, self.mode.1 as f64);
         let mu = m * PI / self.a;
@@ -245,6 +250,28 @@ mod tests {
         assert!(mid.iter().map(|c| c * c).sum::<f64>().sqrt() > 0.99);
         let wall = p.e_profile([0.0, 0.5, 3.0]);
         assert!(wall.iter().all(|c| c.abs() < 1e-9), "side-wall E ≠ 0");
+    }
+
+    #[test]
+    fn lumped_port_is_a_uniform_zero_cutoff_mode() {
+        // The (0,0) sentinel mode — a lumped / TEM port: uniform transverse
+        // field, no cutoff, flat Z = 1 impedance.
+        let p = z_port(0.5, 0.25, (0, 0));
+        // Uniform field along v̂ everywhere on the face.
+        for &(u, v) in &[(0.1, 0.05), (0.25, 0.1), (0.49, 0.2)] {
+            let e = p.e_profile([u, v, 0.0]);
+            assert!((e[1] - 1.0).abs() < 1e-12, "not uniform: {e:?}");
+            assert!(e[0].abs() < 1e-12 && e[2].abs() < 1e-12);
+        }
+        // No cutoff, and the impedance is flat (non-dispersive).
+        assert!(p.cutoff().abs() < 1e-12, "lumped port has a cutoff");
+        for &omega in &[0.3, 1.0, 5.0] {
+            assert!((p.te_impedance(omega) - 1.0).abs() < 1e-12);
+        }
+        // E × H still points inward (a forward-propagating partner).
+        let x = [0.25, 0.1, 0.0];
+        let poynting = cross(p.e_profile(x), p.h_profile(x));
+        assert!(dot(poynting, p.w_hat) > 0.99);
     }
 
     #[test]

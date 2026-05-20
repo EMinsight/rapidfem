@@ -1920,6 +1920,61 @@ mod tests {
     }
 
     #[test]
+    fn lumped_port_integrates_with_the_operator() {
+        // WP5.1: a lumped (0,0) port flows through the same operator
+        // machinery as a waveguide port — the flux, the injection source
+        // and the modal extraction are mode-agnostic, so a uniform-profile
+        // port builds a nonzero source and a finite extraction with no
+        // special-casing beyond the mode profile itself.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 4, 1.0, 1.0, 4.0);
+        let port_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| mesh.nodes[nd][2].abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let rect = RectPort {
+            origin: [0.0, 0.0, 0.0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a: 1.0,
+            b: 1.0,
+            mode: (0, 0), // lumped / TEM port
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+        );
+        assert_eq!(op.n_ports(), 1);
+        assert!(
+            op.port_cutoff(0).abs() < 1e-12,
+            "lumped port must have zero cutoff"
+        );
+        let src = op.port_source(0);
+        assert!(
+            src.iter().any(|&x| x != 0.0),
+            "lumped-port injection source is empty"
+        );
+        let y: Vec<f64> = (0..op.n_dof())
+            .map(|i| (0.1 * i as f64).sin())
+            .collect();
+        let (pe, ph) = op.port_modal_projections(&y, 0);
+        assert!(
+            pe.is_finite() && ph.is_finite(),
+            "lumped-port extraction not finite"
+        );
+    }
+
+    #[test]
     fn two_port_guide_s_parameters() {
         // WP3.2: a matched straight two-port guide — S₁₁ ≈ 0, |S₂₁| ≈ 1,
         // energy |S₁₁|² + |S₂₁|² ≈ 1, and reciprocity |S₂₁| ≈ |S₁₂|. The
