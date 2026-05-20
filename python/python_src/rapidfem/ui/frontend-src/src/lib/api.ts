@@ -325,4 +325,48 @@ export function sparamsToSMatrices(s: number[][][][]): SMatrix[] {
 	);
 }
 
+// ── Time-domain display payloads ──────────────────────────────────────────
+// Emitted by rapidfem.show() for the ProblemTD verb results — see
+// api._td_*_payload on the Python side.
+
+/** One trace of a time-series plot. A time-domain probe carries a real
+ *  `y`; a frequency-domain transfer function carries a complex
+ *  `y_re` / `y_im` pair. */
+export interface TdSeries {
+	label: string;
+	y?: number[];
+	y_re?: number[];
+	y_im?: number[];
+}
+
+/** `td_timeseries` payload — driven_transient probe signals (`domain:'time'`)
+ *  or a transfer function (`domain:'freq'`). */
+export interface TdTimeSeriesPayload {
+	domain: 'time' | 'freq';
+	x_label: string;
+	x: number[];
+	series: TdSeries[];
+	source_label: string;
+}
+
+/** `td_result` payload — a time-domain modal-port scattering matrix. Carries
+ *  the same nested-list shape as the frequency-domain result, so it feeds the
+ *  existing S-parameter panel unchanged. */
+export interface TdResultPayload {
+	frequencies: number[];
+	sparams: number[][][][];
+	n_port: number;
+	n_freq: number;
+}
+
+/** `td_trajectory` payload — a mesh (the DG corner sampling) plus a
+ *  per-snapshot |E| / |H| magnitude animation. */
+export interface TdTrajectoryPayload extends MeshPayload {
+	n_snapshots: number;
+	times: number[];
+	field_max: { E: number; H: number };
+	frames_e: number[][];
+	frames_h: number[][];
+}
+
 export { viz_load_mesh, viz_sample } from './viz';
