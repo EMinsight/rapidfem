@@ -79,21 +79,32 @@ def _collect_materials(geometry):
 
 
 def _collect_ports(geometry):
-    """Walk the geometry's :class:`RectWaveguidePort` physics.
+    """Walk the geometry's port physics — :class:`RectWaveguidePort` and
+    :class:`LumpedPort`.
 
     Returns ``[(face_tag, mode_m, mode_n)]`` for the native TD operator;
-    the list order fixes the port index used by :meth:`ProblemTD.sparams`.
+    the list order (geometry declaration order) fixes the port index used
+    by :meth:`ProblemTD.sparams`. A lumped port maps to the ``(0, 0)``
+    sentinel mode — the operator's uniform-profile / TEM port (zero cutoff,
+    flat impedance). The lumped port's voltage-integration ``direction`` is
+    not forwarded: the native port auto-fits its uniform field to the
+    narrower transverse face axis, which is the gap axis for a standard
+    plate-to-plate port.
     """
-    from ..physics import RectWaveguidePort
+    from ..physics import LumpedPort, RectWaveguidePort
 
     out = []
     for phys in getattr(geometry, "_physics", []):
-        if not isinstance(phys, RectWaveguidePort):
+        if isinstance(phys, RectWaveguidePort):
+            mode = (int(phys.mode[0]), int(phys.mode[1]))
+        elif isinstance(phys, LumpedPort):
+            mode = (0, 0)
+        else:
             continue
         tag = geometry._physics_tags.get(id(phys))
         if tag is None:
             continue
-        out.append((int(tag), int(phys.mode[0]), int(phys.mode[1])))
+        out.append((int(tag), mode[0], mode[1]))
     return out
 
 
@@ -611,8 +622,8 @@ class ProblemTD:
         n_ports = self._op.n_ports()
         if n_ports == 0:
             raise RuntimeError(
-                "ProblemTD has no ports — attach RectWaveguidePort(s) to "
-                "the geometry before constructing it"
+                "ProblemTD has no ports — attach RectWaveguidePort(s) or "
+                "LumpedPort(s) to the geometry before constructing it"
             )
         n = self.n_dof
         times = np.arange(steps) * dt

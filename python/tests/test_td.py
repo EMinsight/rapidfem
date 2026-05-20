@@ -176,6 +176,51 @@ def test_sparams_verb_runs():
         assert abs(s[k, 0, 0]) < 0.5, f"reflection too high at f[{k}]"
 
 
+def test_lumped_port_wires_through():
+    # WP-B: a LumpedPort is collected as a TD port and maps to the (0,0)
+    # sentinel mode — the operator's uniform-profile / TEM port. The native
+    # operator must see it as a driven port with zero cutoff.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=12 * mm)
+    air = g.box(20 * mm, 10 * mm, 60 * mm, material=rf.Air())
+    rf.LumpedPort(air.faces.min(axis="z"), direction=(0, 1, 0))
+    rf.LumpedPort(air.faces.max(axis="z"), direction=(0, 1, 0))
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    ptd = rf.ProblemTD(g, order=2, flux="central")
+    assert ptd._op.n_ports() == 2
+    # The (0,0) lumped/TEM port is non-dispersive — zero cutoff frequency.
+    assert abs(ptd._op.port_cutoff(0)) < 1e-9
+    assert abs(ptd._op.port_cutoff(1)) < 1e-9
+
+
+def test_mixed_ports_keep_declaration_order():
+    # WP-B: RectWaveguidePort and LumpedPort coexist; the TD port index
+    # follows geometry declaration order, so sparams rows/cols stay aligned.
+    import rapidfem as rf
+    from rapidfem.problem.td import _collect_ports
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=12 * mm)
+    air = g.box(22.86 * mm, 10.16 * mm, 60 * mm, material=rf.Air())
+    rf.RectWaveguidePort(air.faces.min(axis="z"))   # port 0 — TE10
+    rf.LumpedPort(air.faces.max(axis="z"), direction=(0, 1, 0))  # port 1
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    modes = [m for _, *m in _collect_ports(g)]
+    assert modes == [[1, 0], [0, 0]]
+
+
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):
     import xml.etree.ElementTree as ET
 
