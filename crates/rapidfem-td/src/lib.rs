@@ -7,5 +7,6 @@
 pub mod dg_basis;
 pub mod geom_factors;
 pub mod mesh_gen;
+pub mod mor;
 pub mod propagator;
 pub mod rhs;
