@@ -331,17 +331,17 @@
 
 	.docstring-content :global(.katex-display) {
 		margin: var(--space-md) 0;
-		overflow-x: auto;
 	}
 
-	/* Math blocks — no backdrop or border, just the equation. */
+	/* Math blocks — no backdrop, border or scroll container; full text colour. */
 	.docstring-content :global(pre.math),
 	.docstring-content :global(div.math) {
 		background: none;
 		border: none;
 		padding: 0;
 		margin: var(--space-md) 0;
-		overflow-x: auto;
+		color: var(--text);
+		white-space: normal;
 	}
 
 	/* Inline math rendered from LaTeX literals — drop the inline-code colour. */
