@@ -81,7 +81,7 @@
 		border: 1px solid var(--border);
 		color: var(--text);
 		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		font-weight: 500;
 		text-transform: none;
 		letter-spacing: normal;
@@ -122,7 +122,7 @@
 		background: none;
 		border: none;
 		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		text-transform: none;
 		letter-spacing: normal;
 		color: var(--text-muted);
@@ -141,7 +141,7 @@
 	}
 
 	.version-tag {
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		color: var(--text-disabled);
 	}
 </style>

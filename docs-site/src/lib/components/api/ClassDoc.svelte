@@ -153,7 +153,7 @@
 
 	.class-name {
 		font-family: var(--font-mono);
-		font-size: var(--fs-md);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--accent);
 		background: none;
@@ -163,12 +163,12 @@
 
 	.class-bases {
 		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		color: var(--text-muted);
 	}
 
 	.class-desc {
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		color: var(--text-muted);
 		line-height: 1.5;
 		text-transform: none;

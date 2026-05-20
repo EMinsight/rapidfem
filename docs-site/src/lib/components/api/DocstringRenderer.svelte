@@ -85,14 +85,21 @@
 
 	async function renderMath() {
 		if (!container) return;
-		const mathElements = container.querySelectorAll('.math');
-		if (mathElements.length === 0) return;
+
+		// Block math: docutils `.. math::` → <pre class="math"> / <div class="math">.
+		const blocks = [...container.querySelectorAll('.math')].filter(
+			(el) => !el.classList.contains('katex-rendered')
+		);
+		// Inline math authored as RST literals of raw LaTeX (\varepsilon_\infty, \tau …).
+		const inlines = [...container.querySelectorAll('tt, code')].filter(
+			(el) => !el.closest('pre') && /^\\[a-zA-Z]/.test((el.textContent || '').trim())
+		);
+		if (blocks.length === 0 && inlines.length === 0) return;
 
 		const katex = (await import('katex')).default;
 		await import('katex/dist/katex.min.css');
 
-		for (const el of mathElements) {
-			if (el.classList.contains('katex-rendered')) continue;
+		for (const el of blocks) {
 			const latex = (el.textContent || '').trim();
 			if (!latex) continue;
 			try {
@@ -114,6 +121,20 @@
 				/* leave raw LaTeX in place */
 			}
 		}
+
+		for (const el of inlines) {
+			const tex = (el.textContent || '').trim();
+			try {
+				el.innerHTML = katex.renderToString(tex, {
+					displayMode: false,
+					throwOnError: false,
+					strict: false
+				});
+				el.classList.add('katex-inline');
+			} catch {
+				/* leave as literal */
+			}
+		}
 	}
 
 	// Replace docstring <pre> code blocks with read-only CodeMirror viewers
@@ -124,6 +145,8 @@
 		if (!container) return;
 		for (const pre of container.querySelectorAll('pre')) {
 			if (pre.classList.contains('cm-done')) continue;
+			// Math blocks are handled by renderMath / KaTeX — never CodeMirror.
+			if (pre.classList.contains('math')) continue;
 			const code = (pre.textContent || '').replace(/\n$/, '');
 			if (!code.trim()) continue;
 
@@ -175,20 +198,18 @@
 	.docstring-content :global(.param-table-wrapper) {
 		margin: var(--space-md) 0;
 		overflow-x: auto;
-		border: 1px solid var(--border);
 	}
 
 	.docstring-content :global(.param-table) {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 	}
 
 	.docstring-content :global(.param-table thead th) {
 		padding: var(--space-xs) var(--space-md);
-		background: var(--surface-raised);
 		font-weight: 600;
-		color: var(--text-muted);
+		color: var(--accent);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		text-align: left;
@@ -196,7 +217,7 @@
 	}
 
 	.docstring-content :global(.param-table td) {
-		padding: var(--space-xs) var(--space-md);
+		padding: var(--space-sm) var(--space-md);
 		vertical-align: top;
 		border-bottom: 1px solid var(--border-subtle);
 	}
@@ -242,8 +263,8 @@
 	.docstring-content :global(h3),
 	.docstring-content :global(h4),
 	.docstring-content :global(p:has(> strong:only-child)) {
-		font-family: var(--font-ui);
-		font-size: var(--fs-sm);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		color: var(--accent);
 		text-transform: uppercase;
@@ -281,18 +302,11 @@
 		line-height: 1.55;
 	}
 
-	.docstring-content :global(code) {
+	/* Inline code / literals — no backdrop or border, just colour. */
+	.docstring-content :global(code),
+	.docstring-content :global(tt) {
 		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
-		background: var(--surface-raised);
-		padding: 1px 4px;
-		border: 1px solid var(--border);
-	}
-
-	.docstring-content :global(pre code) {
-		background: none;
-		padding: 0;
-		border: none;
+		color: var(--accent-secondary);
 	}
 
 	.docstring-content :global(blockquote) {
@@ -320,8 +334,19 @@
 		overflow-x: auto;
 	}
 
+	/* Math blocks — no backdrop or border, just the equation. */
+	.docstring-content :global(pre.math),
 	.docstring-content :global(div.math) {
+		background: none;
+		border: none;
+		padding: 0;
 		margin: var(--space-md) 0;
+		overflow-x: auto;
+	}
+
+	/* Inline math rendered from LaTeX literals — drop the inline-code colour. */
+	.docstring-content :global(.katex-inline) {
+		color: var(--text);
 	}
 
 	.docstring-content :global(.math:not(.katex-rendered)) {

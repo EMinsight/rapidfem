@@ -208,7 +208,6 @@
 {/snippet}
 
 <div class="api-toc">
-	<div class="api-toc-title label-uppercase">Contents</div>
 	<nav class="api-toc-nav">
 		{#each getSortedChildren(moduleTree) as [, rootNode]}
 			{@render treeItem(rootNode, 0)}
@@ -217,21 +216,16 @@
 </div>
 
 <style>
+	/* Tree styled to match the RapidFEM notebook file browser. */
 	.api-toc {
 		display: flex;
 		flex-direction: column;
-		padding: var(--space-md);
-	}
-
-	.api-toc-title {
-		padding: var(--space-xs) var(--space-sm);
-		margin-bottom: var(--space-xs);
+		padding: var(--space-sm) 0 var(--space-md);
 	}
 
 	.api-toc-nav {
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
 	}
 
 	.toc-item {
@@ -239,45 +233,74 @@
 		flex-direction: column;
 	}
 
+	/* Module group row — like a folder row */
 	.toc-node {
 		display: flex;
 		align-items: center;
-		gap: var(--space-xs);
+		justify-content: flex-start;
+		gap: 4px;
 		width: 100%;
-		padding: var(--space-xs) var(--space-sm);
-		padding-left: calc(var(--space-sm) + var(--depth, 0) * var(--space-md));
+		padding: 3px var(--space-lg);
+		padding-left: calc(var(--space-lg) + var(--depth, 0) * 12px);
 		background: none;
 		border: none;
+		border-left: 2px solid transparent;
+		font-family: var(--font-mono);
 		font-size: var(--fs-sm);
-		font-weight: 500;
+		font-weight: 400;
 		text-transform: none;
-		letter-spacing: normal;
+		letter-spacing: 0;
 		color: var(--text-muted);
 		text-align: left;
 		cursor: pointer;
-		transition: all var(--transition-fast);
+		transition: background var(--transition-fast), color var(--transition-fast);
+	}
+
+	/* Class / function leaf — like a file row */
+	.toc-leaf {
+		display: flex;
+		justify-content: flex-start;
+		width: 100%;
+		padding: 3px var(--space-lg);
+		padding-left: calc(var(--space-lg) + 16px + var(--depth, 0) * 12px);
+		background: none;
+		border: none;
+		border-left: 2px solid transparent;
+		font-family: var(--font-mono);
+		font-size: var(--fs-sm);
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		color: var(--text-muted);
+		text-align: left;
+		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast);
 	}
 
 	.toc-node:hover,
 	.toc-leaf:hover {
 		color: var(--text);
-		background: var(--surface-hover);
+		background: var(--surface-panel);
 	}
 
 	.toc-node.active,
 	.toc-leaf.active {
 		color: var(--accent);
 		background: var(--accent-bg);
+		border-left-color: var(--accent);
 	}
 
 	.toc-node:not(.has-children) {
-		padding-left: calc(var(--space-sm) + 12px + var(--space-xs) + var(--depth, 0) * var(--space-md));
+		padding-left: calc(var(--space-lg) + 16px + var(--depth, 0) * 12px);
 	}
 
 	.toc-icon {
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		width: 12px;
+		flex-shrink: 0;
+		color: var(--text-dim);
 		transform: rotate(-90deg);
 		transition: transform var(--transition-fast);
 	}
@@ -288,28 +311,13 @@
 
 	.toc-name {
 		font-family: var(--font-mono);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.toc-children {
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
-	}
-
-	.toc-leaf {
-		display: flex;
-		width: 100%;
-		padding: var(--space-xs) var(--space-sm);
-		padding-left: calc(var(--space-sm) + 12px + var(--space-xs) + var(--depth, 0) * var(--space-md));
-		background: none;
-		border: none;
-		font-family: var(--font-mono);
-		font-size: var(--fs-sm);
-		text-transform: none;
-		letter-spacing: normal;
-		color: var(--text-muted);
-		text-align: left;
-		cursor: pointer;
-		transition: all var(--transition-fast);
 	}
 </style>

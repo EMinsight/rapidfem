@@ -136,7 +136,7 @@
 	}
 
 	.tagline {
-		font-size: var(--fs-md);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		color: var(--text-muted);
 		text-transform: uppercase;
@@ -167,7 +167,7 @@
 		border: 1px solid var(--border);
 		background: var(--surface-raised);
 		color: var(--text);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
@@ -197,7 +197,7 @@
 	}
 
 	h2 {
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		color: var(--accent);
 		text-transform: uppercase;
@@ -227,7 +227,7 @@
 	}
 
 	.feature-desc {
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		color: var(--text-muted);
 		line-height: 1.6;
 	}

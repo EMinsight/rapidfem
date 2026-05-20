@@ -5,7 +5,7 @@
 	import Icon from '$lib/components/common/Icon.svelte';
 	import VersionSelector from './VersionSelector.svelte';
 	import { ApiToc } from '$lib/components/api';
-	import { getSidebarItems, external } from '$lib/config/rapidfem';
+	import { getSidebarItems } from '$lib/config/rapidfem';
 	import type { APIPackage, VersionManifest } from '$lib/api/types';
 	import { buildSearchItems, createSearch, runSearch, type SearchItem } from '$lib/search';
 	import { searchTarget } from '$lib/stores/searchNavigation';
@@ -103,22 +103,14 @@
 			<VersionSelector {manifest} {currentVersion} />
 			<nav class="sidebar-nav">
 				{#each navItems as item}
-					{#if item.external}
-						<a href={item.path} class="sidebar-item">
-							{#if item.icon}<Icon name={item.icon} size={14} />{/if}
-							<span>{item.title}</span>
-							<Icon name="external-link" size={12} />
-						</a>
-					{:else}
-						<a
-							href="{base}/{item.path}"
-							class="sidebar-item"
-							class:active={isActive(item.path)}
-						>
-							{#if item.icon}<Icon name={item.icon} size={14} />{/if}
-							<span>{item.title}</span>
-						</a>
-					{/if}
+					<a
+						href="{base}/{item.path}"
+						class="sidebar-item"
+						class:active={isActive(item.path)}
+					>
+						{#if item.icon}<Icon name={item.icon} size={13} />{/if}
+						<span>{item.title}</span>
+					</a>
 				{/each}
 			</nav>
 		</div>
@@ -129,12 +121,13 @@
 </aside>
 
 <style>
+	/* Sidebar styled after the RapidFEM notebook file browser. */
 	.sidebar {
 		width: var(--sidebar-width);
 		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
-		background: var(--surface);
+		background: var(--surface-mid);
 		border-right: 1px solid var(--border);
 	}
 
@@ -144,7 +137,8 @@
 		align-items: center;
 		gap: var(--space-sm);
 		height: var(--header-height);
-		padding: 0 var(--space-md);
+		padding: 0 var(--space-lg);
+		background: var(--surface-raised);
 		border-bottom: 1px solid var(--border);
 		color: var(--text-muted);
 	}
@@ -159,7 +153,8 @@
 		background: none;
 		border: none;
 		padding: 0;
-		font-family: var(--font-ui);
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
 		color: var(--text);
 	}
 
@@ -195,9 +190,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		padding: var(--space-sm) var(--space-md);
+		padding: var(--space-sm) var(--space-lg);
 		background: none;
 		border: none;
+		border-left: 2px solid transparent;
 		border-bottom: 1px solid var(--border-subtle);
 		text-transform: none;
 		letter-spacing: normal;
@@ -207,7 +203,8 @@
 	}
 
 	.search-result:hover {
-		background: var(--surface-hover);
+		background: var(--surface-panel);
+		border-left-color: var(--accent);
 	}
 
 	.result-name {
@@ -220,14 +217,13 @@
 	.result-meta {
 		display: flex;
 		gap: var(--space-sm);
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 	}
 
 	.result-type {
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
-		color: var(--text-disabled);
-		font-size: 10px;
+		color: var(--text-dim);
 		align-self: center;
 	}
 
@@ -243,38 +239,41 @@
 		padding: var(--space-lg);
 		text-align: center;
 		color: var(--text-muted);
+		font-size: var(--fs-xs);
 	}
 
 	.sidebar-nav {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-xs);
-		padding: var(--space-md);
+		padding: var(--space-sm) 0;
 	}
 
 	.sidebar-item {
 		display: flex;
 		align-items: center;
 		gap: var(--space-sm);
-		padding: var(--space-sm) var(--space-md);
-		font-size: var(--fs-sm);
+		padding: 5px var(--space-lg);
+		border-left: 2px solid transparent;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		color: var(--text-muted);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		text-decoration: none;
-		transition: all var(--transition-fast);
+		transition: color var(--transition-fast), background var(--transition-fast);
 	}
 
 	.sidebar-item:hover {
 		color: var(--text);
-		background: var(--surface-hover);
+		background: var(--surface-panel);
 		text-decoration: none;
 	}
 
 	.sidebar-item.active {
 		color: var(--accent);
 		background: var(--accent-bg);
+		border-left-color: var(--accent);
 	}
 
 	.sidebar-item span {

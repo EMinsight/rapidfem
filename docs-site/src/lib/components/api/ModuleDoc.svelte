@@ -99,7 +99,7 @@
 	}
 
 	.api-module-desc {
-		font-size: var(--fs-sm);
+		font-size: var(--fs-xs);
 		color: var(--text-muted);
 		margin: 0;
 		line-height: 1.6;

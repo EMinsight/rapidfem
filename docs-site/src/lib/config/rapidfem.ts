@@ -125,7 +125,6 @@ export function getSidebarItems(version?: string): SidebarItem[] {
 	const v = version || 'latest';
 	return [
 		{ title: 'Overview', path: '', icon: 'home' },
-		{ title: 'API Reference', path: `${v}/api`, icon: 'braces' },
-		{ title: 'Examples', path: external.demo, icon: 'play', external: true }
+		{ title: 'API Reference', path: `${v}/api`, icon: 'braces' }
 	];
 }
