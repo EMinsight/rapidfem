@@ -473,26 +473,88 @@ impl CsrMatrix {
 
 impl MaxwellOperator {
     /// Assemble the operator as an explicit sparse CSR matrix — the
-    /// state-space `A`. Entries below `1e-12` of the largest magnitude are
-    /// dropped. For handing `A` to external tools / model-order reduction.
+    /// state-space `A` — **without ever densifying**.
+    ///
+    /// The DG operator couples each element only to itself and its (≤4) face
+    /// neighbours, so row block `e` is found by probing just that small
+    /// column stencil with unit vectors and reading element `e`'s output
+    /// block. Element blocks are independent and assemble in parallel.
+    /// Memory is `O(nnz)`, not `O(N²)`, so this scales to production meshes
+    /// where [`assemble_dense`](Self::assemble_dense) cannot.
     pub fn assemble_sparse(&self) -> CsrMatrix {
+        let stride = self.re.n_nodes * 6;
         let n = self.n_dof();
-        let dense = self.assemble_dense();
-        let max = dense.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-        let tol = 1e-12 * max;
+
+        // Sorted column-element stencil of row block `e`: itself plus every
+        // distinct face neighbour.
+        let stencil = |e: usize| -> Vec<usize> {
+            let mut s = Vec::with_capacity(5);
+            s.push(e);
+            for f in 0..4 {
+                let nb = self.faces[e * 4 + f].neighbor;
+                if nb != usize::MAX && !s.contains(&nb) {
+                    s.push(nb);
+                }
+            }
+            s.sort_unstable();
+            s
+        };
+
+        // Each element block computes its own `stride` rows independently.
+        // `map_init` keeps one probe vector per worker thread, reused across
+        // elements (each probe resets the single entry it touched).
+        let blocks: Vec<(Vec<usize>, Vec<usize>, Vec<f64>)> = (0..self.n_elem)
+            .into_par_iter()
+            .map_init(
+                || (vec![0.0_f64; n], vec![0.0_f64; stride]),
+                |(y, out), e| {
+                    let cols = stencil(e);
+                    // (col, val) per local row, filled in ascending column
+                    // order — so the assembled CSR row stays sorted.
+                    let mut rows: Vec<Vec<(usize, f64)>> =
+                        vec![Vec::new(); stride];
+                    for &c in &cols {
+                        for jl in 0..stride {
+                            let j = c * stride + jl;
+                            y[j] = 1.0;
+                            out.iter_mut().for_each(|v| *v = 0.0);
+                            self.apply_element(e, y, out);
+                            y[j] = 0.0;
+                            for (il, &v) in out.iter().enumerate() {
+                                if v != 0.0 {
+                                    rows[il].push((j, v));
+                                }
+                            }
+                        }
+                    }
+                    let mut lens = Vec::with_capacity(stride);
+                    let mut col_idx = Vec::new();
+                    let mut values = Vec::new();
+                    for r in rows {
+                        lens.push(r.len());
+                        for (c, v) in r {
+                            col_idx.push(c);
+                            values.push(v);
+                        }
+                    }
+                    (lens, col_idx, values)
+                },
+            )
+            .collect();
+
+        // Concatenate the element blocks in row order into one CSR matrix.
         let mut row_ptr = Vec::with_capacity(n + 1);
         let mut col_idx = Vec::new();
         let mut values = Vec::new();
         row_ptr.push(0);
-        for i in 0..n {
-            for j in 0..n {
-                let v = dense[i * n + j];
-                if v.abs() > tol {
-                    col_idx.push(j);
-                    values.push(v);
-                }
+        let mut acc = 0;
+        for (lens, ci, vv) in blocks {
+            col_idx.extend(ci);
+            values.extend(vv);
+            for l in lens {
+                acc += l;
+                row_ptr.push(acc);
             }
-            row_ptr.push(values.len());
         }
         CsrMatrix { n, row_ptr, col_idx, values }
     }
@@ -960,5 +1022,50 @@ mod tests {
             csr.nnz(),
             n * n
         );
+    }
+
+    #[test]
+    fn sparse_assembly_scales_without_densifying() {
+        // WP6.2 gate: assemble `A` for a mesh whose dense form would need
+        // gigabytes — the element-wise probe path must stay O(nnz). Each row
+        // can couple at most `5·stride` columns (self + 4 face neighbours),
+        // so nnz grows linearly with N, not quadratically.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(4, 4, 4, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let stride = 6 * 10; // 6 fields × Np(order 2) = 60
+
+        // The dense matrix would be n² f64 — assert it is genuinely out of
+        // reach, so this test actually exercises the non-densifying path.
+        let dense_bytes = (n as u128).pow(2) * 8;
+        assert!(
+            dense_bytes > 1 << 30,
+            "mesh too small to prove the point: dense would be {dense_bytes} B"
+        );
+
+        let csr = op.assemble_sparse();
+        assert_eq!(csr.n, n);
+        // Linear scaling: every row stays within the face-neighbour stencil.
+        assert!(
+            csr.nnz() <= 5 * stride * n,
+            "nnz {} exceeds the stencil bound {}",
+            csr.nnz(),
+            5 * stride * n
+        );
+
+        // Correctness still holds at this scale.
+        let v: Vec<f64> =
+            (0..n).map(|i| (0.3 + i as f64 * 0.013).sin()).collect();
+        let sp = csr.matvec(&v);
+        let mf = op.apply(&v);
+        let err: f64 = sp
+            .iter()
+            .zip(&mf)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = mf.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(err < 1e-10 * scale, "sparse vs matrix-free: err {err}");
     }
 }
