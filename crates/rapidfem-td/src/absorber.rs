@@ -9,6 +9,31 @@
 use crate::rhs::ElemMaterial;
 use rapidfem_core::mesh::Mesh;
 
+/// As [`absorbing_layer`] but for the `axis = inner` face (the low-coordinate
+/// end), within `thickness` of the plane `x_axis = inner`.
+pub fn absorbing_layer_low(
+    mesh: &Mesh,
+    axis: usize,
+    inner: f64,
+    thickness: f64,
+    nu_max: f64,
+) -> Vec<ElemMaterial> {
+    mesh.tets
+        .iter()
+        .map(|tet| {
+            let centroid: f64 =
+                tet.iter().map(|&n| mesh.nodes[n][axis]).sum::<f64>() / 4.0;
+            let depth = (inner + thickness) - centroid;
+            if depth <= 0.0 {
+                ElemMaterial::VACUUM
+            } else {
+                let frac = (depth / thickness).min(1.0);
+                ElemMaterial::matched_absorber(1.0, 1.0, nu_max * frac * frac)
+            }
+        })
+        .collect()
+}
+
 /// Per-element materials: vacuum everywhere, except a graded matched absorber
 /// within `thickness` of the plane `x_axis = outer`. The loss ramps
 /// quadratically from `0` at the layer entry to `nu_max` at `outer`.
