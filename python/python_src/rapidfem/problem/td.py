@@ -27,16 +27,19 @@ def _aslist(y):
 
 
 class ProblemTD:
-    """Time-domain DGTD Maxwell problem on a structured box cavity."""
+    """Time-domain DGTD Maxwell problem.
 
-    def __init__(self, *, size, cells, order=2, flux="upwind"):
+    Built from a meshed :class:`~rapidfem.Geometry` — arbitrary unstructured
+    tetrahedral meshes. :meth:`box` is a shortcut for a structured box
+    cavity, used for validation.
+    """
+
+    def __init__(self, geometry, *, order=2, flux="upwind"):
         """
         Parameters
         ----------
-        size : (lx, ly, lz)
-            Cavity dimensions.
-        cells : (nx, ny, nz)
-            Structured-mesh cell counts per axis.
+        geometry : rapidfem.Geometry
+            A geometry on which ``g.mesh()`` has already been called.
         order : int
             DG polynomial order.
         flux : {"upwind", "central"}
@@ -45,13 +48,43 @@ class ProblemTD:
         """
         if flux not in _FLUX:
             raise ValueError(f"flux must be one of {sorted(_FLUX)}")
+        if getattr(geometry, "_last_mesh", None) is None:
+            raise RuntimeError(
+                "geometry not meshed yet — call g.mesh() before "
+                "constructing a ProblemTD"
+            )
+        mesh_bytes = geometry._last_mesh[0]
+        self._op = TdOperator.from_mesh_bytes(
+            bytes(mesh_bytes), order, _FLUX[flux]
+        )
+        self._geometry = geometry
+        self.order = order
+        self.flux = flux
+
+    @classmethod
+    def box(cls, *, size, cells, order=2, flux="upwind"):
+        """Build directly on a structured box cavity, bypassing the geometry
+        API — handy for validation and quick experiments.
+
+        Parameters
+        ----------
+        size : (lx, ly, lz)
+            Cavity dimensions.
+        cells : (nx, ny, nz)
+            Structured-mesh cell counts per axis.
+        """
+        if flux not in _FLUX:
+            raise ValueError(f"flux must be one of {sorted(_FLUX)}")
         lx, ly, lz = size
         nx, ny, nz = cells
-        self._op = TdOperator(nx, ny, nz, lx, ly, lz, order, _FLUX[flux])
-        self.order = order
-        self.size = tuple(size)
-        self.cells = tuple(cells)
-        self.flux = flux
+        obj = cls.__new__(cls)
+        obj._op = TdOperator(nx, ny, nz, lx, ly, lz, order, _FLUX[flux])
+        obj._geometry = None
+        obj.order = order
+        obj.flux = flux
+        obj.size = tuple(size)
+        obj.cells = tuple(cells)
+        return obj
 
     @property
     def n_dof(self):

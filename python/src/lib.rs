@@ -396,6 +396,21 @@ impl PyTdOperator {
         PyTdOperator { op }
     }
 
+    /// Build the operator from in-memory gmsh `.msh` bytes — the path for
+    /// arbitrary unstructured meshes produced by the geometry API.
+    #[staticmethod]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0))]
+    fn from_mesh_bytes(
+        mesh_bytes: &[u8],
+        order: usize,
+        flux_alpha: f64,
+    ) -> PyResult<Self> {
+        let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
+            .map_err(PyRuntimeError::new_err)?;
+        let op = rapidfem_td::rhs::MaxwellOperator::new(&mesh, order, flux_alpha);
+        Ok(PyTdOperator { op })
+    }
+
     /// Degrees of freedom, `6·Np·n_elem`.
     fn n_dof(&self) -> usize {
         self.op.n_dof()

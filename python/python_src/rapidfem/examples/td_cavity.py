@@ -11,7 +11,7 @@ import numpy as np
 import rapidfem as rf
 
 # %% Build the time-domain problem — a unit cubic PEC cavity
-ptd = rf.ProblemTD(
+ptd = rf.ProblemTD.box(
     size=(1.0, 1.0, 1.0),   # cavity dimensions
     cells=(2, 2, 2),        # structured-mesh resolution
     order=2,                # DG polynomial order

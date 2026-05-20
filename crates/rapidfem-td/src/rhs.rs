@@ -493,6 +493,79 @@ mod tests {
     }
 
     #[test]
+    fn cavity_eigenfrequency_on_irregular_mesh() {
+        // WP1.2: the cavity fundamental survives on a skewed, irregular mesh —
+        // the physics does not depend on mesh regularity, only the
+        // discretisation error grows mildly.
+        use crate::mesh_gen::structured_box_jittered;
+        use faer::Mat;
+
+        let mesh = structured_box_jittered(2, 2, 2, 1.0, 1.0, 1.0, 0.25, 7);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mat = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+        let eig = mat.eigenvalues().expect("eigenvalues");
+
+        let want = std::f64::consts::PI * 2.0_f64.sqrt();
+        let mut fundamental = (f64::NEG_INFINITY, 0.0_f64);
+        for z in &eig {
+            if z.im.abs() > 1.0 && z.re > fundamental.0 {
+                fundamental = (z.re, z.im.abs());
+            }
+        }
+        let (re, im) = fundamental;
+        let err = (im - want).abs() / want;
+        eprintln!(
+            "DIAG irregular mesh: Re={re:.5} |Im|={im:.5} π√2={want:.5} err={err:.4}"
+        );
+        assert!(re < 0.0, "upwind flux must damp — Re = {re}");
+        assert!(
+            err < 0.08,
+            "irregular-mesh fundamental |Im| = {im:.4}, π√2 = {want:.4}, rel.err {err:.3}"
+        );
+    }
+
+    #[test]
+    fn cavity_fundamental_converges_under_refinement() {
+        // WP1.3: mesh refinement drives the eigenfrequency error down at a
+        // high-order rate.
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+        let want = std::f64::consts::PI * 2.0_f64.sqrt();
+
+        let fundamental_err = |cells: usize, order: usize| -> f64 {
+            let mesh = structured_box(cells, cells, cells, 1.0, 1.0, 1.0);
+            let op = MaxwellOperator::new(&mesh, order, 1.0);
+            let n = op.n_dof();
+            let a = op.assemble_dense();
+            let mat = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+            let eig = mat.eigenvalues().expect("eig");
+            let mut best = (f64::NEG_INFINITY, 0.0_f64);
+            for z in &eig {
+                if z.im.abs() > 1.0 && z.re > best.0 {
+                    best = (z.re, z.im.abs());
+                }
+            }
+            (best.1 - want).abs() / want
+        };
+
+        let coarse = fundamental_err(1, 2); // 6 tets
+        let fine = fundamental_err(2, 2); // 48 tets
+        eprintln!(
+            "DIAG convergence p=2: coarse(1^3)={coarse:.3e} fine(2^3)={fine:.3e} ratio={:.1}",
+            coarse / fine
+        );
+        assert!(fine < coarse, "refinement must reduce the error");
+        assert!(fine < 1e-3, "fine-mesh error {fine:.2e} too large");
+        assert!(
+            coarse / fine > 4.0,
+            "weak convergence — error ratio only {:.1}",
+            coarse / fine
+        );
+    }
+
+    #[test]
     fn sparse_assembly_matches_matrix_free_apply() {
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);

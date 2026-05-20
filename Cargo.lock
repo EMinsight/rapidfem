@@ -1438,6 +1438,7 @@ dependencies = [
  "num-complex 0.4.6",
  "numpy",
  "pyo3",
+ "rapidfem-core",
  "rapidfem-fd",
  "rapidfem-td",
 ]
