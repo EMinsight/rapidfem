@@ -398,16 +398,39 @@ impl PyTdOperator {
 
     /// Build the operator from in-memory gmsh `.msh` bytes — the path for
     /// arbitrary unstructured meshes produced by the geometry API.
+    ///
+    /// `tag_materials` maps a gmsh volume tag to `(eps_diag, mu_diag, sigma)`;
+    /// tets in untagged volumes default to vacuum.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None))]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
         order: usize,
         flux_alpha: f64,
+        tag_materials: Option<
+            Vec<(i32, (f64, f64, f64), (f64, f64, f64), f64)>,
+        >,
     ) -> PyResult<Self> {
+        use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator};
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
             .map_err(PyRuntimeError::new_err)?;
-        let op = rapidfem_td::rhs::MaxwellOperator::new(&mesh, order, flux_alpha);
+        let mut materials = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        if let Some(tm) = tag_materials {
+            for (tag, eps, mu, sigma) in tm {
+                if let Some(tets) = mesh.vtag_to_tet.get(&tag) {
+                    for &t in tets {
+                        materials[t] = ElemMaterial {
+                            eps: [eps.0, eps.1, eps.2],
+                            mu: [mu.0, mu.1, mu.2],
+                            sigma,
+                        };
+                    }
+                }
+            }
+        }
+        let op = MaxwellOperator::new_with_materials(
+            &mesh, order, flux_alpha, &materials,
+        );
         Ok(PyTdOperator { op })
     }
 

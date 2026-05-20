@@ -26,6 +26,39 @@ def _aslist(y):
     return np.asarray(y, dtype=float).ravel().tolist()
 
 
+def _collect_materials(geometry):
+    """Walk the geometry's volume materials.
+
+    Returns ``[(tag, eps_diag, mu_diag, sigma)]`` for the native TD operator.
+    Non-dispersive materials only — loss-tangent dispersion is a frequency-
+    domain effect and is handled by the ADE machinery, not as a constant
+    conductivity.
+    """
+    from ..materials import Material
+
+    out = []
+    seen = set()
+    for ent in getattr(geometry, "_entities", []):
+        mat = getattr(ent, "material", None)
+        if not isinstance(mat, Material) or getattr(ent, "dim", None) != 3:
+            continue
+        if id(mat) in seen:
+            continue
+        seen.add(id(mat))
+        tag = geometry._material_tags.get(id(mat))
+        if tag is None:
+            continue
+        eps = mat.er_diag if mat.er_diag is not None else (mat.er,) * 3
+        mu = mat.ur_diag if mat.ur_diag is not None else (mat.ur,) * 3
+        out.append((
+            int(tag),
+            tuple(float(v) for v in eps),
+            tuple(float(v) for v in mu),
+            float(mat.conductivity),
+        ))
+    return out
+
+
 class ProblemTD:
     """Time-domain DGTD Maxwell problem.
 
@@ -54,8 +87,9 @@ class ProblemTD:
                 "constructing a ProblemTD"
             )
         mesh_bytes = geometry._last_mesh[0]
+        tag_materials = _collect_materials(geometry)
         self._op = TdOperator.from_mesh_bytes(
-            bytes(mesh_bytes), order, _FLUX[flux]
+            bytes(mesh_bytes), order, _FLUX[flux], tag_materials or None
         )
         self._geometry = geometry
         self.order = order
