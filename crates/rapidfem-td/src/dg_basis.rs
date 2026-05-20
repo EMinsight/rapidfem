@@ -1,0 +1,337 @@
+//! DG reference element on the unit tetrahedron.
+//!
+//! Reference tet: vertices `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`, i.e.
+//! `r,s,t ≥ 0` and `r+s+t ≤ 1`.
+//!
+//! A nodal (Lagrange) basis of order `p` is built on equispaced nodes. The
+//! basis is expressed in monomials via the inverse Vandermonde, which lets
+//! every reference operator be assembled in closed form:
+//!
+//! * the mass matrix from the exact monomial integral
+//!   `∫ rᵃsᵇtᶜ dV = a!·b!·c! / (a+b+c+3)!`,
+//! * the differentiation matrices from the analytic monomial derivatives.
+//!
+//! Equispaced nodes keep this first version simple; for `p ≳ 5` the
+//! Vandermonde conditioning degrades and Warp&Blend nodes become worthwhile.
+
+/// Reference DG element of polynomial order `p` on the unit tetrahedron.
+///
+/// All matrices are `n_nodes × n_nodes`, stored row-major.
+pub struct ReferenceElement {
+    /// Polynomial order.
+    pub order: usize,
+    /// Node count, `Np = (p+1)(p+2)(p+3)/6`.
+    pub n_nodes: usize,
+    /// Node coordinates on the reference tet, `(r, s, t)`.
+    pub nodes: Vec<[f64; 3]>,
+    /// Mass matrix, `M[i,j] = ∫ φ_i φ_j dV`.
+    pub mass: Vec<f64>,
+    /// Inverse mass matrix.
+    pub mass_inv: Vec<f64>,
+    /// `∂/∂r` differentiation matrix: `(∂u/∂r)(node_i) = Σ_j diff_r[i,j] u_j`.
+    pub diff_r: Vec<f64>,
+    /// `∂/∂s` differentiation matrix.
+    pub diff_s: Vec<f64>,
+    /// `∂/∂t` differentiation matrix.
+    pub diff_t: Vec<f64>,
+}
+
+impl ReferenceElement {
+    /// Build the reference element of order `p` (`p ≥ 1`).
+    pub fn new(p: usize) -> Self {
+        assert!(p >= 1, "DG reference element needs order >= 1");
+        let monos = monomials(p);
+        let nodes = equispaced_nodes(p);
+        let n = monos.len();
+        assert_eq!(n, nodes.len(), "monomial / node count mismatch");
+
+        // Vandermonde V[node, mono] = mono(node); C = V^-1 gives the nodal
+        // basis coefficients in the monomial basis: φ_i = Σ_m C[m,i]·mono_m.
+        let mut vander = vec![0.0; n * n];
+        for (ni, nd) in nodes.iter().enumerate() {
+            for (mi, m) in monos.iter().enumerate() {
+                vander[ni * n + mi] = eval_mono(*m, *nd);
+            }
+        }
+        let c = invert(&vander, n);
+
+        // Monomial Gram matrix G[m,n] = ∫ mono_m·mono_n dV (exact).
+        let mut gram = vec![0.0; n * n];
+        for (mi, m) in monos.iter().enumerate() {
+            for (ni, q) in monos.iter().enumerate() {
+                gram[mi * n + ni] =
+                    mono_integral(m[0] + q[0], m[1] + q[1], m[2] + q[2]);
+            }
+        }
+        // Mass M = Cᵀ G C.
+        let mass = triple_product(&c, &gram, &c, n);
+        let mass_inv = invert(&mass, n);
+
+        // Derivative Vandermondes Vr/Vs/Vt, then D = V_d · C.
+        let (mut vr, mut vs, mut vt) =
+            (vec![0.0; n * n], vec![0.0; n * n], vec![0.0; n * n]);
+        for (ni, nd) in nodes.iter().enumerate() {
+            for (mi, m) in monos.iter().enumerate() {
+                vr[ni * n + mi] = eval_mono_d(*m, *nd, 0);
+                vs[ni * n + mi] = eval_mono_d(*m, *nd, 1);
+                vt[ni * n + mi] = eval_mono_d(*m, *nd, 2);
+            }
+        }
+        let diff_r = matmul(&vr, &c, n);
+        let diff_s = matmul(&vs, &c, n);
+        let diff_t = matmul(&vt, &c, n);
+
+        ReferenceElement {
+            order: p,
+            n_nodes: n,
+            nodes,
+            mass,
+            mass_inv,
+            diff_r,
+            diff_s,
+            diff_t,
+        }
+    }
+}
+
+/// Monomial exponents `(a,b,c)` for total degree `≤ p`.
+fn monomials(p: usize) -> Vec<[usize; 3]> {
+    let mut v = Vec::new();
+    for deg in 0..=p {
+        for a in 0..=deg {
+            for b in 0..=(deg - a) {
+                v.push([a, b, deg - a - b]);
+            }
+        }
+    }
+    v
+}
+
+/// Equispaced nodes `(i,j,k)/p` with `i+j+k ≤ p` on the reference tet.
+fn equispaced_nodes(p: usize) -> Vec<[f64; 3]> {
+    let mut v = Vec::new();
+    let pp = p as f64;
+    for i in 0..=p {
+        for j in 0..=(p - i) {
+            for k in 0..=(p - i - j) {
+                v.push([i as f64 / pp, j as f64 / pp, k as f64 / pp]);
+            }
+        }
+    }
+    v
+}
+
+/// `n!` as an `f64`.
+fn factorial(n: usize) -> f64 {
+    (1..=n).map(|k| k as f64).product()
+}
+
+/// Exact integral of `rᵃ sᵇ tᶜ` over the unit reference tetrahedron.
+fn mono_integral(a: usize, b: usize, c: usize) -> f64 {
+    factorial(a) * factorial(b) * factorial(c) / factorial(a + b + c + 3)
+}
+
+/// Evaluate monomial `rᵃ sᵇ tᶜ` at a point.
+fn eval_mono(m: [usize; 3], x: [f64; 3]) -> f64 {
+    x[0].powi(m[0] as i32) * x[1].powi(m[1] as i32) * x[2].powi(m[2] as i32)
+}
+
+/// Evaluate `∂/∂x_axis` of monomial `m` at a point (`axis` 0=r, 1=s, 2=t).
+fn eval_mono_d(m: [usize; 3], x: [f64; 3], axis: usize) -> f64 {
+    let e = m[axis];
+    if e == 0 {
+        return 0.0;
+    }
+    let mut d = m;
+    d[axis] -= 1;
+    e as f64 * eval_mono(d, x)
+}
+
+/// Invert an `n×n` row-major matrix via Gauss-Jordan with partial pivoting.
+fn invert(src: &[f64], n: usize) -> Vec<f64> {
+    let mut a = src.to_vec();
+    let mut inv = vec![0.0; n * n];
+    for i in 0..n {
+        inv[i * n + i] = 1.0;
+    }
+    for col in 0..n {
+        let mut piv = col;
+        let mut best = a[col * n + col].abs();
+        for r in (col + 1)..n {
+            let v = a[r * n + col].abs();
+            if v > best {
+                best = v;
+                piv = r;
+            }
+        }
+        assert!(best > 1e-300, "singular matrix in invert()");
+        if piv != col {
+            for k in 0..n {
+                a.swap(col * n + k, piv * n + k);
+                inv.swap(col * n + k, piv * n + k);
+            }
+        }
+        let d = a[col * n + col];
+        for k in 0..n {
+            a[col * n + k] /= d;
+            inv[col * n + k] /= d;
+        }
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let f = a[r * n + col];
+            if f == 0.0 {
+                continue;
+            }
+            for k in 0..n {
+                a[r * n + k] -= f * a[col * n + k];
+                inv[r * n + k] -= f * inv[col * n + k];
+            }
+        }
+    }
+    inv
+}
+
+/// `A · B` for `n×n` row-major matrices.
+fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+    let mut c = vec![0.0; n * n];
+    for i in 0..n {
+        for k in 0..n {
+            let aik = a[i * n + k];
+            if aik == 0.0 {
+                continue;
+            }
+            for j in 0..n {
+                c[i * n + j] += aik * b[k * n + j];
+            }
+        }
+    }
+    c
+}
+
+/// `Aᵀ · G · A` for `n×n` row-major matrices.
+fn triple_product(a: &[f64], g: &[f64], a2: &[f64], n: usize) -> Vec<f64> {
+    // (Aᵀ G) then · A
+    let mut at_g = vec![0.0; n * n];
+    for i in 0..n {
+        for k in 0..n {
+            let mut acc = 0.0;
+            for m in 0..n {
+                acc += a[m * n + i] * g[m * n + k];
+            }
+            at_g[i * n + k] = acc;
+        }
+    }
+    matmul(&at_g, a2, n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn np(p: usize) -> usize {
+        (p + 1) * (p + 2) * (p + 3) / 6
+    }
+
+    #[test]
+    fn node_counts() {
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            assert_eq!(re.n_nodes, np(p), "Np wrong for p={p}");
+        }
+    }
+
+    #[test]
+    fn mass_is_partition_of_unity() {
+        // Σ_ij M[i,j] = ∫ (Σφ_i)(Σφ_j) = ∫ 1·1 dV = 1/6 (unit tet volume).
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            let sum: f64 = re.mass.iter().sum();
+            assert!(
+                (sum - 1.0 / 6.0).abs() < 1e-11,
+                "p={p}: Σ M = {sum}, expected 1/6"
+            );
+        }
+    }
+
+    #[test]
+    fn mass_is_symmetric() {
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            let n = re.n_nodes;
+            for i in 0..n {
+                for j in 0..n {
+                    assert!(
+                        (re.mass[i * n + j] - re.mass[j * n + i]).abs() < 1e-13
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mass_inverse_is_correct() {
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            let n = re.n_nodes;
+            let id = matmul(&re.mass, &re.mass_inv, n);
+            for i in 0..n {
+                for j in 0..n {
+                    let want = if i == j { 1.0 } else { 0.0 };
+                    assert!(
+                        (id[i * n + j] - want).abs() < 1e-9,
+                        "p={p}: M·M⁻¹ off at ({i},{j})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diff_rows_sum_to_zero() {
+        // ∂(constant)/∂x = 0  ⇒  each row of every D sums to 0.
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            let n = re.n_nodes;
+            for d in [&re.diff_r, &re.diff_s, &re.diff_t] {
+                for i in 0..n {
+                    let row: f64 = (0..n).map(|j| d[i * n + j]).sum();
+                    assert!(row.abs() < 1e-9, "p={p}: D row {i} sum = {row}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diff_is_exact_on_polynomials() {
+        // Differentiate a degree-p polynomial exactly at the nodes.
+        let p = 3;
+        let re = ReferenceElement::new(p);
+        let n = re.n_nodes;
+        // u = 1 + 2r + 3s - t + r·s + r·t² + s³
+        let u = |r: f64, s: f64, t: f64| {
+            1.0 + 2.0 * r + 3.0 * s - t + r * s + r * t * t + s * s * s
+        };
+        let du_dr = |_r: f64, s: f64, t: f64| 2.0 + s + t * t;
+        let du_ds = |r: f64, s: f64, _t: f64| 3.0 + r + 3.0 * s * s;
+        let du_dt = |r: f64, _s: f64, t: f64| -1.0 + 2.0 * r * t;
+
+        let un: Vec<f64> =
+            re.nodes.iter().map(|x| u(x[0], x[1], x[2])).collect();
+        for (d, exact) in [
+            (&re.diff_r, &du_dr as &dyn Fn(f64, f64, f64) -> f64),
+            (&re.diff_s, &du_ds),
+            (&re.diff_t, &du_dt),
+        ] {
+            for i in 0..n {
+                let got: f64 = (0..n).map(|j| d[i * n + j] * un[j]).sum();
+                let want = exact(re.nodes[i][0], re.nodes[i][1], re.nodes[i][2]);
+                assert!(
+                    (got - want).abs() < 1e-8,
+                    "node {i}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+}
