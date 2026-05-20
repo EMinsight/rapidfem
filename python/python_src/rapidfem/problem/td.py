@@ -15,6 +15,9 @@ geometry support follows the frequency-domain ``(mesh, TOML)`` path.
 """
 from __future__ import annotations
 
+import sys
+import time
+
 import numpy as np
 
 from .._native import TdOperator
@@ -27,6 +30,11 @@ _COMP = {"x": 0, "y": 1, "z": 2}
 # measured in metres); `c` maps operator results to physical SI units —
 # `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
 C_LIGHT = 299_792_458.0
+
+
+def _log(msg):
+    """Progress logging for long TD runs — to stderr, like the FD solver."""
+    print(f"  [rapidfem-td] {msg}", file=sys.stderr, flush=True)
 
 
 def _aslist(y):
@@ -105,6 +113,10 @@ class ProblemTD:
         self.order = order
         self.flux = flux
         self.c = float(c)
+        _log(
+            f"operator built — {self.n_dof} DOFs, order {order}, "
+            f"flux={flux}, {len(tag_materials)} tagged materials"
+        )
 
     @classmethod
     def box(cls, *, size, cells, order=2, flux="upwind", c=1.0):
@@ -132,6 +144,10 @@ class ProblemTD:
         obj.c = float(c)
         obj.size = tuple(size)
         obj.cells = tuple(cells)
+        _log(
+            f"operator built (box) — {obj.n_dof} DOFs, order {order}, "
+            f"flux={flux}"
+        )
         return obj
 
     @property
@@ -196,7 +212,8 @@ class ProblemTD:
         )
 
     def driven_transient(
-        self, *, source, waveform, probes, dt, steps, krylov_dim=40
+        self, *, source, waveform, probes, dt, steps, krylov_dim=40,
+        verbose=True,
     ):
         """Drive a soft point source and record field probes.
 
@@ -227,6 +244,8 @@ class ProblemTD:
         resp = np.zeros((len(pdofs), steps + 1))
         for k, d in enumerate(pdofs):
             resp[k, 0] = y[d]
+        t0 = time.time()
+        every = max(1, steps // 10)
         for s in range(steps):
             g = float(waveform(s * dt))
             y = np.asarray(
@@ -236,10 +255,22 @@ class ProblemTD:
             )
             for k, d in enumerate(pdofs):
                 resp[k, s + 1] = y[d]
+            if verbose and (s + 1) % every == 0:
+                el = time.time() - t0
+                eta = el / (s + 1) * (steps - s - 1)
+                _log(
+                    f"driven_transient {s + 1}/{steps}  "
+                    f"({el:.1f}s elapsed, ETA {eta:.0f}s)"
+                )
+        if verbose:
+            _log(
+                f"driven_transient complete — {steps} steps "
+                f"in {time.time() - t0:.1f}s"
+            )
         return times, resp
 
     # -- turnkey: a transient run ------------------------------------------
-    def transient(self, y0, *, dt, steps, krylov_dim=40):
+    def transient(self, y0, *, dt, steps, krylov_dim=40, verbose=True):
         """Propagate ``y0`` for ``steps`` steps of size ``dt``.
 
         Returns the trajectory as an array of shape ``[steps + 1, n_dof]``.
@@ -247,7 +278,18 @@ class ProblemTD:
         y = np.asarray(y0, dtype=float).ravel()
         traj = np.empty((steps + 1, y.size))
         traj[0] = y
+        t0 = time.time()
+        every = max(1, steps // 10)
         for k in range(steps):
             y = self.step(y, dt, krylov_dim)
             traj[k + 1] = y
+            if verbose and (k + 1) % every == 0:
+                el = time.time() - t0
+                eta = el / (k + 1) * (steps - k - 1)
+                _log(
+                    f"transient {k + 1}/{steps}  "
+                    f"({el:.1f}s elapsed, ETA {eta:.0f}s)"
+                )
+        if verbose:
+            _log(f"transient complete — {steps} steps in {time.time() - t0:.1f}s")
         return traj

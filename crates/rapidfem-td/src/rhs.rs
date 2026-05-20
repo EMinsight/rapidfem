@@ -12,6 +12,7 @@ use crate::dg_basis::ReferenceElement;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
+use rayon::prelude::*;
 
 /// Physical curl of a vector field on a single element.
 ///
@@ -251,14 +252,25 @@ impl MaxwellOperator {
         best
     }
 
-    /// Evaluate `dy/dt = A·y`.
+    /// Evaluate `dy/dt = A·y`. The per-element work is independent — each
+    /// element writes only its own slice of `dy` — so it runs in parallel
+    /// across cores.
     pub fn apply(&self, y: &[f64]) -> Vec<f64> {
+        let stride = self.re.n_nodes * 6;
+        let mut dy = vec![0.0; self.n_dof()];
+        dy.par_chunks_mut(stride)
+            .enumerate()
+            .for_each(|(e, out)| self.apply_element(e, y, out));
+        dy
+    }
+
+    /// Compute element `e`'s block of `dy = A·y` into `out` — its `Np·6`
+    /// contiguous slice.
+    fn apply_element(&self, e: usize, y: &[f64], out: &mut [f64]) {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let cols = 4 * nfp;
-        let mut dy = vec![0.0; self.n_dof()];
-
-        for e in 0..self.n_elem {
+        {
             let base = e * np * 6;
             let mut ee = vec![0.0; 3 * np];
             let mut hh = vec![0.0; 3 * np];
@@ -342,13 +354,12 @@ impl MaxwellOperator {
                 (self.inv_eps[e], self.inv_mu[e], self.sigma_eps[e]);
             for node in 0..np {
                 for c in 0..3 {
-                    dy[base + node * 6 + c] =
+                    out[node * 6 + c] =
                         ie[c] * de[node * 3 + c] - se[c] * ee[node * 3 + c];
-                    dy[base + node * 6 + 3 + c] = im[c] * dh[node * 3 + c];
+                    out[node * 6 + 3 + c] = im[c] * dh[node * 3 + c];
                 }
             }
         }
-        dy
     }
 
     /// Assemble the operator as a dense `N×N` row-major matrix by applying it
