@@ -5,6 +5,9 @@
 //! matrix-free `apply`, so the action `exp(h·A)·v` is formed in an `m`-step
 //! Krylov subspace: Arnoldi gives `A·V_m ≈ V_m·H_m`, and
 //! `exp(h·A)·v ≈ ‖v‖·V_m·exp(h·H_m)·e₁` with the small `exp(h·H_m)` dense.
+//!
+//! [`KrylovWorkspace`] holds the Arnoldi basis and the dense buffers so a
+//! repeated time step allocates nothing.
 
 /// Dense matrix exponential of an `n×n` row-major matrix, via
 /// scaling-and-squaring with a Taylor core.
@@ -44,62 +47,254 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
     result
 }
 
+/// `y ← y − α·x`. Kept serial: at the Krylov vector lengths in play each
+/// axpy is too small to amortise a rayon fork/join, and the Arnoldi
+/// orthogonalisation issues hundreds of them per step.
+fn axpy_neg(y: &mut [f64], alpha: f64, x: &[f64]) {
+    debug_assert_eq!(y.len(), x.len());
+    for (yk, xk) in y.iter_mut().zip(x) {
+        *yk -= alpha * xk;
+    }
+}
+
+/// `out ← A·B` for `n×n` row-major matrices; `out` must not alias `a`/`b`.
+fn matmul_into(a: &[f64], b: &[f64], n: usize, out: &mut [f64]) {
+    out[..n * n].fill(0.0);
+    for i in 0..n {
+        for k in 0..n {
+            let aik = a[i * n + k];
+            if aik == 0.0 {
+                continue;
+            }
+            for j in 0..n {
+                out[i * n + j] += aik * b[k * n + j];
+            }
+        }
+    }
+}
+
+/// Scratch for the dense matrix exponential — five `n×n` buffers, grown on
+/// demand and reused.
+struct ExpmScratch {
+    cap: usize,
+    b: Vec<f64>,
+    result: Vec<f64>,
+    term: Vec<f64>,
+    term2: Vec<f64>,
+    tmp: Vec<f64>,
+}
+
+impl ExpmScratch {
+    fn new() -> Self {
+        ExpmScratch {
+            cap: 0,
+            b: Vec::new(),
+            result: Vec::new(),
+            term: Vec::new(),
+            term2: Vec::new(),
+            tmp: Vec::new(),
+        }
+    }
+    fn ensure(&mut self, nn: usize) {
+        if self.cap < nn {
+            self.b.resize(nn, 0.0);
+            self.result.resize(nn, 0.0);
+            self.term.resize(nn, 0.0);
+            self.term2.resize(nn, 0.0);
+            self.tmp.resize(nn, 0.0);
+            self.cap = nn;
+        }
+    }
+}
+
+/// `exp(A)` of an `n×n` row-major matrix into `out`, reusing `s` — the
+/// allocation-free counterpart of [`expm`].
+fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
+    let nn = n * n;
+    s.ensure(nn);
+
+    let mut norm = 0.0_f64;
+    for i in 0..n {
+        let row: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
+        norm = norm.max(row);
+    }
+    let sq: u32 = if norm > 0.5 {
+        (norm.log2().ceil() as i64 + 1).max(0) as u32
+    } else {
+        0
+    };
+    let scale = 2.0_f64.powi(sq as i32);
+    for k in 0..nn {
+        s.b[k] = a[k] / scale;
+    }
+
+    // result = I, term = I.
+    s.result[..nn].fill(0.0);
+    s.term[..nn].fill(0.0);
+    for i in 0..n {
+        s.result[i * n + i] = 1.0;
+        s.term[i * n + i] = 1.0;
+    }
+    // exp(B) = Σ Bᵏ/k!  (≈18 terms suffice for ‖B‖ ≤ 1/2).
+    for k in 1..=18 {
+        matmul_into(&s.term[..nn], &s.b[..nn], n, &mut s.term2);
+        let inv = 1.0 / k as f64;
+        for x in s.term2[..nn].iter_mut() {
+            *x *= inv;
+        }
+        for (r, t) in s.result[..nn].iter_mut().zip(&s.term2[..nn]) {
+            *r += *t;
+        }
+        s.term[..nn].copy_from_slice(&s.term2[..nn]);
+    }
+    // Square sq times.
+    for _ in 0..sq {
+        matmul_into(&s.result[..nn], &s.result[..nn], n, &mut s.tmp);
+        s.result[..nn].copy_from_slice(&s.tmp[..nn]);
+    }
+    out[..nn].copy_from_slice(&s.result[..nn]);
+}
+
+/// Reusable workspace for the Krylov exponential propagator — owns the
+/// Arnoldi basis and the dense `H` buffers, so
+/// [`expmv_into`](Self::expmv_into) allocates nothing once warmed.
+pub struct KrylovWorkspace {
+    /// Arnoldi basis, flat — vector `j` occupies `basis[j*n .. (j+1)*n]`.
+    basis: Vec<f64>,
+    /// Arnoldi working vector / matvec output.
+    w: Vec<f64>,
+    /// Upper Hessenberg `H`, `m×m` row-major.
+    h: Vec<f64>,
+    /// `t·H` and `exp(t·H)`, packed `dim×dim`.
+    th: Vec<f64>,
+    exp_th: Vec<f64>,
+    expm_scratch: ExpmScratch,
+}
+
+impl Default for KrylovWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KrylovWorkspace {
+    /// An empty workspace; its buffers grow to fit on the first call.
+    pub fn new() -> Self {
+        KrylovWorkspace {
+            basis: Vec::new(),
+            w: Vec::new(),
+            h: Vec::new(),
+            th: Vec::new(),
+            exp_th: Vec::new(),
+            expm_scratch: ExpmScratch::new(),
+        }
+    }
+
+    fn ensure(&mut self, n: usize, m: usize) {
+        if self.basis.len() < (m + 1) * n {
+            self.basis.resize((m + 1) * n, 0.0);
+        }
+        if self.w.len() < n {
+            self.w.resize(n, 0.0);
+        }
+        if self.h.len() < m * m {
+            self.h.resize(m * m, 0.0);
+            self.th.resize(m * m, 0.0);
+            self.exp_th.resize(m * m, 0.0);
+        }
+    }
+
+    /// Matrix-free `exp(t·A)·v` into `out`, with `matvec(x, ax)` writing
+    /// `A·x` into `ax`. After the buffers have grown once to fit `n` and
+    /// `m`, this allocates nothing — the form to call in a step loop.
+    /// `m` is the Krylov dimension; Arnoldi stops early on a breakdown.
+    pub fn expmv_into<F>(
+        &mut self,
+        matvec: F,
+        v: &[f64],
+        t: f64,
+        m: usize,
+        out: &mut [f64],
+    ) where
+        F: Fn(&[f64], &mut [f64]),
+    {
+        let n = v.len();
+        self.ensure(n, m);
+
+        let beta = norm2(v);
+        if beta == 0.0 {
+            out[..n].fill(0.0);
+            return;
+        }
+        let inv_beta = 1.0 / beta;
+        for k in 0..n {
+            self.basis[k] = v[k] * inv_beta;
+        }
+        self.h[..m * m].fill(0.0);
+
+        // Arnoldi — modified Gram-Schmidt.
+        let mut dim = m;
+        for j in 0..m {
+            matvec(&self.basis[j * n..j * n + n], &mut self.w[..n]);
+            for i in 0..=j {
+                let bi = &self.basis[i * n..i * n + n];
+                let hij = dot(&self.w[..n], bi);
+                self.h[i * m + j] = hij;
+                axpy_neg(&mut self.w[..n], hij, bi);
+            }
+            let hnext = norm2(&self.w[..n]);
+            if hnext < 1e-12 {
+                dim = j + 1;
+                break;
+            }
+            if j + 1 < m {
+                self.h[(j + 1) * m + j] = hnext;
+                let inv = 1.0 / hnext;
+                let dst = (j + 1) * n;
+                for k in 0..n {
+                    self.basis[dst + k] = self.w[k] * inv;
+                }
+            }
+        }
+
+        // exp(t·H) on the dim×dim leading block, packed tightly.
+        for i in 0..dim {
+            for j in 0..dim {
+                self.th[i * dim + j] = t * self.h[i * m + j];
+            }
+        }
+        expm_into(
+            &self.th[..dim * dim],
+            dim,
+            &mut self.exp_th[..dim * dim],
+            &mut self.expm_scratch,
+        );
+
+        // out = β · Σ_i basis[i] · exp_th[i,0].
+        out[..n].fill(0.0);
+        for i in 0..dim {
+            let c = beta * self.exp_th[i * dim];
+            let bi = &self.basis[i * n..i * n + n];
+            for k in 0..n {
+                out[k] += c * bi[k];
+            }
+        }
+    }
+}
+
 /// Matrix-free action `exp(t·A)·v`, via an `m`-step Krylov projection.
 ///
 /// `matvec` computes `A·x`. `m` is the Krylov dimension; Arnoldi stops early
-/// on a lucky breakdown.
+/// on a lucky breakdown. Allocating wrapper around
+/// [`KrylovWorkspace::expmv_into`] — reuse a [`KrylovWorkspace`] directly to
+/// step without allocating.
 pub fn expmv<F>(matvec: F, v: &[f64], t: f64, m: usize) -> Vec<f64>
 where
     F: Fn(&[f64]) -> Vec<f64>,
 {
-    let n = v.len();
-    let beta = norm2(v);
-    if beta == 0.0 {
-        return vec![0.0; n];
-    }
-
-    let mut basis: Vec<Vec<f64>> = Vec::with_capacity(m + 1);
-    basis.push(v.iter().map(|x| x / beta).collect());
-    let mut h = vec![0.0; m * m];
-    let mut dim = m;
-
-    for j in 0..m {
-        let mut w = matvec(&basis[j]);
-        for i in 0..=j {
-            let hij = dot(&w, &basis[i]);
-            h[i * m + j] = hij;
-            for k in 0..n {
-                w[k] -= hij * basis[i][k];
-            }
-        }
-        let hnext = norm2(&w);
-        if hnext < 1e-12 {
-            dim = j + 1;
-            break;
-        }
-        if j + 1 < m {
-            h[(j + 1) * m + j] = hnext;
-            basis.push(w.iter().map(|x| x / hnext).collect());
-        }
-    }
-
-    // exp(t·H) on the dim×dim leading block.
-    let mut th = vec![0.0; dim * dim];
-    for i in 0..dim {
-        for j in 0..dim {
-            th[i * dim + j] = t * h[i * m + j];
-        }
-    }
-    let e = expm(&th, dim);
-
-    // result = β · Σ_i basis[i] · e[i,0]
-    let mut out = vec![0.0; n];
-    for i in 0..dim {
-        let c = beta * e[i * dim];
-        for k in 0..n {
-            out[k] += c * basis[i][k];
-        }
-    }
+    let mut ws = KrylovWorkspace::new();
+    let mut out = vec![0.0; v.len()];
+    ws.expmv_into(|x, ax| ax.copy_from_slice(&matvec(x)), v, t, m, &mut out);
     out
 }
 

@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use rapidfem_td::mesh_gen::structured_box;
-use rapidfem_td::propagator::expmv;
+use rapidfem_td::propagator::KrylovWorkspace;
 use rapidfem_td::rhs::MaxwellOperator;
 
 /// Median wall-clock seconds of `reps` runs of `f`.
@@ -72,11 +72,13 @@ fn main() {
     let n = op.n_dof();
     let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.07).cos()).collect();
 
-    println!("\nexponential propagation  (n_dof = {n}):");
+    println!("\nexponential propagation  (n_dof = {n}, reused workspace):");
     for &m in &[12usize, 24, 40] {
-        expmv(|x| op.apply(x), &y, 0.02, m); // warm up
+        let mut ws = KrylovWorkspace::new();
+        let mut out = vec![0.0; n];
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, &mut out); // warm
         let t = time_median(20, || {
-            expmv(|x| op.apply(x), &y, 0.02, m);
+            ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, &mut out);
         });
         println!("  krylov_dim {m:>3}:  {:>7.2} ms/step", t * 1e3);
     }

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use rapidfem_td::mesh_gen::structured_box;
-use rapidfem_td::propagator::{etd_step, expmv};
+use rapidfem_td::propagator::{KrylovWorkspace, etd_step, expmv};
 use rapidfem_td::rhs::MaxwellOperator;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -76,17 +76,31 @@ fn main() {
     let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.07).cos()).collect();
 
     println!("\nn_dof = {n}:");
-    for &(label, m) in &[("expmv  krylov 40", 40usize)] {
-        expmv(|x| op.apply(x), &y, 0.02, m); // warm
+    {
+        expmv(|x| op.apply(x), &y, 0.02, 40); // warm
+        let (a0, b0) = snap();
+        let _ = expmv(|x| op.apply(x), &y, 0.02, 40);
+        let (a1, b1) = snap();
+        println!(
+            "  expmv      krylov 40 (allocating wrapper): {} allocs, {} MiB",
+            a1 - a0,
+            (b1 - b0) / (1 << 20),
+        );
+    }
+    {
+        let mut ws = KrylovWorkspace::new();
+        let mut out = vec![0.0; n];
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, &mut out);
         let (a0, b0) = snap();
         let t = Instant::now();
-        let _ = expmv(|x| op.apply(x), &y, 0.02, m);
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, &mut out);
         let dt = t.elapsed();
         let (a1, b1) = snap();
         println!(
-            "  {label}: {} allocs, {} MiB churned, {:.2} ms",
+            "  expmv_into krylov 40 (reused workspace):    {} allocs, \
+             {} KiB, {:.2} ms",
             a1 - a0,
-            (b1 - b0) / (1 << 20),
+            (b1 - b0) / 1024,
             dt.as_secs_f64() * 1e3,
         );
     }
@@ -96,7 +110,7 @@ fn main() {
         let (a0, _) = snap();
         let _ = etd_step(|x| op.apply(x), &y, &b, 0.02, 40);
         let (a1, _) = snap();
-        println!("  etd_step krylov 40: {} allocs", a1 - a0);
+        println!("  etd_step   krylov 40 (allocating):          {} allocs", a1 - a0);
     }
 
     // --- sparse assembly --------------------------------------------------
