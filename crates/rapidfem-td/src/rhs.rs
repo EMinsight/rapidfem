@@ -10,6 +10,7 @@
 
 use crate::dg_basis::ReferenceElement;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
+use crate::waveguide::RectPort;
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
 use rayon::prelude::*;
@@ -120,12 +121,23 @@ struct FaceInfo {
 /// A port — a set of mesh boundary faces carrying a waveguide mode.
 ///
 /// Identified by the mesh triangle indices on the port plane (a gmsh face
-/// tag resolves to exactly such a set via `Mesh::ftag_to_tri`). The modal
-/// fields land here as the ports plan progresses through its phases.
+/// tag resolves to exactly such a set via `Mesh::ftag_to_tri`). With
+/// `rect = None` the port is a pure characteristic absorbing boundary;
+/// `Some` attaches a rectangular-waveguide mode for injection / extraction.
 #[derive(Clone, Debug)]
 pub struct PortSpec {
     /// Mesh triangle indices forming this port's boundary faces.
     pub tris: Vec<usize>,
+    /// Waveguide mode of this port, or `None` for an absorbing-only port.
+    pub rect: Option<RectPort>,
+}
+
+/// Resolved per-port data held by the operator.
+struct PortData {
+    /// The port's waveguide mode, if any.
+    rect: Option<RectPort>,
+    /// `(element, local_face)` of every boundary face on this port.
+    faces: Vec<(usize, usize)>,
 }
 
 /// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
@@ -286,6 +298,8 @@ pub struct MaxwellOperator {
     /// Reusable per-thread scratch buffers — keeps `apply` allocation-free
     /// after the first call (see [`Scratch`]).
     scratch_pool: Mutex<Vec<Scratch>>,
+    /// Resolved port data — faces and waveguide mode per port.
+    ports: Vec<PortData>,
 }
 
 impl MaxwellOperator {
@@ -394,6 +408,23 @@ impl MaxwellOperator {
                 ]
             })
             .collect();
+        // Resolve per-port data — collect each port's boundary faces.
+        let mut port_data: Vec<PortData> = ports
+            .iter()
+            .map(|spec| PortData {
+                rect: spec.rect.clone(),
+                faces: Vec::new(),
+            })
+            .collect();
+        for e in 0..n_elem {
+            for f in 0..4 {
+                let pi = faces[e * 4 + f].port;
+                if pi != usize::MAX {
+                    port_data[pi].faces.push((e, f));
+                }
+            }
+        }
+
         MaxwellOperator {
             re,
             n_elem,
@@ -405,6 +436,7 @@ impl MaxwellOperator {
             sigma_eps,
             sigma_mu,
             scratch_pool: Mutex::new(Vec::new()),
+            ports: port_data,
         }
     }
 
@@ -473,6 +505,69 @@ impl MaxwellOperator {
                 })
                 .expect("reference element carries the tet-corner nodes")
         })
+    }
+
+    /// Number of ports on the operator.
+    pub fn n_ports(&self) -> usize {
+        self.ports.len()
+    }
+
+    /// Spatial source vector `b_spatial` for driving port `port_idx` with a
+    /// unit-amplitude waveform: the system `dy/dt = A·y + b_spatial·g(t)`
+    /// then carries the port's incident mode modulated by `g(t)`.
+    ///
+    /// The port flux uses the ghost state `(E⁺, H⁺) = (E_inc, H_inc)`; its
+    /// `(E⁻, H⁻)` part is already the absorbing operator `A`, and the
+    /// incident-field part is this rank-1 source — the lift of
+    /// `(n̂×h_t − n̂×(n̂×e_t))` (electric) and `(−n̂×e_t − n̂×(n̂×h_t))`
+    /// (magnetic) over the port faces, with the per-element material
+    /// scaling applied.
+    pub fn port_source(&self, port_idx: usize) -> Vec<f64> {
+        let np = self.re.n_nodes;
+        let nfp = self.re.n_face_nodes;
+        let cols = 4 * nfp;
+        let mut b = vec![0.0; self.n_dof()];
+        let pd = &self.ports[port_idx];
+        let rect = match &pd.rect {
+            Some(r) => r,
+            None => return b, // absorbing-only port — nothing to inject
+        };
+        for &(e, f) in &pd.faces {
+            let fi = &self.faces[e * 4 + f];
+            let n = fi.normal;
+            let coef = 0.5 * fi.fscale;
+            let (ie, im) = (self.inv_eps[e], self.inv_mu[e]);
+            for m in 0..nfp {
+                let vi = self.re.face_nodes[f][m];
+                let x = self.geom[e].map(self.re.nodes[vi]);
+                let et = rect.e_profile(x);
+                let ht = rect.h_profile(x);
+                // Incident-field flux: jumps [E] = −e_t, [H] = −h_t.
+                let nxe = cross3(n, et);
+                let nxh = cross3(n, ht);
+                let nne = cross3(n, nxe);
+                let nnh = cross3(n, nxh);
+                let s_de = [
+                    nxh[0] - nne[0],
+                    nxh[1] - nne[1],
+                    nxh[2] - nne[2],
+                ];
+                let s_dh = [
+                    -nxe[0] - nnh[0],
+                    -nxe[1] - nnh[1],
+                    -nxe[2] - nnh[2],
+                ];
+                for i in 0..np {
+                    let w = coef * self.re.lift[i * cols + f * nfp + m];
+                    let base = (e * np + i) * 6;
+                    for c in 0..3 {
+                        b[base + c] += ie[c] * w * s_de[c];
+                        b[base + 3 + c] += im[c] * w * s_dh[c];
+                    }
+                }
+            }
+        }
+        b
     }
 
     /// Evaluate `dy/dt = A·y`, allocating the result. See [`apply_into`](Self::apply_into)
@@ -1415,7 +1510,7 @@ mod tests {
         };
 
         let pec = run(&[]);
-        let port = run(&[PortSpec { tris: port_tris }]);
+        let port = run(&[PortSpec { tris: port_tris, rect: None }]);
         // The all-PEC channel conserves energy exactly (central flux); the
         // port drains the majority of it. The residue is the test field's
         // below-cutoff content — evanescent in a waveguide, so it cannot
@@ -1461,7 +1556,7 @@ mod tests {
         // Central flux — the interior is energy-conserving, only the port
         // dissipates.
         let op = MaxwellOperator::new_with_materials_ports(
-            &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris }],
+            &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris, rect: None }],
         );
         let n = op.n_dof();
         let a = op.assemble_dense();
@@ -1499,6 +1594,104 @@ mod tests {
         assert!(
             min_re < -1e-3 * scale,
             "port operator shows no dissipation — min eig = {min_re:.3e}"
+        );
+    }
+
+    #[test]
+    fn port_injects_a_mode_at_the_group_velocity() {
+        // WP2.2: a TE₁₀ mode injected at a port travels down a matched
+        // straight guide at the analytic group velocity
+        // v_g = √(1 − (ω_c/ω₀)²).
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use std::f64::consts::PI;
+
+        let (a, b, lz) = (1.0, 0.5, 9.0);
+        let mesh = structured_box(2, 1, 18, a, b, lz);
+        // The z = 0 end face is the driven port.
+        let port_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| mesh.nodes[nd][2].abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!port_tris.is_empty());
+
+        let rect = RectPort {
+            origin: [0.0, 0.0, 0.0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0], // inward (+z) for the z = 0 face
+            a,
+            b,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+        );
+        let n = op.n_dof();
+        let b_spatial = op.port_source(0);
+        assert!(
+            b_spatial.iter().any(|&x| x != 0.0),
+            "port source is empty"
+        );
+
+        // Modulated-Gaussian drive; carrier ω₀ in the single-mode band
+        // (π, 2π) of this guide. A fairly narrow band keeps the group
+        // velocity well-defined (broadband dispersion skews the peak).
+        let omega0 = 1.6 * PI;
+        let (t0, tau) = (7.0, 2.5);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+
+        let probe = |z: f64| op.nearest_node_dof([a / 2.0, b / 2.0, z], 0, 1);
+        let (p1, p2) = (probe(3.5), probe(6.5));
+
+        let dt = 0.02;
+        let mut y = vec![0.0; n];
+        let (mut peak1, mut tpk1) = (0.0_f64, 0.0);
+        let (mut peak2, mut tpk2) = (0.0_f64, 0.0);
+        for s in 0..850 {
+            let t = s as f64 * dt;
+            let g = pulse(t);
+            let bvec: Vec<f64> =
+                b_spatial.iter().map(|x| x * g).collect();
+            y = etd_step(|x| op.apply(x), &y, &bvec, dt, 20);
+            if y[p1].abs() > peak1 {
+                peak1 = y[p1].abs();
+                tpk1 = t;
+            }
+            if y[p2].abs() > peak2 {
+                peak2 = y[p2].abs();
+                tpk2 = t;
+            }
+        }
+        assert!(y.iter().all(|v| v.is_finite()));
+        assert!(
+            peak1 > 1e-3 && peak2 > 1e-3,
+            "injected mode did not reach the probes: {peak1:.2e}, {peak2:.2e}"
+        );
+
+        // Group velocity from the envelope-peak arrival times.
+        let v = 3.0 / (tpk2 - tpk1);
+        let wc = PI / a; // TE₁₀ cutoff
+        let vg = (1.0 - (wc / omega0).powi(2)).sqrt();
+        let err = (v - vg).abs() / vg;
+        eprintln!(
+            "DIAG port mode: peaks t={tpk1:.2},{tpk2:.2}  v={v:.3}  v_g={vg:.3}"
+        );
+        assert!(
+            err < 0.15,
+            "packet speed {v:.3}, analytic v_g {vg:.3} (rel.err {err:.2})"
         );
     }
 }
