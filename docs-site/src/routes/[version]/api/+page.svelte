@@ -1,55 +1,72 @@
 <script lang="ts">
-	import { page } from '$app/stores';
-	import { apiModules } from '$lib/config/rapidfem';
+	import { DocLayout } from '$lib/components/layout';
+	import { ModuleDoc } from '$lib/components/api';
+	import { apiModules, site } from '$lib/config/rapidfem';
+	import type { APIModule } from '$lib/api/types';
+	import type { PageData } from './$types';
 
-	let version = $derived($page.params.version);
+	let { data }: { data: PageData } = $props();
+
+	// Resolved tag for display ('latest' → its concrete version).
+	let resolvedTag = $derived(
+		data.version === 'latest' ? data.manifest.latest : data.version
+	);
+
+	// Order modules by the curated config order, then any extras alphabetically.
+	let orderedModules = $derived.by(() => {
+		const order = apiModules.map((m) => m.name);
+		const all = Object.values(data.api.modules) as APIModule[];
+		return all.slice().sort((a, b) => {
+			const ia = order.indexOf(a.name);
+			const ib = order.indexOf(b.name);
+			if (ia !== -1 && ib !== -1) return ia - ib;
+			if (ia !== -1) return -1;
+			if (ib !== -1) return 1;
+			return a.name.localeCompare(b.name);
+		});
+	});
 </script>
 
 <svelte:head>
-	<title>API Reference — RapidFEM</title>
+	<title>API Reference {resolvedTag} — RapidFEM</title>
 </svelte:head>
 
-<div class="api-stub">
-	<h1>API Reference</h1>
-	<p class="lead">
-		Version <code>{version}</code> — generated from the RapidFEM Python docstrings.
-	</p>
-	<p class="placeholder">
-		The extracted API content is wired up in a later step. Modules to be documented:
-	</p>
-	<ul class="module-list">
-		{#each apiModules as mod}
-			<li><code>{mod.name}</code> — {mod.description}</li>
+<DocLayout api={data.api} manifest={data.manifest} currentVersion={data.version}>
+	<article class="prose">
+		<header class="api-page-header">
+			<div class="api-title-row">
+				<h1>API Reference</h1>
+				<span class="badge accent">{resolvedTag}</span>
+			</div>
+			<p class="lead">
+				{site.name} — {Object.keys(data.api.modules).length} modules, extracted from the
+				Python docstrings. Click a class or function to expand it.
+			</p>
+		</header>
+
+		{#each orderedModules as module (module.name)}
+			<ModuleDoc {module} />
 		{/each}
-	</ul>
-</div>
+	</article>
+</DocLayout>
 
 <style>
-	.api-stub {
-		max-width: var(--content-max-width);
-		margin: 0 auto;
-		padding: var(--space-2xl) var(--space-lg);
+	.api-page-header {
+		margin-bottom: var(--space-xl);
 	}
 
-	.placeholder {
-		color: var(--text-muted);
-		margin-top: var(--space-xl);
+	.api-title-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+		margin-bottom: var(--space-sm);
 	}
 
-	.module-list {
-		list-style: none;
-		padding: 0;
-		margin-top: var(--space-md);
+	.api-title-row h1 {
+		margin: 0;
 	}
 
-	.module-list li {
-		padding: var(--space-sm) 0;
-		border-bottom: 1px solid var(--border);
-		color: var(--text-muted);
-	}
-
-	.module-list code {
-		color: var(--accent);
-		font-weight: 500;
+	.lead {
+		margin-bottom: 0;
 	}
 </style>
