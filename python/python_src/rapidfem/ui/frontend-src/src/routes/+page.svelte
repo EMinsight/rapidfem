@@ -3,6 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
 	import { installation, quickstart } from '$lib/docs/config/rapidfem';
+	import '$lib/docs/docs.css';
+	import CodeBlock from '$lib/docs/components/common/CodeBlock.svelte';
+	import Icon from '$lib/docs/components/common/Icon.svelte';
 
 	let copied_cmd = $state<string | null>(null);
 	let cmd_timer: ReturnType<typeof setTimeout> | null = null;
@@ -144,21 +147,27 @@
 		</div>
 		<section class="info-section">
 			<h2 class="section-title">Installation</h2>
-			<div class="install-grid">
-				{#each installation as opt}
-					<button class="pkg-card" onclick={() => copyCmd(opt.command)}>
-						<span class="pkg-name">{opt.name}</span>
-						<code class="pkg-cmd">{opt.command}</code>
-						<span class="pkg-copy">{copied_cmd === opt.command ? '✓ copied' : 'copy'}</span>
-					</button>
-				{/each}
+			<div class="rfdocs snippet-block">
+				<div class="install-grid">
+					{#each installation as opt}
+						<button class="install-card" onclick={() => copyCmd(opt.command)}>
+							<div class="panel-header">
+								<span>{opt.name}</span>
+								<Icon name={copied_cmd === opt.command ? 'check' : 'copy'} size={14} />
+							</div>
+							<div class="install-body"><code>{opt.command}</code></div>
+						</button>
+					{/each}
+				</div>
 			</div>
 		</section>
 
 		<section class="info-section">
 			<h2 class="section-title">Quick Start</h2>
 			<p class="section-desc">{quickstart.description}</p>
-			<pre class="code-block"><code>{quickstart.code}</code></pre>
+			<div class="rfdocs snippet-block">
+				<CodeBlock code={quickstart.code} title={quickstart.title} lang="python" />
+			</div>
 		</section>
 
 		<a class="embed-hint" href={embed_test_url}>
@@ -244,8 +253,8 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 32px;
-		padding: 40px;
+		gap: 64px;
+		padding: 48px 40px;
 		overflow-y: auto;
 	}
 	.hero {
@@ -424,66 +433,11 @@
 		text-align: center;
 		max-width: 620px;
 	}
-	.install-grid {
-		display: flex;
-		gap: 14px;
-		flex-wrap: wrap;
-		justify-content: center;
-	}
-	.pkg-card {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 6px;
-		min-width: 260px;
-		padding: 12px 14px;
-		background: var(--bg-surface);
-		border: 1px solid var(--border-subtle);
-		font-family: var(--font-mono);
-		text-transform: none;
-		letter-spacing: normal;
-		text-align: left;
-		cursor: pointer;
-		transition: border-color var(--transition);
-	}
-	.pkg-card:hover {
-		background: var(--bg-surface);
-		border-color: var(--accent);
-	}
-	.pkg-name {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--text-dim);
-	}
-	.pkg-cmd {
-		font-size: var(--fs-xs);
-		color: var(--text);
-	}
-	.pkg-copy {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--text-dim);
-		transition: color var(--transition);
-	}
-	.pkg-card:hover .pkg-copy {
-		color: var(--accent);
-	}
-	.code-block {
+	/* Wrapper for the ported docs snippets (install cards + CodeBlock).
+	   .rfdocs supplies the docs design tokens; docs.css does the styling. */
+	.snippet-block {
 		width: 100%;
 		max-width: 760px;
-		margin: 0;
-		padding: 14px 16px;
-		background: var(--bg-surface);
-		border: 1px solid var(--border-subtle);
-		overflow-x: auto;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text);
-		line-height: 1.6;
-		text-align: left;
-		white-space: pre;
 	}
 
 	.embed-hint {

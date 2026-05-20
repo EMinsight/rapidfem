@@ -16,6 +16,9 @@
 	import Select from '$lib/components/Select.svelte';
 	import { openPrompt } from '$lib/modals';
 
+	// Web-build cross-navigation targets (only used when IS_STATIC_MODE).
+	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
+
 	let status = $state('idle');
 	let workdir = $state('');
 	let active_path = $state<string | null>(null);
@@ -625,6 +628,14 @@
 	<header>
 		<a class="brand" href="https://fem.rapidpassives.org" target="_blank" rel="noopener" title="RapidFEM landing"><img src="/favicon.svg" alt="RapidFEM" class="logo" /></a>
 		<span class="nav-sep"></span>
+		{#if IS_STATIC_MODE}
+			<nav class="tabs">
+				<a class="tab active" href="{base}/notebook">Notebook</a>
+				<a class="tab" href="{base}/latest/api">API</a>
+				<a class="tab" href="{base}/embed/test">Embed</a>
+			</nav>
+			<span class="nav-sep"></span>
+		{/if}
 		{#if active_path}
 			<span class="active-file has-tip">
 				{active_path}{dirty ? ' •' : ''}
@@ -933,6 +944,28 @@
 		height: 100%;
 		background: var(--border);
 		flex-shrink: 0;
+	}
+	header .tabs {
+		display: flex;
+		height: 100%;
+	}
+	header .tab {
+		display: flex;
+		align-items: center;
+		padding: 0 14px;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		font-weight: 600;
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		text-decoration: none;
+		transition: color var(--transition);
+	}
+	header .tab:hover {
+		color: var(--text-muted);
+	}
+	header .tab.active {
+		color: var(--accent);
 	}
 	header .active-file {
 		color: var(--text);
