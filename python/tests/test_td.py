@@ -146,6 +146,36 @@ def test_transfer_function_peaks_at_a_resonance(cavity):
     assert min(abs(a - f_peak) for a in analytic) < 0.15
 
 
+def test_sparams_verb_runs():
+    # WP4.2: ProblemTD.sparams runs end-to-end on a geometry with waveguide
+    # ports and returns a plausible 2-port S-matrix. The tight accuracy
+    # gate is the Rust matched-guide S-parameter test.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=12 * mm)
+    air = g.box(22.86 * mm, 10.16 * mm, 80 * mm, material=rf.Air())
+    rf.RectWaveguidePort(air.faces.min(axis="z"))
+    rf.RectWaveguidePort(air.faces.max(axis="z"))
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    ptd = rf.ProblemTD(g, order=2, flux="central")
+    assert ptd._op.n_ports() == 2
+
+    freqs = np.array([9e9, 11e9])
+    f, s = ptd.sparams(freqs, dt=5e-12, steps=200, verbose=False)
+    assert s.shape == (2, 2, 2)
+    assert np.all(np.isfinite(s))
+    for k in range(len(f)):
+        # Transmission present, guide roughly matched.
+        assert abs(s[k, 1, 0]) > 0.5, f"no transmission at f[{k}]"
+        assert abs(s[k, 0, 0]) < 0.5, f"reflection too high at f[{k}]"
+
+
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):
     import xml.etree.ElementTree as ET
 

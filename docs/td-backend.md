@@ -91,6 +91,7 @@ The API exposes the model at every level — pick the abstraction you need.
 | `transient(y0, dt, steps)` | trajectory `[steps+1, n_dof]` | turnkey free propagation |
 | `driven_transient(source, waveform, probes, ...)` | `(times, responses)` | soft source + field probes |
 | `transfer_function(source, probe, pulse, ...)` | `(freqs, H)` | scalar frequency response by RFT |
+| `sparams(freqs, dt, steps)` | `(freqs, S)` | modal-port scattering matrix |
 | `probe_dof(point, field, comp)` | DOF index | place a source or probe |
 | `reduce(start, dim)` | `TdReducedModel` | Krylov model-order reduction |
 | `resonances(n)` | frequencies (Hz) | cavity modes from the spectrum |
@@ -132,7 +133,30 @@ ptd.export_vtk(traj, "out/cavity")
 
 Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 `td_model_reduction.py`, `td_field_export.py`, `td_transfer_function.py`,
-`td_dielectric_cavity.py` (geometry-based), `td_fd_crossvalidation.py`.
+`td_dielectric_cavity.py` (geometry-based), `td_waveguide_sparams.py`
+(WR-90 S-parameters vs FD), `td_fd_crossvalidation.py`.
+
+## Waveguide ports
+
+A `RectWaveguidePort` attached to a geometry face becomes a time-domain
+**modal port**. The port boundary uses a characteristic flux with the
+ghost state set to the incident modal field: it absorbs outgoing waves
+*and* injects the analytic `TE_mn` rectangular-waveguide mode. The
+absorbing part folds into the constant operator `A`; the injection is a
+rank-1 time-dependent source `b(t)`.
+
+`ProblemTD.sparams(freqs, dt, steps)` drives each port in turn with a
+broadband pulse, projects the port-face field onto the mode profile to
+extract the incident / scattered modal amplitudes (the forward/backward
+split uses the dispersive modal impedance `Z_TE(ω)` per frequency), and
+assembles `S_ij(f) = B_i(f)/A_j(f)`. The matched-guide S-matrix is
+validated to ~2 % in the Rust suite; `td_waveguide_sparams.py`
+cross-checks a WR-90 guide against the frequency-domain backend.
+
+The guide must be long enough that, within the transient window, the
+incident / reflected / transmitted pulses are time-separated — the
+characteristic port has a residual modal-mismatch reflection, so its
+multiply-reflected energy must not return before the run ends.
 
 ## Materials and boundaries
 
@@ -175,9 +199,10 @@ Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 
 ## Not yet / out of scope
 
-- **Modal-port S-parameters** — soft sources and probe RFT give the scalar
-  transfer function today; waveguide-mode injection / extraction (full
-  modal `sparams`) is the larger remaining item.
+- **General-cross-section ports** — `sparams` handles rectangular
+  waveguide ports (analytic `TE_mn` modes); arbitrary cross-sections
+  would need a 2D modal eigensolve on the port face. Lumped / coax ports
+  are a further extension.
 - **Curvilinear / isoparametric elements** — affine tets with adequate
   refinement is the pragmatic choice.
 - **Nonlinear materials** — the backend stays linear (constant `A`).
