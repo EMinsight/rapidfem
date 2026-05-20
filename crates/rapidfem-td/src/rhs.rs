@@ -1846,4 +1846,148 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn two_port_guide_s_parameters() {
+        // WP3.2: a matched straight two-port guide — S₁₁ ≈ 0, |S₂₁| ≈ 1,
+        // energy |S₁₁|² + |S₂₁|² ≈ 1, and reciprocity |S₂₁| ≈ |S₁₂|. The
+        // run stops before the (imperfectly absorbed) far-port reflection
+        // can return — the time window isolates the direct S-parameters.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use std::f64::consts::PI;
+
+        let (a, b, lz) = (1.0, 0.5, 6.0);
+        let mesh = structured_box(2, 1, 24, a, b, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a,
+            b,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    rect: Some(rect(0.0, 1.0)),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    rect: Some(rect(lz, -1.0)),
+                },
+            ],
+        );
+        let n = op.n_dof();
+        let src0 = op.port_source(0);
+        let src1 = op.port_source(1);
+
+        let omega0 = 1.5 * PI;
+        let (t0, tau) = (3.0, 1.0);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+        let dt = 0.02;
+        let steps = 900;
+
+        // Drive one port; record (P_e, P_h) at both ports each step.
+        let run = |src: &[f64]| -> [Vec<f64>; 4] {
+            let mut y = vec![0.0; n];
+            let mut cols: [Vec<f64>; 4] =
+                std::array::from_fn(|_| Vec::with_capacity(steps));
+            for s in 0..steps {
+                let g = pulse(s as f64 * dt);
+                let bvec: Vec<f64> = src.iter().map(|x| x * g).collect();
+                y = etd_step(|x| op.apply(x), &y, &bvec, dt, 18);
+                let (pe0, ph0) = op.port_modal_projections(&y, 0);
+                let (pe1, ph1) = op.port_modal_projections(&y, 1);
+                cols[0].push(pe0);
+                cols[1].push(ph0);
+                cols[2].push(pe1);
+                cols[3].push(ph1);
+            }
+            cols
+        };
+
+        let dft = |sig: &[f64], omega: f64| -> (f64, f64) {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, &x) in sig.iter().enumerate() {
+                let t = k as f64 * dt;
+                re += x * (omega * t).cos();
+                im -= x * (omega * t).sin();
+            }
+            (re * dt, im * dt)
+        };
+        let cmag = |z: (f64, f64)| (z.0 * z.0 + z.1 * z.1).sqrt();
+        // Forward / backward modal amplitudes A,B = (P_e ± Z·P_h)/2.
+        let split = |pe: (f64, f64), ph: (f64, f64), z: f64| {
+            (
+                (0.5 * (pe.0 + z * ph.0), 0.5 * (pe.1 + z * ph.1)),
+                (0.5 * (pe.0 - z * ph.0), 0.5 * (pe.1 - z * ph.1)),
+            )
+        };
+
+        let drive0 = run(&src0);
+        let drive1 = run(&src1);
+
+        // Validate across the band where the mesh resolves the guide
+        // wavelength well (away from cutoff and from the per-element
+        // resolution limit).
+        for &omega in &[1.35 * PI, 1.45 * PI, 1.55 * PI] {
+            let z = rect(0.0, 1.0).te_impedance(omega);
+
+            // Port 0 driven: incident A₀, reflected B₀; the outgoing wave
+            // B₁ at port 1 is the transmission.
+            let (a0, b0) =
+                split(dft(&drive0[0], omega), dft(&drive0[1], omega), z);
+            let (_a1, b1) =
+                split(dft(&drive0[2], omega), dft(&drive0[3], omega), z);
+            let s11 = cmag(b0) / cmag(a0);
+            let s21 = cmag(b1) / cmag(a0);
+
+            // Port 1 driven: incident A₁, transmission B₀ at port 0.
+            let (a1d, _b1d) =
+                split(dft(&drive1[2], omega), dft(&drive1[3], omega), z);
+            let (_a0d, b0d) =
+                split(dft(&drive1[0], omega), dft(&drive1[1], omega), z);
+            let s12 = cmag(b0d) / cmag(a1d);
+
+            let energy = s11 * s11 + s21 * s21;
+            eprintln!(
+                "DIAG S(ω/π={:.2}): S11={s11:.4} S21={s21:.4} \
+                 S12={s12:.4}  |S|²={energy:.4}",
+                omega / PI
+            );
+            assert!(s11 < 0.1, "S11 not small on a matched guide: {s11:.3}");
+            assert!(
+                (0.9..1.1).contains(&s21),
+                "S21 not unity on a lossless guide: {s21:.3}"
+            );
+            assert!(
+                (energy - 1.0).abs() < 0.1,
+                "S-matrix not energy-conserving: |S|² = {energy:.3}"
+            );
+            assert!(
+                (s21 - s12).abs() < 0.05,
+                "reciprocity violated: S21 {s21:.3}, S12 {s12:.3}"
+            );
+        }
+    }
 }
