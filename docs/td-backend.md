@@ -146,7 +146,8 @@ constant operator `A`; the injection is a rank-1 time-dependent source
 `b(t)`. A `RectWaveguidePort` carries the analytic `TE_mn`
 rectangular-waveguide mode; a `LumpedPort` carries the `(0, 0)` sentinel
 mode — a uniform transverse profile with zero cutoff and a flat
-impedance, i.e. a TEM port.
+impedance, i.e. a TEM port — with its `direction` setting the transverse
+field axis (as in the frequency-domain backend).
 
 `ProblemTD.sparams(freqs, dt, steps)` drives each port in turn with a
 broadband pulse, projects the port-face field onto the mode profile to

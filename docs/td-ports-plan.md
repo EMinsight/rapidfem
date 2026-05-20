@@ -42,8 +42,11 @@ addressed:
 - **WP-B — Python `LumpedPort` wired through.** `ProblemTD` now collects
   `LumpedPort` physics alongside `RectWaveguidePort`, mapping each to the
   operator's `(0, 0)` sentinel mode. Geometry-declaration order fixes the
-  port index. (The lumped port's `direction` is not forwarded — the
-  native port auto-fits its uniform field to the narrower face axis.)
+  port index. The lumped port's voltage-integration `direction` is
+  forwarded (WP-B.2) as the port's transverse field axis — projected into
+  the port plane — so the TD and FD backends agree on the port
+  orientation; a direction with no in-plane part is rejected at
+  construction.
 - **WP-C — TEM validation.** A Rust test
   (`lumped_port_carries_a_dispersionless_tem_wave`) proves the `(0,0)`
   port carries a true TEM mode: with transparent characteristic side

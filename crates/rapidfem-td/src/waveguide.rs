@@ -106,10 +106,17 @@ impl RectPort {
     /// narrower the height `b` (`v_hat`); the frame is made right-handed
     /// (`û × v̂ = ŵ`). The `TE_mn` mode then has `m` indexing the wide
     /// dimension — so `TE₁₀` is the dominant mode regardless of orientation.
+    ///
+    /// `field_axis` overrides the auto-fit transverse axis `v̂`: a lumped
+    /// port's voltage-integration direction is projected into the port
+    /// plane and used as `v̂` (with `û` rebuilt to keep the frame
+    /// right-handed). `None` keeps the auto-fit. A direction parallel to
+    /// the normal has no in-plane part and is ignored.
     pub fn from_face(
         nodes: &[[f64; 3]],
         inward_normal: [f64; 3],
         mode: (usize, usize),
+        field_axis: Option<[f64; 3]>,
     ) -> RectPort {
         // The inward normal is ±eₖ — the constant (out-of-plane) axis.
         let k = (0..3)
@@ -150,6 +157,19 @@ impl RectPort {
         } else {
             v_hat[narrow] = -1.0;
             origin[narrow] = lo_n + b;
+        }
+        // An explicit field axis (a lumped port's voltage-integration
+        // direction) overrides the auto-fit transverse axis: project it
+        // into the port plane and rebuild a right-handed (û, v̂, ŵ) frame.
+        if let Some(d) = field_axis {
+            let dn = dot(d, w_hat);
+            let proj =
+                [d[0] - dn * w_hat[0], d[1] - dn * w_hat[1], d[2] - dn * w_hat[2]];
+            let len = dot(proj, proj).sqrt();
+            if len > 1e-9 {
+                v_hat = [proj[0] / len, proj[1] / len, proj[2] / len];
+                u_hat = cross(v_hat, w_hat); // û = v̂×ŵ ⇒ û×v̂ = ŵ
+            }
         }
         RectPort { origin, u_hat, v_hat, w_hat, a, b, mode }
     }
@@ -237,7 +257,7 @@ mod tests {
             [0.0, 1.0, 3.0],
             [1.0, 0.5, 3.0],
         ];
-        let p = RectPort::from_face(&nodes, [0.0, 0.0, -1.0], (1, 0));
+        let p = RectPort::from_face(&nodes, [0.0, 0.0, -1.0], (1, 0), None);
         // Width = the larger span (x), height = the smaller (y).
         assert!((p.a - 2.0).abs() < 1e-12, "a = {}", p.a);
         assert!((p.b - 1.0).abs() < 1e-12, "b = {}", p.b);
@@ -250,6 +270,48 @@ mod tests {
         assert!(mid.iter().map(|c| c * c).sum::<f64>().sqrt() > 0.99);
         let wall = p.e_profile([0.0, 0.5, 3.0]);
         assert!(wall.iter().all(|c| c.abs() < 1e-9), "side-wall E ≠ 0");
+    }
+
+    #[test]
+    fn from_face_honours_an_explicit_field_axis() {
+        // A z = 0 face spanning [0,2]×[0,1] — auto-fit makes v̂ the narrow
+        // (y) axis. An explicit field axis must override that.
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.5, 0.0],
+        ];
+        let n = [0.0, 0.0, 1.0]; // inward +z
+        // Auto-fit picks the narrow (y) axis for v̂.
+        let auto = RectPort::from_face(&nodes, n, (0, 0), None);
+        assert!((auto.v_hat[1].abs() - 1.0).abs() < 1e-12, "auto v̂ ≠ ±ŷ");
+        // An explicit x axis (the wide axis) overrides the auto-fit.
+        let p =
+            RectPort::from_face(&nodes, n, (0, 0), Some([1.0, 0.0, 0.0]));
+        assert!(
+            (p.v_hat[0] - 1.0).abs() < 1e-12
+                && p.v_hat[1].abs() < 1e-12
+                && p.v_hat[2].abs() < 1e-12,
+            "v̂ not set to x̂: {:?}",
+            p.v_hat,
+        );
+        // The (0,0) field profile follows the explicit axis.
+        let e = p.e_profile([1.0, 0.5, 0.0]);
+        assert!((e[0] - 1.0).abs() < 1e-12 && e[1].abs() < 1e-12);
+        // The frame stays right-handed.
+        let uxv = cross(p.u_hat, p.v_hat);
+        assert!(dot(uxv, p.w_hat) > 0.999, "frame not right-handed");
+        // A direction with an out-of-plane component is projected back
+        // into the port plane.
+        let q =
+            RectPort::from_face(&nodes, n, (0, 0), Some([0.0, 3.0, 9.0]));
+        assert!(
+            (q.v_hat[1] - 1.0).abs() < 1e-12 && q.v_hat[2].abs() < 1e-12,
+            "out-of-plane direction not projected: {:?}",
+            q.v_hat,
+        );
     }
 
     #[test]

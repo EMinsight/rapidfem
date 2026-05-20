@@ -413,8 +413,9 @@ impl PyTdOperator {
     ///
     /// `tag_materials` maps a gmsh volume tag to `(eps_diag, mu_diag, sigma)`;
     /// tets in untagged volumes default to vacuum. `ports` maps a gmsh face
-    /// tag to `(mode_m, mode_n)` — each becomes a waveguide port, indexed in
-    /// the given order.
+    /// tag to `(mode_m, mode_n, direction)` — each becomes a waveguide port,
+    /// indexed in the given order. `direction` is `None` for a waveguide
+    /// port, or a `(dx, dy, dz)` field axis for a lumped port.
     #[staticmethod]
     #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None))]
     fn from_mesh_bytes(
@@ -424,7 +425,7 @@ impl PyTdOperator {
         tag_materials: Option<
             Vec<(i32, (f64, f64, f64), (f64, f64, f64), f64)>,
         >,
-        ports: Option<Vec<(i32, usize, usize)>>,
+        ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
@@ -446,11 +447,13 @@ impl PyTdOperator {
         }
         let mut port_specs: Vec<PortSpec> = Vec::new();
         if let Some(ps) = ports {
-            for (tag, m, n) in ps {
-                let spec = PortSpec::from_mesh_tag(&mesh, tag, (m, n))
+            for (tag, m, n, dir) in ps {
+                let dir = dir.map(|(x, y, z)| [x, y, z]);
+                let spec = PortSpec::from_mesh_tag(&mesh, tag, (m, n), dir)
                     .ok_or_else(|| {
                         PyRuntimeError::new_err(format!(
-                            "port face tag {tag} carries no triangles"
+                            "port face tag {tag} has no triangles, or its \
+                             direction is zero / parallel to the face"
                         ))
                     })?;
                 port_specs.push(spec);

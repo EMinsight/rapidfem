@@ -82,14 +82,13 @@ def _collect_ports(geometry):
     """Walk the geometry's port physics — :class:`RectWaveguidePort` and
     :class:`LumpedPort`.
 
-    Returns ``[(face_tag, mode_m, mode_n)]`` for the native TD operator;
-    the list order (geometry declaration order) fixes the port index used
-    by :meth:`ProblemTD.sparams`. A lumped port maps to the ``(0, 0)``
-    sentinel mode — the operator's uniform-profile / TEM port (zero cutoff,
-    flat impedance). The lumped port's voltage-integration ``direction`` is
-    not forwarded: the native port auto-fits its uniform field to the
-    narrower transverse face axis, which is the gap axis for a standard
-    plate-to-plate port.
+    Returns ``[(face_tag, mode_m, mode_n, direction)]`` for the native TD
+    operator; the list order (geometry declaration order) fixes the port
+    index used by :meth:`ProblemTD.sparams`. A lumped port maps to the
+    ``(0, 0)`` sentinel mode — the operator's uniform-profile / TEM port
+    (zero cutoff, flat impedance) — and forwards its voltage-integration
+    ``direction`` as the port's transverse field axis. A waveguide port
+    has ``direction`` ``None`` — its frame is auto-fit from the face.
     """
     from ..physics import LumpedPort, RectWaveguidePort
 
@@ -97,14 +96,17 @@ def _collect_ports(geometry):
     for phys in getattr(geometry, "_physics", []):
         if isinstance(phys, RectWaveguidePort):
             mode = (int(phys.mode[0]), int(phys.mode[1]))
+            direction = None
         elif isinstance(phys, LumpedPort):
             mode = (0, 0)
+            d = phys.direction
+            direction = (float(d[0]), float(d[1]), float(d[2]))
         else:
             continue
         tag = geometry._physics_tags.get(id(phys))
         if tag is None:
             continue
-        out.append((int(tag), mode[0], mode[1]))
+        out.append((int(tag), mode[0], mode[1], direction))
     return out
 
 

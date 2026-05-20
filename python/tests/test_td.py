@@ -217,8 +217,55 @@ def test_mixed_ports_keep_declaration_order():
     )
     g.mesh()
 
-    modes = [m for _, *m in _collect_ports(g)]
-    assert modes == [[1, 0], [0, 0]]
+    ports = _collect_ports(g)
+    assert [(m, n) for _, m, n, _ in ports] == [(1, 0), (0, 0)]
+
+
+def test_lumped_port_direction_sets_the_field_axis():
+    # WP-B.2: a LumpedPort's `direction` becomes the (0,0) port's transverse
+    # field axis, overriding the geometric auto-fit. On a 20x8 mm port face
+    # the auto-fit would pick the narrow (y) axis; an explicit x direction
+    # must override it. A uniform E_x probe state confirms it: the port
+    # projects the field onto its axis, so an x-axis port registers it in
+    # full and an orthogonal y-axis port does not.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=10 * mm)
+    air = g.box(20 * mm, 8 * mm, 60 * mm, material=rf.Air())
+    rf.LumpedPort(air.faces.min(axis="z"), direction=(1, 0, 0))  # axis x
+    rf.LumpedPort(air.faces.max(axis="z"), direction=(0, 1, 0))  # axis y
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    ptd = rf.ProblemTD(g, order=2, flux="central")
+    y = np.zeros(ptd.n_dof)
+    y[0::6] = 1.0  # uniform E_x at every node
+    pe_x, _ = ptd._op.port_projections(y, 0)  # field axis x — sees E_x
+    pe_y, _ = ptd._op.port_projections(y, 1)  # field axis y — orthogonal
+    assert pe_x == pytest.approx(1.0, abs=1e-9)
+    assert abs(pe_y) < 1e-9
+
+
+def test_lumped_port_rejects_out_of_plane_direction():
+    # WP-B.2: a direction parallel to the port face normal has no in-plane
+    # part to use as the field axis — it is rejected at construction.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=12 * mm)
+    air = g.box(20 * mm, 10 * mm, 60 * mm, material=rf.Air())
+    rf.LumpedPort(air.faces.min(axis="z"), direction=(0, 0, 1))  # ∥ normal
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+    with pytest.raises(RuntimeError):
+        rf.ProblemTD(g, order=2, flux="central")
 
 
 def test_sparams_runs_on_lumped_ports():

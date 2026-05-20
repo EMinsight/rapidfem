@@ -135,11 +135,17 @@ pub struct PortSpec {
 impl PortSpec {
     /// Build a waveguide port from a gmsh face tag — collecting the port
     /// triangles and fitting the rectangular-waveguide `TE_mn` mode to the
-    /// face. Returns `None` if the tag carries no triangles.
+    /// face.
+    ///
+    /// `direction`, if given, is a lumped port's voltage-integration axis;
+    /// it overrides the auto-fit transverse field axis. Returns `None` if
+    /// the tag carries no triangles, or if `direction` is zero or parallel
+    /// to the face normal (it then has no in-plane part).
     pub fn from_mesh_tag(
         mesh: &Mesh,
         face_tag: i32,
         mode: (usize, usize),
+        direction: Option<[f64; 3]>,
     ) -> Option<PortSpec> {
         let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
         if tris.is_empty() {
@@ -190,7 +196,21 @@ impl PortSpec {
                 *c = -*c;
             }
         }
-        let rect = RectPort::from_face(&coords, nrm, mode);
+        // A lumped port's voltage-integration direction, if supplied,
+        // becomes the port's transverse field axis. Reject one that is
+        // zero or parallel to the face normal (no in-plane part to use).
+        if let Some(d) = direction {
+            let dl = dot3(d, d).sqrt();
+            if dl < 1e-12 {
+                return None;
+            }
+            let dn = [d[0] / dl, d[1] / dl, d[2] / dl];
+            let perp = dot3(dn, nrm);
+            if 1.0 - perp * perp < 1e-9 {
+                return None;
+            }
+        }
+        let rect = RectPort::from_face(&coords, nrm, mode, direction);
         Some(PortSpec { tris, rect: Some(rect) })
     }
 }
