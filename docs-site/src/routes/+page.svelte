@@ -127,10 +127,10 @@
 
 	.hero-title {
 		font-family: var(--font-mono);
-		font-size: 40px;
-		font-weight: 600;
-		letter-spacing: -0.02em;
-		color: var(--text);
+		font-size: 38px;
+		font-weight: 700;
+		letter-spacing: 2px;
+		color: var(--accent);
 		line-height: 1;
 		margin-bottom: var(--space-md);
 	}
@@ -199,7 +199,7 @@
 	h2 {
 		font-size: var(--font-base);
 		font-weight: 600;
-		color: var(--text-muted);
+		color: var(--accent);
 		text-transform: uppercase;
 		letter-spacing: 1px;
 		margin-bottom: var(--space-lg);

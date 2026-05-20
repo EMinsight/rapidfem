@@ -245,7 +245,7 @@
 		font-family: var(--font-ui);
 		font-size: var(--font-base);
 		font-weight: 600;
-		color: var(--text);
+		color: var(--accent);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		margin: var(--space-lg) 0 var(--space-sm);
