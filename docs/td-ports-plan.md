@@ -26,12 +26,31 @@ piece of the TD backend).
 - **P5** — lumped / TEM port as the uniform-profile `(0,0)` mode, reusing
   the (mode-agnostic) flux / injection / extraction machinery.
 
-Honestly scoped as remaining refinement: tightening the broadband WR-90
-`sparams` cross-validation below the ~10 % coarse-mesh / time-window
-spread (needs a finer mesh and per-signal time-gating); wiring the
-Python `LumpedPort` geometry class through to the `(0,0)` port; a
-parallel-plate TEM-line FD cross-check. The core port machinery is
-validated cleanly in the Rust suite.
+## Follow-up refinements — WP-A / B / C
+
+Three items the phase plan scoped as honest follow-up work, since
+addressed:
+
+- **WP-A — broadband WR-90 `sparams` accuracy.** Refining the
+  `td_waveguide_sparams.py` mesh (`maxh` 9 → 6 mm, ≈ 4 cells across the
+  guide width) and tuning the transient window (820 × 3 ps ≈ 0.74 m of
+  light travel — long enough for the slow near-cutoff transmitted pulse,
+  short enough to exclude the round-trip re-reflection) brought the
+  TD↔FD `|S₂₁|` agreement from a ~21 % worst case to **≤ 9 % full band,
+  ≤ 4 % over the 9–12 GHz core band**; `|S₁₁|` agrees to ≤ 0.04. The
+  residual sits at the dispersive near-cutoff band edge (8–8.5 GHz).
+- **WP-B — Python `LumpedPort` wired through.** `ProblemTD` now collects
+  `LumpedPort` physics alongside `RectWaveguidePort`, mapping each to the
+  operator's `(0, 0)` sentinel mode. Geometry-declaration order fixes the
+  port index. (The lumped port's `direction` is not forwarded — the
+  native port auto-fits its uniform field to the narrower face axis.)
+- **WP-C — TEM validation.** A Rust test
+  (`lumped_port_carries_a_dispersionless_tem_wave`) proves the `(0,0)`
+  port carries a true TEM mode: with transparent characteristic side
+  walls the lumped port clocks a packet at exactly `c`, against the
+  slower dispersive TE₁₀ `v_g` of the same guide with PEC walls.
+
+The core port machinery is validated cleanly in the Rust suite.
 
 ## The approach
 

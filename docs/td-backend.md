@@ -138,20 +138,27 @@ Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 
 ## Waveguide ports
 
-A `RectWaveguidePort` attached to a geometry face becomes a time-domain
-**modal port**. The port boundary uses a characteristic flux with the
-ghost state set to the incident modal field: it absorbs outgoing waves
-*and* injects the analytic `TE_mn` rectangular-waveguide mode. The
-absorbing part folds into the constant operator `A`; the injection is a
-rank-1 time-dependent source `b(t)`.
+A `RectWaveguidePort` or `LumpedPort` attached to a geometry face becomes
+a time-domain **modal port**. The port boundary uses a characteristic
+flux with the ghost state set to the incident modal field: it absorbs
+outgoing waves *and* injects the mode. The absorbing part folds into the
+constant operator `A`; the injection is a rank-1 time-dependent source
+`b(t)`. A `RectWaveguidePort` carries the analytic `TE_mn`
+rectangular-waveguide mode; a `LumpedPort` carries the `(0, 0)` sentinel
+mode — a uniform transverse profile with zero cutoff and a flat
+impedance, i.e. a TEM port.
 
 `ProblemTD.sparams(freqs, dt, steps)` drives each port in turn with a
 broadband pulse, projects the port-face field onto the mode profile to
 extract the incident / scattered modal amplitudes (the forward/backward
-split uses the dispersive modal impedance `Z_TE(ω)` per frequency), and
+split uses the dispersive modal impedance `Z(ω)` per frequency), and
 assembles `S_ij(f) = B_i(f)/A_j(f)`. The matched-guide S-matrix is
-validated to ~2 % in the Rust suite; `td_waveguide_sparams.py`
-cross-checks a WR-90 guide against the frequency-domain backend.
+validated to ~2 % in the Rust suite, and that the lumped port carries a
+dispersionless `c`-velocity TEM wave is a further Rust gate.
+`td_waveguide_sparams.py` cross-checks a WR-90 guide against the
+frequency-domain backend — TD↔FD `|S₂₁|` agrees to ≤ 4 % over the
+9–12 GHz core band (≤ 9 % including the dispersive near-cutoff edge),
+`|S₁₁|` to ≤ 0.04.
 
 The guide must be long enough that, within the transient window, the
 incident / reflected / transmitted pulses are time-separated — the
@@ -200,9 +207,10 @@ multiply-reflected energy must not return before the run ends.
 ## Not yet / out of scope
 
 - **General-cross-section ports** — `sparams` handles rectangular
-  waveguide ports (analytic `TE_mn` modes); arbitrary cross-sections
-  would need a 2D modal eigensolve on the port face. Lumped / coax ports
-  are a further extension.
+  waveguide ports (analytic `TE_mn` modes) and lumped / TEM ports (the
+  uniform `(0, 0)` profile); arbitrary cross-sections would need a 2D
+  modal eigensolve on the port face, and coax ports an annular TEM
+  profile — both a further extension.
 - **Curvilinear / isoparametric elements** — affine tets with adequate
   refinement is the pragmatic choice.
 - **Nonlinear materials** — the backend stays linear (constant `A`).
