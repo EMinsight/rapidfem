@@ -5,3 +5,4 @@
 //! `docs/td-backend-plan.md` for the work-package breakdown.
 
 pub mod dg_basis;
+pub mod geom_factors;
