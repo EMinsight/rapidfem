@@ -87,14 +87,17 @@ struct FaceInfo {
     perm: Vec<usize>,
 }
 
-/// Per-element electromagnetic material — relative permittivity / permeability
-/// and conductivity, in the solver's normalised units (`c = ε₀ = μ₀ = 1`).
+/// Per-element electromagnetic material — diagonal relative permittivity /
+/// permeability tensors and conductivity, in the solver's normalised units
+/// (`c = ε₀ = μ₀ = 1`). Diagonal tensors cover isotropic and uniaxial /
+/// biaxial media (and the uniaxial PML); fully off-diagonal tensors are a
+/// future extension.
 #[derive(Clone, Copy, Debug)]
 pub struct ElemMaterial {
-    /// Relative permittivity `ε_r`.
-    pub eps: f64,
-    /// Relative permeability `μ_r`.
-    pub mu: f64,
+    /// Diagonal relative permittivity `(ε_x, ε_y, ε_z)`.
+    pub eps: [f64; 3],
+    /// Diagonal relative permeability `(μ_x, μ_y, μ_z)`.
+    pub mu: [f64; 3],
     /// Conductivity `σ` (Ohmic loss).
     pub sigma: f64,
 }
@@ -102,7 +105,12 @@ pub struct ElemMaterial {
 impl ElemMaterial {
     /// Vacuum — `ε = μ = 1`, `σ = 0`.
     pub const VACUUM: ElemMaterial =
-        ElemMaterial { eps: 1.0, mu: 1.0, sigma: 0.0 };
+        ElemMaterial { eps: [1.0; 3], mu: [1.0; 3], sigma: 0.0 };
+
+    /// An isotropic material from scalar `ε_r`, `μ_r`, `σ`.
+    pub fn isotropic(eps: f64, mu: f64, sigma: f64) -> Self {
+        ElemMaterial { eps: [eps; 3], mu: [mu; 3], sigma }
+    }
 }
 
 /// Semi-discrete DG operator for the Maxwell curl equations on a tetrahedral
@@ -120,10 +128,10 @@ pub struct MaxwellOperator {
     faces: Vec<FaceInfo>,
     /// Upwind blend: 0 = central, 1 = full upwind.
     flux_alpha: f64,
-    /// Per-element `1/ε`, `1/μ`, `σ/ε`.
-    inv_eps: Vec<f64>,
-    inv_mu: Vec<f64>,
-    sigma_eps: Vec<f64>,
+    /// Per-element diagonal `1/ε`, `1/μ`, `σ/ε`.
+    inv_eps: Vec<[f64; 3]>,
+    inv_mu: Vec<[f64; 3]>,
+    sigma_eps: Vec<[f64; 3]>,
 }
 
 impl MaxwellOperator {
@@ -191,9 +199,15 @@ impl MaxwellOperator {
             }
         }
         assert_eq!(materials.len(), n_elem, "one material per element");
-        let inv_eps = materials.iter().map(|m| 1.0 / m.eps).collect();
-        let inv_mu = materials.iter().map(|m| 1.0 / m.mu).collect();
-        let sigma_eps = materials.iter().map(|m| m.sigma / m.eps).collect();
+        let recip = |v: [f64; 3]| [1.0 / v[0], 1.0 / v[1], 1.0 / v[2]];
+        let inv_eps: Vec<[f64; 3]> =
+            materials.iter().map(|m| recip(m.eps)).collect();
+        let inv_mu: Vec<[f64; 3]> =
+            materials.iter().map(|m| recip(m.mu)).collect();
+        let sigma_eps: Vec<[f64; 3]> = materials
+            .iter()
+            .map(|m| [m.sigma / m.eps[0], m.sigma / m.eps[1], m.sigma / m.eps[2]])
+            .collect();
         MaxwellOperator {
             re,
             n_elem,
@@ -303,8 +317,8 @@ impl MaxwellOperator {
             for node in 0..np {
                 for c in 0..3 {
                     dy[base + node * 6 + c] =
-                        ie * de[node * 3 + c] - se * ee[node * 3 + c];
-                    dy[base + node * 6 + 3 + c] = im * dh[node * 3 + c];
+                        ie[c] * de[node * 3 + c] - se[c] * ee[node * 3 + c];
+                    dy[base + node * 6 + 3 + c] = im[c] * dh[node * 3 + c];
                 }
             }
         }
@@ -338,14 +352,14 @@ impl MaxwellOperator {
         let mut m = vec![0.0; n * n];
         for e in 0..self.n_elem {
             let scale = self.geom[e].det.abs();
-            let eps = 1.0 / self.inv_eps[e];
-            let mu = 1.0 / self.inv_mu[e];
+            let eps = self.inv_eps[e].map(|x| 1.0 / x);
+            let mu = self.inv_mu[e].map(|x| 1.0 / x);
             let base = e * np * 6;
             for ni in 0..np {
                 for nj in 0..np {
                     let mij = scale * self.re.mass[ni * np + nj];
                     for c in 0..6 {
-                        let w = if c < 3 { eps } else { mu };
+                        let w = if c < 3 { eps[c] } else { mu[c - 3] };
                         m[(base + ni * 6 + c) * n + (base + nj * 6 + c)] =
                             w * mij;
                     }
@@ -519,7 +533,7 @@ mod tests {
         let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
         let eps_r = 4.0;
         let mats =
-            vec![ElemMaterial { eps: eps_r, mu: 1.0, sigma: 0.0 }; mesh.n_tets()];
+            vec![ElemMaterial::isotropic(eps_r, 1.0, 0.0); mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
         let n = op.n_dof();
         let a = op.assemble_dense();
@@ -547,10 +561,12 @@ mod tests {
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
         let mats: Vec<ElemMaterial> = (0..mesh.n_tets())
-            .map(|i| ElemMaterial {
-                eps: 1.0 + 0.7 * i as f64,
-                mu: 1.0 + 0.3 * i as f64,
-                sigma: 0.0,
+            .map(|i| {
+                ElemMaterial::isotropic(
+                    1.0 + 0.7 * i as f64,
+                    1.0 + 0.3 * i as f64,
+                    0.0,
+                )
             })
             .collect();
         let op = MaxwellOperator::new_with_materials(&mesh, 2, 0.0, &mats);
@@ -595,10 +611,8 @@ mod tests {
         let eps_r = 1.0;
 
         let least_damped_re = |sigma: f64| -> f64 {
-            let mats = vec![
-                ElemMaterial { eps: eps_r, mu: 1.0, sigma };
-                mesh.n_tets()
-            ];
+            let mats =
+                vec![ElemMaterial::isotropic(eps_r, 1.0, sigma); mesh.n_tets()];
             let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
             let n = op.n_dof();
             let a = op.assemble_dense();
@@ -617,6 +631,50 @@ mod tests {
         assert!(
             err < 0.1,
             "conductivity damping ΔRe = {delta:.5}, analytic -σ/2ε = {want:.5}, err {err:.3}"
+        );
+    }
+
+    #[test]
+    fn anisotropic_central_flux_conserves_energy() {
+        // Diagonal-anisotropic ε, μ — the central-flux operator still
+        // conserves the per-component-weighted material energy: M̃·A is skew.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let mats: Vec<ElemMaterial> = (0..mesh.n_tets())
+            .map(|i| ElemMaterial {
+                eps: [2.0 + i as f64, 3.0, 1.5],
+                mu: [1.0, 1.2 + 0.3 * i as f64, 2.0],
+                sigma: 0.0,
+            })
+            .collect();
+        let op = MaxwellOperator::new_with_materials(&mesh, 2, 0.0, &mats);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mm = op.assemble_energy_mass();
+
+        let mut ma = vec![0.0; n * n];
+        for i in 0..n {
+            for k in 0..n {
+                let mik = mm[i * n + k];
+                if mik == 0.0 {
+                    continue;
+                }
+                for j in 0..n {
+                    ma[i * n + j] += mik * a[k * n + j];
+                }
+            }
+        }
+        let mut worst = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for p in 0..n {
+            for q in 0..n {
+                worst = worst.max((ma[p * n + q] + ma[q * n + p]).abs());
+                scale = scale.max(ma[p * n + q].abs());
+            }
+        }
+        assert!(
+            worst < 1e-9 * scale.max(1.0),
+            "anisotropic M̃A not skew: worst {worst}, scale {scale}"
         );
     }
 
