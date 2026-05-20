@@ -481,6 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn equispaced_vandermonde_conditioning() {
+        // WP1.4: quantify the monomial-Vandermonde conditioning of the
+        // equispaced node set across orders, to know the safe order range.
+        let norm_inf = |m: &[f64], n: usize| -> f64 {
+            (0..n)
+                .map(|i| (0..n).map(|j| m[i * n + j].abs()).sum::<f64>())
+                .fold(0.0_f64, f64::max)
+        };
+        for p in 1..=5 {
+            let monos = monomials(p);
+            let nodes = equispaced_nodes(p);
+            let n = monos.len();
+            let mut v = vec![0.0; n * n];
+            for (ni, nd) in nodes.iter().enumerate() {
+                for (mi, m) in monos.iter().enumerate() {
+                    v[ni * n + mi] = eval_mono(*m, *nd);
+                }
+            }
+            let c = invert(&v, n);
+            let cond = norm_inf(&v, n) * norm_inf(&c, n);
+            eprintln!("DIAG conditioning: p={p} Np={n} cond~{cond:.2e}");
+            // f64 holds ~15 digits; cond < 1e10 still leaves ~5 safe digits.
+            assert!(cond < 1e10, "p={p}: Vandermonde cond {cond:.2e} too high");
+        }
+    }
+
+    #[test]
     fn lift_integrates_face_traces() {
         // 1ᵀ M (LIFT · trace) reduces to ∮ trace dA. For an all-ones trace on
         // one face this is the reference face area — 1/2 in the unit
