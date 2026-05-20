@@ -11,6 +11,28 @@ the frequency-domain backend.
 Branch: continues on `feature/td-backend` (ports are the last production
 piece of the TD backend).
 
+## Status — all phases complete
+
+- **P1** — port-face plumbing (characteristic absorbing boundary);
+  analytic `TE_mn` rectangular-waveguide modes.
+- **P2** — port flux validated purely dissipative (`M̃A + AᵀM̃ ⪯ 0`);
+  mode-injection source, validated against the analytic group velocity.
+- **P3** — modal extraction by surface-integral projection with the
+  per-frequency `Z_TE` forward/backward split; S-matrix on a matched
+  two-port guide (`S₁₁ ≈ 0.02`, `|S₂₁| ≈ 1`, reciprocity, energy
+  conserved).
+- **P4** — `ProblemTD.sparams` through pyo3 (gmsh face tag → port);
+  WR-90 TD-vs-FD cross-validation example; regression test; docs.
+- **P5** — lumped / TEM port as the uniform-profile `(0,0)` mode, reusing
+  the (mode-agnostic) flux / injection / extraction machinery.
+
+Honestly scoped as remaining refinement: tightening the broadband WR-90
+`sparams` cross-validation below the ~10 % coarse-mesh / time-window
+spread (needs a finer mesh and per-signal time-gating); wiring the
+Python `LumpedPort` geometry class through to the `(0,0)` port; a
+parallel-plate TEM-line FD cross-check. The core port machinery is
+validated cleanly in the Rust suite.
+
 ## The approach
 
 A **port** is a tagged mesh face carrying an analytic waveguide mode. The
