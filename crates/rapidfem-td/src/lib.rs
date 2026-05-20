@@ -6,3 +6,4 @@
 
 pub mod dg_basis;
 pub mod geom_factors;
+pub mod rhs;
