@@ -221,6 +221,36 @@ def test_mixed_ports_keep_declaration_order():
     assert modes == [[1, 0], [0, 0]]
 
 
+def test_sparams_runs_on_lumped_ports():
+    # WP-C: the sparams verb runs end-to-end with LumpedPort excitation —
+    # the (0,0) lumped port flows through drive, modal extraction and
+    # S-matrix assembly. The clean TEM-physics gate (a dispersionless
+    # c-velocity mode) is the Rust test
+    # `lumped_port_carries_a_dispersionless_tem_wave`.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=12 * mm)
+    air = g.box(22.86 * mm, 10.16 * mm, 80 * mm, material=rf.Air())
+    rf.LumpedPort(air.faces.min(axis="z"), direction=(0, 1, 0))
+    rf.LumpedPort(air.faces.max(axis="z"), direction=(0, 1, 0))
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    ptd = rf.ProblemTD(g, order=2, flux="central")
+    assert ptd._op.n_ports() == 2
+    # The (0,0) lumped port is non-dispersive — flat Z, zero cutoff.
+    assert ptd._port_impedance(0, 9e9) == pytest.approx(1.0)
+
+    freqs = np.array([9e9, 11e9])
+    f, s = ptd.sparams(freqs, dt=5e-12, steps=200, verbose=False)
+    assert s.shape == (2, 2, 2)
+    assert np.all(np.isfinite(s))
+
+
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):
     import xml.etree.ElementTree as ET
 

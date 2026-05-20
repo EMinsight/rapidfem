@@ -1975,6 +1975,135 @@ mod tests {
     }
 
     #[test]
+    fn lumped_port_carries_a_dispersionless_tem_wave() {
+        // WP-C: the (0,0) lumped port carries a true TEM mode — zero cutoff,
+        // velocity c, no dispersion. The proof is a two-run contrast on the
+        // *same* guide with the *same* drive, changing only the side walls:
+        //   * PEC side walls → the guide is hollow; its dominant mode is
+        //     the dispersive TE₁₀ travelling at v_g = √(1−(ω_c/ω)²) < c;
+        //   * transparent characteristic side walls (rect = None ports) →
+        //     the parallel-plate TEM mode exists and travels at exactly c.
+        // Centreline envelope-peak arrival times give the packet velocity —
+        // centreline probes are clear of the side-wall edge effects. The
+        // TEM run must clock c; the hollow run must clock the slower v_g.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use std::f64::consts::PI;
+
+        let (a, b, lz) = (2.0, 0.5, 9.0);
+        let mesh = structured_box(6, 2, 20, a, b, lz);
+        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let z0_tris = on(&|p| p[2].abs() < 1e-9);
+        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
+        let x_lo = on(&|p| p[0].abs() < 1e-9);
+        let x_hi = on(&|p| (p[0] - a).abs() < 1e-9);
+        assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
+        assert!(!x_lo.is_empty() && !x_hi.is_empty());
+
+        // The (0,0) lumped port on the z = 0 face — uniform E along v̂ = ŷ.
+        let rect = RectPort {
+            origin: [0.0, 0.0, 0.0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0], // inward +z
+            a,
+            b,
+            mode: (0, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+
+        // Drive in the single-mode band — ω₀ = 1.5·ω_c — so the hollow
+        // guide carries a well-defined (dispersive) TE₁₀ packet.
+        let wc = PI / a;
+        let omega0 = 1.5 * wc;
+        let (t0, tau) = (7.0, 2.5);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+        let dt = 0.02;
+        let steps = 950;
+        // Centreline probes, a wide baseline apart — a long baseline averages
+        // out the per-probe envelope-peak quantisation.
+        let (zp1, zp2) = (2.5, 6.5);
+
+        // Drive the z = 0 port; return the envelope-peak (value, time) at
+        // two centreline probes. The z = lz end is always an absorbing port
+        // so no end reflection contaminates the arrival times.
+        let run = |side_ports: Vec<PortSpec>| -> [(f64, f64); 2] {
+            let mut ports = vec![
+                PortSpec { tris: z0_tris.clone(), rect: Some(rect.clone()) },
+                PortSpec { tris: zl_tris.clone(), rect: None },
+            ];
+            ports.extend(side_ports);
+            let op = MaxwellOperator::new_with_materials_ports(
+                &mesh, 2, 0.0, &vacuum, &ports,
+            );
+            let src = op.port_source(0);
+            let probe =
+                |z: f64| op.nearest_node_dof([a / 2.0, b / 2.0, z], 0, 1);
+            let (p1, p2) = (probe(zp1), probe(zp2));
+            let mut y = vec![0.0; op.n_dof()];
+            let mut pk = [(0.0_f64, 0.0_f64); 2];
+            for s in 0..steps {
+                let t = s as f64 * dt;
+                let g = pulse(t);
+                let bvec: Vec<f64> = src.iter().map(|x| x * g).collect();
+                y = etd_step(|x| op.apply(x), &y, &bvec, dt, 18);
+                for (k, &p) in [p1, p2].iter().enumerate() {
+                    if y[p].abs() > pk[k].0 {
+                        pk[k] = (y[p].abs(), t);
+                    }
+                }
+            }
+            assert!(y.iter().all(|v| v.is_finite()));
+            pk
+        };
+
+        // Run A — PEC side walls (no side ports): a hollow guide.
+        let pec = run(Vec::new());
+        // Run B — transparent characteristic side walls (rect = None).
+        let open = run(vec![
+            PortSpec { tris: x_lo, rect: None },
+            PortSpec { tris: x_hi, rect: None },
+        ]);
+
+        assert!(
+            pec.iter().all(|p| p.0 > 1e-3) && open.iter().all(|p| p.0 > 1e-3),
+            "a packet failed to reach the probes: PEC {pec:?} open {open:?}",
+        );
+        let baseline = zp2 - zp1;
+        let v_pec = baseline / (pec[1].1 - pec[0].1);
+        let v_tem = baseline / (open[1].1 - open[0].1);
+        let vg = (1.0 - (wc / omega0).powi(2)).sqrt(); // analytic TE₁₀ v_g
+        eprintln!(
+            "DIAG TEM port: v_TEM={v_tem:.3} (expect c=1)  \
+             v_hollow={v_pec:.3} (TE₁₀ v_g={vg:.3})",
+        );
+        // The TEM mode is dispersionless — the lumped port clocks exactly c.
+        assert!(
+            (v_tem - 1.0).abs() < 0.15,
+            "TEM packet speed {v_tem:.3}, expected the dispersionless c = 1",
+        );
+        // The hollow guide's TE₁₀ packet is slower — sub-c and dispersive.
+        assert!(
+            v_pec < 0.85 && v_pec > 0.5,
+            "hollow-guide packet speed {v_pec:.3}, expected the TE₁₀ \
+             v_g ≈ {vg:.3} (sub-c)",
+        );
+        assert!(
+            v_tem > v_pec + 0.15,
+            "TEM ({v_tem:.3}) not clearly faster than TE₁₀ ({v_pec:.3})",
+        );
+    }
+
+    #[test]
     fn two_port_guide_s_parameters() {
         // WP3.2: a matched straight two-port guide — S₁₁ ≈ 0, |S₂₁| ≈ 1,
         // energy |S₁₁|² + |S₂₁|² ≈ 1, and reciprocity |S₂₁| ≈ |S₁₂|. The
