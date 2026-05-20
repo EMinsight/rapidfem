@@ -272,11 +272,76 @@ def _write_pvd(path, entries):
 
 
 class ProblemTD:
-    """Time-domain DGTD Maxwell problem.
+    """Time-domain DGTD Maxwell problem ready for analysis.
 
-    Built from a meshed :class:`~rapidfem.Geometry` — arbitrary unstructured
-    tetrahedral meshes. :meth:`box` is a shortcut for a structured box
-    cavity, used for validation.
+    A container around a meshed :class:`~rapidfem.Geometry` and its
+    attached materials, ports and BCs — the time-domain counterpart of
+    :class:`~rapidfem.ProblemFD`. The curl equations are discretised in
+    space with a **nodal discontinuous Galerkin** method on tetrahedra,
+    giving an explicit linear ODE ``dy/dt = A·y`` with a constant, sparse
+    operator ``A``; a driven port adds a rank-1 source ``b(t)``.
+
+    ``ProblemTD`` is a **model-export tool** — it hands back that ODE at
+    every level of abstraction, so the verb to call is just the level of
+    detail wanted:
+
+    - :meth:`rhs` / :meth:`state_space` — the matrix-free right-hand side,
+      or the verbatim sparse operator ``A``
+    - :meth:`ode` — a handoff object for an external integrator
+      (e.g. ``scipy.integrate.solve_ivp``)
+    - :meth:`step` / :meth:`stepper` / :meth:`transient` — exact
+      exponential time stepping (matrix-free Krylov / ETD)
+    - :meth:`driven_transient` / :meth:`transfer_function` / :meth:`sparams`
+      — soft-source or modal-port excitation, a scalar transfer function,
+      and the modal-port scattering matrix
+    - :meth:`reduce` — a Krylov model-order-reduced surrogate
+    - :meth:`resonances` — cavity eigenfrequencies from the spectrum
+    - :meth:`export_vtk` — a VTK field animation
+
+    Because the semi-discrete system is linear with a constant ``A``, the
+    exponential propagator is *exact* at any step size — the time step is
+    set by the wanted output cadence, not by a CFL stability limit.
+
+    Note
+    ----
+    The geometry must already be meshed (via ``g.mesh()``) before the
+    ProblemTD is constructed — construction snapshots the mesh bytes.
+    Re-meshing the geometry afterwards has no effect on an existing
+    ProblemTD; construct a new one instead. :meth:`box` is a shortcut that
+    builds directly on a structured box cavity, bypassing the geometry
+    API — handy for validation.
+
+    Example
+    -------
+    Build a waveguide problem, then read the model at three levels:
+
+    .. code-block:: python
+
+        g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+        air = g.box(22.86e-3, 10.16e-3, 30e-3, material=rf.Air())
+        rf.RectWaveguidePort(air.faces.min(axis="z"))
+        rf.RectWaveguidePort(air.faces.max(axis="z"))
+        rf.PEC(air.faces.min(axis="x"), air.faces.max(axis="x"),
+               air.faces.min(axis="y"), air.faces.max(axis="y"))
+        g.mesh()
+
+        ptd = rf.ProblemTD(g, order=2, flux="upwind")
+        A = ptd.state_space()                        # verbatim sparse A
+        advance = ptd.stepper(dt=5e-12)              # exact exponential step
+        freqs, S = ptd.sparams(np.linspace(8e9, 12e9, 21),
+                               dt=3e-12, steps=820)  # modal-port S-matrix
+
+    Attributes
+    ----------
+    n_dof : int
+        state-vector length, ``6·Np·n_elem``
+    order : int
+        the DG polynomial order the operator was built at
+    flux : str
+        the numerical flux in use — ``"upwind"`` or ``"central"``
+    c : float
+        speed of light in the mesh's length units; sets the operator ↔
+        physical time/frequency mapping
     """
 
     def __init__(self, geometry, *, order=2, flux="upwind", c=C_LIGHT):

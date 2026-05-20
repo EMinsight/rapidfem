@@ -102,13 +102,16 @@ export interface ApiModule {
 	description: string;
 }
 
-// Python modules whose docstrings the build pipeline extracts.
+// Curated module order and descriptions for the API reference page.
+// Modules not listed here still render — sorted alphabetically after these.
 export const apiModules: ApiModule[] = [
 	{ name: 'rapidfem', description: 'Top-level package — Geometry, Problem, and re-exported helpers' },
 	{ name: 'rapidfem.geometry', description: 'Geometry construction, entities, face selection, meshing' },
-	{ name: 'rapidfem.problem', description: 'Problem definition, frequency sweep, eigenmode, far-field' },
-	{ name: 'rapidfem.materials', description: 'Material models — Air, Dielectric, lossy permittivity' },
-	{ name: 'rapidfem.physics', description: 'Ports and boundary conditions — waveguide, lumped, PEC, ABC' },
+	{ name: 'rapidfem.materials', description: 'Material models — Air, Dielectric, lossy and dispersive permittivity' },
+	{ name: 'rapidfem.physics', description: 'Ports and boundary conditions — waveguide, lumped, PEC, ABC, PML' },
+	{ name: 'rapidfem.excitation', description: 'Time-domain excitation waveforms — Gaussian and modulated pulses' },
+	{ name: 'rapidfem.problem.fd', description: 'Frequency-domain solver — driven sweep, eigenmode, far-field' },
+	{ name: 'rapidfem.problem.td', description: 'Time-domain DGTD solver — exponential stepping, transients, modal-port S-parameters, model-order reduction' },
 	{ name: 'rapidfem.io', description: 'Result containers, Touchstone, VTK, and far-field export' },
 	{ name: 'rapidfem.rfic', description: 'RFIC layout import — geometry from JSON layer stacks' }
 ];
