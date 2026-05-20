@@ -2,6 +2,18 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
+	import { installation, quickstart } from '$lib/docs/config/rapidfem';
+
+	let copied_cmd = $state<string | null>(null);
+	let cmd_timer: ReturnType<typeof setTimeout> | null = null;
+	function copyCmd(cmd: string) {
+		try {
+			navigator.clipboard.writeText(cmd);
+			copied_cmd = cmd;
+			if (cmd_timer) clearTimeout(cmd_timer);
+			cmd_timer = setTimeout(() => { copied_cmd = null; }, 1400);
+		} catch {}
+	}
 
 	// Local `rapidfem serve` has no use for the landing page — go straight
 	// to /notebook. The landing route is only meaningful in the GH-Pages
@@ -65,6 +77,7 @@
 
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
 	const notebook_url = `${base}/notebook`;
+	const api_url = `${base}/latest/api`;
 	const embed_test_url = `${base}/embed/test`;
 
 	const install_cmd = 'pip install rapidfem';
@@ -94,6 +107,7 @@
 		<span class="nav-sep"></span>
 		<nav class="tabs">
 			<a class="tab" href={notebook_url}>Notebook</a>
+			<a class="tab" href={api_url}>API</a>
 			<a class="tab" href={embed_test_url}>Embed</a>
 		</nav>
 	</header>
@@ -106,7 +120,7 @@
 			<div class="install-line">
 				<span class="install-prompt">$</span>
 				<code class="install-cmd">{install_cmd}</code>
-				<button class="copy-btn" on:click={copyInstall} aria-label="Copy install command">
+				<button class="copy-btn" onclick={copyInstall} aria-label="Copy install command">
 					{copied ? '✓ copied' : 'copy'}
 				</button>
 			</div>
@@ -128,6 +142,25 @@
 				</a>
 			{/each}
 		</div>
+		<section class="info-section">
+			<h2 class="section-title">Installation</h2>
+			<div class="install-grid">
+				{#each installation as opt}
+					<button class="pkg-card" onclick={() => copyCmd(opt.command)}>
+						<span class="pkg-name">{opt.name}</span>
+						<code class="pkg-cmd">{opt.command}</code>
+						<span class="pkg-copy">{copied_cmd === opt.command ? '✓ copied' : 'copy'}</span>
+					</button>
+				{/each}
+			</div>
+		</section>
+
+		<section class="info-section">
+			<h2 class="section-title">Quick Start</h2>
+			<p class="section-desc">{quickstart.description}</p>
+			<pre class="code-block"><code>{quickstart.code}</code></pre>
+		</section>
+
 		<a class="embed-hint" href={embed_test_url}>
 			<span class="embed-tag">&lt;fem-viewer&gt;</span>
 			<span>Embed FEM results on your website</span>
@@ -366,6 +399,93 @@
 		line-height: 1.4;
 		font-family: var(--font-mono);
 	}
+	/* ── Installation + Quick Start sections ─────────────────────────── */
+	.info-section {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 14px;
+		width: 100%;
+		max-width: 880px;
+	}
+	.section-title {
+		font-family: var(--font-mono);
+		font-size: 22px;
+		font-weight: 700;
+		color: var(--accent);
+		text-transform: uppercase;
+		letter-spacing: 1.6px;
+	}
+	.section-desc {
+		font-family: var(--font-mono);
+		font-size: var(--fs-sm);
+		color: var(--text-muted);
+		line-height: 1.6;
+		text-align: center;
+		max-width: 620px;
+	}
+	.install-grid {
+		display: flex;
+		gap: 14px;
+		flex-wrap: wrap;
+		justify-content: center;
+	}
+	.pkg-card {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 6px;
+		min-width: 260px;
+		padding: 12px 14px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		font-family: var(--font-mono);
+		text-transform: none;
+		letter-spacing: normal;
+		text-align: left;
+		cursor: pointer;
+		transition: border-color var(--transition);
+	}
+	.pkg-card:hover {
+		background: var(--bg-surface);
+		border-color: var(--accent);
+	}
+	.pkg-name {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+	}
+	.pkg-cmd {
+		font-size: var(--fs-xs);
+		color: var(--text);
+	}
+	.pkg-copy {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		transition: color var(--transition);
+	}
+	.pkg-card:hover .pkg-copy {
+		color: var(--accent);
+	}
+	.code-block {
+		width: 100%;
+		max-width: 760px;
+		margin: 0;
+		padding: 14px 16px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		overflow-x: auto;
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs);
+		color: var(--text);
+		line-height: 1.6;
+		text-align: left;
+		white-space: pre;
+	}
+
 	.embed-hint {
 		display: flex;
 		align-items: center;
