@@ -59,7 +59,7 @@ from rapidfem.physics import (
     RectWaveguidePort, LumpedPort, CoaxPort, UserDefinedPort, FloquetPort,
     PEC, PMC, ABC, SurfaceImpedance, LumpedElement, PML,
 )
-from rapidfem.problem import Problem, Adaptive
+from rapidfem.problem import Problem, ProblemFD, Adaptive
 from rapidfem import io  # registers .to_network/.to_touchstone/.to_hdf5 on SweepResult
 from rapidfem import rfic  # RFIC builder helpers (Stack, microstrip, via, gsg_port, ...)
 from rapidfem import _show_capture
@@ -185,7 +185,7 @@ __all__ = [
     "Material", "Air", "Dielectric", "Conductor", "Anisotropic", "Debye", "Drude",
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
-    "Problem", "Adaptive",
+    "Problem", "ProblemFD", "Adaptive",
     "io", "rfic", "show", "lambda_maxh",
 ]
 __version__ = "0.7.0"

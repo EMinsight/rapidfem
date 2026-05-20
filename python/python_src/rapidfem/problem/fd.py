@@ -13,9 +13,9 @@ from typing import Iterable
 
 import numpy as np
 
-from ._native import Simulation as _NativeSimulation
-from .geometry import Geometry
-from .physics import PEC, PML
+from .._native import Simulation as _NativeSimulation
+from ..geometry import Geometry
+from ..physics import PEC, PML
 
 
 # HELPERS ===============================================================================
@@ -27,7 +27,7 @@ def _f64(x: float) -> str:
 # ADAPTIVE REFINEMENT ===================================================================
 
 class Adaptive:
-    """Adaptive-mesh-refinement settings for :meth:`Problem.sweep`.
+    """Adaptive-mesh-refinement settings for :meth:`ProblemFD.sweep`.
 
     Drives a Dörfler-marking loop on top of the driven sweep — elements
     carrying the highest residual error get their local mesh size cut
@@ -65,7 +65,7 @@ class Adaptive:
 
 # PROBLEM ===============================================================================
 
-class Problem:
+class ProblemFD:
     """Frequency-domain FEM problem ready for analysis.
 
     Generic container around a meshed :class:`Geometry`, its attached
@@ -85,9 +85,9 @@ class Problem:
     Note
     ----
     The geometry must already be meshed (via ``g.mesh()``) before the
-    Problem is constructed — the Problem snapshot copies the mesh
+    ProblemFD is constructed — the ProblemFD snapshot copies the mesh
     bytes on init. Re-meshing the geometry afterwards has no effect on
-    an existing Problem; construct a new one instead.
+    an existing ProblemFD; construct a new one instead.
 
 
     Example
@@ -103,7 +103,7 @@ class Problem:
                air.faces.min(axis="z"), air.faces.max(axis="z"))
         g.mesh()
 
-        prob = rf.Problem(g)
+        prob = rf.ProblemFD(g)
         modes  = prob.eigenmode(target_frequency=2e9, n_modes=5)
         result = prob.sweep(np.linspace(1.8e9, 2.2e9, 21))
         pattern = prob.farfield(result, freq_idx=10, port_idx=0)
@@ -129,7 +129,7 @@ class Problem:
     def __init__(self, geometry: Geometry):
         if geometry._last_mesh is None:
             raise ValueError(
-                "geometry not meshed yet — call g.mesh() before constructing a Problem")
+                "geometry not meshed yet — call g.mesh() before constructing a ProblemFD")
         self._geometry = geometry
         self._mesh_bytes, _ = geometry._last_mesh
         self._native: _NativeSimulation | None = None  # cached after first analysis
@@ -292,12 +292,12 @@ class Problem:
         ``field_at_nodes``, ``current_density_at_nodes``,
         ``compute_farfield``, ...) that live on the Rust side. Raises
         :class:`RuntimeError` if no analysis has run yet — show()ing a
-        Problem before any ``.sweep()`` / ``.eigenmode()`` call has
+        ProblemFD before any ``.sweep()`` / ``.eigenmode()`` call has
         nothing to render.
         """
         if self._native is None:
             raise RuntimeError(
-                "Problem.native is not available — run .sweep() or "
+                "ProblemFD.native is not available — run .sweep() or "
                 ".eigenmode() first to assemble the native solver")
         return self._native
 
@@ -415,4 +415,4 @@ class Problem:
         return "\n".join(parts)
 
 
-__all__ = ["Problem", "Adaptive"]
+__all__ = ["ProblemFD", "Adaptive"]
