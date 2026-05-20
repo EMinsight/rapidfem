@@ -93,6 +93,18 @@ impl RectPort {
         let (m, n) = (self.mode.0 as f64, self.mode.1 as f64);
         PI * ((m / self.a).powi(2) + (n / self.b).powi(2)).sqrt()
     }
+
+    /// `TE`-mode wave impedance at angular frequency `omega`, in the
+    /// solver's normalised units (`Z₀ = 1`): `Z_TE = 1/√(1 − (ω_c/ω)²)`.
+    ///
+    /// This is the ratio `|E_t|/|H_t|` of the propagating mode. The
+    /// forward/backward modal split uses it, and because it is
+    /// frequency-dependent the split must be done per frequency. Valid
+    /// for `omega > cutoff`.
+    pub fn te_impedance(&self, omega: f64) -> f64 {
+        let r = self.cutoff() / omega;
+        1.0 / (1.0 - r * r).sqrt()
+    }
 }
 
 #[cfg(test)]

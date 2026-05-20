@@ -570,14 +570,17 @@ impl MaxwellOperator {
         b
     }
 
-    /// Modal amplitudes at port `port_idx` for the current state `y`:
-    /// `(a, b)` — the amplitude of the mode entering the domain (`a`,
-    /// forward) and leaving it (`b`, backward).
+    /// Modal field projections `(P_e, P_h)` at port `port_idx` for the
+    /// current state `y` — the port-face E and H surface-integral-projected
+    /// onto the mode's transverse profile.
     ///
-    /// Both directions share the transverse-E profile but carry opposite
-    /// transverse H, so `E_t = e_t·(a+b)` and `H_t = h_t·(a−b)`; surface-
-    /// integral projection onto `e_t` / `h_t` recovers `a±b`.
-    pub fn port_modal_amplitudes(
+    /// Both propagation directions share the transverse-E profile but
+    /// carry transverse H scaled by `±1/Z` (the modal impedance), so
+    /// `E_t = e_t·(A+B)` and `H_t = (h_t/Z)·(A−B)`. Hence `P_e = A+B` and
+    /// `Z·P_h = A−B`; the forward/backward split `A,B = (P_e ± Z·P_h)/2`
+    /// is done per frequency since `Z` is dispersive — feed the recorded
+    /// `(P_e, P_h)` time series through a transform first.
+    pub fn port_modal_projections(
         &self,
         y: &[f64],
         port_idx: usize,
@@ -612,7 +615,7 @@ impl MaxwellOperator {
         }
         let p_e = if e_norm > 0.0 { e_dot / e_norm } else { 0.0 };
         let p_h = if h_norm > 0.0 { h_dot / h_norm } else { 0.0 };
-        (0.5 * (p_e + p_h), 0.5 * (p_e - p_h))
+        (p_e, p_h)
     }
 
     /// Evaluate `dy/dt = A·y`, allocating the result. See [`apply_into`](Self::apply_into)
@@ -1742,10 +1745,10 @@ mod tests {
 
     #[test]
     fn port_extracts_the_incident_amplitude() {
-        // WP3.1: driving a straight guide, the extracted incident modal
-        // amplitude a(t) reproduces the drive waveform, and the backward
-        // amplitude b(t) stays small — the injection launches an almost
-        // purely forward mode (before any far-end reflection returns).
+        // WP3.1: driving a straight guide, the per-frequency forward/
+        // backward split A,B = (P_e ± Z·P_h)/2 recovers an almost purely
+        // forward wave — |B|/|A| ≪ 1 on a uniform guide (before any far-end
+        // reflection can return), confirming the modal extraction.
         use crate::mesh_gen::structured_box;
         use crate::propagator::etd_step;
         use std::f64::consts::PI;
@@ -1776,7 +1779,7 @@ mod tests {
             2,
             0.0,
             &vacuum,
-            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+            &[PortSpec { tris: port_tris, rect: Some(rect.clone()) }],
         );
         let n = op.n_dof();
         let b_spatial = op.port_source(0);
@@ -1789,39 +1792,58 @@ mod tests {
 
         let dt = 0.02;
         let mut y = vec![0.0; n];
-        let (mut fa, mut fg, mut fb) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut fpe, mut fph, mut fg) =
+            (Vec::new(), Vec::new(), Vec::new());
         // Stop before the far-end (PEC) reflection can return to the port.
-        for s in 0..600 {
+        for s in 0..700 {
             let t = s as f64 * dt;
             let g = pulse(t);
             let bvec: Vec<f64> = b_spatial.iter().map(|x| x * g).collect();
             y = etd_step(|x| op.apply(x), &y, &bvec, dt, 20);
-            let (a_amp, b_amp) = op.port_modal_amplitudes(&y, 0);
-            fa.push(a_amp);
-            fb.push(b_amp);
+            let (pe, ph) = op.port_modal_projections(&y, 0);
+            fpe.push(pe);
+            fph.push(ph);
             fg.push(g);
         }
         assert!(y.iter().all(|v| v.is_finite()));
 
-        // a(t) reproduces the drive shape — normalised correlation ≈ 1.
-        let dotp = |x: &[f64], z: &[f64]| -> f64 {
-            x.iter().zip(z).map(|(p, q)| p * q).sum()
+        // Discrete Fourier transform of a recorded signal at one frequency.
+        let dft = |sig: &[f64], omega: f64| -> (f64, f64) {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, &x) in sig.iter().enumerate() {
+                let t = k as f64 * dt;
+                re += x * (omega * t).cos();
+                im -= x * (omega * t).sin();
+            }
+            (re * dt, im * dt)
         };
-        let corr = dotp(&fa, &fg)
-            / (dotp(&fa, &fa) * dotp(&fg, &fg)).sqrt();
-        let max_a = fa.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-        let max_b = fb.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-        eprintln!(
-            "DIAG extraction: corr(a,g)={corr:.4}  max|a|={max_a:.3e}  \
-             max|b|={max_b:.3e}  b/a={:.3}",
-            max_b / max_a
-        );
-        assert!(corr > 0.9, "incident amplitude does not track the drive: corr {corr:.3}");
-        assert!(max_a > 1e-3, "no incident amplitude extracted");
-        assert!(
-            max_b < 0.15 * max_a,
-            "injection is not forward-clean: b/a = {:.3}",
-            max_b / max_a
-        );
+        let mag = |z: (f64, f64)| (z.0 * z.0 + z.1 * z.1).sqrt();
+
+        // Per-frequency forward / backward split across the drive band.
+        for &omega in &[1.45 * PI, 1.6 * PI, 1.75 * PI] {
+            let pe = dft(&fpe, omega);
+            let ph = dft(&fph, omega);
+            let z = rect.te_impedance(omega);
+            let amp = (
+                0.5 * (pe.0 + z * ph.0),
+                0.5 * (pe.1 + z * ph.1),
+            );
+            let bmp = (
+                0.5 * (pe.0 - z * ph.0),
+                0.5 * (pe.1 - z * ph.1),
+            );
+            let refl = mag(bmp) / mag(amp);
+            eprintln!(
+                "DIAG extract ω/π={:.2}: |A|={:.3e} |B|={:.3e} |B/A|={refl:.4}",
+                omega / PI,
+                mag(amp),
+                mag(bmp),
+            );
+            assert!(mag(amp) > 1e-3, "no incident amplitude at ω={omega}");
+            assert!(
+                refl < 0.06,
+                "uniform guide should be reflection-free: |B/A| = {refl:.3}"
+            );
+        }
     }
 }
