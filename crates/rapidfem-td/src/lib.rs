@@ -4,6 +4,7 @@
 //! state-space export and model-order reduction land here. See
 //! `docs/td-backend-plan.md` for the work-package breakdown.
 
+pub mod absorber;
 pub mod dg_basis;
 pub mod geom_factors;
 pub mod mesh_gen;
