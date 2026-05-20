@@ -12,3 +12,4 @@ pub mod mesh_gen;
 pub mod mor;
 pub mod propagator;
 pub mod rhs;
+pub mod waveguide;
