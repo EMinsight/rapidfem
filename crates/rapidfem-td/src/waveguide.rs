@@ -94,6 +94,61 @@ impl RectPort {
         PI * ((m / self.a).powi(2) + (n / self.b).powi(2)).sqrt()
     }
 
+    /// Fit a `RectPort` to an axis-aligned port face from its mesh node
+    /// coordinates and the inward normal (pointing into the domain).
+    ///
+    /// The wider transverse dimension becomes the width `a` (`u_hat`), the
+    /// narrower the height `b` (`v_hat`); the frame is made right-handed
+    /// (`û × v̂ = ŵ`). The `TE_mn` mode then has `m` indexing the wide
+    /// dimension — so `TE₁₀` is the dominant mode regardless of orientation.
+    pub fn from_face(
+        nodes: &[[f64; 3]],
+        inward_normal: [f64; 3],
+        mode: (usize, usize),
+    ) -> RectPort {
+        // The inward normal is ±eₖ — the constant (out-of-plane) axis.
+        let k = (0..3)
+            .max_by(|&i, &j| {
+                inward_normal[i]
+                    .abs()
+                    .partial_cmp(&inward_normal[j].abs())
+                    .unwrap()
+            })
+            .unwrap();
+        let s = if inward_normal[k] >= 0.0 { 1.0 } else { -1.0 };
+        let others: Vec<usize> = (0..3).filter(|&x| x != k).collect();
+        let extent = |ax: usize| -> (f64, f64) {
+            let lo = nodes.iter().map(|p| p[ax]).fold(f64::MAX, f64::min);
+            let hi = nodes.iter().map(|p| p[ax]).fold(f64::MIN, f64::max);
+            (lo, hi - lo)
+        };
+        let (lo0, ext0) = extent(others[0]);
+        let (lo1, ext1) = extent(others[1]);
+        // Wide axis → width a, narrow → height b.
+        let (wide, narrow, a, b, lo_w, lo_n) = if ext0 >= ext1 {
+            (others[0], others[1], ext0, ext1, lo0, lo1)
+        } else {
+            (others[1], others[0], ext1, ext0, lo1, lo0)
+        };
+        let mut u_hat = [0.0; 3];
+        u_hat[wide] = 1.0;
+        let mut v_hat = [0.0; 3];
+        v_hat[narrow] = 1.0;
+        let mut w_hat = [0.0; 3];
+        w_hat[k] = s;
+        let mut origin = [0.0; 3];
+        origin[wide] = lo_w;
+        origin[k] = nodes[0][k];
+        // Make (u, v, w) right-handed; flipping v̂ moves its origin corner.
+        if dot(cross(u_hat, v_hat), w_hat) >= 0.0 {
+            origin[narrow] = lo_n;
+        } else {
+            v_hat[narrow] = -1.0;
+            origin[narrow] = lo_n + b;
+        }
+        RectPort { origin, u_hat, v_hat, w_hat, a, b, mode }
+    }
+
     /// `TE`-mode wave impedance at angular frequency `omega`, in the
     /// solver's normalised units (`Z₀ = 1`): `Z_TE = 1/√(1 − (ω_c/ω)²)`.
     ///
@@ -165,6 +220,31 @@ mod tests {
         // |h| = |e| for a transverse profile crossed with the unit normal.
         let (ne, nh) = (dot(e, e).sqrt(), dot(h, h).sqrt());
         assert!((ne - nh).abs() < 1e-12, "|E| {ne} vs |H| {nh}");
+    }
+
+    #[test]
+    fn from_face_fits_an_axis_aligned_port() {
+        // A z = 3 face spanning [0,2]×[0,1], inward normal −ẑ.
+        let nodes = [
+            [0.0, 0.0, 3.0],
+            [2.0, 0.0, 3.0],
+            [2.0, 1.0, 3.0],
+            [0.0, 1.0, 3.0],
+            [1.0, 0.5, 3.0],
+        ];
+        let p = RectPort::from_face(&nodes, [0.0, 0.0, -1.0], (1, 0));
+        // Width = the larger span (x), height = the smaller (y).
+        assert!((p.a - 2.0).abs() < 1e-12, "a = {}", p.a);
+        assert!((p.b - 1.0).abs() < 1e-12, "b = {}", p.b);
+        assert!((p.w_hat[2] + 1.0).abs() < 1e-12, "inward normal");
+        // Right-handed frame.
+        let uxv = cross(p.u_hat, p.v_hat);
+        assert!(dot(uxv, p.w_hat) > 0.999, "frame not right-handed");
+        // The TE₁₀ profile peaks mid-width and vanishes at the side walls.
+        let mid = p.e_profile([1.0, 0.5, 3.0]);
+        assert!(mid.iter().map(|c| c * c).sum::<f64>().sqrt() > 0.99);
+        let wall = p.e_profile([0.0, 0.5, 3.0]);
+        assert!(wall.iter().all(|c| c.abs() < 1e-9), "side-wall E ≠ 0");
     }
 
     #[test]
