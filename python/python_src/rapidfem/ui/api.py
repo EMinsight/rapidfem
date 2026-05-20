@@ -163,6 +163,153 @@ def _capture_native_streams(stage: str):
     return _capture_streams(on_line=None, stage=stage)
 
 
+def _td_result_payload(obj) -> dict[str, Any]:
+    """``TdScattering`` → an S-parameter payload in the same nested-list
+    shape the frequency-domain ``result`` event uses, so the UI plots it
+    with the existing S-parameter panel."""
+    import numpy as np
+
+    freqs = np.asarray(obj.frequencies, dtype=float).ravel()
+    s = np.asarray(obj.sparams)
+    n_freq, n_p, _ = s.shape
+    sparams_payload = [
+        [[[float(s[fi, r, c].real), float(s[fi, r, c].imag)]
+          for c in range(n_p)] for r in range(n_p)]
+        for fi in range(n_freq)
+    ]
+    return {
+        "frequencies": freqs.tolist(),
+        "sparams": sparams_payload,
+        "n_port": int(n_p),
+        "n_freq": int(n_freq),
+    }
+
+
+def _td_timeseries_payload(obj) -> dict[str, Any]:
+    """``TdResponse`` / ``TdTransfer`` → a line-plot payload.
+
+    A response carries real probe samples on a time axis; a transfer
+    function carries a complex ``H`` on a frequency axis. ``domain``
+    tells the frontend which it is.
+    """
+    import numpy as np
+
+    cls = type(obj).__name__
+    if cls == "TdResponse":
+        x = np.asarray(obj.times, dtype=float).ravel()
+        resp = np.asarray(obj.responses, dtype=float)
+        labels = list(obj.probe_labels) or [
+            f"probe {k}" for k in range(resp.shape[0])
+        ]
+        series = [
+            {"label": labels[k], "y": resp[k].astype(float).tolist()}
+            for k in range(resp.shape[0])
+        ]
+        return {
+            "domain": "time",
+            "x_label": "Time",
+            "x": x.tolist(),
+            "series": series,
+            "source_label": obj.source_label,
+        }
+    # TdTransfer — complex frequency response
+    x = np.asarray(obj.frequencies, dtype=float).ravel()
+    H = np.asarray(obj.H)
+    return {
+        "domain": "freq",
+        "x_label": "Frequency (Hz)",
+        "x": x.tolist(),
+        "series": [{
+            "label": f"H · {obj.probe_label}",
+            "y_re": np.real(H).astype(float).tolist(),
+            "y_im": np.imag(H).astype(float).tolist(),
+        }],
+        "source_label": obj.source_label,
+    }
+
+
+def _td_trajectory_payload(traj, *, max_frames: int = 64) -> dict[str, Any]:
+    """``TdTrajectory`` → a 3-D field-animation payload.
+
+    Samples the DG state at the element corners — the same discontinuous
+    linear-tet sampling :meth:`ProblemTD.export_vtk` writes to VTK — and
+    packs one ``|E|`` / ``|H|`` magnitude frame per snapshot. Snapshots
+    are decimated to at most ``max_frames`` so the animation payload
+    stays small. A global per-channel maximum lets the viewer hold a
+    fixed colour scale across the whole animation.
+    """
+    import numpy as np
+
+    p = getattr(traj, "_problem", None)
+    if p is None:
+        raise RuntimeError(
+            "trajectory carries no ProblemTD reference — it must come "
+            "straight from ProblemTD.transient()"
+        )
+    states = np.ascontiguousarray(traj, dtype=np.float64)
+    if states.ndim == 1:
+        states = states[None, :]
+    n_snap, n_dof = states.shape
+
+    o = int(p.order)
+    np_ = (o + 1) * (o + 2) * (o + 3) // 6
+    n_elem = n_dof // (6 * np_)
+    corners = np.asarray(p._op.corner_local_nodes(), dtype=np.int64)
+    coords = np.asarray(p._op.node_coords(), dtype=float).reshape(n_elem, np_, 3)
+    corner_xyz = coords[:, corners, :].reshape(-1, 3)          # [n_elem*4, 3]
+
+    # 4 triangular faces per tet → a renderable solid surface.
+    face = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+    tris = (np.arange(n_elem)[:, None, None] * 4
+            + face[None, :, :]).reshape(-1)
+    tets = np.arange(n_elem * 4, dtype=np.int64)
+
+    # Decimate snapshots to a bounded frame count.
+    if n_snap > max_frames:
+        idx = np.unique(np.linspace(0, n_snap - 1, max_frames).round()
+                        .astype(int))
+    else:
+        idx = np.arange(n_snap)
+
+    dt = getattr(traj, "_dt", None)
+    frames_e: list[list[float]] = []
+    frames_h: list[list[float]] = []
+    e_max = 0.0
+    h_max = 0.0
+    for s in idx:
+        f = states[int(s)].reshape(n_elem, np_, 6)[:, corners, :]
+        em = np.linalg.norm(f[..., 0:3].reshape(-1, 3), axis=1)
+        hm = np.linalg.norm(f[..., 3:6].reshape(-1, 3), axis=1)
+        e_max = max(e_max, float(em.max()))
+        h_max = max(h_max, float(hm.max()))
+        frames_e.append(em.astype(np.float32).tolist())
+        frames_h.append(hm.astype(np.float32).tolist())
+
+    times = (np.asarray(idx, dtype=float) * dt).tolist() if dt else \
+        np.asarray(idx, dtype=float).tolist()
+
+    return {
+        "kind": "mesh",
+        "nodes": corner_xyz.astype(np.float32).ravel().tolist(),
+        "tris": tris.astype(np.int64).tolist(),
+        "tri_phys": [1] * (len(tris) // 3),
+        "tets": tets.tolist(),
+        "tet_phys": [1] * n_elem,
+        "phys_names": {"1": "field"},
+        "phys_dim": {"1": 3},
+        "name_to_tag": {"field": 1},
+        "bbox": _bbox_for_nodes(corner_xyz),
+        "stats": {"n_nodes": int(corner_xyz.shape[0]), "n_tets": int(n_elem),
+                  "n_tris": len(tris) // 3, "mesh_time_s": 0.0, "msh_bytes": 0},
+        # ── animation payload ───────────────────────────────────────────
+        "n_snapshots": len(idx),
+        "times": times,
+        "field_max": {"E": e_max or 1.0, "H": h_max or 1.0},
+        "frames_e": frames_e,
+        "frames_h": frames_h,
+    }
+
+
 def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     """Render captured Geometry/Problem/Result into a flat list of display
     events (`{kind, payload, name}`) for the WS kernel protocol.
@@ -210,6 +357,20 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             # Single mode → wrap in a list so the downstream serialiser
             # always sees a uniform shape.
             last_modes = [item.obj]
+        elif item.kind in ("td_result", "td_timeseries", "td_trajectory"):
+            # Time-domain results are self-contained — emit directly,
+            # no sim/result pairing needed.
+            _td_builder = {
+                "td_result": _td_result_payload,
+                "td_timeseries": _td_timeseries_payload,
+                "td_trajectory": _td_trajectory_payload,
+            }[item.kind]
+            try:
+                out.append({"kind": item.kind, "name": item.name,
+                            "payload": _td_builder(item.obj)})
+            except Exception as e:  # noqa: BLE001
+                out.append({"kind": "error", "name": item.name,
+                            "error": _format_exception(e)})
 
     # Pair sim+result into mesh+field displays.
     if last_sim is not None:
