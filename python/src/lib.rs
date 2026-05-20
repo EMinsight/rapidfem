@@ -423,6 +423,7 @@ impl PyTdOperator {
                             eps: [eps.0, eps.1, eps.2],
                             mu: [mu.0, mu.1, mu.2],
                             sigma,
+                            sigma_m: 0.0,
                         };
                     }
                 }

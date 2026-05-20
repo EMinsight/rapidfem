@@ -99,18 +99,37 @@ pub struct ElemMaterial {
     pub eps: [f64; 3],
     /// Diagonal relative permeability `(μ_x, μ_y, μ_z)`.
     pub mu: [f64; 3],
-    /// Conductivity `σ` (Ohmic loss).
+    /// Electric conductivity `σ` (Ohmic loss).
     pub sigma: f64,
+    /// Magnetic conductivity `σ*` — the magnetic-loss term. Setting
+    /// `σ*/μ = σ/ε` gives an impedance-matched absorbing layer (no reflection
+    /// at normal incidence).
+    pub sigma_m: f64,
 }
 
 impl ElemMaterial {
-    /// Vacuum — `ε = μ = 1`, `σ = 0`.
-    pub const VACUUM: ElemMaterial =
-        ElemMaterial { eps: [1.0; 3], mu: [1.0; 3], sigma: 0.0 };
+    /// Vacuum — `ε = μ = 1`, no loss.
+    pub const VACUUM: ElemMaterial = ElemMaterial {
+        eps: [1.0; 3],
+        mu: [1.0; 3],
+        sigma: 0.0,
+        sigma_m: 0.0,
+    };
 
-    /// An isotropic material from scalar `ε_r`, `μ_r`, `σ`.
+    /// An isotropic, lossless material from scalar `ε_r`, `μ_r`, `σ`.
     pub fn isotropic(eps: f64, mu: f64, sigma: f64) -> Self {
-        ElemMaterial { eps: [eps; 3], mu: [mu; 3], sigma }
+        ElemMaterial { eps: [eps; 3], mu: [mu; 3], sigma, sigma_m: 0.0 }
+    }
+
+    /// An impedance-matched absorbing material: `σ*/μ = σ/ε = nu`, so the
+    /// wave is absorbed with no reflection at the layer interface.
+    pub fn matched_absorber(eps: f64, mu: f64, nu: f64) -> Self {
+        ElemMaterial {
+            eps: [eps; 3],
+            mu: [mu; 3],
+            sigma: nu * eps,
+            sigma_m: nu * mu,
+        }
     }
 }
 
@@ -129,10 +148,11 @@ pub struct MaxwellOperator {
     faces: Vec<FaceInfo>,
     /// Upwind blend: 0 = central, 1 = full upwind.
     flux_alpha: f64,
-    /// Per-element diagonal `1/ε`, `1/μ`, `σ/ε`.
+    /// Per-element diagonal `1/ε`, `1/μ`, `σ/ε` (electric), `σ*/μ` (magnetic).
     inv_eps: Vec<[f64; 3]>,
     inv_mu: Vec<[f64; 3]>,
     sigma_eps: Vec<[f64; 3]>,
+    sigma_mu: Vec<[f64; 3]>,
 }
 
 impl MaxwellOperator {
@@ -209,6 +229,16 @@ impl MaxwellOperator {
             .iter()
             .map(|m| [m.sigma / m.eps[0], m.sigma / m.eps[1], m.sigma / m.eps[2]])
             .collect();
+        let sigma_mu: Vec<[f64; 3]> = materials
+            .iter()
+            .map(|m| {
+                [
+                    m.sigma_m / m.mu[0],
+                    m.sigma_m / m.mu[1],
+                    m.sigma_m / m.mu[2],
+                ]
+            })
+            .collect();
         MaxwellOperator {
             re,
             n_elem,
@@ -218,6 +248,7 @@ impl MaxwellOperator {
             inv_eps,
             inv_mu,
             sigma_eps,
+            sigma_mu,
         }
     }
 
@@ -350,13 +381,14 @@ impl MaxwellOperator {
 
             // Apply per-element materials: ∂E/∂t = (1/ε)(∇×H + flux) - (σ/ε)E,
             // ∂H/∂t = (1/μ)(-∇×E + flux).
-            let (ie, im, se) =
-                (self.inv_eps[e], self.inv_mu[e], self.sigma_eps[e]);
+            let (ie, im) = (self.inv_eps[e], self.inv_mu[e]);
+            let (se, sm) = (self.sigma_eps[e], self.sigma_mu[e]);
             for node in 0..np {
                 for c in 0..3 {
                     out[node * 6 + c] =
                         ie[c] * de[node * 3 + c] - se[c] * ee[node * 3 + c];
-                    out[node * 6 + 3 + c] = im[c] * dh[node * 3 + c];
+                    out[node * 6 + 3 + c] =
+                        im[c] * dh[node * 3 + c] - sm[c] * hh[node * 3 + c];
                 }
             }
         }
@@ -682,6 +714,7 @@ mod tests {
                 eps: [2.0 + i as f64, 3.0, 1.5],
                 mu: [1.0, 1.2 + 0.3 * i as f64, 2.0],
                 sigma: 0.0,
+                sigma_m: 0.0,
             })
             .collect();
         let op = MaxwellOperator::new_with_materials(&mesh, 2, 0.0, &mats);
@@ -712,6 +745,43 @@ mod tests {
         assert!(
             worst < 1e-9 * scale.max(1.0),
             "anisotropic M̃A not skew: worst {worst}, scale {scale}"
+        );
+    }
+
+    #[test]
+    fn matched_absorber_damps_at_the_full_rate() {
+        // An impedance-matched material (σ/ε = σ*/μ = ν) loses energy from
+        // both the E and H halves, so a mode decays at Re = -ν — twice the
+        // rate of an electric-only loss. This validates the magnetic-loss
+        // term and the matched-absorber construction together.
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let nu = 0.15;
+
+        let least_damped_re = |mat: ElemMaterial| -> f64 {
+            let mats = vec![mat; mesh.n_tets()];
+            let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
+            let n = op.n_dof();
+            let a = op.assemble_dense();
+            let m = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+            m.eigenvalues()
+                .expect("eig")
+                .iter()
+                .filter(|z| z.im.abs() > 1.0)
+                .map(|z| z.re)
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+
+        let re_vac = least_damped_re(ElemMaterial::VACUUM);
+        let re_matched =
+            least_damped_re(ElemMaterial::matched_absorber(1.0, 1.0, nu));
+        let delta = re_matched - re_vac;
+        let err = (delta + nu).abs() / nu;
+        assert!(
+            err < 0.08,
+            "matched-absorber decay ΔRe = {delta:.4}, analytic -ν = {:.4}, err {err:.3}",
+            -nu
         );
     }
 
