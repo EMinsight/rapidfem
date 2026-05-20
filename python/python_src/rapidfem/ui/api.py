@@ -228,15 +228,18 @@ def _td_timeseries_payload(obj) -> dict[str, Any]:
     }
 
 
-def _td_trajectory_payload(traj, *, max_frames: int = 64) -> dict[str, Any]:
-    """``TdTrajectory`` → a 3-D field-animation payload.
+def _td_trajectory_payload(
+    traj, *, max_frames: int = 64, max_points: int = 12000,
+) -> dict[str, Any]:
+    """``TdTrajectory`` → a 3-D field-animation point cloud.
 
-    Samples the DG state at the element corners — the same discontinuous
-    linear-tet sampling :meth:`ProblemTD.export_vtk` writes to VTK — and
-    packs one ``|E|`` / ``|H|`` magnitude frame per snapshot. Snapshots
-    are decimated to at most ``max_frames`` so the animation payload
-    stays small. A global per-channel maximum lets the viewer hold a
-    fixed colour scale across the whole animation.
+    The DG state lives at the per-element nodal points; this samples the
+    field there directly — no interpolation — giving one point per DG
+    node and a ``|E|`` / ``|H|`` magnitude per point per snapshot.
+    Snapshots are decimated to at most ``max_frames`` and the point set
+    strided down to at most ``max_points`` so the animation payload stays
+    small. A global per-channel maximum lets the viewer hold a fixed
+    colour scale across the whole animation.
     """
     import numpy as np
 
@@ -254,17 +257,15 @@ def _td_trajectory_payload(traj, *, max_frames: int = 64) -> dict[str, Any]:
     o = int(p.order)
     np_ = (o + 1) * (o + 2) * (o + 3) // 6
     n_elem = n_dof // (6 * np_)
-    corners = np.asarray(p._op.corner_local_nodes(), dtype=np.int64)
-    coords = np.asarray(p._op.node_coords(), dtype=float).reshape(n_elem, np_, 3)
-    corner_xyz = coords[:, corners, :].reshape(-1, 3)          # [n_elem*4, 3]
+    pts = np.asarray(p._op.node_coords(), dtype=float).reshape(-1, 3)
+    n_pts = pts.shape[0]                                   # n_elem * np_
 
-    # 4 triangular faces per tet → a renderable solid surface.
-    face = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
-    tris = (np.arange(n_elem)[:, None, None] * 4
-            + face[None, :, :]).reshape(-1)
-    tets = np.arange(n_elem * 4, dtype=np.int64)
-
-    # Decimate snapshots to a bounded frame count.
+    # Stride the point set down to a bounded count; snapshots likewise.
+    if n_pts > max_points:
+        sel = np.unique(np.linspace(0, n_pts - 1, max_points).round()
+                        .astype(int))
+    else:
+        sel = np.arange(n_pts)
     if n_snap > max_frames:
         idx = np.unique(np.linspace(0, n_snap - 1, max_frames).round()
                         .astype(int))
@@ -277,9 +278,9 @@ def _td_trajectory_payload(traj, *, max_frames: int = 64) -> dict[str, Any]:
     e_max = 0.0
     h_max = 0.0
     for s in idx:
-        f = states[int(s)].reshape(n_elem, np_, 6)[:, corners, :]
-        em = np.linalg.norm(f[..., 0:3].reshape(-1, 3), axis=1)
-        hm = np.linalg.norm(f[..., 3:6].reshape(-1, 3), axis=1)
+        f = states[int(s)].reshape(-1, 6)[sel]
+        em = np.linalg.norm(f[:, 0:3], axis=1)
+        hm = np.linalg.norm(f[:, 3:6], axis=1)
         e_max = max(e_max, float(em.max()))
         h_max = max(h_max, float(hm.max()))
         frames_e.append(em.astype(np.float32).tolist())
@@ -289,19 +290,10 @@ def _td_trajectory_payload(traj, *, max_frames: int = 64) -> dict[str, Any]:
         np.asarray(idx, dtype=float).tolist()
 
     return {
-        "kind": "mesh",
-        "nodes": corner_xyz.astype(np.float32).ravel().tolist(),
-        "tris": tris.astype(np.int64).tolist(),
-        "tri_phys": [1] * (len(tris) // 3),
-        "tets": tets.tolist(),
-        "tet_phys": [1] * n_elem,
-        "phys_names": {"1": "field"},
-        "phys_dim": {"1": 3},
-        "name_to_tag": {"field": 1},
-        "bbox": _bbox_for_nodes(corner_xyz),
-        "stats": {"n_nodes": int(corner_xyz.shape[0]), "n_tets": int(n_elem),
-                  "n_tris": len(tris) // 3, "mesh_time_s": 0.0, "msh_bytes": 0},
-        # ── animation payload ───────────────────────────────────────────
+        "points": pts[sel].astype(np.float32).ravel().tolist(),
+        "n_points": int(sel.size),
+        "n_elem": int(n_elem),
+        "bbox": _bbox_for_nodes(pts),
         "n_snapshots": len(idx),
         "times": times,
         "field_max": {"E": e_max or 1.0, "H": h_max or 1.0},

@@ -359,9 +359,15 @@ export interface TdResultPayload {
 	n_freq: number;
 }
 
-/** `td_trajectory` payload — a mesh (the DG corner sampling) plus a
- *  per-snapshot |E| / |H| magnitude animation. */
-export interface TdTrajectoryPayload extends MeshPayload {
+/** `td_trajectory` payload — a field-animation point cloud. One point per
+ *  sampled DG node; `frames_e` / `frames_h` carry a per-point |E| / |H|
+ *  magnitude per snapshot. `field_max` is the global per-channel maximum,
+ *  for a colour scale held fixed across the whole animation. */
+export interface TdTrajectoryPayload {
+	points: number[];          // flat xyz
+	n_points: number;
+	n_elem: number;
+	bbox: { min: [number, number, number]; max: [number, number, number] };
 	n_snapshots: number;
 	times: number[];
 	field_max: { E: number; H: number };
