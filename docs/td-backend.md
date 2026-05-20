@@ -161,12 +161,17 @@ Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 ## Performance
 
 - The matrix-free `apply` is **parallel across cores** (rayon, per
-  element); progress is logged to stderr like the FD solver.
+  element) and **allocation-free** — each worker reuses a pooled scratch
+  buffer instead of allocating per element.
+- The exponential propagator reuses a **`KrylovWorkspace`**: a transient
+  step allocates nothing beyond its result array, so a long step loop
+  does no per-step heap work. This alone made stepping ~2.6× faster.
 - `state_space()` assembles `A` **element-wise and sparse** — `O(nnz)`
   memory, never densifying — so it scales to 10⁵-DOF meshes where a dense
   matrix would need gigabytes.
 - numpy data crosses the Python ↔ Rust boundary **zero-copy**.
-- Benchmark: `cargo run --release -p rapidfem-td --example bench`.
+- Benchmarks: `cargo run --release -p rapidfem-td --example bench`;
+  `--example allocaudit` counts allocations on the hot paths.
 
 ## Not yet / out of scope
 
