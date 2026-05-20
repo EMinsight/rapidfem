@@ -547,6 +547,103 @@ impl PyTdOperator {
             csr.values.into_pyarray_bound(py),
         )
     }
+
+    /// Build a Krylov model-order-reduced model — `r`-step Arnoldi on the
+    /// matrix-free operator from the seed vector `start`. The returned
+    /// `ReducedModel` propagates states in the `r`-dimensional subspace.
+    fn reduced_model(
+        &self,
+        start: PyReadonlyArray1<'_, f64>,
+        r: usize,
+    ) -> PyResult<PyReducedModel> {
+        let start = start
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if start.iter().all(|&x| x == 0.0) {
+            return Err(PyRuntimeError::new_err(
+                "reduced_model: start vector must be nonzero",
+            ));
+        }
+        let inner = rapidfem_td::mor::ReducedModel::build(
+            |x| self.op.apply(x),
+            start,
+            r,
+        );
+        Ok(PyReducedModel { inner })
+    }
+}
+
+/// A Krylov model-order-reduced model of a `TdOperator` — `A ≈ V·Â·Vᵀ`
+/// with `Â` small and dense. Propagates states at a fraction of the cost.
+#[pyclass(name = "ReducedModel")]
+struct PyReducedModel {
+    inner: rapidfem_td::mor::ReducedModel,
+}
+
+#[pymethods]
+impl PyReducedModel {
+    /// Reduced dimension `r` — at most the requested Krylov dimension,
+    /// smaller on an early Arnoldi breakdown.
+    #[getter]
+    fn r(&self) -> usize {
+        self.inner.r
+    }
+
+    /// Full state dimension `n`.
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.n
+    }
+
+    /// The reduced operator `Â = VᵀAV` as an `r×r` numpy array.
+    #[getter]
+    fn a_hat<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let r = self.inner.r;
+        numpy::ndarray::Array2::from_shape_vec(
+            (r, r),
+            self.inner.a_hat.clone(),
+        )
+        .expect("a_hat is r×r")
+        .into_pyarray_bound(py)
+    }
+
+    /// Project a full state into the reduced space — `ŷ = Vᵀ·y`.
+    fn project<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.inner.project(y).into_pyarray_bound(py))
+    }
+
+    /// Lift a reduced state back to the full space — `y = V·ŷ`.
+    fn lift<'py>(
+        &self,
+        py: Python<'py>,
+        yhat: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let yhat = yhat
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.inner.lift(yhat).into_pyarray_bound(py))
+    }
+
+    /// Propagate a full state by `t` through the reduced model —
+    /// `V·exp(t·Â)·Vᵀ·y₀`.
+    fn propagate<'py>(
+        &self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        t: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.inner.propagate(y0, t).into_pyarray_bound(py))
+    }
 }
 
 /// rapidfem — frequency- and time-domain EM FEM solver.
@@ -562,5 +659,6 @@ fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEigenmode>()?;
     m.add_class::<PyRadiationPattern>()?;
     m.add_class::<PyTdOperator>()?;
+    m.add_class::<PyReducedModel>()?;
     Ok(())
 }

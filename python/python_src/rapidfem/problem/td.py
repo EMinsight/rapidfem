@@ -76,6 +76,102 @@ def _collect_materials(geometry):
     return out
 
 
+class TdODE:
+    """The time-domain problem as an explicit linear ODE ``dy/dt = A·y``.
+
+    A handoff object for external integrators (e.g.
+    :func:`scipy.integrate.solve_ivp`): :meth:`rhs` carries the
+    integrator's ``(t, y)`` signature and is evaluated matrix-free;
+    :meth:`jacobian` returns the constant sparse ``A`` for implicit
+    methods. Obtained from :meth:`ProblemTD.ode`.
+    """
+
+    def __init__(self, problem):
+        self._p = problem
+        self.n_dof = problem.n_dof
+
+    def rhs(self, t, y):
+        """``dy/dt`` at state ``y``. The ``t`` argument is ignored — the
+        system is autonomous and linear — but kept for the integrator
+        signature. Matrix-free, runs on all cores."""
+        return self._p._op.apply(_arr(y))
+
+    def jacobian(self, t=None, y=None):
+        """The constant Jacobian ``A`` as a :class:`scipy.sparse.csr_matrix`."""
+        return self._p.state_space()
+
+    def __repr__(self):
+        return f"TdODE(n_dof={self.n_dof})"
+
+
+class TdStepper:
+    """A reusable one-step exponential propagator bound to a fixed ``dt``.
+
+    Call the stepper on a state to advance it by ``dt``; the exponential
+    step is exact for the linear homogeneous system at any ``dt``.
+    Obtained from :meth:`ProblemTD.stepper`.
+    """
+
+    def __init__(self, problem, dt, krylov_dim):
+        self._p = problem
+        self.dt = float(dt)
+        self.krylov_dim = int(krylov_dim)
+
+    def __call__(self, y):
+        return self._p.step(y, self.dt, self.krylov_dim)
+
+    def advance(self, y):
+        """Advance ``y`` by one ``dt`` step — same as calling the stepper."""
+        return self(y)
+
+    def __repr__(self):
+        return f"TdStepper(dt={self.dt:g}, krylov_dim={self.krylov_dim})"
+
+
+class TdReducedModel:
+    """A Krylov model-order-reduced view of a :class:`ProblemTD`.
+
+    Wraps the native reduced model so :meth:`propagate` takes physical
+    time — consistent with :meth:`ProblemTD.step`. Obtained from
+    :meth:`ProblemTD.reduce`.
+    """
+
+    def __init__(self, native, c):
+        self._m = native
+        self._c = float(c)
+
+    @property
+    def r(self):
+        """Reduced order — the Krylov subspace dimension actually used."""
+        return self._m.r
+
+    @property
+    def n(self):
+        """Full state dimension ``n_dof``."""
+        return self._m.n
+
+    @property
+    def a_hat(self):
+        """The reduced operator ``Â = VᵀAV`` — a dense ``r×r`` array."""
+        return self._m.a_hat
+
+    def project(self, y):
+        """Project a full state into the reduced subspace — ``ŷ = Vᵀ·y``."""
+        return self._m.project(_arr(y))
+
+    def lift(self, yhat):
+        """Lift a reduced state back to the full space — ``y = V·ŷ``."""
+        return self._m.lift(_arr(yhat))
+
+    def propagate(self, y0, t):
+        """Propagate ``y0`` by physical time ``t`` through the reduced
+        model — ``V·exp(t·Â)·Vᵀ·y₀``."""
+        return self._m.propagate(_arr(y0), float(self._c * t))
+
+    def __repr__(self):
+        return f"TdReducedModel(r={self.r}, n={self.n})"
+
+
 class ProblemTD:
     """Time-domain DGTD Maxwell problem.
 
@@ -174,6 +270,16 @@ class ProblemTD:
         n, row_ptr, col_idx, values = self._op.state_space()
         return csr_matrix((values, col_idx, row_ptr), shape=(n, n))
 
+    def ode(self):
+        """Export the problem as an explicit linear ODE ``dy/dt = A·y``.
+
+        Returns a :class:`TdODE` carrying everything an external
+        integrator needs — ``n_dof``, a matrix-free ``rhs(t, y)`` with
+        the :func:`scipy.integrate.solve_ivp` signature, and
+        ``jacobian()``.
+        """
+        return TdODE(self)
+
     def resonances(self, *, n=8):
         """Cavity resonant frequencies (Hz) from the operator's spectrum.
 
@@ -202,6 +308,53 @@ class ProblemTD:
         the matrix-free exponential propagator — exact for the linear
         homogeneous system at any ``h``."""
         return self._op.step(_arr(y), float(self.c * h), int(krylov_dim))
+
+    def stepper(self, dt, *, krylov_dim=40):
+        """A reusable one-step propagator bound to a fixed ``dt``.
+
+        Returns a :class:`TdStepper` — call it repeatedly to advance a
+        state without re-passing ``dt``/``krylov_dim`` each time.
+        """
+        return TdStepper(self, dt, krylov_dim)
+
+    # -- model-order reduction ---------------------------------------------
+    def reduce(self, start, *, dim=60):
+        """Build a Krylov model-order-reduced model around ``start``.
+
+        Runs ``dim``-step Arnoldi on the matrix-free operator from
+        ``start``, projecting ``A`` onto the Krylov subspace
+        ``span{start, A·start, A²·start, …}``. The returned
+        :class:`TdReducedModel` propagates states *in that subspace* —
+        ``start`` in particular — with a dense ``r×r`` exponential,
+        orders of magnitude cheaper than the full operator.
+
+        Parameters
+        ----------
+        start : array_like
+            The state to reduce around — typically the initial condition
+            or excitation vector you intend to propagate. The model is
+            accurate for ``start`` and its Krylov orbit, not for
+            arbitrary states.
+        dim : int
+            Krylov subspace dimension (the reduced order). The order
+            actually used may be smaller on an early Arnoldi breakdown.
+
+        Returns
+        -------
+        TdReducedModel
+        """
+        n = self.n_dof
+        s = _arr(start)
+        if s.size != n:
+            raise ValueError(
+                f"start must have length n_dof={n}, got {s.size}"
+            )
+        if not np.any(s):
+            raise ValueError("reduce: start vector must be nonzero")
+        _log(f"reduce — {dim}-step Arnoldi on {n} DOFs")
+        rom = TdReducedModel(self._op.reduced_model(s, int(dim)), self.c)
+        _log(f"reduce complete — reduced order r={rom.r}")
+        return rom
 
     # -- ports: soft sources & field probes --------------------------------
     def probe_dof(self, point, *, field="E", component="z"):
