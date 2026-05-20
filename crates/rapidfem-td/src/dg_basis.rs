@@ -45,6 +45,11 @@ pub struct ReferenceElement {
     /// per-face physical scaling `Fscale = area_phys / (1/2)` is applied later
     /// by the RHS operator.
     pub lift: Vec<f64>,
+    /// Per-face nodal surface-integration weights — `face_node_weights[f][m]`
+    /// is `∮ φ_m dA` over the reference face (the unit right triangle), so
+    /// they sum to `1/2`. A physical surface integral is
+    /// `Σ_m 2·area_phys·weight[m]·F_m`.
+    pub face_node_weights: [Vec<f64>; 4],
 }
 
 impl ReferenceElement {
@@ -92,7 +97,8 @@ impl ReferenceElement {
         let diff_s = matmul(&vs, &c, n);
         let diff_t = matmul(&vt, &c, n);
 
-        let (n_face_nodes, face_nodes, lift) = build_lift(p, &mass_inv, n);
+        let (n_face_nodes, face_nodes, lift, face_node_weights) =
+            build_lift(p, &mass_inv, n);
 
         ReferenceElement {
             order: p,
@@ -106,6 +112,7 @@ impl ReferenceElement {
             n_face_nodes,
             face_nodes,
             lift,
+            face_node_weights,
         }
     }
 }
@@ -282,7 +289,7 @@ fn build_lift(
     p: usize,
     mass_inv: &[f64],
     n: usize,
-) -> (usize, [Vec<usize>; 4], Vec<f64>) {
+) -> (usize, [Vec<usize>; 4], Vec<f64>, [Vec<f64>; 4]) {
     let ijk = equispaced_ijk(p);
     // Face membership, aligned with TET_FACE_LOCAL.
     let on_face = |f: usize, c: [usize; 3]| match f {
@@ -330,6 +337,8 @@ fn build_lift(
     // onto the rows of face f's volume nodes.
     let cols = 4 * nfp;
     let mut emat = vec![0.0; n * cols];
+    let mut face_node_weights: [Vec<f64>; 4] =
+        [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let pf = p as f64;
     for f in 0..4 {
         // 2D node coordinates for this face.
@@ -365,10 +374,14 @@ fn build_lift(
                 emat[vi * cols + f * nfp + m] = mf[a * nfp + m];
             }
         }
+        // Nodal surface-integration weights — row sums of the face mass.
+        face_node_weights[f] = (0..nfp)
+            .map(|a| (0..nfp).map(|m| mf[a * nfp + m]).sum())
+            .collect();
     }
 
     let lift = mat_mul(mass_inv, n, n, &emat, cols);
-    (nfp, face_nodes, lift)
+    (nfp, face_nodes, lift, face_node_weights)
 }
 
 #[cfg(test)]

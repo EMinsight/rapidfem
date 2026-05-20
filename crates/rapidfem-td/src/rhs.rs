@@ -570,6 +570,51 @@ impl MaxwellOperator {
         b
     }
 
+    /// Modal amplitudes at port `port_idx` for the current state `y`:
+    /// `(a, b)` — the amplitude of the mode entering the domain (`a`,
+    /// forward) and leaving it (`b`, backward).
+    ///
+    /// Both directions share the transverse-E profile but carry opposite
+    /// transverse H, so `E_t = e_t·(a+b)` and `H_t = h_t·(a−b)`; surface-
+    /// integral projection onto `e_t` / `h_t` recovers `a±b`.
+    pub fn port_modal_amplitudes(
+        &self,
+        y: &[f64],
+        port_idx: usize,
+    ) -> (f64, f64) {
+        let np = self.re.n_nodes;
+        let nfp = self.re.n_face_nodes;
+        let pd = &self.ports[port_idx];
+        let rect = pd
+            .rect
+            .as_ref()
+            .expect("port has no mode for extraction");
+        let (mut e_dot, mut e_norm) = (0.0, 0.0); // ∮E·e_t, ∮e_t·e_t
+        let (mut h_dot, mut h_norm) = (0.0, 0.0);
+        for &(e, f) in &pd.faces {
+            let fi = &self.faces[e * 4 + f];
+            let area = fi.fscale * self.geom[e].det.abs() / 2.0;
+            let wgt = &self.re.face_node_weights[f];
+            for m in 0..nfp {
+                let vi = self.re.face_nodes[f][m];
+                let x = self.geom[e].map(self.re.nodes[vi]);
+                let et = rect.e_profile(x);
+                let ht = rect.h_profile(x);
+                let w = 2.0 * area * wgt[m];
+                let base = (e * np + vi) * 6;
+                let ef = [y[base], y[base + 1], y[base + 2]];
+                let hf = [y[base + 3], y[base + 4], y[base + 5]];
+                e_dot += w * dot3(ef, et);
+                e_norm += w * dot3(et, et);
+                h_dot += w * dot3(hf, ht);
+                h_norm += w * dot3(ht, ht);
+            }
+        }
+        let p_e = if e_norm > 0.0 { e_dot / e_norm } else { 0.0 };
+        let p_h = if h_norm > 0.0 { h_dot / h_norm } else { 0.0 };
+        (0.5 * (p_e + p_h), 0.5 * (p_e - p_h))
+    }
+
     /// Evaluate `dy/dt = A·y`, allocating the result. See [`apply_into`](Self::apply_into)
     /// for the allocation-free form.
     pub fn apply(&self, y: &[f64]) -> Vec<f64> {
@@ -1692,6 +1737,91 @@ mod tests {
         assert!(
             err < 0.15,
             "packet speed {v:.3}, analytic v_g {vg:.3} (rel.err {err:.2})"
+        );
+    }
+
+    #[test]
+    fn port_extracts_the_incident_amplitude() {
+        // WP3.1: driving a straight guide, the extracted incident modal
+        // amplitude a(t) reproduces the drive waveform, and the backward
+        // amplitude b(t) stays small — the injection launches an almost
+        // purely forward mode (before any far-end reflection returns).
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use std::f64::consts::PI;
+
+        let (a, b, lz) = (1.0, 0.5, 9.0);
+        let mesh = structured_box(2, 1, 18, a, b, lz);
+        let port_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| mesh.nodes[nd][2].abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let rect = RectPort {
+            origin: [0.0, 0.0, 0.0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a,
+            b,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+        );
+        let n = op.n_dof();
+        let b_spatial = op.port_source(0);
+
+        let omega0 = 1.6 * PI;
+        let (t0, tau) = (7.0, 2.5);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+
+        let dt = 0.02;
+        let mut y = vec![0.0; n];
+        let (mut fa, mut fg, mut fb) = (Vec::new(), Vec::new(), Vec::new());
+        // Stop before the far-end (PEC) reflection can return to the port.
+        for s in 0..600 {
+            let t = s as f64 * dt;
+            let g = pulse(t);
+            let bvec: Vec<f64> = b_spatial.iter().map(|x| x * g).collect();
+            y = etd_step(|x| op.apply(x), &y, &bvec, dt, 20);
+            let (a_amp, b_amp) = op.port_modal_amplitudes(&y, 0);
+            fa.push(a_amp);
+            fb.push(b_amp);
+            fg.push(g);
+        }
+        assert!(y.iter().all(|v| v.is_finite()));
+
+        // a(t) reproduces the drive shape — normalised correlation ≈ 1.
+        let dotp = |x: &[f64], z: &[f64]| -> f64 {
+            x.iter().zip(z).map(|(p, q)| p * q).sum()
+        };
+        let corr = dotp(&fa, &fg)
+            / (dotp(&fa, &fa) * dotp(&fg, &fg)).sqrt();
+        let max_a = fa.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        let max_b = fb.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        eprintln!(
+            "DIAG extraction: corr(a,g)={corr:.4}  max|a|={max_a:.3e}  \
+             max|b|={max_b:.3e}  b/a={:.3}",
+            max_b / max_a
+        );
+        assert!(corr > 0.9, "incident amplitude does not track the drive: corr {corr:.3}");
+        assert!(max_a > 1e-3, "no incident amplitude extracted");
+        assert!(
+            max_b < 0.15 * max_a,
+            "injection is not forward-clean: b/a = {:.3}",
+            max_b / max_a
         );
     }
 }
