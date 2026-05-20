@@ -22,6 +22,7 @@ import time
 import numpy as np
 
 from .._native import TdOperator
+from ..excitation import GaussianPulse
 
 _FLUX = {"upwind": 1.0, "central": 0.0}
 _FIELD = {"E": 0, "H": 1}
@@ -74,6 +75,25 @@ def _collect_materials(geometry):
             tuple(float(v) for v in mu),
             float(mat.conductivity),
         ))
+    return out
+
+
+def _collect_ports(geometry):
+    """Walk the geometry's :class:`RectWaveguidePort` physics.
+
+    Returns ``[(face_tag, mode_m, mode_n)]`` for the native TD operator;
+    the list order fixes the port index used by :meth:`ProblemTD.sparams`.
+    """
+    from ..physics import RectWaveguidePort
+
+    out = []
+    for phys in getattr(geometry, "_physics", []):
+        if not isinstance(phys, RectWaveguidePort):
+            continue
+        tag = geometry._physics_tags.get(id(phys))
+        if tag is None:
+            continue
+        out.append((int(tag), int(phys.mode[0]), int(phys.mode[1])))
     return out
 
 
@@ -270,8 +290,10 @@ class ProblemTD:
             )
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
+        tag_ports = _collect_ports(geometry)
         self._op = TdOperator.from_mesh_bytes(
-            bytes(mesh_bytes), order, _FLUX[flux], tag_materials or None
+            bytes(mesh_bytes), order, _FLUX[flux],
+            tag_materials or None, tag_ports or None,
         )
         self._geometry = geometry
         self.order = order
@@ -279,7 +301,8 @@ class ProblemTD:
         self.c = float(c)
         _log(
             f"operator built — {self.n_dof} DOFs, order {order}, "
-            f"flux={flux}, {len(tag_materials)} tagged materials"
+            f"flux={flux}, {len(tag_materials)} tagged materials, "
+            f"{len(tag_ports)} ports"
         )
 
     @classmethod
@@ -543,6 +566,107 @@ class ProblemTD:
         band = np.abs(spec_g) > 1e-2 * np.abs(spec_g).max()
         h[band] = spec_r[band] / spec_g[band]
         return freqs, h
+
+    # -- ports: scattering parameters --------------------------------------
+    def _port_impedance(self, port_idx, f):
+        """TE-mode wave impedance of a port at physical frequency ``f``."""
+        wc = self._op.port_cutoff(port_idx)
+        fc = self.c * wc / (2.0 * np.pi)
+        r = fc / f
+        return 1.0 / np.sqrt(1.0 - r * r)
+
+    def sparams(self, freqs, *, dt, steps, pulse=None, krylov_dim=40,
+                verbose=True):
+        """Scattering matrix ``S(f)`` of the waveguide-port network.
+
+        Drives each port in turn with a broadband pulse, extracts the
+        modal amplitudes at every port by surface-integral projection,
+        and assembles ``S_ij(f) = B_i(f)/A_j(f)`` — the wave leaving port
+        ``i`` per unit wave incident at the driven port ``j``.
+
+        Parameters
+        ----------
+        freqs : array_like
+            Frequencies — Hz for a geometry, operator units for a
+            :meth:`box`.
+        dt, steps : float, int
+            Time step and step count. The run must be long enough to
+            capture the response; for a clean ``S₁₁`` it should stop
+            before energy multiply-reflected by the (characteristic)
+            ports returns.
+        pulse : callable, optional
+            Broadband excitation ``g(t)``; defaults to a modulated
+            Gaussian spanning the frequency band.
+        krylov_dim : int
+            Krylov dimension of the exponential step.
+
+        Returns
+        -------
+        freqs : ndarray
+        S : ndarray of complex, shape ``[n_freq, n_port, n_port]``
+            ``S[f, i, j]`` — the index order matches the frequency-domain
+            backend's ``SweepResult.sparams``.
+        """
+        freqs = np.asarray(freqs, dtype=float).ravel()
+        n_ports = self._op.n_ports()
+        if n_ports == 0:
+            raise RuntimeError(
+                "ProblemTD has no ports — attach RectWaveguidePort(s) to "
+                "the geometry before constructing it"
+            )
+        n = self.n_dof
+        times = np.arange(steps) * dt
+
+        if pulse is None:
+            fc = float(np.mean(freqs))
+            fw = float(np.ptp(freqs)) or 0.5 * fc
+            tau = 1.0 / (np.pi * max(fw, 0.25 * fc))
+            pulse = GaussianPulse(t0=4.0 * tau, tau=tau, f0=fc)
+        g = np.array([float(pulse(t)) for t in times])
+        # DFT kernel — rows index frequency, columns index time sample.
+        phase = np.exp(-2j * np.pi * np.outer(freqs, times)) * dt
+
+        h_op = float(self.c * dt)
+        a_inc = np.zeros((n_ports, freqs.size), dtype=complex)
+        b_out = np.zeros((n_ports, n_ports, freqs.size), dtype=complex)
+        every = max(1, steps // 5)
+        for j in range(n_ports):
+            src = self._op.port_source(j)
+            y = np.zeros(n)
+            pe = np.zeros((n_ports, steps))
+            ph = np.zeros((n_ports, steps))
+            t0 = time.time()
+            for s in range(steps):
+                y = self._op.step_with_source(
+                    y, src * g[s], h_op, krylov_dim
+                )
+                for i in range(n_ports):
+                    pe[i, s], ph[i, s] = self._op.port_projections(y, i)
+                if verbose and (s + 1) % every == 0:
+                    _log(
+                        f"sparams drive {j + 1}/{n_ports}: "
+                        f"step {s + 1}/{steps} ({time.time() - t0:.1f}s)"
+                    )
+            for i in range(n_ports):
+                pe_f = phase @ pe[i]
+                ph_f = phase @ ph[i]
+                z = np.array(
+                    [self._port_impedance(i, f) for f in freqs]
+                )
+                b_out[j, i] = 0.5 * (pe_f - z * ph_f)
+                if i == j:
+                    a_inc[j] = 0.5 * (pe_f + z * ph_f)
+
+        s_mat = np.zeros((freqs.size, n_ports, n_ports), dtype=complex)
+        for j in range(n_ports):
+            for i in range(n_ports):
+                s_mat[:, i, j] = b_out[j, i] / a_inc[j]
+        if verbose:
+            _log(
+                f"sparams complete — {n_ports}-port S-matrix at "
+                f"{freqs.size} frequencies"
+            )
+        return freqs, s_mat
 
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0, *, dt, steps, krylov_dim=40, verbose=True):

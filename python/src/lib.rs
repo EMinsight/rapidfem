@@ -412,9 +412,11 @@ impl PyTdOperator {
     /// arbitrary unstructured meshes produced by the geometry API.
     ///
     /// `tag_materials` maps a gmsh volume tag to `(eps_diag, mu_diag, sigma)`;
-    /// tets in untagged volumes default to vacuum.
+    /// tets in untagged volumes default to vacuum. `ports` maps a gmsh face
+    /// tag to `(mode_m, mode_n)` — each becomes a waveguide port, indexed in
+    /// the given order.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None))]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
         order: usize,
@@ -422,8 +424,9 @@ impl PyTdOperator {
         tag_materials: Option<
             Vec<(i32, (f64, f64, f64), (f64, f64, f64), f64)>,
         >,
+        ports: Option<Vec<(i32, usize, usize)>>,
     ) -> PyResult<Self> {
-        use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator};
+        use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
             .map_err(PyRuntimeError::new_err)?;
         let mut materials = vec![ElemMaterial::VACUUM; mesh.n_tets()];
@@ -441,8 +444,20 @@ impl PyTdOperator {
                 }
             }
         }
-        let op = MaxwellOperator::new_with_materials(
-            &mesh, order, flux_alpha, &materials,
+        let mut port_specs: Vec<PortSpec> = Vec::new();
+        if let Some(ps) = ports {
+            for (tag, m, n) in ps {
+                let spec = PortSpec::from_mesh_tag(&mesh, tag, (m, n))
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "port face tag {tag} carries no triangles"
+                        ))
+                    })?;
+                port_specs.push(spec);
+            }
+        }
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh, order, flux_alpha, &materials, &port_specs,
         );
         Ok(PyTdOperator {
             op,
@@ -544,6 +559,76 @@ impl PyTdOperator {
             &mut out,
         );
         self.driven_b[source_dof] = 0.0;
+        Ok(out.into_pyarray_bound(py))
+    }
+
+    /// Number of waveguide ports on the operator.
+    fn n_ports(&self) -> usize {
+        self.op.n_ports()
+    }
+
+    /// Cutoff angular frequency of port `port_idx`'s mode (operator units).
+    fn port_cutoff(&self, port_idx: usize) -> f64 {
+        self.op.port_cutoff(port_idx)
+    }
+
+    /// Spatial source vector for driving port `port_idx` with a unit
+    /// waveform — the system is `dy/dt = A·y + b·g(t)`.
+    fn port_source<'py>(
+        &self,
+        py: Python<'py>,
+        port_idx: usize,
+    ) -> Bound<'py, PyArray1<f64>> {
+        self.op.port_source(port_idx).into_pyarray_bound(py)
+    }
+
+    /// Modal field projections `(P_e, P_h)` at port `port_idx` for the
+    /// state `y` — the forward/backward split `A,B = (P_e ± Z·P_h)/2` is
+    /// done per frequency on the recorded time series.
+    fn port_projections(
+        &self,
+        y: PyReadonlyArray1<'_, f64>,
+        port_idx: usize,
+    ) -> PyResult<(f64, f64)> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.op.port_modal_projections(y, port_idx))
+    }
+
+    /// One source-driven step `dy/dt = A·y + b` with a full source vector
+    /// `b` — the path for modal port excitation. Zero-copy numpy in/out;
+    /// the Krylov workspace is reused across the loop.
+    #[pyo3(signature = (y, source, h, krylov_dim = 40))]
+    fn step_with_source<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        source: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        krylov_dim: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if src.len() != y.len() {
+            return Err(PyRuntimeError::new_err(
+                "source length must equal n_dof",
+            ));
+        }
+        let mut out = vec![0.0; y.len()];
+        let op = &self.op;
+        self.krylov.etd_step_into(
+            |x, ax| op.apply_into(x, ax),
+            y,
+            src,
+            h,
+            krylov_dim,
+            &mut out,
+        );
         Ok(out.into_pyarray_bound(py))
     }
 

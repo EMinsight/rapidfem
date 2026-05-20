@@ -132,6 +132,69 @@ pub struct PortSpec {
     pub rect: Option<RectPort>,
 }
 
+impl PortSpec {
+    /// Build a waveguide port from a gmsh face tag — collecting the port
+    /// triangles and fitting the rectangular-waveguide `TE_mn` mode to the
+    /// face. Returns `None` if the tag carries no triangles.
+    pub fn from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+        mode: (usize, usize),
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        // Distinct node coordinates of the port face.
+        let mut node_ids: Vec<usize> = Vec::new();
+        for &t in &tris {
+            for &nd in &mesh.tris[t] {
+                if !node_ids.contains(&nd) {
+                    node_ids.push(nd);
+                }
+            }
+        }
+        let coords: Vec<[f64; 3]> =
+            node_ids.iter().map(|&nd| mesh.nodes[nd]).collect();
+
+        // Geometric normal of a representative port triangle, oriented to
+        // point into the domain (toward the adjacent tet's centroid).
+        let t0 = tris[0];
+        let [v0, v1, v2] = mesh.tris[t0];
+        let (p0, p1, p2) = (mesh.nodes[v0], mesh.nodes[v1], mesh.nodes[v2]);
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let mut nrm = cross3(e1, e2);
+        let len =
+            (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        for c in nrm.iter_mut() {
+            *c /= len;
+        }
+        let tet = mesh.tri_to_tet[t0]
+            .iter()
+            .copied()
+            .find(|&x| x != usize::MAX)?;
+        let mut centroid = [0.0; 3];
+        for &nd in &mesh.tets[tet] {
+            for k in 0..3 {
+                centroid[k] += mesh.nodes[nd][k] / 4.0;
+            }
+        }
+        let inward = [
+            centroid[0] - p0[0],
+            centroid[1] - p0[1],
+            centroid[2] - p0[2],
+        ];
+        if dot3(nrm, inward) < 0.0 {
+            for c in nrm.iter_mut() {
+                *c = -*c;
+            }
+        }
+        let rect = RectPort::from_face(&coords, nrm, mode);
+        Some(PortSpec { tris, rect: Some(rect) })
+    }
+}
+
 /// Resolved per-port data held by the operator.
 struct PortData {
     /// The port's waveguide mode, if any.
@@ -510,6 +573,15 @@ impl MaxwellOperator {
     /// Number of ports on the operator.
     pub fn n_ports(&self) -> usize {
         self.ports.len()
+    }
+
+    /// Cutoff angular frequency of port `port_idx`'s waveguide mode, in the
+    /// operator's normalised units (`0` if the port carries no mode).
+    pub fn port_cutoff(&self, port_idx: usize) -> f64 {
+        self.ports[port_idx]
+            .rect
+            .as_ref()
+            .map_or(0.0, |r| r.cutoff())
     }
 
     /// Spatial source vector `b_spatial` for driving port `port_idx` with a
