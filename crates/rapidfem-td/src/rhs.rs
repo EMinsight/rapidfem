@@ -9,7 +9,9 @@
 //! with components ordered `x, y, z`.
 
 use crate::dg_basis::ReferenceElement;
-use crate::geom_factors::GeometricFactors;
+use crate::geom_factors::{GeometricFactors, all_geometric_factors};
+use rapidfem_core::mesh::Mesh;
+use rapidfem_core::topology::FaceTopology;
 
 /// Physical curl of a vector field on a single element.
 ///
@@ -56,6 +58,235 @@ pub fn element_curl(
         out[i * 3 + 2] = pd[0][1][i] - pd[1][0][i];
     }
     out
+}
+
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Per (element, local face) flux data.
+struct FaceInfo {
+    /// Outward unit normal.
+    normal: [f64; 3],
+    /// Surface scaling `2·area_phys / |det J|` (the lift assumes a 1/2 reference face).
+    fscale: f64,
+    /// Neighbour element, or `usize::MAX` on a PEC boundary.
+    neighbor: usize,
+    /// Neighbour local face.
+    neighbor_local_face: usize,
+    /// `perm[m]` = neighbour face-node local index matching this face's node `m`.
+    perm: Vec<usize>,
+}
+
+/// Semi-discrete DG operator for the vacuum Maxwell curl equations on a
+/// tetrahedral mesh with PEC outer walls.
+///
+/// State layout: `y[(e*Np + node)*6 + comp]`, `comp` 0..3 = E, 3..6 = H.
+/// Central numerical flux (energy-conserving). `apply` evaluates `dy/dt`.
+pub struct MaxwellOperator {
+    re: ReferenceElement,
+    n_elem: usize,
+    geom: Vec<GeometricFactors>,
+    /// 4 faces per element, flattened: `faces[e*4 + f]`.
+    faces: Vec<FaceInfo>,
+}
+
+impl MaxwellOperator {
+    /// Build the operator for a mesh at polynomial order `p`.
+    pub fn new(mesh: &Mesh, order: usize) -> Self {
+        let re = ReferenceElement::new(order);
+        let geom = all_geometric_factors(mesh);
+        let topo = FaceTopology::build(mesh);
+        let n_elem = mesh.n_tets();
+
+        let face_coords = |e: usize, f: usize| -> Vec<[f64; 3]> {
+            re.face_nodes[f]
+                .iter()
+                .map(|&vi| geom[e].map(re.nodes[vi]))
+                .collect()
+        };
+
+        let mut faces = Vec::with_capacity(n_elem * 4);
+        for e in 0..n_elem {
+            for f in 0..4 {
+                let df = topo.face(e, f);
+                let fscale = 2.0 * df.area / geom[e].det.abs();
+                let perm = if df.neighbor == usize::MAX {
+                    Vec::new()
+                } else {
+                    let here = face_coords(e, f);
+                    let there =
+                        face_coords(df.neighbor, df.neighbor_local_face);
+                    here.iter()
+                        .map(|p| {
+                            let (mut best, mut bm) = (f64::MAX, 0);
+                            for (m2, q) in there.iter().enumerate() {
+                                let d = (p[0] - q[0]).powi(2)
+                                    + (p[1] - q[1]).powi(2)
+                                    + (p[2] - q[2]).powi(2);
+                                if d < best {
+                                    best = d;
+                                    bm = m2;
+                                }
+                            }
+                            assert!(best < 1e-18, "unmatched face node");
+                            bm
+                        })
+                        .collect()
+                };
+                faces.push(FaceInfo {
+                    normal: df.normal,
+                    fscale,
+                    neighbor: df.neighbor,
+                    neighbor_local_face: df.neighbor_local_face,
+                    perm,
+                });
+            }
+        }
+        MaxwellOperator { re, n_elem, geom, faces }
+    }
+
+    /// Degrees of freedom, `6 · Np · n_elem`.
+    pub fn n_dof(&self) -> usize {
+        6 * self.re.n_nodes * self.n_elem
+    }
+
+    /// Evaluate `dy/dt = A·y`.
+    pub fn apply(&self, y: &[f64]) -> Vec<f64> {
+        let np = self.re.n_nodes;
+        let nfp = self.re.n_face_nodes;
+        let cols = 4 * nfp;
+        let mut dy = vec![0.0; self.n_dof()];
+
+        for e in 0..self.n_elem {
+            let base = e * np * 6;
+            let mut ee = vec![0.0; 3 * np];
+            let mut hh = vec![0.0; 3 * np];
+            for node in 0..np {
+                for c in 0..3 {
+                    ee[node * 3 + c] = y[base + node * 6 + c];
+                    hh[node * 3 + c] = y[base + node * 6 + 3 + c];
+                }
+            }
+
+            // Volume term:  dE = ∇×H,  dH = -∇×E.
+            let mut de = element_curl(&self.re, &self.geom[e], &hh);
+            let mut dh = element_curl(&self.re, &self.geom[e], &ee);
+            for v in dh.iter_mut() {
+                *v = -*v;
+            }
+
+            // Surface term — central flux.
+            for f in 0..4 {
+                let fi = &self.faces[e * 4 + f];
+                let n = fi.normal;
+                let coef = 0.5 * fi.fscale;
+                for m in 0..nfp {
+                    let vi = self.re.face_nodes[f][m];
+                    let em = [ee[vi * 3], ee[vi * 3 + 1], ee[vi * 3 + 2]];
+                    let hm = [hh[vi * 3], hh[vi * 3 + 1], hh[vi * 3 + 2]];
+                    // Jumps [E] = E⁻-E⁺, [H] = H⁻-H⁺.
+                    let (je, jh) = if fi.neighbor == usize::MAX {
+                        // PEC ghost: [E] = 2·E_tangential, [H] = 2·H_normal.
+                        let edn = dot3(n, em);
+                        let hdn = dot3(n, hm);
+                        (
+                            [
+                                2.0 * (em[0] - edn * n[0]),
+                                2.0 * (em[1] - edn * n[1]),
+                                2.0 * (em[2] - edn * n[2]),
+                            ],
+                            [
+                                2.0 * hdn * n[0],
+                                2.0 * hdn * n[1],
+                                2.0 * hdn * n[2],
+                            ],
+                        )
+                    } else {
+                        let vj = self.re.face_nodes[fi.neighbor_local_face]
+                            [fi.perm[m]];
+                        let nbb = fi.neighbor * np * 6;
+                        (
+                            [
+                                em[0] - y[nbb + vj * 6],
+                                em[1] - y[nbb + vj * 6 + 1],
+                                em[2] - y[nbb + vj * 6 + 2],
+                            ],
+                            [
+                                hm[0] - y[nbb + vj * 6 + 3],
+                                hm[1] - y[nbb + vj * 6 + 4],
+                                hm[2] - y[nbb + vj * 6 + 5],
+                            ],
+                        )
+                    };
+                    let nxjh = cross3(n, jh);
+                    let nxje = cross3(n, je);
+                    for i in 0..np {
+                        let w = coef * self.re.lift[i * cols + f * nfp + m];
+                        for c in 0..3 {
+                            de[i * 3 + c] -= w * nxjh[c];
+                            dh[i * 3 + c] += w * nxje[c];
+                        }
+                    }
+                }
+            }
+
+            for node in 0..np {
+                for c in 0..3 {
+                    dy[base + node * 6 + c] = de[node * 3 + c];
+                    dy[base + node * 6 + 3 + c] = dh[node * 3 + c];
+                }
+            }
+        }
+        dy
+    }
+
+    /// Assemble the operator as a dense `N×N` row-major matrix by applying it
+    /// to each unit vector. For validation on small meshes.
+    pub fn assemble_dense(&self) -> Vec<f64> {
+        let n = self.n_dof();
+        let mut a = vec![0.0; n * n];
+        let mut ej = vec![0.0; n];
+        for j in 0..n {
+            ej[j] = 1.0;
+            let col = self.apply(&ej);
+            for (i, &v) in col.iter().enumerate() {
+                a[i * n + j] = v;
+            }
+            ej[j] = 0.0;
+        }
+        a
+    }
+
+    /// Dense block-diagonal energy mass `M̃`: per element and field component a
+    /// copy of `|det J_e|·M_ref`. `yᵀ M̃ y` is the discrete field energy.
+    pub fn assemble_energy_mass(&self) -> Vec<f64> {
+        let np = self.re.n_nodes;
+        let n = self.n_dof();
+        let mut m = vec![0.0; n * n];
+        for e in 0..self.n_elem {
+            let scale = self.geom[e].det.abs();
+            let base = e * np * 6;
+            for ni in 0..np {
+                for nj in 0..np {
+                    let mij = scale * self.re.mass[ni * np + nj];
+                    for c in 0..6 {
+                        m[(base + ni * 6 + c) * n + (base + nj * 6 + c)] = mij;
+                    }
+                }
+            }
+        }
+        m
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +342,45 @@ mod tests {
         let field = vec![0.7; 3 * re.n_nodes];
         let curl = element_curl(&re, &gf, &field);
         assert!(curl.iter().all(|c| c.abs() < 1e-10));
+    }
+
+    #[test]
+    fn central_flux_operator_conserves_energy() {
+        // The central-flux DG Maxwell operator is exactly energy-conserving:
+        // M̃·A must be skew-symmetric. This validates the flux signs, the
+        // surface scaling and the PEC boundary treatment all at once.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mm = op.assemble_energy_mass();
+
+        // ma = M̃ · A
+        let mut ma = vec![0.0; n * n];
+        for i in 0..n {
+            for k in 0..n {
+                let mik = mm[i * n + k];
+                if mik == 0.0 {
+                    continue;
+                }
+                for j in 0..n {
+                    ma[i * n + j] += mik * a[k * n + j];
+                }
+            }
+        }
+
+        let mut worst = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for p in 0..n {
+            for q in 0..n {
+                worst = worst.max((ma[p * n + q] + ma[q * n + p]).abs());
+                scale = scale.max(ma[p * n + q].abs());
+            }
+        }
+        assert!(
+            worst < 1e-9 * scale.max(1.0),
+            "M̃A not skew-symmetric: worst {worst}, scale {scale}"
+        );
     }
 }
