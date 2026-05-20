@@ -106,12 +106,26 @@ struct FaceInfo {
     normal: [f64; 3],
     /// Surface scaling `2·area_phys / |det J|` (the lift assumes a 1/2 reference face).
     fscale: f64,
-    /// Neighbour element, or `usize::MAX` on a PEC boundary.
+    /// Neighbour element, or `usize::MAX` on a domain-boundary face.
     neighbor: usize,
     /// Neighbour local face.
     neighbor_local_face: usize,
     /// `perm[m]` = neighbour face-node local index matching this face's node `m`.
     perm: Vec<usize>,
+    /// Port index if this boundary face belongs to a port, else `usize::MAX`.
+    /// A non-port boundary face (`neighbor == usize::MAX`) is a PEC wall.
+    port: usize,
+}
+
+/// A port — a set of mesh boundary faces carrying a waveguide mode.
+///
+/// Identified by the mesh triangle indices on the port plane (a gmsh face
+/// tag resolves to exactly such a set via `Mesh::ftag_to_tri`). The modal
+/// fields land here as the ports plan progresses through its phases.
+#[derive(Clone, Debug)]
+pub struct PortSpec {
+    /// Mesh triangle indices forming this port's boundary faces.
+    pub tris: Vec<usize>,
 }
 
 /// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
@@ -289,6 +303,19 @@ impl MaxwellOperator {
         flux_alpha: f64,
         materials: &[ElemMaterial],
     ) -> Self {
+        Self::new_with_materials_ports(mesh, order, flux_alpha, materials, &[])
+    }
+
+    /// Build the operator with per-element materials and waveguide ports.
+    /// Faces on a port behave as a characteristic boundary; non-port
+    /// boundary faces are PEC walls.
+    pub fn new_with_materials_ports(
+        mesh: &Mesh,
+        order: usize,
+        flux_alpha: f64,
+        materials: &[ElemMaterial],
+        ports: &[PortSpec],
+    ) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
         let topo = FaceTopology::build(mesh);
@@ -300,6 +327,14 @@ impl MaxwellOperator {
                 .map(|&vi| geom[e].map(re.nodes[vi]))
                 .collect()
         };
+
+        // Triangle → port index, so each face can be tagged as it is built.
+        let mut tri_to_port = vec![usize::MAX; mesh.tris.len()];
+        for (pi, port) in ports.iter().enumerate() {
+            for &tri in &port.tris {
+                tri_to_port[tri] = pi;
+            }
+        }
 
         let mut faces = Vec::with_capacity(n_elem * 4);
         for e in 0..n_elem {
@@ -335,6 +370,7 @@ impl MaxwellOperator {
                     neighbor: df.neighbor,
                     neighbor_local_face: df.neighbor_local_face,
                     perm,
+                    port: tri_to_port[df.tri],
                 });
             }
         }
@@ -517,7 +553,14 @@ impl MaxwellOperator {
                 let em = [s.ee[vi * 3], s.ee[vi * 3 + 1], s.ee[vi * 3 + 2]];
                 let hm = [s.hh[vi * 3], s.hh[vi * 3 + 1], s.hh[vi * 3 + 2]];
                 // Jumps [E] = E⁻-E⁺, [H] = H⁻-H⁺.
-                let (je, jh) = if fi.neighbor == usize::MAX {
+                let (je, jh) = if fi.port != usize::MAX {
+                    // Port boundary — characteristic flux against the
+                    // incident field. Phase 1: the incident field is zero,
+                    // so the jump is the interior trace itself — a
+                    // first-order absorbing boundary that lets outgoing
+                    // waves leave.
+                    (em, hm)
+                } else if fi.neighbor == usize::MAX {
                     // PEC ghost: [E] = 2·E_tangential, [H] = 2·H_normal.
                     let edn = dot3(n, em);
                     let hdn = dot3(n, hm);
@@ -553,8 +596,14 @@ impl MaxwellOperator {
                 let nxjh = cross3(n, jh);
                 let nxje = cross3(n, je);
                 // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential — dissipative,
-                // damps the discontinuous spurious modes.
-                let a = self.flux_alpha;
+                // damps the discontinuous spurious modes. Port faces are
+                // always fully characteristic (the port absorbs outgoing
+                // waves regardless of the global central/upwind blend).
+                let a = if fi.port != usize::MAX {
+                    1.0
+                } else {
+                    self.flux_alpha
+                };
                 let pe = cross3(n, cross3(n, je));
                 let ph = cross3(n, cross3(n, jh));
                 for i in 0..np {
@@ -1305,5 +1354,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn port_face_drains_field_energy() {
+        // WP1.1: a boundary face tagged as a port acts as a characteristic
+        // absorbing boundary — a divergence-free field disturbance
+        // radiates out through it, whereas the all-PEC channel keeps the
+        // energy bounded.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::expmv;
+
+        let lz = 5.0;
+        let mesh = structured_box(1, 1, 10, 0.5, 0.5, lz);
+
+        // Triangles on the z = lz end face form the port.
+        let port_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| (mesh.nodes[nd][2] - lz).abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!port_tris.is_empty(), "no triangles on the port plane");
+
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let energy = |op: &MaxwellOperator, y: &[f64]| -> f64 {
+            let mm = op.assemble_energy_mass();
+            let n = op.n_dof();
+            let mut e = 0.0;
+            for i in 0..n {
+                for j in 0..n {
+                    e += y[i] * mm[i * n + j] * y[j];
+                }
+            }
+            e
+        };
+
+        let run = |ports: &[PortSpec]| -> f64 {
+            // Central flux — the all-PEC channel is then exactly
+            // energy-conserving, so any drain is the port's doing.
+            let op = MaxwellOperator::new_with_materials_ports(
+                &mesh, 2, 0.0, &vacuum, ports,
+            );
+            let n = op.n_dof();
+            // A smooth, z-only Eₓ bump — depends on z alone, so ∇·E = 0:
+            // it propagates as ±z travelling waves, no static residue.
+            let coords = op.node_coords();
+            let mut y = vec![0.0; n];
+            for (idx, p) in coords.iter().enumerate() {
+                y[idx * 6] = (-((p[2] - 2.5) / 0.5).powi(2)).exp();
+            }
+            let e0 = energy(&op, &y);
+            for _ in 0..900 {
+                y = expmv(|x| op.apply(x), &y, 0.06, 24);
+            }
+            energy(&op, &y) / e0
+        };
+
+        let pec = run(&[]);
+        let port = run(&[PortSpec { tris: port_tris }]);
+        // The all-PEC channel conserves energy exactly (central flux); the
+        // port drains the majority of it. The residue is the test field's
+        // below-cutoff content — evanescent in a waveguide, so it cannot
+        // reach the port — not a flux defect; the quantitative reflection
+        // is gated by the matched-line S₁₁ check (WP3.2).
+        assert!(
+            pec > 0.95,
+            "central-flux all-PEC channel must conserve energy — kept {pec:.3}"
+        );
+        assert!(
+            port < 0.5,
+            "port face must drain the bulk of the energy — kept {port:.3}"
+        );
+        assert!(
+            pec - port > 0.3,
+            "port vs PEC contrast too weak: {pec:.3} vs {port:.3}"
+        );
     }
 }
