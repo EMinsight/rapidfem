@@ -116,7 +116,10 @@
 	</header>
 	<div class="landing">
 		<div class="hero">
-			<h1>RapidFEM</h1>
+			<div class="hero-head">
+				<img src="{base}/favicon.svg" alt="" class="hero-icon" />
+				<h1>RapidFEM</h1>
+			</div>
 			<p>Frequency-domain electromagnetic FEM in Rust. Nédélec-2 edge elements, complex-symmetric sparse solvers, Python API, browser notebook UI.</p>
 		</div>
 		<div class="quickstart">
@@ -261,13 +264,25 @@
 		text-align: center;
 		margin-bottom: 16px;
 	}
+	.hero-head {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 16px;
+		margin-bottom: 10px;
+	}
+	.hero-icon {
+		height: 44px;
+		width: auto;
+		display: block;
+	}
 	.hero h1 {
 		font-size: 28px;
 		font-weight: 700;
 		color: var(--accent);
 		font-family: var(--font-mono);
 		letter-spacing: 2px;
-		margin-bottom: 10px;
+		margin: 0;
 	}
 	.hero p {
 		font-size: var(--fs-sm);
