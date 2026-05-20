@@ -283,6 +283,42 @@ impl MaxwellOperator {
         best
     }
 
+    /// Physical coordinates of every DG node — `n_elem·Np` points in state
+    /// order, `point[e*Np + node]`. The hook for a field export.
+    pub fn node_coords(&self) -> Vec<[f64; 3]> {
+        let np = self.re.n_nodes;
+        let mut pts = Vec::with_capacity(self.n_elem * np);
+        for e in 0..self.n_elem {
+            for node in 0..np {
+                pts.push(self.geom[e].map(self.re.nodes[node]));
+            }
+        }
+        pts
+    }
+
+    /// The four reference-node local indices at the tet corners, ordered
+    /// `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` — the connectivity hook for a
+    /// linear-tetrahedron VTK export.
+    pub fn corner_local_nodes(&self) -> [usize; 4] {
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        corners.map(|c| {
+            self.re
+                .nodes
+                .iter()
+                .position(|n| {
+                    (n[0] - c[0]).abs() < 1e-12
+                        && (n[1] - c[1]).abs() < 1e-12
+                        && (n[2] - c[2]).abs() < 1e-12
+                })
+                .expect("reference element carries the tet-corner nodes")
+        })
+    }
+
     /// Evaluate `dy/dt = A·y`. The per-element work is independent — each
     /// element writes only its own slice of `dy` — so it runs in parallel
     /// across cores.
@@ -1067,5 +1103,36 @@ mod tests {
             .sqrt();
         let scale: f64 = mf.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!(err < 1e-10 * scale, "sparse vs matrix-free: err {err}");
+    }
+
+    #[test]
+    fn corner_nodes_map_to_tet_vertices() {
+        // WP7.3 export hook: the four corner local indices are distinct,
+        // and the physical DG node coordinates land on the mesh-tet
+        // vertices in the affine-map order.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(2, 1, 1, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 3, 1.0);
+        let corners = op.corner_local_nodes();
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                assert_ne!(corners[i], corners[j], "corners not distinct");
+            }
+        }
+        let np = op.re.n_nodes;
+        let pts = op.node_coords();
+        assert_eq!(pts.len(), np * mesh.n_tets());
+        for (e, tet) in mesh.tets.iter().enumerate() {
+            for (c, &local) in corners.iter().enumerate() {
+                let got = pts[e * np + local];
+                let want = mesh.nodes[tet[c]];
+                let d: f64 =
+                    (0..3).map(|k| (got[k] - want[k]).powi(2)).sum();
+                assert!(
+                    d.sqrt() < 1e-12,
+                    "elem {e} corner {c}: {got:?} vs {want:?}"
+                );
+            }
+        }
     }
 }

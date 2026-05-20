@@ -15,6 +15,7 @@ geometry support follows the frequency-domain ``(mesh, TOML)`` path.
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -170,6 +171,71 @@ class TdReducedModel:
 
     def __repr__(self):
         return f"TdReducedModel(r={self.r}, n={self.n})"
+
+
+def _fmt(a):
+    """Whitespace-joined ascii of a numeric array — VTK DataArray payload."""
+    return " ".join(f"{v:.9g}" for v in np.asarray(a).ravel())
+
+
+def _write_vtu(path, points, connectivity, offsets, cell_types, point_data):
+    """Write one VTK XML UnstructuredGrid (``.vtu``), ascii."""
+    lines = [
+        '<?xml version="1.0"?>',
+        '<VTKFile type="UnstructuredGrid" version="0.1" '
+        'byte_order="LittleEndian">',
+        '  <UnstructuredGrid>',
+        f'    <Piece NumberOfPoints="{len(points)}" '
+        f'NumberOfCells="{len(offsets)}">',
+        '      <Points>',
+        '        <DataArray type="Float64" NumberOfComponents="3" '
+        'format="ascii">',
+        f'          {_fmt(points)}',
+        '        </DataArray>',
+        '      </Points>',
+        '      <Cells>',
+        '        <DataArray type="Int64" Name="connectivity" format="ascii">',
+        f'          {_fmt(connectivity)}',
+        '        </DataArray>',
+        '        <DataArray type="Int64" Name="offsets" format="ascii">',
+        f'          {_fmt(offsets)}',
+        '        </DataArray>',
+        '        <DataArray type="UInt8" Name="types" format="ascii">',
+        f'          {_fmt(cell_types)}',
+        '        </DataArray>',
+        '      </Cells>',
+        '      <PointData>',
+    ]
+    for name, data in point_data.items():
+        lines.append(
+            f'        <DataArray type="Float64" Name="{name}" '
+            'NumberOfComponents="3" format="ascii">'
+        )
+        lines.append(f'          {_fmt(data)}')
+        lines.append('        </DataArray>')
+    lines += [
+        '      </PointData>',
+        '    </Piece>',
+        '  </UnstructuredGrid>',
+        '</VTKFile>',
+    ]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _write_pvd(path, entries):
+    """Write a ParaView ``.pvd`` collection over ``(time, vtu-name)`` pairs."""
+    lines = [
+        '<?xml version="1.0"?>',
+        '<VTKFile type="Collection" version="0.1" '
+        'byte_order="LittleEndian">',
+        '  <Collection>',
+    ]
+    for t, fname in entries:
+        lines.append(f'    <DataSet timestep="{t:.9g}" file="{fname}"/>')
+    lines += ['  </Collection>', '</VTKFile>']
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 class ProblemTD:
@@ -444,3 +510,86 @@ class ProblemTD:
         if verbose:
             _log(f"transient complete — {steps} steps in {time.time() - t0:.1f}s")
         return traj
+
+    # -- field export ------------------------------------------------------
+    def export_vtk(self, states, path, *, times=None):
+        """Write a DG field trajectory as a ParaView-openable VTK series.
+
+        Each snapshot in ``states`` becomes a ``.vtu`` file; a ``.pvd``
+        collection ties them into a time animation. The field is exported
+        on **discontinuous linear tetrahedra** — one cell per DG element,
+        sampled at the element corners — carrying the ``E`` and ``H``
+        vector fields as point data. Corner values are exact;
+        sub-element high-order variation is not rendered.
+
+        Parameters
+        ----------
+        states : ndarray
+            A single state ``[n_dof]`` or a trajectory
+            ``[n_snapshots, n_dof]`` — e.g. the return of
+            :meth:`transient`.
+        path : str or os.PathLike
+            Output base path. ``<path>.pvd`` and ``<path>_NNNN.vtu`` are
+            written (the parent directory is created if missing).
+        times : array_like, optional
+            Time value per snapshot for the ``.pvd`` timeline; defaults
+            to the snapshot index.
+
+        Returns
+        -------
+        str
+            Path of the ``.pvd`` collection file.
+        """
+        states = np.ascontiguousarray(states, dtype=np.float64)
+        if states.ndim == 1:
+            states = states[None, :]
+        n_snap, n_dof = states.shape
+        if n_dof != self.n_dof:
+            raise ValueError(
+                f"states carry {n_dof} DOFs, expected {self.n_dof}"
+            )
+
+        o = self.order
+        np_ = (o + 1) * (o + 2) * (o + 3) // 6
+        n_elem = self.n_dof // (6 * np_)
+        corners = np.array(self._op.corner_local_nodes(), dtype=np.int64)
+
+        # Discontinuous linear tets: 4 corner points per element.
+        coords = self._op.node_coords().reshape(n_elem, np_, 3)
+        corner_xyz = coords[:, corners, :].reshape(-1, 3)
+        conn = np.arange(n_elem * 4, dtype=np.int64)
+        offsets = np.arange(4, n_elem * 4 + 1, 4, dtype=np.int64)
+        cell_types = np.full(n_elem, 10, dtype=np.uint8)  # 10 = VTK_TETRA
+
+        if times is None:
+            times = np.arange(n_snap, dtype=float)
+        else:
+            times = np.asarray(times, dtype=float).ravel()
+            if times.size != n_snap:
+                raise ValueError(
+                    f"times has {times.size} entries, expected {n_snap}"
+                )
+
+        base = os.fspath(path)
+        parent = os.path.dirname(base)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        stem = os.path.basename(base)
+
+        entries = []
+        for s in range(n_snap):
+            fields = states[s].reshape(n_elem, np_, 6)[:, corners, :]
+            vtu = f"{base}_{s:04d}.vtu"
+            _write_vtu(
+                vtu, corner_xyz, conn, offsets, cell_types,
+                {
+                    "E": fields[..., 0:3].reshape(-1, 3),
+                    "H": fields[..., 3:6].reshape(-1, 3),
+                },
+            )
+            entries.append((float(times[s]), f"{stem}_{s:04d}.vtu"))
+
+        pvd = f"{base}.pvd"
+        _write_pvd(pvd, entries)
+        _log(f"export_vtk — {n_snap} snapshot(s) -> {pvd}")
+        return pvd

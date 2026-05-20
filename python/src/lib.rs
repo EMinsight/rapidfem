@@ -548,6 +548,30 @@ impl PyTdOperator {
         )
     }
 
+    /// DG node physical coordinates — an `(n_elem·Np, 3)` numpy array, in
+    /// state order (`point[e*Np + node]`).
+    fn node_coords<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        let pts = self.op.node_coords();
+        let n = pts.len();
+        let mut flat: Vec<f64> = Vec::with_capacity(n * 3);
+        for p in &pts {
+            flat.extend_from_slice(p);
+        }
+        numpy::ndarray::Array2::from_shape_vec((n, 3), flat)
+            .expect("(n,3) shape")
+            .into_pyarray_bound(py)
+    }
+
+    /// The four corner local-node indices `(0,0,0),(1,0,0),(0,1,0),(0,0,1)`
+    /// — the linear-tetrahedron connectivity for a VTK field export.
+    fn corner_local_nodes(&self) -> (usize, usize, usize, usize) {
+        let c = self.op.corner_local_nodes();
+        (c[0], c[1], c[2], c[3])
+    }
+
     /// Build a Krylov model-order-reduced model — `r`-step Arnoldi on the
     /// matrix-free operator from the seed vector `start`. The returned
     /// `ReducedModel` propagates states in the `r`-dimensional subspace.
