@@ -169,6 +169,9 @@ pub struct KrylovWorkspace {
     th: Vec<f64>,
     exp_th: Vec<f64>,
     expm_scratch: ExpmScratch,
+    /// Augmented state / result buffers for [`etd_step_into`](Self::etd_step_into).
+    aug_in: Vec<f64>,
+    aug_out: Vec<f64>,
 }
 
 impl Default for KrylovWorkspace {
@@ -187,6 +190,8 @@ impl KrylovWorkspace {
             th: Vec::new(),
             exp_th: Vec::new(),
             expm_scratch: ExpmScratch::new(),
+            aug_in: Vec::new(),
+            aug_out: Vec::new(),
         }
     }
 
@@ -279,6 +284,48 @@ impl KrylovWorkspace {
                 out[k] += c * bi[k];
             }
         }
+    }
+
+    /// Allocation-free ETD step of `dy/dt = A·y + b` with `b` constant over
+    /// the step: `y ← exp(hA)·y + h·φ₁(hA)·b`, written into `out` (`n`).
+    ///
+    /// Uses the augmented-matrix identity (see [`etd_step`]) — the Krylov
+    /// projection runs on the `(n+1)`-dimensional augmented system, reusing
+    /// this workspace throughout.
+    pub fn etd_step_into<F>(
+        &mut self,
+        matvec: F,
+        y: &[f64],
+        b: &[f64],
+        h: f64,
+        m: usize,
+        out: &mut [f64],
+    ) where
+        F: Fn(&[f64], &mut [f64]),
+    {
+        let n = y.len();
+        // Borrow the augmented buffers out so `expmv_into` can take `&mut self`.
+        let mut z = std::mem::take(&mut self.aug_in);
+        let mut r = std::mem::take(&mut self.aug_out);
+        z.resize(n + 1, 0.0);
+        r.resize(n + 1, 0.0);
+        z[..n].copy_from_slice(y);
+        z[n] = 1.0;
+
+        // Augmented operator: [[A, b], [0, 0]] applied to [x; ξ].
+        let aug = |zz: &[f64], o: &mut [f64]| {
+            matvec(&zz[..n], &mut o[..n]);
+            let xi = zz[n];
+            for k in 0..n {
+                o[k] += xi * b[k];
+            }
+            o[n] = 0.0;
+        };
+        self.expmv_into(aug, &z, h, m, &mut r);
+        out[..n].copy_from_slice(&r[..n]);
+
+        self.aug_in = z;
+        self.aug_out = r;
     }
 }
 

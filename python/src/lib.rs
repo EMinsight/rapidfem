@@ -374,6 +374,11 @@ fn flatten_2d_complex<'py>(grid: &[Vec<Complex64>], py: Python<'py>) -> Bound<'p
 #[pyclass(name = "TdOperator")]
 struct PyTdOperator {
     op: rapidfem_td::rhs::MaxwellOperator,
+    /// Reused Krylov workspace — keeps `step` / `step_driven` allocation-free
+    /// across a transient loop.
+    krylov: rapidfem_td::propagator::KrylovWorkspace,
+    /// Reused soft-source vector for `step_driven` — one DOF set per call.
+    driven_b: Vec<f64>,
 }
 
 #[pymethods]
@@ -396,7 +401,11 @@ impl PyTdOperator {
     ) -> Self {
         let mesh = rapidfem_td::mesh_gen::structured_box(nx, ny, nz, lx, ly, lz);
         let op = rapidfem_td::rhs::MaxwellOperator::new(&mesh, order, flux_alpha);
-        PyTdOperator { op }
+        PyTdOperator {
+            op,
+            krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
+            driven_b: Vec::new(),
+        }
     }
 
     /// Build the operator from in-memory gmsh `.msh` bytes — the path for
@@ -435,7 +444,11 @@ impl PyTdOperator {
         let op = MaxwellOperator::new_with_materials(
             &mesh, order, flux_alpha, &materials,
         );
-        Ok(PyTdOperator { op })
+        Ok(PyTdOperator {
+            op,
+            krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
+            driven_b: Vec::new(),
+        })
     }
 
     /// Degrees of freedom, `6·Np·n_elem`.
@@ -458,10 +471,11 @@ impl PyTdOperator {
     }
 
     /// Advance the state by `h` with the matrix-free exponential propagator.
-    /// Zero-copy numpy in and out.
+    /// Zero-copy numpy in and out; the Krylov workspace is reused, so a
+    /// transient loop allocates only the returned array per step.
     #[pyo3(signature = (y, h, krylov_dim = 40))]
     fn step<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         y: PyReadonlyArray1<'py, f64>,
         h: f64,
@@ -470,11 +484,14 @@ impl PyTdOperator {
         let y = y
             .as_slice()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let out = rapidfem_td::propagator::expmv(
-            |x| self.op.apply(x),
+        let mut out = vec![0.0; y.len()];
+        let op = &self.op;
+        self.krylov.expmv_into(
+            |x, ax| op.apply_into(x, ax),
             y,
             h,
             krylov_dim,
+            &mut out,
         );
         Ok(out.into_pyarray_bound(py))
     }
@@ -493,10 +510,11 @@ impl PyTdOperator {
     }
 
     /// One source-driven step — `dy/dt = A·y + b` with `b` a single-DOF soft
-    /// source — via the exponential time integrator. Zero-copy numpy in/out.
+    /// source — via the exponential time integrator. Zero-copy numpy in/out;
+    /// the Krylov workspace and source vector are reused across the loop.
     #[pyo3(signature = (y, source_dof, source_value, h, krylov_dim = 40))]
     fn step_driven<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         y: PyReadonlyArray1<'py, f64>,
         source_dof: usize,
@@ -507,18 +525,25 @@ impl PyTdOperator {
         let y = y
             .as_slice()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        if source_dof >= y.len() {
+        let n = y.len();
+        if source_dof >= n {
             return Err(PyRuntimeError::new_err("source_dof out of range"));
         }
-        let mut b = vec![0.0; y.len()];
-        b[source_dof] = source_value;
-        let out = rapidfem_td::propagator::etd_step(
-            |x| self.op.apply(x),
+        if self.driven_b.len() != n {
+            self.driven_b = vec![0.0; n];
+        }
+        self.driven_b[source_dof] = source_value;
+        let mut out = vec![0.0; n];
+        let op = &self.op;
+        self.krylov.etd_step_into(
+            |x, ax| op.apply_into(x, ax),
             y,
-            &b,
+            &self.driven_b,
             h,
             krylov_dim,
+            &mut out,
         );
+        self.driven_b[source_dof] = 0.0;
         Ok(out.into_pyarray_bound(py))
     }
 
