@@ -103,6 +103,35 @@ where
     out
 }
 
+/// One exponential-time-differencing step of `dy/dt = A·y + b`, with the
+/// source `b` held constant across the step:
+/// `y ← exp(h·A)·y + h·φ₁(h·A)·b`.
+///
+/// Uses the augmented-matrix identity
+/// `exp(h·[[A, b],[0, 0]])·[y; 1] = [exp(hA)y + h·φ₁(hA)b ; 1]`, so the
+/// Krylov `expmv` handles the φ-function with no extra machinery — the
+/// homogeneous part is exact at any `h`.
+pub fn etd_step<F>(matvec: F, y: &[f64], b: &[f64], h: f64, m: usize) -> Vec<f64>
+where
+    F: Fn(&[f64]) -> Vec<f64>,
+{
+    let n = y.len();
+    let mut z = Vec::with_capacity(n + 1);
+    z.extend_from_slice(y);
+    z.push(1.0);
+    let aug = |zz: &[f64]| -> Vec<f64> {
+        let xi = zz[n];
+        let mut out = matvec(&zz[..n]);
+        for (o, bk) in out.iter_mut().zip(b) {
+            *o += xi * bk;
+        }
+        out.push(0.0);
+        out
+    };
+    let r = expmv(aug, &z, h, m);
+    r[..n].to_vec()
+}
+
 fn identity(n: usize) -> Vec<f64> {
     let mut m = vec![0.0; n * n];
     for i in 0..n {
@@ -208,5 +237,60 @@ mod tests {
         let scale: f64 =
             want.iter().map(|w| w * w).sum::<f64>().sqrt();
         assert!(err < 1e-8 * scale, "Krylov vs dense: err {err}, scale {scale}");
+    }
+
+    #[test]
+    fn etd_step_matches_analytic_linear_ode() {
+        // dy/dt = A·y + b,  A = [[0,-ω],[ω,0]],  b constant.
+        // Exact: y(h) = exp(hA)·(y₀ + A⁻¹b) - A⁻¹b.
+        let omega = 1.3;
+        let a = [0.0, -omega, omega, 0.0];
+        let matvec = |x: &[f64]| {
+            vec![a[0] * x[0] + a[1] * x[1], a[2] * x[0] + a[3] * x[1]]
+        };
+        let b = [0.4, -0.7];
+        let y0 = [1.0, 0.5];
+        let h = 0.6;
+
+        let ainv_b = [b[1] / omega, -b[0] / omega];
+        let (c, s) = ((omega * h).cos(), (omega * h).sin());
+        let shifted = [y0[0] + ainv_b[0], y0[1] + ainv_b[1]];
+        let want = [
+            c * shifted[0] - s * shifted[1] - ainv_b[0],
+            s * shifted[0] + c * shifted[1] - ainv_b[1],
+        ];
+        // The augmented system is 3-dimensional; m ≥ 3 makes Krylov exact.
+        let got = etd_step(matvec, &y0, &b, h, 8);
+        assert!((got[0] - want[0]).abs() < 1e-12, "{got:?} vs {want:?}");
+        assert!((got[1] - want[1]).abs() < 1e-12, "{got:?} vs {want:?}");
+    }
+
+    #[test]
+    fn central_flux_propagation_conserves_energy() {
+        // P4.4: a central-flux transient run conserves the discrete field
+        // energy yᵀM̃y exactly (up to the Krylov tolerance) over many steps.
+        use crate::mesh_gen::structured_box;
+        use crate::rhs::MaxwellOperator;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 0.0);
+        let n = op.n_dof();
+        let mm = op.assemble_energy_mass();
+        let energy = |y: &[f64]| -> f64 {
+            let mut e = 0.0;
+            for i in 0..n {
+                for j in 0..n {
+                    e += y[i] * mm[i * n + j] * y[j];
+                }
+            }
+            e
+        };
+        let mut y: Vec<f64> =
+            (0..n).map(|i| (0.2 + i as f64 * 0.013).sin()).collect();
+        let e0 = energy(&y);
+        for _ in 0..30 {
+            y = expmv(|x| op.apply(x), &y, 0.02, 40);
+        }
+        let drift = ((energy(&y) - e0) / e0).abs();
+        assert!(drift < 1e-7, "energy drift {drift:e}");
     }
 }
