@@ -139,12 +139,15 @@ def _extract_module_obj(obj: griffe.Object, module_path: str) -> dict:
 
 
 def _should_skip_member(name: str) -> bool:
-    """Check if a member should be skipped."""
-    if name in ("__init__", "__new__", "__del__"):
+    """Skip private members — only the public API is documented.
+
+    `__init__` is kept so constructor parameters can be extracted; every
+    other underscore-prefixed name (dunders and single-underscore privates)
+    is omitted.
+    """
+    if name == "__init__":
         return False
-    if name.startswith("__") and name.endswith("__"):
-        return True
-    return False
+    return name.startswith("_")
 
 
 def _is_defined_here(member: griffe.Object, module_path: str) -> bool:
@@ -310,6 +313,15 @@ def _extract_source(obj: griffe.Object) -> str | None:
         return None
 
 
+# Sphinx cross-reference role, e.g. :meth:`~pkg.Class.method` or :class:`X <Y>`.
+_ROLE_RE = re.compile(r':\w+:`(?:[^`<]*<)?~?([^`<>]+)>?`')
+
+
+def _strip_roles(text: str) -> str:
+    """Reduce Sphinx roles to their plain target text."""
+    return _ROLE_RE.sub(lambda m: m.group(1).strip(), text)
+
+
 def _extract_first_line(docstring: str | None) -> str:
     """Extract first line/sentence as brief description."""
     if not docstring:
@@ -326,7 +338,7 @@ def _extract_first_line(docstring: str | None) -> str:
     if ". " in first_line and len(first_line) > 100:
         first_line = first_line.split(". ")[0] + "."
 
-    return first_line
+    return _strip_roles(first_line)
 
 
 def _get_signature(obj: griffe.Object) -> str | None:
@@ -431,9 +443,11 @@ def _rst_to_html(rst_text: str) -> str:
 
 
 def _preprocess_rst_roles(text: str) -> str:
-    """Convert Sphinx-specific RST roles to standard RST links."""
+    """Convert Sphinx-specific RST roles to standard RST."""
     # :doi:`...` -> hyperlink to https://doi.org/...
     text = re.sub(r':doi:`([^`]+)`', r'`doi:\1 <https://doi.org/\1>`_', text)
+    # Cross-reference roles (:meth:, :class:, :func:, ...) -> inline literal.
+    text = _ROLE_RE.sub(lambda m: f'``{m.group(1).strip()}``', text)
     return text
 
 

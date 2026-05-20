@@ -72,8 +72,8 @@
    "classes": [
     {
      "name": "SimulationBuilder",
-     "description": "Fluent builder for a frequency-domain Maxwell :class:`Simulation`.",
-     "docstring_html": "<p>Fluent builder for a frequency-domain Maxwell :class:`Simulation`.</p>\n<p>Methods return <tt class=\"docutils literal\">self</tt> so calls can be chained. <tt class=\"docutils literal\">build()</tt> consumes\nthe accumulated state and returns a native :class:`Simulation` ready\nfor <tt class=\"docutils literal\">run_sweep()</tt> or <tt class=\"docutils literal\">run_eigenmode()</tt>.</p>\n<p>Every method that references geometry takes <tt class=\"docutils literal\">name</tt> strings instead\nof gmsh physical-group integers \u2014 names are resolved through the\nname\u2192tag map captured by <tt class=\"docutils literal\">mesh()</tt> / <tt class=\"docutils literal\">from_geometry()</tt> /\n<tt class=\"docutils literal\">mesh_from()</tt>.</p>\n",
+     "description": "Fluent builder for a frequency-domain Maxwell Simulation.",
+     "docstring_html": "<p>Fluent builder for a frequency-domain Maxwell <tt class=\"docutils literal\">Simulation</tt>.</p>\n<p>Methods return <tt class=\"docutils literal\">self</tt> so calls can be chained. <tt class=\"docutils literal\">build()</tt> consumes\nthe accumulated state and returns a native <tt class=\"docutils literal\">Simulation</tt> ready\nfor <tt class=\"docutils literal\">run_sweep()</tt> or <tt class=\"docutils literal\">run_eigenmode()</tt>.</p>\n<p>Every method that references geometry takes <tt class=\"docutils literal\">name</tt> strings instead\nof gmsh physical-group integers \u2014 names are resolved through the\nname\u2192tag map captured by <tt class=\"docutils literal\">mesh()</tt> / <tt class=\"docutils literal\">from_geometry()</tt> /\n<tt class=\"docutils literal\">mesh_from()</tt>.</p>\n",
      "source": "class SimulationBuilder:\n    \"\"\"Fluent builder for a frequency-domain Maxwell :class:`Simulation`.\n\n    Methods return ``self`` so calls can be chained. ``build()`` consumes\n    the accumulated state and returns a native :class:`Simulation` ready\n    for ``run_sweep()`` or ``run_eigenmode()``.\n\n    Every method that references geometry takes ``name`` strings instead\n    of gmsh physical-group integers \u2014 names are resolved through the\n    name\u2192tag map captured by ``mesh()`` / ``from_geometry()`` /\n    ``mesh_from()``.\n    \"\"\"\n\n    def __init__(self):\n        self._mesh_bytes: bytes | None = None\n        self._name_to_tag: dict[str, int] = {}\n        self._frequencies: list[float] = []\n        self._ports: list[str] = []        # TOML [[ports]] blocks\n        self._materials: list[str] = []    # TOML [[materials]] blocks\n        self._pec_tags: list[int] = []\n        self._z0_ref: float = 50.0\n        self._mat_name_to_tag: dict[str, int] = {}\n        self._eigenmode: tuple[float, int] | None = None\n        self._adaptive: tuple[float, float] | None = None\n        self._out_touchstone: str | None = None\n        self._out_vtk: str | None = None\n        self._out_farfield: str | None = None\n        self._out_farfield_nfft_tag: int | None = None\n        self._out_group_delay: str | None = None\n\n    # \u2500\u2500 Mesh sources \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def mesh(self, mesh_bytes: bytes, name_to_tag: dict[str, int]) -> \"SimulationBuilder\":\n        \"\"\"Bind a pre-meshed .msh blob and its name \u2192 tag map.\n\n        Use ``from_geometry`` or ``mesh_from`` for the typical workflow;\n        this lower-level entry point exists for callers that produce\n        gmsh bytes through some other path.\n\n        Parameters\n        ----------\n        mesh_bytes : bytes\n            A gmsh ``.msh`` v4 file as bytes.\n        name_to_tag : dict[str, int]\n            Mapping from geometry names (port faces, materials, etc.)\n            to gmsh physical-group integer tags.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self, for call chaining.\n        \"\"\"\n        self._mesh_bytes = mesh_bytes\n        self._name_to_tag = dict(name_to_tag)\n        return self\n\n    def from_geometry(self, geometry, maxh: float = 1.0) -> \"SimulationBuilder\":\n        \"\"\"Mesh a :class:`Geometry` and bind the result in one step.\n\n        Equivalent to calling ``geometry.mesh(maxh)`` then ``mesh(...)``.\n\n        Parameters\n        ----------\n        geometry : rapidfem.Geometry\n            Geometry with names + materials assigned. Will be meshed\n            in-place if not already meshed.\n        maxh : float, optional\n            Maximum tetrahedron edge length in metres. Default 1.0\n            (which is enormous \u2014 always pass a value).\n\n        Returns\n        -------\n        SimulationBuilder\n            Self, for call chaining.\n        \"\"\"\n        mesh_bytes, name_to_tag = geometry.mesh(maxh=maxh)\n        return self.mesh(mesh_bytes, name_to_tag)\n\n    def mesh_from(self, geometry) -> \"SimulationBuilder\":\n        \"\"\"Reuse a geometry that was meshed in an earlier cell.\n\n        Reads the cached ``.msh`` bytes + name\u2192tag map from\n        ``geometry._last_mesh`` without re-meshing. Raises if the\n        geometry was never meshed.\n\n        Parameters\n        ----------\n        geometry : rapidfem.Geometry\n            A geometry on which ``.mesh(maxh=...)`` has been called.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self, for call chaining.\n\n        Raises\n        ------\n        ValueError\n            If the geometry has no cached mesh.\n        \"\"\"\n        cached = getattr(geometry, \"_last_mesh\", None)\n        if cached is None:\n            raise ValueError(\n                \"geometry has no mesh yet \u2014 call g.mesh(maxh=...) first, \"\n                \"or use builder.from_geometry(g, maxh=...) to mesh + store in one go.\"\n            )\n        mesh_bytes, name_to_tag = cached\n        return self.mesh(mesh_bytes, name_to_tag)\n\n    # \u2500\u2500 Frequencies \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def frequencies(self, values: Iterable[float]) -> \"SimulationBuilder\":\n        \"\"\"Set the driven-sweep frequency points.\n\n        Parameters\n        ----------\n        values : Iterable[float]\n            Frequencies in Hz. Order is preserved.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Examples\n        --------\n        >>> b.frequencies(np.linspace(8e9, 12e9, 21))\n        \"\"\"\n        self._frequencies = [float(v) for v in values]\n        return self\n\n    def frequency_range(self, start: float, stop: float, n: int) -> \"SimulationBuilder\":\n        \"\"\"Set frequencies as a linearly-spaced sweep.\n\n        Parameters\n        ----------\n        start, stop : float\n            Sweep endpoints in Hz (inclusive on both ends).\n        n : int\n            Number of points (\u2265 2 for a real sweep).\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        self._frequencies = list(np.linspace(start, stop, n))\n        return self\n\n    # \u2500\u2500 PEC / PMC \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def pec(self, *names: str) -> \"SimulationBuilder\":\n        \"\"\"Mark one or more named surfaces as perfect electric conductor.\n\n        Parameters\n        ----------\n        *names : str\n            Geometry names to treat as PEC. Each must exist in the\n            geometry's name \u2192 tag map.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Examples\n        --------\n        >>> b.pec(\"ground\", \"patch_pec\", \"pec\")\n        \"\"\"\n        for n in names:\n            self._pec_tags.append(self._tag(n))\n        return self\n\n    def pmc(self, *names: str) -> \"SimulationBuilder\":\n        \"\"\"Mark one or more named surfaces as perfect magnetic conductor.\n\n        Useful as a symmetry boundary for problems where the magnetic\n        field is tangential to a plane.\n\n        Parameters\n        ----------\n        *names : str\n            Geometry names to treat as PMC.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        for n in names:\n            tag = self._tag(n)\n            self._ports.append(f'[[ports]]\\ntype = \"pmc\"\\ntag = {tag}\\n')\n        return self\n\n    # \u2500\u2500 Driven / radiation ports \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def rect_waveguide(self, name: str, *,\n                       mode: tuple[int, int] = (1, 0),\n                       er: float = 1.0,\n                       power: float = 1.0,\n                       width: float = 0.0,\n                       height: float = 0.0) -> \"SimulationBuilder\":\n        \"\"\"Drive or terminate a port with an analytic TE mode of a\n        rectangular waveguide.\n\n        Cross-section dimensions (``width``, ``height``) are auto-detected\n        from the port face bounding-box when set to 0. Override only if\n        the face is clipped or you want to drive a specific waveguide cross\n        section.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the port plane.\n        mode : tuple[int, int], optional\n            (m, n) TE-mode indices. Default ``(1, 0)`` = TE\u2081\u2080.\n        er : float, optional\n            Relative permittivity inside the waveguide. Default 1.\n        power : float, optional\n            Incident power in watts. Default 1.\n        width, height : float, optional\n            Cross-section overrides in metres. 0 means auto-detect.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        self._ports.append(\n            f'[[ports]]\\ntype = \"rectangular\"\\ntag = {tag}\\n'\n            f'mode = [{int(mode[0])}, {int(mode[1])}]\\n'\n            f'er = {_f64(er)}\\npower = {_f64(power)}\\n'\n            f'width = {_f64(width)}\\nheight = {_f64(height)}\\n'\n        )\n        return self\n\n    def lumped_port(self, name: str, *,\n                    direction: Sequence[float],\n                    z0: float = 50.0,\n                    power: float = 1.0,\n                    width: float = 0.0,\n                    height: float = 0.0) -> \"SimulationBuilder\":\n        \"\"\"Drive a port via a lumped 50-ohm (or arbitrary Z\u2080) voltage source.\n\n        The port surface should bridge two PEC conductors (e.g. ground and\n        a microstrip trace). ``direction`` is the voltage-integration\n        direction \u2014 typically perpendicular to the two conductors.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the port surface.\n        direction : Sequence[float]\n            3-vector giving the voltage-integration direction.\n        z0 : float, optional\n            Reference port impedance in ohms. Default 50.\n        power : float, optional\n            Incident power in watts. Default 1.\n        width, height : float, optional\n            Port extent overrides in metres. 0 means auto-detect.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Examples\n        --------\n        >>> b.lumped_port(\"feed\", direction=(0, 0, 1), z0=50.0)\n        \"\"\"\n        tag = self._tag(name)\n        d = [float(v) for v in direction]\n        self._ports.append(\n            f'[[ports]]\\ntype = \"lumped\"\\ntag = {tag}\\n'\n            f'z0 = {_f64(z0)}\\npower = {_f64(power)}\\n'\n            f'direction = [{_f64(d[0])}, {_f64(d[1])}, {_f64(d[2])}]\\n'\n            f'width = {_f64(width)}\\nheight = {_f64(height)}\\n'\n        )\n        return self\n\n    def coax_port(self, name: str, *,\n                  ri: float,\n                  ro: float,\n                  origin: Sequence[float] | None = None,\n                  z_axis: Sequence[float] | None = None,\n                  er: float = 1.0,\n                  power: float = 1.0) -> \"SimulationBuilder\":\n        \"\"\"Drive a port with the analytic TEM mode of a coaxial line.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the annular port surface.\n        ri, ro : float\n            Inner and outer coax radii in metres.\n        origin : Sequence[float], optional\n            Point on the coax axis. Defaults to the bbox centre of the\n            port face.\n        z_axis : Sequence[float], optional\n            Direction of the coax axis. Defaults to +z.\n        er : float, optional\n            Relative permittivity of the coax dielectric. Default 1.\n        power : float, optional\n            Incident power in watts. Default 1.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        s = (\n            f'[[ports]]\\ntype = \"coax\"\\ntag = {tag}\\n'\n            f'ri = {_f64(ri)}\\nro = {_f64(ro)}\\n'\n            f'er = {_f64(er)}\\npower = {_f64(power)}\\n'\n        )\n        if origin is not None:\n            o = [float(v) for v in origin]\n            s += f'origin = [{_f64(o[0])}, {_f64(o[1])}, {_f64(o[2])}]\\n'\n        if z_axis is not None:\n            z = [float(v) for v in z_axis]\n            s += f'z_axis = [{_f64(z[0])}, {_f64(z[1])}, {_f64(z[2])}]\\n'\n        self._ports.append(s)\n        return self\n\n    def user_defined_port(self, name: str, *,\n                          e_field: Sequence[float],\n                          power: float = 1.0) -> \"SimulationBuilder\":\n        \"\"\"Drive a port with a user-supplied uniform E-field on the face.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the port.\n        e_field : Sequence[float]\n            3-vector of the imposed electric field on the port face.\n        power : float, optional\n            Normalisation power in watts. Default 1.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        e = [float(v) for v in e_field]\n        self._ports.append(\n            f'[[ports]]\\ntype = \"user_defined\"\\ntag = {tag}\\n'\n            f'e_field = [{_f64(e[0])}, {_f64(e[1])}, {_f64(e[2])}]\\n'\n            f'power = {_f64(power)}\\n'\n        )\n        return self\n\n    def floquet_port(self, name: str, *,\n                     scan_theta_deg: float = 0.0,\n                     scan_phi_deg: float = 0.0,\n                     mode_nr: int = 1,\n                     er: float = 1.0,\n                     power: float = 1.0) -> \"SimulationBuilder\":\n        \"\"\"Drive a port with a Floquet plane-wave mode for periodic unit cells.\n\n        For frequency-selective surfaces, phased-array unit cells, and\n        similar problems requiring oblique-incidence excitation.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the Floquet port (typically the top\n            or bottom of a periodic unit cell).\n        scan_theta_deg, scan_phi_deg : float, optional\n            Scan angles in degrees (spherical coords). Default (0, 0)\n            = normal incidence.\n        mode_nr : int, optional\n            Floquet mode index. Default 1 (fundamental).\n        er : float, optional\n            Relative permittivity of the port medium. Default 1.\n        power : float, optional\n            Incident power in watts. Default 1.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        self._ports.append(\n            f'[[ports]]\\ntype = \"floquet\"\\ntag = {tag}\\n'\n            f'scan_theta_deg = {_f64(scan_theta_deg)}\\n'\n            f'scan_phi_deg = {_f64(scan_phi_deg)}\\n'\n            f'mode_nr = {int(mode_nr)}\\n'\n            f'er = {_f64(er)}\\npower = {_f64(power)}\\n'\n        )\n        return self\n\n    def pml(self, name: str, *,\n            direction: Sequence[float],\n            inner_face: float,\n            thickness: float,\n            er_base: float = 1.0,\n            ur_base: float = 1.0,\n            exponent: float = 1.5,\n            delta_max: float = 8.0) -> \"SimulationBuilder\":\n        \"\"\"Apply a Perfectly Matched Layer to a *volume* in the geometry.\n\n        Coordinate-stretched anisotropic PML following EMerge's formulation.\n        For a closed PML enclosure around an antenna, use 5 non-overlapping\n        slabs (top + 4 sides) with each pointing outward along its face\n        normal \u2014 see ``examples/patch_antenna.py``.\n\n        Parameters\n        ----------\n        name : str\n            Geometry *volume* name. The volume must have its ``name``\n            attribute set on the OCC primitive before meshing.\n        direction : Sequence[float]\n            Outward-pointing unit vector along the absorption axis. Must\n            be axis-aligned (one of \u00b1x\u0302, \u00b1\u0177, \u00b1\u1e91).\n        inner_face : float\n            Coordinate of the PML's inner face along ``direction`` (m).\n        thickness : float\n            PML extent in metres beyond ``inner_face``.\n        er_base, ur_base : float, optional\n            Base relative permittivity / permeability inside the PML.\n            Default 1 (air-PML).\n        exponent : float, optional\n            Polynomial profile exponent for the stretch. Typical 1.5\u20133.\n        delta_max : float, optional\n            Peak stretch magnitude \u03b4_max at the outer face. Typical 5\u201312.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Examples\n        --------\n        >>> b.pml(\"pml_top\", direction=(0, 0, 1), inner_face=AIR_TOP,\n        ...       thickness=PML_T, exponent=1.5, delta_max=8.0)\n        \"\"\"\n        tag = self._tag(name)\n        d = \", \".join(_f64(v) for v in direction)\n        self._materials.append(\n            f'[[pml]]\\nvolume_tag = {tag}\\ndirection = [{d}]\\n'\n            f'inner_face = {_f64(inner_face)}\\n'\n            f'thickness = {_f64(thickness)}\\n'\n            f'er_base = {_f64(er_base)}\\n'\n            f'ur_base = {_f64(ur_base)}\\n'\n            f'exponent = {_f64(exponent)}\\n'\n            f'delta_max = {_f64(delta_max)}\\n'\n        )\n        return self\n\n    def abc(self, name: str, *, order: int = 1, abctype: str = \"B\") -> \"SimulationBuilder\":\n        \"\"\"Apply an Absorbing Boundary Condition to a named surface.\n\n        Lower-cost alternative to PML: a surface-level radiation\n        boundary. Order 1 is the first-order Sommerfeld ABC; order 2 is\n        higher-accuracy at the price of more matrix fill-in.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the ABC surface.\n        order : int, optional\n            ABC order. ``1`` or ``2``. Default 1.\n        abctype : str, optional\n            Coefficient family (A\u2013E). Default ``\"B\"``.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        self._ports.append(\n            f'[[ports]]\\ntype = \"abc\"\\ntag = {tag}\\n'\n            f'order = {int(order)}\\nabctype = \"{abctype}\"\\n'\n        )\n        return self\n\n    def surface_impedance(self, name: str, *,\n                          conductivity: float = 0.0,\n                          mur: float = 1.0,\n                          er: float = 1.0,\n                          thickness: float | None = None,\n                          zs: tuple[float, float] | None = None) -> \"SimulationBuilder\":\n        \"\"\"Apply a surface impedance boundary condition.\n\n        Either give ``conductivity`` + ``mur`` + ``er`` (+ optionally\n        ``thickness`` for a thin lossy sheet), or pass ``zs`` directly\n        as a ``(real, imag)`` ohms-per-square tuple to override the\n        analytic value.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name.\n        conductivity : float, optional\n            Bulk conductivity \u03c3 (S/m) of the lossy conductor.\n        mur, er : float, optional\n            Relative permeability / permittivity of the surface medium.\n        thickness : float, optional\n            Physical thickness of the lossy sheet in metres.\n        zs : tuple[float, float], optional\n            Explicit surface impedance ``(Re, Im)`` in \u03a9/\u25a1. Overrides\n            the analytic computation.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        s = (\n            f'[[ports]]\\ntype = \"surface_impedance\"\\ntag = {tag}\\n'\n            f'conductivity = {_f64(conductivity)}\\n'\n            f'mur = {_f64(mur)}\\ner = {_f64(er)}\\n'\n        )\n        if thickness is not None:\n            s += f'thickness = {_f64(thickness)}\\n'\n        if zs is not None:\n            s += f'zs = [{_f64(zs[0])}, {_f64(zs[1])}]\\n'\n        self._ports.append(s)\n        return self\n\n    def lumped_element(self, name: str, *,\n                       r: float = 0.0,\n                       l: float = 0.0,\n                       c: float | None = None,\n                       direction: Sequence[float] = (0.0, 0.0, 1.0),\n                       width: float = 0.0,\n                       height: float = 0.0) -> \"SimulationBuilder\":\n        \"\"\"Embed a chip R / L / C element on a 2D surface.\n\n        Models a series-RLC lumped element living on a named face. Use\n        for isolation resistors (Wilkinson dividers), shunt caps, etc.\n\n        Parameters\n        ----------\n        name : str\n            Geometry face name for the element footprint.\n        r : float, optional\n            Series resistance in ohms.\n        l : float, optional\n            Series inductance in henries.\n        c : float, optional\n            Series capacitance in farads. ``None`` = no capacitor.\n        direction : Sequence[float], optional\n            Current-flow direction across the element. Default +z.\n        width, height : float, optional\n            Footprint dimensions in metres. 0 means auto-detect.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        tag = self._tag(name)\n        s = (\n            f'[[ports]]\\ntype = \"lumped_element\"\\ntag = {tag}\\n'\n            f'r = {_f64(r)}\\nl = {_f64(l)}\\n'\n        )\n        if c is not None:\n            s += f'c = {_f64(c)}\\n'\n        d = [float(v) for v in direction]\n        s += (\n            f'direction = [{_f64(d[0])}, {_f64(d[1])}, {_f64(d[2])}]\\n'\n            f'width = {_f64(width)}\\nheight = {_f64(height)}\\n'\n        )\n        self._ports.append(s)\n        return self\n\n    # \u2500\u2500 Materials \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def material(self, name: str, *,\n                 er: float = 1.0,\n                 ur: float = 1.0,\n                 tand: float = 0.0,\n                 conductivity: float = 0.0,\n                 er_diag: Sequence[float] | None = None,\n                 ur_diag: Sequence[float] | None = None,\n                 debye: dict | None = None,\n                 drude: dict | None = None) -> \"SimulationBuilder\":\n        \"\"\"Assign material properties to a named volume.\n\n        Supports isotropic scalars (``er``, ``ur``, loss tangent,\n        conductivity), diagonal anisotropy, and dispersive Debye / Drude\n        models for frequency-dependent \u03b5.\n\n        Parameters\n        ----------\n        name : str\n            Geometry volume name (must have ``volume.material = \"...\"``\n            set in the geometry layer).\n        er, ur : float, optional\n            Relative permittivity / permeability. Default 1.\n        tand : float, optional\n            Loss tangent tan \u03b4. Default 0.\n        conductivity : float, optional\n            Bulk conductivity \u03c3 (S/m). Default 0.\n        er_diag, ur_diag : Sequence[float], optional\n            Diagonal anisotropic (\u03b5xx, \u03b5yy, \u03b5zz) / (\u03bcxx, \u03bcyy, \u03bczz).\n            Overrides the scalar ``er``/``ur``.\n        debye : dict, optional\n            Debye dispersion. Keys: ``er_inf`` (\u03b5\u221e), ``er_static`` (\u03b5s),\n            ``tau_s`` (relaxation time in s).\n        drude : dict, optional\n            Drude dispersion. Keys: ``er_inf``, ``plasma_freq_hz``,\n            ``damping_freq_hz``.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Examples\n        --------\n        >>> b.material(\"fr4\", er=4.4, tand=0.02)\n        >>> b.material(\"gold\", drude={\n        ...     \"er_inf\": 1.0,\n        ...     \"plasma_freq_hz\": 2.18e15,\n        ...     \"damping_freq_hz\": 6.46e12,\n        ... })\n        \"\"\"\n        tag = self._tag(name)\n        s = (\n            f'[[materials]]\\nvolume_tag = {tag}\\n'\n            f'er = {_f64(er)}\\nur = {_f64(ur)}\\n'\n            f'tand = {_f64(tand)}\\nconductivity = {_f64(conductivity)}\\n'\n        )\n        if er_diag is not None:\n            v = [float(x) for x in er_diag]\n            s += f'er_diag = [{_f64(v[0])}, {_f64(v[1])}, {_f64(v[2])}]\\n'\n        if ur_diag is not None:\n            v = [float(x) for x in ur_diag]\n            s += f'ur_diag = [{_f64(v[0])}, {_f64(v[1])}, {_f64(v[2])}]\\n'\n        if debye is not None:\n            s += (\n                f'[materials.debye]\\n'\n                f'er_inf = {_f64(debye[\"er_inf\"])}\\n'\n                f'er_static = {_f64(debye[\"er_static\"])}\\n'\n                f'tau_s = {_f64(debye[\"tau_s\"])}\\n'\n            )\n        if drude is not None:\n            s += (\n                f'[materials.drude]\\n'\n                f'er_inf = {_f64(drude.get(\"er_inf\", 1.0))}\\n'\n                f'plasma_freq_hz = {_f64(drude[\"plasma_freq_hz\"])}\\n'\n                f'damping_freq_hz = {_f64(drude[\"damping_freq_hz\"])}\\n'\n            )\n        self._materials.append(s)\n        return self\n\n    # \u2500\u2500 Eigenmode + adaptive refinement \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def eigenmode(self, target_frequency: float, *,\n                  n_modes: int = 6) -> \"SimulationBuilder\":\n        \"\"\"Configure an eigenmode solve around ``target_frequency``.\n\n        After ``build()``, call :meth:`Simulation.run_eigenmode` to\n        execute. Uses a shift-invert Lanczos iteration with PARDISO (or\n        faer) as the inner direct factoriser.\n\n        ``.frequencies(...)`` does **not** need to be called for an\n        eigenmode-only build \u2014 ``target_frequency`` doubles as the\n        single sample point the matrix assembly needs.\n\n        Parameters\n        ----------\n        target_frequency : float\n            Spectral shift in Hz. Modes nearest this frequency are\n            returned.\n        n_modes : int, optional\n            Number of eigenpairs requested. Default 6.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        self._eigenmode = (float(target_frequency), int(n_modes))\n        return self\n\n    def adaptive(self, *,\n                 theta: float = 0.5,\n                 refinement_ratio: float = 0.5) -> \"SimulationBuilder\":\n        \"\"\"Enable adaptive mesh refinement on the driven sweep.\n\n        Parameters\n        ----------\n        theta : float, optional\n            D\u00f6rfler-marking fraction \u2014 elements carrying the top \u03b8 of the\n            residual error are marked. Default 0.5.\n        refinement_ratio : float, optional\n            Local size reduction applied to marked elements in the gmsh\n            size field. Default 0.5.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Notes\n        -----\n        The adaptive refinement loop (solve \u2192 estimate \u2192 mark \u2192 write\n        size field \u2192 re-mesh \u2192 repeat) is driven by the ``rapidfem``\n        CLI, not by :meth:`Simulation.run_sweep`. Combine with\n        :meth:`dump` to produce a CLI-consumable config.\n        \"\"\"\n        self._adaptive = (float(theta), float(refinement_ratio))\n        return self\n\n    # \u2500\u2500 Output / reference impedance \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def reference_impedance(self, z0: float) -> \"SimulationBuilder\":\n        \"\"\"Set the reference impedance used when reporting S-parameters.\n\n        Default is 50 \u03a9. Has no effect on the assembly itself, only on\n        the post-processed S-parameter normalisation.\n\n        Parameters\n        ----------\n        z0 : float\n            Reference impedance in ohms.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n        \"\"\"\n        self._z0_ref = float(z0)\n        return self\n\n    def output_touchstone(self, path: str) -> \"SimulationBuilder\":\n        \"\"\"Request Touchstone (.sNp) export of the S-parameter sweep.\n\n        Parameters\n        ----------\n        path : str\n            Output file path.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Notes\n        -----\n        Consumed by the ``rapidfem`` CLI; pair with :meth:`dump` to\n        write a config the CLI executes. From Python, write Touchstone\n        post-solve via ``rapidfem.io.to_touchstone(result, path)``.\n        \"\"\"\n        self._out_touchstone = str(path)\n        return self\n\n    def output_vtk(self, path: str) -> \"SimulationBuilder\":\n        \"\"\"Request VTK field-dump export (one file per frequency).\n\n        Parameters\n        ----------\n        path : str\n            Output file path or template.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Notes\n        -----\n        CLI-driven. See :meth:`output_touchstone` for the workflow note.\n        \"\"\"\n        self._out_vtk = str(path)\n        return self\n\n    def output_farfield(self, path: str, *,\n                        nfft_tag: int | None = None) -> \"SimulationBuilder\":\n        \"\"\"Request a far-field CSV export from the NFFT surface.\n\n        Parameters\n        ----------\n        path : str\n            Output CSV path.\n        nfft_tag : int, optional\n            Physical-group tag of the NFFT surface. Defaults to the ABC\n            tag if any.\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Notes\n        -----\n        CLI-driven. From Python, use :meth:`Simulation.compute_farfield`.\n        \"\"\"\n        self._out_farfield = str(path)\n        if nfft_tag is not None:\n            self._out_farfield_nfft_tag = int(nfft_tag)\n        return self\n\n    def output_group_delay(self, path: str) -> \"SimulationBuilder\":\n        \"\"\"Request group-delay export \u03c4_g = -d\u03c6/d\u03c9 as CSV.\n\n        Parameters\n        ----------\n        path : str\n            Output CSV path (one row per frequency).\n\n        Returns\n        -------\n        SimulationBuilder\n            Self.\n\n        Notes\n        -----\n        CLI-driven.\n        \"\"\"\n        self._out_group_delay = str(path)\n        return self\n\n    # \u2500\u2500 Build \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def _make_config_toml(self) -> str:\n        # Frequencies are required for any *driven* run. An eigenmode-only\n        # build can fall back to the target_frequency as a single shift\n        # value \u2014 the Rust side just needs *some* number to seed the matrix\n        # assembly with, which is what the target already is.\n        if not self._frequencies:\n            if self._eigenmode is None:\n                raise ValueError(\"call .frequencies(...) before .build()/.dump()\")\n            f0, _ = self._eigenmode\n            self._frequencies = [float(f0)]\n        toml = ['[mesh]\\nfile = \"(in-memory)\"\\n']\n        freqs_str = \", \".join(_f64(f) for f in self._frequencies)\n        toml.append(f\"[frequency]\\nvalues = [{freqs_str}]\\n\")\n        toml.extend(self._ports)\n        toml.extend(self._materials)\n        if self._pec_tags:\n            tags_str = \", \".join(str(t) for t in self._pec_tags)\n            toml.append(f\"[pec]\\ntags = [{tags_str}]\\n\")\n        else:\n            toml.append(\"[pec]\\ntags = []\\n\")\n\n        if self._eigenmode is not None:\n            f0, nm = self._eigenmode\n            toml.append(\n                f\"[eigenmode]\\ntarget_frequency = {_f64(f0)}\\nn_modes = {nm}\\n\"\n            )\n        if self._adaptive is not None:\n            theta, ratio = self._adaptive\n            toml.append(\n                f\"[adaptive]\\ntheta = {_f64(theta)}\\nrefinement_ratio = {_f64(ratio)}\\n\"\n            )\n\n        out_lines = [f\"[output]\\nz0 = {_f64(self._z0_ref)}\"]\n        if self._out_touchstone is not None:\n            out_lines.append(f'touchstone = \"{self._out_touchstone}\"')\n        if self._out_vtk is not None:\n            out_lines.append(f'vtk = \"{self._out_vtk}\"')\n        if self._out_farfield is not None:\n            out_lines.append(f'farfield = \"{self._out_farfield}\"')\n        if self._out_farfield_nfft_tag is not None:\n            out_lines.append(f'nfft_tag = {self._out_farfield_nfft_tag}')\n        if self._out_group_delay is not None:\n            out_lines.append(f'group_delay = \"{self._out_group_delay}\"')\n        toml.append(\"\\n\".join(out_lines) + \"\\n\")\n        return \"\\n\".join(toml)\n\n    def build(self) -> Simulation:\n        \"\"\"Construct a native :class:`Simulation` ready for solving.\n\n        Returns\n        -------\n        Simulation\n            The native FEM problem. Call ``.run_sweep()`` (driven) or\n            ``.run_eigenmode()`` (modal) to compute results.\n\n        Raises\n        ------\n        ValueError\n            If no mesh has been bound or no frequencies set.\n        \"\"\"\n        if self._mesh_bytes is None:\n            raise ValueError(\"call .mesh(...) or .from_geometry(...) before .build()\")\n        return Simulation.from_bytes(self._mesh_bytes, self._make_config_toml())\n\n    def dump(self, mesh_path: str, config_path: str) -> None:\n        \"\"\"Write the assembled mesh + TOML config to disk.\n\n        Use this to feed the ``rapidfem`` CLI without going through\n        Python's solver path. The output pair is exactly what the CLI\n        expects.\n\n        Parameters\n        ----------\n        mesh_path : str\n            Destination for the binary ``.msh`` file.\n        config_path : str\n            Destination for the TOML config.\n\n        Raises\n        ------\n        ValueError\n            If no mesh has been bound.\n        \"\"\"\n        if self._mesh_bytes is None:\n            raise ValueError(\"call .mesh(...) or .from_geometry(...) before .dump()\")\n        with open(mesh_path, \"wb\") as f:\n            f.write(self._mesh_bytes)\n        with open(config_path, \"w\", encoding=\"utf-8\") as f:\n            f.write(self._make_config_toml())\n\n    # \u2500\u2500 Internals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def _tag(self, name: str) -> int:\n        if name not in self._name_to_tag:\n            available = \", \".join(sorted(self._name_to_tag.keys()))\n            raise KeyError(\n                f\"name {name!r} not found in geometry. Available: {available}\"\n            )\n        return self._name_to_tag[name]",
      "bases": [],
      "methods": [
@@ -112,8 +112,8 @@
       },
       {
        "name": "from_geometry",
-       "description": "Mesh a :class:`Geometry` and bind the result in one step.",
-       "docstring_html": "<p>Mesh a :class:`Geometry` and bind the result in one step.</p>\n<p>Equivalent to calling <tt class=\"docutils literal\">geometry.mesh(maxh)</tt> then <tt class=\"docutils literal\"><span class=\"pre\">mesh(...)</span></tt>.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>geometry <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">rapidfem.Geometry</span></dt>\n<dd>Geometry with names + materials assigned. Will be meshed\nin-place if not already meshed.</dd>\n<dt>maxh <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Maximum tetrahedron edge length in metres. Default 1.0\n(which is enormous \u2014 always pass a value).</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self, for call chaining.</dd>\n</dl>\n",
+       "description": "Mesh a Geometry and bind the result in one step.",
+       "docstring_html": "<p>Mesh a <tt class=\"docutils literal\">Geometry</tt> and bind the result in one step.</p>\n<p>Equivalent to calling <tt class=\"docutils literal\">geometry.mesh(maxh)</tt> then <tt class=\"docutils literal\"><span class=\"pre\">mesh(...)</span></tt>.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>geometry <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">rapidfem.Geometry</span></dt>\n<dd>Geometry with names + materials assigned. Will be meshed\nin-place if not already meshed.</dd>\n<dt>maxh <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Maximum tetrahedron edge length in metres. Default 1.0\n(which is enormous \u2014 always pass a value).</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self, for call chaining.</dd>\n</dl>\n",
        "source": "def from_geometry(self, geometry, maxh: float = 1.0) -> \"SimulationBuilder\":\n    \"\"\"Mesh a :class:`Geometry` and bind the result in one step.\n\n    Equivalent to calling ``geometry.mesh(maxh)`` then ``mesh(...)``.\n\n    Parameters\n    ----------\n    geometry : rapidfem.Geometry\n        Geometry with names + materials assigned. Will be meshed\n        in-place if not already meshed.\n    maxh : float, optional\n        Maximum tetrahedron edge length in metres. Default 1.0\n        (which is enormous \u2014 always pass a value).\n\n    Returns\n    -------\n    SimulationBuilder\n        Self, for call chaining.\n    \"\"\"\n    mesh_bytes, name_to_tag = geometry.mesh(maxh=maxh)\n    return self.mesh(mesh_bytes, name_to_tag)",
        "signature": "(geometry, maxh: float = 1.0)",
        "parameters": [
@@ -709,7 +709,7 @@
       {
        "name": "eigenmode",
        "description": "Configure an eigenmode solve around ``target_frequency``.",
-       "docstring_html": "<p>Configure an eigenmode solve around <tt class=\"docutils literal\">target_frequency</tt>.</p>\n<p>After <tt class=\"docutils literal\">build()</tt>, call :meth:`Simulation.run_eigenmode` to\nexecute. Uses a shift-invert Lanczos iteration with PARDISO (or\nfaer) as the inner direct factoriser.</p>\n<p><tt class=\"docutils literal\"><span class=\"pre\">.frequencies(...)</span></tt> does <strong>not</strong> need to be called for an\neigenmode-only build \u2014 <tt class=\"docutils literal\">target_frequency</tt> doubles as the\nsingle sample point the matrix assembly needs.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>target_frequency <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float</span></dt>\n<dd>Spectral shift in Hz. Modes nearest this frequency are\nreturned.</dd>\n<dt>n_modes <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">int, optional</span></dt>\n<dd>Number of eigenpairs requested. Default 6.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n",
+       "docstring_html": "<p>Configure an eigenmode solve around <tt class=\"docutils literal\">target_frequency</tt>.</p>\n<p>After <tt class=\"docutils literal\">build()</tt>, call <tt class=\"docutils literal\">Simulation.run_eigenmode</tt> to\nexecute. Uses a shift-invert Lanczos iteration with PARDISO (or\nfaer) as the inner direct factoriser.</p>\n<p><tt class=\"docutils literal\"><span class=\"pre\">.frequencies(...)</span></tt> does <strong>not</strong> need to be called for an\neigenmode-only build \u2014 <tt class=\"docutils literal\">target_frequency</tt> doubles as the\nsingle sample point the matrix assembly needs.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>target_frequency <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float</span></dt>\n<dd>Spectral shift in Hz. Modes nearest this frequency are\nreturned.</dd>\n<dt>n_modes <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">int, optional</span></dt>\n<dd>Number of eigenpairs requested. Default 6.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n",
        "source": "def eigenmode(self, target_frequency: float, *,\n              n_modes: int = 6) -> \"SimulationBuilder\":\n    \"\"\"Configure an eigenmode solve around ``target_frequency``.\n\n    After ``build()``, call :meth:`Simulation.run_eigenmode` to\n    execute. Uses a shift-invert Lanczos iteration with PARDISO (or\n    faer) as the inner direct factoriser.\n\n    ``.frequencies(...)`` does **not** need to be called for an\n    eigenmode-only build \u2014 ``target_frequency`` doubles as the\n    single sample point the matrix assembly needs.\n\n    Parameters\n    ----------\n    target_frequency : float\n        Spectral shift in Hz. Modes nearest this frequency are\n        returned.\n    n_modes : int, optional\n        Number of eigenpairs requested. Default 6.\n\n    Returns\n    -------\n    SimulationBuilder\n        Self.\n    \"\"\"\n    self._eigenmode = (float(target_frequency), int(n_modes))\n    return self",
        "signature": "(target_frequency: float, n_modes: int = 6)",
        "parameters": [
@@ -732,7 +732,7 @@
       {
        "name": "adaptive",
        "description": "Enable adaptive mesh refinement on the driven sweep.",
-       "docstring_html": "<p>Enable adaptive mesh refinement on the driven sweep.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>theta <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>D\u00f6rfler-marking fraction \u2014 elements carrying the top \u03b8 of the\nresidual error are marked. Default 0.5.</dd>\n<dt>refinement_ratio <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Local size reduction applied to marked elements in the gmsh\nsize field. Default 0.5.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>The adaptive refinement loop (solve \u2192 estimate \u2192 mark \u2192 write\nsize field \u2192 re-mesh \u2192 repeat) is driven by the <tt class=\"docutils literal\">rapidfem</tt>\nCLI, not by :meth:`Simulation.run_sweep`. Combine with\n:meth:`dump` to produce a CLI-consumable config.</p>\n",
+       "docstring_html": "<p>Enable adaptive mesh refinement on the driven sweep.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>theta <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>D\u00f6rfler-marking fraction \u2014 elements carrying the top \u03b8 of the\nresidual error are marked. Default 0.5.</dd>\n<dt>refinement_ratio <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Local size reduction applied to marked elements in the gmsh\nsize field. Default 0.5.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>The adaptive refinement loop (solve \u2192 estimate \u2192 mark \u2192 write\nsize field \u2192 re-mesh \u2192 repeat) is driven by the <tt class=\"docutils literal\">rapidfem</tt>\nCLI, not by <tt class=\"docutils literal\">Simulation.run_sweep</tt>. Combine with\n<tt class=\"docutils literal\">dump</tt> to produce a CLI-consumable config.</p>\n",
        "source": "def adaptive(self, *,\n             theta: float = 0.5,\n             refinement_ratio: float = 0.5) -> \"SimulationBuilder\":\n    \"\"\"Enable adaptive mesh refinement on the driven sweep.\n\n    Parameters\n    ----------\n    theta : float, optional\n        D\u00f6rfler-marking fraction \u2014 elements carrying the top \u03b8 of the\n        residual error are marked. Default 0.5.\n    refinement_ratio : float, optional\n        Local size reduction applied to marked elements in the gmsh\n        size field. Default 0.5.\n\n    Returns\n    -------\n    SimulationBuilder\n        Self.\n\n    Notes\n    -----\n    The adaptive refinement loop (solve \u2192 estimate \u2192 mark \u2192 write\n    size field \u2192 re-mesh \u2192 repeat) is driven by the ``rapidfem``\n    CLI, not by :meth:`Simulation.run_sweep`. Combine with\n    :meth:`dump` to produce a CLI-consumable config.\n    \"\"\"\n    self._adaptive = (float(theta), float(refinement_ratio))\n    return self",
        "signature": "(theta: float = 0.5, refinement_ratio: float = 0.5)",
        "parameters": [
@@ -772,7 +772,7 @@
       {
        "name": "output_touchstone",
        "description": "Request Touchstone (.sNp) export of the S-parameter sweep.",
-       "docstring_html": "<p>Request Touchstone (.sNp) export of the S-parameter sweep.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output file path.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>Consumed by the <tt class=\"docutils literal\">rapidfem</tt> CLI; pair with :meth:`dump` to\nwrite a config the CLI executes. From Python, write Touchstone\npost-solve via <tt class=\"docutils literal\">rapidfem.io.to_touchstone(result, path)</tt>.</p>\n",
+       "docstring_html": "<p>Request Touchstone (.sNp) export of the S-parameter sweep.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output file path.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>Consumed by the <tt class=\"docutils literal\">rapidfem</tt> CLI; pair with <tt class=\"docutils literal\">dump</tt> to\nwrite a config the CLI executes. From Python, write Touchstone\npost-solve via <tt class=\"docutils literal\">rapidfem.io.to_touchstone(result, path)</tt>.</p>\n",
        "source": "def output_touchstone(self, path: str) -> \"SimulationBuilder\":\n    \"\"\"Request Touchstone (.sNp) export of the S-parameter sweep.\n\n    Parameters\n    ----------\n    path : str\n        Output file path.\n\n    Returns\n    -------\n    SimulationBuilder\n        Self.\n\n    Notes\n    -----\n    Consumed by the ``rapidfem`` CLI; pair with :meth:`dump` to\n    write a config the CLI executes. From Python, write Touchstone\n    post-solve via ``rapidfem.io.to_touchstone(result, path)``.\n    \"\"\"\n    self._out_touchstone = str(path)\n    return self",
        "signature": "(path: str)",
        "parameters": [
@@ -789,7 +789,7 @@
       {
        "name": "output_vtk",
        "description": "Request VTK field-dump export (one file per frequency).",
-       "docstring_html": "<p>Request VTK field-dump export (one file per frequency).</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output file path or template.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>CLI-driven. See :meth:`output_touchstone` for the workflow note.</p>\n",
+       "docstring_html": "<p>Request VTK field-dump export (one file per frequency).</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output file path or template.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>CLI-driven. See <tt class=\"docutils literal\">output_touchstone</tt> for the workflow note.</p>\n",
        "source": "def output_vtk(self, path: str) -> \"SimulationBuilder\":\n    \"\"\"Request VTK field-dump export (one file per frequency).\n\n    Parameters\n    ----------\n    path : str\n        Output file path or template.\n\n    Returns\n    -------\n    SimulationBuilder\n        Self.\n\n    Notes\n    -----\n    CLI-driven. See :meth:`output_touchstone` for the workflow note.\n    \"\"\"\n    self._out_vtk = str(path)\n    return self",
        "signature": "(path: str)",
        "parameters": [
@@ -806,7 +806,7 @@
       {
        "name": "output_farfield",
        "description": "Request a far-field CSV export from the NFFT surface.",
-       "docstring_html": "<p>Request a far-field CSV export from the NFFT surface.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output CSV path.</dd>\n<dt>nfft_tag <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">int, optional</span></dt>\n<dd>Physical-group tag of the NFFT surface. Defaults to the ABC\ntag if any.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>CLI-driven. From Python, use :meth:`Simulation.compute_farfield`.</p>\n",
+       "docstring_html": "<p>Request a far-field CSV export from the NFFT surface.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>path <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">str</span></dt>\n<dd>Output CSV path.</dd>\n<dt>nfft_tag <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">int, optional</span></dt>\n<dd>Physical-group tag of the NFFT surface. Defaults to the ABC\ntag if any.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>SimulationBuilder</dt>\n<dd>Self.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>CLI-driven. From Python, use <tt class=\"docutils literal\">Simulation.compute_farfield</tt>.</p>\n",
        "source": "def output_farfield(self, path: str, *,\n                    nfft_tag: int | None = None) -> \"SimulationBuilder\":\n    \"\"\"Request a far-field CSV export from the NFFT surface.\n\n    Parameters\n    ----------\n    path : str\n        Output CSV path.\n    nfft_tag : int, optional\n        Physical-group tag of the NFFT surface. Defaults to the ABC\n        tag if any.\n\n    Returns\n    -------\n    SimulationBuilder\n        Self.\n\n    Notes\n    -----\n    CLI-driven. From Python, use :meth:`Simulation.compute_farfield`.\n    \"\"\"\n    self._out_farfield = str(path)\n    if nfft_tag is not None:\n        self._out_farfield_nfft_tag = int(nfft_tag)\n    return self",
        "signature": "(path: str, nfft_tag: int | None = None)",
        "parameters": [
@@ -844,19 +844,9 @@
        "method_type": "method"
       },
       {
-       "name": "_make_config_toml",
-       "description": "",
-       "docstring_html": "",
-       "source": "def _make_config_toml(self) -> str:\n    # Frequencies are required for any *driven* run. An eigenmode-only\n    # build can fall back to the target_frequency as a single shift\n    # value \u2014 the Rust side just needs *some* number to seed the matrix\n    # assembly with, which is what the target already is.\n    if not self._frequencies:\n        if self._eigenmode is None:\n            raise ValueError(\"call .frequencies(...) before .build()/.dump()\")\n        f0, _ = self._eigenmode\n        self._frequencies = [float(f0)]\n    toml = ['[mesh]\\nfile = \"(in-memory)\"\\n']\n    freqs_str = \", \".join(_f64(f) for f in self._frequencies)\n    toml.append(f\"[frequency]\\nvalues = [{freqs_str}]\\n\")\n    toml.extend(self._ports)\n    toml.extend(self._materials)\n    if self._pec_tags:\n        tags_str = \", \".join(str(t) for t in self._pec_tags)\n        toml.append(f\"[pec]\\ntags = [{tags_str}]\\n\")\n    else:\n        toml.append(\"[pec]\\ntags = []\\n\")\n\n    if self._eigenmode is not None:\n        f0, nm = self._eigenmode\n        toml.append(\n            f\"[eigenmode]\\ntarget_frequency = {_f64(f0)}\\nn_modes = {nm}\\n\"\n        )\n    if self._adaptive is not None:\n        theta, ratio = self._adaptive\n        toml.append(\n            f\"[adaptive]\\ntheta = {_f64(theta)}\\nrefinement_ratio = {_f64(ratio)}\\n\"\n        )\n\n    out_lines = [f\"[output]\\nz0 = {_f64(self._z0_ref)}\"]\n    if self._out_touchstone is not None:\n        out_lines.append(f'touchstone = \"{self._out_touchstone}\"')\n    if self._out_vtk is not None:\n        out_lines.append(f'vtk = \"{self._out_vtk}\"')\n    if self._out_farfield is not None:\n        out_lines.append(f'farfield = \"{self._out_farfield}\"')\n    if self._out_farfield_nfft_tag is not None:\n        out_lines.append(f'nfft_tag = {self._out_farfield_nfft_tag}')\n    if self._out_group_delay is not None:\n        out_lines.append(f'group_delay = \"{self._out_group_delay}\"')\n    toml.append(\"\\n\".join(out_lines) + \"\\n\")\n    return \"\\n\".join(toml)",
-       "signature": "()",
-       "parameters": [],
-       "returns": "str",
-       "method_type": "method"
-      },
-      {
        "name": "build",
-       "description": "Construct a native :class:`Simulation` ready for solving.",
-       "docstring_html": "<p>Construct a native :class:`Simulation` ready for solving.</p>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>Simulation</dt>\n<dd>The native FEM problem. Call <tt class=\"docutils literal\">.run_sweep()</tt> (driven) or\n<tt class=\"docutils literal\">.run_eigenmode()</tt> (modal) to compute results.</dd>\n</dl>\n<p><strong>Raises</strong></p>\n<dl class=\"docutils\">\n<dt>ValueError</dt>\n<dd>If no mesh has been bound or no frequencies set.</dd>\n</dl>\n",
+       "description": "Construct a native Simulation ready for solving.",
+       "docstring_html": "<p>Construct a native <tt class=\"docutils literal\">Simulation</tt> ready for solving.</p>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>Simulation</dt>\n<dd>The native FEM problem. Call <tt class=\"docutils literal\">.run_sweep()</tt> (driven) or\n<tt class=\"docutils literal\">.run_eigenmode()</tt> (modal) to compute results.</dd>\n</dl>\n<p><strong>Raises</strong></p>\n<dl class=\"docutils\">\n<dt>ValueError</dt>\n<dd>If no mesh has been bound or no frequencies set.</dd>\n</dl>\n",
        "source": "def build(self) -> Simulation:\n    \"\"\"Construct a native :class:`Simulation` ready for solving.\n\n    Returns\n    -------\n    Simulation\n        The native FEM problem. Call ``.run_sweep()`` (driven) or\n        ``.run_eigenmode()`` (modal) to compute results.\n\n    Raises\n    ------\n    ValueError\n        If no mesh has been bound or no frequencies set.\n    \"\"\"\n    if self._mesh_bytes is None:\n        raise ValueError(\"call .mesh(...) or .from_geometry(...) before .build()\")\n    return Simulation.from_bytes(self._mesh_bytes, self._make_config_toml())",
        "signature": "()",
        "parameters": [],
@@ -885,317 +875,19 @@
        ],
        "returns": "None",
        "method_type": "method"
-      },
-      {
-       "name": "_tag",
-       "description": "",
-       "docstring_html": "",
-       "source": "def _tag(self, name: str) -> int:\n    if name not in self._name_to_tag:\n        available = \", \".join(sorted(self._name_to_tag.keys()))\n        raise KeyError(\n            f\"name {name!r} not found in geometry. Available: {available}\"\n        )\n    return self._name_to_tag[name]",
-       "signature": "(name: str)",
-       "parameters": [
-        {
-         "name": "name",
-         "type": "str",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "int",
-       "method_type": "method"
       }
      ],
-     "attributes": [
-      {
-       "name": "_mesh_bytes",
-       "description": "",
-       "type": "bytes | None",
-       "value": "None"
-      },
-      {
-       "name": "_name_to_tag",
-       "description": "",
-       "type": "dict[str, int]",
-       "value": "{}"
-      },
-      {
-       "name": "_frequencies",
-       "description": "",
-       "type": "list[float]",
-       "value": "[]"
-      },
-      {
-       "name": "_ports",
-       "description": "",
-       "type": "list[str]",
-       "value": "[]"
-      },
-      {
-       "name": "_materials",
-       "description": "",
-       "type": "list[str]",
-       "value": "[]"
-      },
-      {
-       "name": "_pec_tags",
-       "description": "",
-       "type": "list[int]",
-       "value": "[]"
-      },
-      {
-       "name": "_z0_ref",
-       "description": "",
-       "type": "float",
-       "value": "50.0"
-      },
-      {
-       "name": "_mat_name_to_tag",
-       "description": "",
-       "type": "dict[str, int]",
-       "value": "{}"
-      },
-      {
-       "name": "_eigenmode",
-       "description": "",
-       "type": "tuple[float, int] | None",
-       "value": "None"
-      },
-      {
-       "name": "_adaptive",
-       "description": "",
-       "type": "tuple[float, float] | None",
-       "value": "None"
-      },
-      {
-       "name": "_out_touchstone",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      },
-      {
-       "name": "_out_vtk",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      },
-      {
-       "name": "_out_farfield",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      },
-      {
-       "name": "_out_farfield_nfft_tag",
-       "description": "",
-       "type": "int | None",
-       "value": "None"
-      },
-      {
-       "name": "_out_group_delay",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      }
-     ],
+     "attributes": [],
      "parameters": []
     }
    ],
-   "functions": [
-    {
-     "name": "_f64",
-     "description": "",
-     "docstring_html": "",
-     "source": "def _f64(x: float) -> str:\n    return f\"{float(x):.10g}\"",
-     "signature": "(x: float)",
-     "parameters": [
-      {
-       "name": "x",
-       "type": "float",
-       "default": null,
-       "description": ""
-      }
-     ],
-     "returns": "str"
-    }
-   ]
+   "functions": []
   },
   "rapidfem.geometry": {
    "name": "rapidfem.geometry",
    "description": "",
    "docstring_html": "",
    "classes": [
-    {
-     "name": "_Entity",
-     "description": "A tracked gmsh entity with stable identity through boolean ops.",
-     "docstring_html": "<p>A tracked gmsh entity with stable identity through boolean ops.</p>\n<p><cite>tag</cite> is the <em>current</em> gmsh tag \u2014 may be updated by Geometry._reresolve()\nafter fragment/cut. The (cog, bbox, dim) triple is the stable identity used\nfor re-resolution.</p>\n",
-     "source": "@dataclass\nclass _Entity:\n    \"\"\"A tracked gmsh entity with stable identity through boolean ops.\n\n    `tag` is the *current* gmsh tag \u2014 may be updated by Geometry._reresolve()\n    after fragment/cut. The (cog, bbox, dim) triple is the stable identity used\n    for re-resolution.\n    \"\"\"\n    dim: int\n    tag: int\n    cog: tuple[float, float, float]\n    bbox: tuple[float, float, float, float, float, float]\n    name: str | None = None\n    material: str | None = None\n    maxh: float | None = None\n\n    @staticmethod\n    def from_dimtag(dim: int, tag: int) -> \"_Entity\":\n        cog = tuple(gmsh.model.occ.getCenterOfMass(dim, tag))\n        bbox = tuple(gmsh.model.getBoundingBox(dim, tag))\n        return _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)",
-     "bases": [],
-     "methods": [
-      {
-       "name": "from_dimtag",
-       "description": "",
-       "docstring_html": "",
-       "source": "@staticmethod\ndef from_dimtag(dim: int, tag: int) -> \"_Entity\":\n    cog = tuple(gmsh.model.occ.getCenterOfMass(dim, tag))\n    bbox = tuple(gmsh.model.getBoundingBox(dim, tag))\n    return _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)",
-       "signature": "(dim: int, tag: int)",
-       "parameters": [
-        {
-         "name": "dim",
-         "type": "int",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "tag",
-         "type": "int",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "'_Entity'",
-       "method_type": "staticmethod"
-      },
-      {
-       "name": "__init__",
-       "description": "",
-       "docstring_html": "",
-       "source": null,
-       "signature": "(dim: int, tag: int, cog: tuple[float, float, float], bbox: tuple[float, float, float, float, float, float], name: str | None = None, material: str | None = None, maxh: float | None = None)",
-       "parameters": [
-        {
-         "name": "dim",
-         "type": "int",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "tag",
-         "type": "int",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "cog",
-         "type": "tuple[float, float, float]",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "bbox",
-         "type": "tuple[float, float, float, float, float, float]",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "name",
-         "type": "str | None",
-         "default": "None",
-         "description": ""
-        },
-        {
-         "name": "material",
-         "type": "str | None",
-         "default": "None",
-         "description": ""
-        },
-        {
-         "name": "maxh",
-         "type": "float | None",
-         "default": "None",
-         "description": ""
-        }
-       ],
-       "returns": "None",
-       "method_type": "method"
-      }
-     ],
-     "attributes": [
-      {
-       "name": "dim",
-       "description": "",
-       "type": "int",
-       "value": null
-      },
-      {
-       "name": "tag",
-       "description": "",
-       "type": "int",
-       "value": null
-      },
-      {
-       "name": "cog",
-       "description": "",
-       "type": "tuple[float, float, float]",
-       "value": null
-      },
-      {
-       "name": "bbox",
-       "description": "",
-       "type": "tuple[float, float, float, float, float, float]",
-       "value": null
-      },
-      {
-       "name": "name",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      },
-      {
-       "name": "material",
-       "description": "",
-       "type": "str | None",
-       "value": "None"
-      },
-      {
-       "name": "maxh",
-       "description": "",
-       "type": "float | None",
-       "value": "None"
-      }
-     ],
-     "parameters": [
-      {
-       "name": "dim",
-       "type": "int",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "tag",
-       "type": "int",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "cog",
-       "type": "tuple[float, float, float]",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "bbox",
-       "type": "tuple[float, float, float, float, float, float]",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "name",
-       "type": "str | None",
-       "default": "None",
-       "description": ""
-      },
-      {
-       "name": "material",
-       "type": "str | None",
-       "default": "None",
-       "description": ""
-      },
-      {
-       "name": "maxh",
-       "type": "float | None",
-       "default": "None",
-       "description": ""
-      }
-     ]
-    },
     {
      "name": "EntityCollection",
      "description": "A collection of sub-entities (faces or edges) with selectors and bulk",
@@ -1246,7 +938,7 @@
       {
        "name": "max",
        "description": "Keep only entities whose centroid is at the maximum along ``axis``.",
-       "docstring_html": "<p>Keep only entities whose centroid is at the maximum along <tt class=\"docutils literal\">axis</tt>.</p>\n<p>Mirror of :meth:`min`. See that method for parameters/returns.</p>\n",
+       "docstring_html": "<p>Keep only entities whose centroid is at the maximum along <tt class=\"docutils literal\">axis</tt>.</p>\n<p>Mirror of <tt class=\"docutils literal\">min</tt>. See that method for parameters/returns.</p>\n",
        "source": "def max(self, axis: str = \"z\") -> \"EntityCollection\":\n    \"\"\"Keep only entities whose centroid is at the maximum along ``axis``.\n\n    Mirror of :meth:`min`. See that method for parameters/returns.\n    \"\"\"\n    ax = {\"x\": 0, \"y\": 1, \"z\": 2}[axis.lower()]\n    if not self._entities:\n        return EntityCollection(self._geometry, [])\n    m = max(e.cog[ax] for e in self._entities)\n    kept = [e for e in self._entities if abs(e.cog[ax] - m) < _COG_TOL]\n    return EntityCollection(self._geometry, kept)",
        "signature": "(axis: str = 'z')",
        "parameters": [
@@ -1279,18 +971,6 @@
       }
      ],
      "attributes": [
-      {
-       "name": "_geometry",
-       "description": "",
-       "type": null,
-       "value": "geometry"
-      },
-      {
-       "name": "_entities",
-       "description": "",
-       "type": null,
-       "value": "entities"
-      },
       {
        "name": "name",
        "description": "",
@@ -1348,73 +1028,9 @@
        ],
        "returns": null,
        "method_type": "method"
-      },
-      {
-       "name": "_discover_subentities",
-       "description": "Re-query gmsh for the current sub-entities of dimension `target_dim`.",
-       "docstring_html": "<p>Re-query gmsh for the current sub-entities of dimension <cite>target_dim</cite>.\nExisting entries in <cite>self._geometry._entities</cite> matching by (cog, bbox)\nkeep their name/material/maxh; new entries get fresh blank metadata.</p>\n",
-       "source": "def _discover_subentities(self, target_dim: int) -> list[_Entity]:\n    \"\"\"Re-query gmsh for the current sub-entities of dimension `target_dim`.\n    Existing entries in `self._geometry._entities` matching by (cog, bbox)\n    keep their name/material/maxh; new entries get fresh blank metadata.\"\"\"\n    if self._entity.dim == 3 and target_dim == 2:\n        children = [(d, t) for d, t in\n                    gmsh.model.getBoundary([(3, self._entity.tag)], oriented=False)\n                    if d == 2]\n    elif self._entity.dim == 3 and target_dim == 1:\n        children = []\n        seen: set[int] = set()\n        for d, t in gmsh.model.getBoundary([(3, self._entity.tag)], oriented=False):\n            if d != 2:\n                continue\n            for d_e, t_e in gmsh.model.getBoundary([(2, t)], oriented=False):\n                if d_e == 1 and t_e not in seen:\n                    seen.add(t_e)\n                    children.append((d_e, t_e))\n    elif self._entity.dim == 2 and target_dim == 1:\n        children = [(d, t) for d, t in\n                    gmsh.model.getBoundary([(2, self._entity.tag)], oriented=False)\n                    if d == 1]\n    else:\n        children = []\n\n    # Build entries, reusing existing _Entity records if cog+bbox matches\n    out: list[_Entity] = []\n    for d, t in children:\n        cog = tuple(gmsh.model.occ.getCenterOfMass(d, t))\n        bbox = tuple(gmsh.model.getBoundingBox(d, t))\n        existing = self._find_or_register_entity(d, t, cog, bbox)\n        out.append(existing)\n    return out",
-       "signature": "(target_dim: int)",
-       "parameters": [
-        {
-         "name": "target_dim",
-         "type": "int",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "list[_Entity]",
-       "method_type": "method"
-      },
-      {
-       "name": "_find_or_register_entity",
-       "description": "Look up an existing _Entity in the geometry registry by (cog, bbox);",
-       "docstring_html": "<p>Look up an existing _Entity in the geometry registry by (cog, bbox);\nregister a new one if not found. Updates the tag to current.</p>\n",
-       "source": "def _find_or_register_entity(self, dim, tag, cog, bbox) -> _Entity:\n    \"\"\"Look up an existing _Entity in the geometry registry by (cog, bbox);\n    register a new one if not found. Updates the tag to current.\"\"\"\n    for ent in self._geometry._entities:\n        if ent.dim != dim:\n            continue\n        if math.dist(ent.cog, cog) < _COG_TOL and _bbox_match(ent.bbox, bbox, _BBOX_TOL):\n            ent.tag = tag       # refresh tag (may have changed after fragment)\n            return ent\n    new_ent = _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)\n    self._geometry._entities.append(new_ent)\n    return new_ent",
-       "signature": "(dim, tag, cog, bbox)",
-       "parameters": [
-        {
-         "name": "dim",
-         "type": null,
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "tag",
-         "type": null,
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "cog",
-         "type": null,
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "bbox",
-         "type": null,
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "_Entity",
-       "method_type": "method"
       }
      ],
      "attributes": [
-      {
-       "name": "_geometry",
-       "description": "",
-       "type": null,
-       "value": "geometry"
-      },
-      {
-       "name": "_entity",
-       "description": "",
-       "type": null,
-       "value": "entity"
-      },
       {
        "name": "faces",
        "description": "",
@@ -1470,7 +1086,7 @@
     {
      "name": "Geometry",
      "description": "Top-level geometry builder. Owns a gmsh OCC model for its lifetime.",
-     "docstring_html": "<p>Top-level geometry builder. Owns a gmsh OCC model for its lifetime.</p>\n<p>Build with primitives (:meth:`box`, :meth:`cylinder`, ...), tag\nfaces / edges / volumes with names, assign materials, then call\n:meth:`mesh` to produce the FEM mesh. Hand the meshed geometry to\n:class:`rapidfem.SimulationBuilder` to assemble a :class:`Simulation`.</p>\n<p><strong>Examples</strong></p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; import rapidfem\n&gt;&gt;&gt; g = rapidfem.Geometry()\n&gt;&gt;&gt; air = g.box(22.86e-3, 10.16e-3, 30e-3,\n...             position=(-11.43e-3, -5.08e-3, 0))\n&gt;&gt;&gt; air.material = &quot;air&quot;\n&gt;&gt;&gt; air.faces.min(axis=&quot;z&quot;).name = &quot;port_in&quot;\n&gt;&gt;&gt; air.faces.max(axis=&quot;z&quot;).name = &quot;port_out&quot;\n&gt;&gt;&gt; for f in air.faces:\n...     if f.name is None:\n...         f.name = &quot;pec&quot;\n&gt;&gt;&gt; g.mesh(maxh=3e-3)\n</pre>\n",
+     "docstring_html": "<p>Top-level geometry builder. Owns a gmsh OCC model for its lifetime.</p>\n<p>Build with primitives (<tt class=\"docutils literal\">box</tt>, <tt class=\"docutils literal\">cylinder</tt>, ...), tag\nfaces / edges / volumes with names, assign materials, then call\n<tt class=\"docutils literal\">mesh</tt> to produce the FEM mesh. Hand the meshed geometry to\n<tt class=\"docutils literal\">rapidfem.SimulationBuilder</tt> to assemble a <tt class=\"docutils literal\">Simulation</tt>.</p>\n<p><strong>Examples</strong></p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; import rapidfem\n&gt;&gt;&gt; g = rapidfem.Geometry()\n&gt;&gt;&gt; air = g.box(22.86e-3, 10.16e-3, 30e-3,\n...             position=(-11.43e-3, -5.08e-3, 0))\n&gt;&gt;&gt; air.material = &quot;air&quot;\n&gt;&gt;&gt; air.faces.min(axis=&quot;z&quot;).name = &quot;port_in&quot;\n&gt;&gt;&gt; air.faces.max(axis=&quot;z&quot;).name = &quot;port_out&quot;\n&gt;&gt;&gt; for f in air.faces:\n...     if f.name is None:\n...         f.name = &quot;pec&quot;\n&gt;&gt;&gt; g.mesh(maxh=3e-3)\n</pre>\n",
      "source": "class Geometry:\n    \"\"\"Top-level geometry builder. Owns a gmsh OCC model for its lifetime.\n\n    Build with primitives (:meth:`box`, :meth:`cylinder`, ...), tag\n    faces / edges / volumes with names, assign materials, then call\n    :meth:`mesh` to produce the FEM mesh. Hand the meshed geometry to\n    :class:`rapidfem.SimulationBuilder` to assemble a :class:`Simulation`.\n\n    Examples\n    --------\n    >>> import rapidfem\n    >>> g = rapidfem.Geometry()\n    >>> air = g.box(22.86e-3, 10.16e-3, 30e-3,\n    ...             position=(-11.43e-3, -5.08e-3, 0))\n    >>> air.material = \"air\"\n    >>> air.faces.min(axis=\"z\").name = \"port_in\"\n    >>> air.faces.max(axis=\"z\").name = \"port_out\"\n    >>> for f in air.faces:\n    ...     if f.name is None:\n    ...         f.name = \"pec\"\n    >>> g.mesh(maxh=3e-3)\n    \"\"\"\n\n    def __init__(self, name: str = \"rapidfem\"):\n        if not gmsh.isInitialized():\n            gmsh.initialize()\n        gmsh.option.setNumber(\"General.Terminal\", 0)\n        gmsh.model.add(name)\n        self._objects: list[GeoObject] = []\n        self._entities: list[_Entity] = []  # all named-or-trackable entities\n        self._owns_gmsh = True  # we'll finalize on close\n\n    # \u2500\u2500 GDS-driven extrusion \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    @staticmethod\n    def from_gds(\n        path: str,\n        stack,                          # rapidfem.rfic.Stack\n        top_cell: str | None = None,\n        bbox: tuple[float, float, float, float] | None = None,\n        flatten: bool = True,\n        merge: bool = True,\n        thin_conductors: bool = False,\n    ) -> \"Geometry\":\n        \"\"\"Load a GDSII layout and extrude all matching polygons into 3D primitives.\n\n        Each polygon on a (gds, datatype) tuple in `stack` becomes a 3D box\n        (rectangles) or extruded prism (general polygons) at the layer's z with\n        the layer's thickness. All polygons of one layer get the layer's name\n        as a physical-group tag so the SimulationBuilder can wire them by name.\n\n        Args:\n            path: Path to the .gds(.gz) file.\n            stack: A `rapidfem.rfic.Stack` mapping (gds, datatype) \u2192 PdkLayer.\n            top_cell: Cell name to extrude. ``None`` \u21d2 auto-pick the unique\n                top-level cell.\n            bbox: Optional (xmin, ymin, xmax, ymax) crop box in meters; polygons\n                outside are skipped (faster iteration on large layouts).\n            flatten: Resolve cell references before extrusion (default True).\n                Set False only if your top cell has no references.\n            merge: Merge co-layer polygons via gmsh fragment so adjacent traces\n                produce a conformal mesh (default True).\n            thin_conductors: If True, metal layers become 2D PEC plates at the\n                layer's bottom z (thin-conductor approximation, t << w). The\n                resulting plate carries the layer's name as a SURFACE physical\n                group, which is what the simulator's `.pec(...)` BC expects.\n                Recommended for RFIC-style metal with thicknesses \u2264 wavelength/100.\n        \"\"\"\n        try:\n            import gdstk\n        except ImportError as e:\n            raise ImportError(\"gdstk is required for from_gds(). pip install gdstk\") from e\n        import numpy as np\n\n        lib = gdstk.read_gds(path)\n        cells_by_name = {c.name: c for c in lib.cells}\n\n        # Resolve top cell\n        if top_cell is None:\n            tops = lib.top_level()\n            if len(tops) != 1:\n                names = \", \".join(c.name for c in tops)\n                raise ValueError(\n                    f\"GDS has {len(tops)} top-level cells ({names}); \"\n                    f\"specify top_cell=...\")\n            cell = tops[0]\n        else:\n            if top_cell not in cells_by_name:\n                avail = \", \".join(cells_by_name.keys())\n                raise ValueError(f\"top_cell {top_cell!r} not in GDS; available: {avail}\")\n            cell = cells_by_name[top_cell]\n\n        # GDS unit (typically 1e-6 = micron, sometimes 1e-9 = nm). gdstk reports\n        # the working unit in lib.unit (meters per GDS unit).\n        unit = lib.unit  # meters per logical unit in the GDS\n\n        # Flatten the cell to expose all polygons including those in references.\n        flat_polys = cell.get_polygons() if not flatten else cell.flatten().polygons\n\n        # Optional bbox crop\n        if bbox is not None:\n            xmin, ymin, xmax, ymax = bbox\n\n        g = Geometry(name=cell.name or \"gds_import\")\n        # Group polygons by their PdkLayer (so we name + extrude per-layer).\n        per_layer: dict[str, list[np.ndarray]] = {}\n        for poly in flat_polys:\n            pdk_layer = stack.by_gds(poly.layer, poly.datatype)\n            if pdk_layer is None:\n                continue\n            pts_raw = np.asarray(poly.points, dtype=np.float64)\n            if bbox is not None:\n                if (pts_raw[:, 0].max() < xmin or pts_raw[:, 0].min() > xmax\n                        or pts_raw[:, 1].max() < ymin or pts_raw[:, 1].min() > ymax):\n                    continue\n            pts_m = pts_raw * unit  # convert GDS coords \u2192 meters\n            per_layer.setdefault(pdk_layer.name, []).append(pts_m)\n\n        # Build each polygon at its layer's z. With thin_conductors=True (or\n        # for non-metal types) we keep it as a 2D plate so PEC BC can attach\n        # to a SURFACE group; otherwise we extrude to a 3D solid.\n        per_layer_objs: dict[str, list[GeoObject]] = {}\n        for layer_name, polys in per_layer.items():\n            pdk = stack.by_name(layer_name)\n            use_2d = thin_conductors and pdk.type == \"metal\"\n            objs: list[GeoObject] = []\n            for pts in polys:\n                if use_2d:\n                    obj = g._plate_polygon(pts, z=pdk.z)\n                else:\n                    obj = g._extrude_polygon(pts, z=pdk.z, thickness=pdk.thickness)\n                obj.name = layer_name\n                objs.append(obj)\n            per_layer_objs[layer_name] = objs\n\n        # Optional: fragment co-layer polygons so adjacent traces share faces.\n        if merge:\n            for objs in per_layer_objs.values():\n                if len(objs) >= 2:\n                    g.fragment(objs[0], *objs[1:])\n\n        return g\n\n    def _plate_polygon(self, pts: \"np.ndarray\", z: float) -> GeoObject:\n        \"\"\"Create a 2D plane surface from a closed polygon at height z.\n\n        Used by `from_gds(thin_conductors=True)` so metals stay 2D and their\n        layer-name physical group lands on FACES (PEC-compatible).\n        \"\"\"\n        import numpy as np\n        # Rectangle fast path\n        if pts.shape[0] in (4, 5):\n            p = pts[:4]\n            xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))\n            if len(xs) == 2 and len(ys) == 2:\n                tag = gmsh.model.occ.addRectangle(\n                    xs[0], ys[0], z, xs[1] - xs[0], ys[1] - ys[0]\n                )\n                return self._wrap_face(tag)\n        # General polygon\n        if np.allclose(pts[0], pts[-1]):\n            pts = pts[:-1]\n        tol = 1e-9\n        keep = [pts[0]]\n        for p in pts[1:]:\n            if np.linalg.norm(p - keep[-1]) > tol:\n                keep.append(p)\n        if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:\n            keep = keep[:-1]\n        pts = np.asarray(keep)\n        if len(pts) < 3:\n            raise ValueError(f\"Polygon collapsed to {len(pts)} unique vertices\")\n        pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]\n        line_tags = [\n            gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])\n            for i in range(len(pt_tags))\n        ]\n        loop = gmsh.model.occ.addCurveLoop(line_tags)\n        surf = gmsh.model.occ.addPlaneSurface([loop])\n        return self._wrap_face(surf)\n\n    def _extrude_polygon(\n        self,\n        pts: \"np.ndarray\",\n        z: float,\n        thickness: float,\n    ) -> GeoObject:\n        \"\"\"Extrude a 2D polygon (Nx2 numpy array) vertically into a 3D solid.\n\n        Rectangular axis-aligned polygons \u2192 addBox (fast path).\n        Otherwise: build a wire \u2192 plane surface \u2192 extrude.\n        \"\"\"\n        import numpy as np\n\n        # Detect axis-aligned rectangle (4 points, 90\u00b0 corners)\n        if pts.shape[0] in (4, 5):\n            p = pts[:4]\n            xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))\n            if len(xs) == 2 and len(ys) == 2:\n                tag = gmsh.model.occ.addBox(\n                    xs[0], ys[0], z,\n                    xs[1] - xs[0], ys[1] - ys[0], thickness,\n                )\n                return self._wrap_volume(tag)\n\n        # General polygon: wire \u2192 plane \u2192 extrude\n        # Drop duplicated last point (gdstk includes it sometimes)\n        if np.allclose(pts[0], pts[-1]):\n            pts = pts[:-1]\n        # Drop adjacent coincident vertices \u2014 gdstk boolean unions can leave\n        # them at shared corners and they'd collapse OCC line endpoints into a\n        # broken loop. Keep one of every coincident-pair (within ~1nm).\n        tol = 1e-9\n        keep = [pts[0]]\n        for p in pts[1:]:\n            if np.linalg.norm(p - keep[-1]) > tol:\n                keep.append(p)\n        # Also check wraparound (last vs first)\n        if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:\n            keep = keep[:-1]\n        pts = np.asarray(keep)\n        if len(pts) < 3:\n            raise ValueError(f\"Polygon collapsed to {len(pts)} unique vertices\")\n        pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]\n        line_tags = [\n            gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])\n            for i in range(len(pt_tags))\n        ]\n        loop = gmsh.model.occ.addCurveLoop(line_tags)\n        surf = gmsh.model.occ.addPlaneSurface([loop])\n        # Extrude vertically by thickness; second elt of return is the top cap\n        out = gmsh.model.occ.extrude([(2, surf)], 0, 0, thickness)\n        # gmsh's extrude returns: [top_face, volume, side_faces...]\n        vol_tag = next(t for d, t in out if d == 3)\n        return self._wrap_volume(vol_tag)\n\n    def __enter__(self):\n        return self\n\n    def __exit__(self, *exc):\n        self.close()\n\n    def close(self):\n        if self._owns_gmsh and gmsh.isInitialized():\n            gmsh.finalize()\n            self._owns_gmsh = False\n\n    # \u2500\u2500 Primitives \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def _wrap_volume(self, tag: int) -> GeoObject:\n        gmsh.model.occ.synchronize()\n        ent = _Entity.from_dimtag(3, tag)\n        obj = GeoObject(self, ent)\n        self._objects.append(obj)\n        self._entities.append(ent)\n        return obj\n\n    def _wrap_face(self, tag: int) -> GeoObject:\n        gmsh.model.occ.synchronize()\n        ent = _Entity.from_dimtag(2, tag)\n        obj = GeoObject(self, ent)\n        self._objects.append(obj)\n        self._entities.append(ent)\n        return obj\n\n    def box(self, width: float, depth: float, height: float,\n            position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add an axis-aligned box primitive.\n\n        Parameters\n        ----------\n        width, depth, height : float\n            Extents along x, y, z respectively (m).\n        position : tuple[float, float, float], optional\n            Lower corner ``(xmin, ymin, zmin)``. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            Volume with 6 ``.faces`` and 12 ``.edges``.\n        \"\"\"\n        x, y, z = position\n        tag = gmsh.model.occ.addBox(x, y, z, width, depth, height)\n        return self._wrap_volume(tag)\n\n    def cylinder(self, radius: float, height: float,\n                 position: tuple[float, float, float] = (0, 0, 0),\n                 axis: tuple[float, float, float] = (0, 0, 1),\n                 angle: float = 2 * math.pi) -> GeoObject:\n        \"\"\"Add a (partial-sweep) cylinder primitive.\n\n        Parameters\n        ----------\n        radius : float\n            Cylinder radius in metres.\n        height : float\n            Extent along ``axis``.\n        position : tuple[float, float, float], optional\n            Base centre. Default origin.\n        axis : tuple[float, float, float], optional\n            Cylinder axis direction. Default +z.\n        angle : float, optional\n            Sweep angle in radians. Default 2\u03c0 (full cylinder).\n\n        Returns\n        -------\n        GeoObject\n            Volume.\n        \"\"\"\n        x, y, z = position\n        ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)\n        tag = gmsh.model.occ.addCylinder(x, y, z, ax, ay, az, radius, angle=angle)\n        return self._wrap_volume(tag)\n\n    def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a sphere primitive.\n\n        Parameters\n        ----------\n        radius : float\n            Sphere radius in metres.\n        center : tuple[float, float, float], optional\n            Sphere centre. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            Volume.\n        \"\"\"\n        cx, cy, cz = center\n        tag = gmsh.model.occ.addSphere(cx, cy, cz, radius)\n        return self._wrap_volume(tag)\n\n    def cone(self, r1: float, r2: float, height: float,\n             position: tuple[float, float, float] = (0, 0, 0),\n             axis: tuple[float, float, float] = (0, 0, 1),\n             angle: float = 2 * math.pi) -> GeoObject:\n        \"\"\"Add a truncated cone (or cylinder if ``r1 == r2``).\n\n        Parameters\n        ----------\n        r1, r2 : float\n            Base and top radii in metres.\n        height : float\n            Extent along ``axis``.\n        position : tuple[float, float, float], optional\n            Base centre. Default origin.\n        axis : tuple[float, float, float], optional\n            Cone axis direction. Default +z.\n        angle : float, optional\n            Sweep angle in radians. Default 2\u03c0.\n\n        Returns\n        -------\n        GeoObject\n            Volume.\n        \"\"\"\n        x, y, z = position\n        ax, ay, az = (axis[0] * height, axis[1] * height, axis[2] * height)\n        tag = gmsh.model.occ.addCone(x, y, z, ax, ay, az, r1, r2, angle=angle)\n        return self._wrap_volume(tag)\n\n    def wedge(self, dx: float, dy: float, dz: float,\n              top_x: float = 0.0,\n              position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a rectangular-base prism (wedge).\n\n        The base is ``dx \u00d7 dy`` at z = 0; the top edge runs from x = 0 to\n        x = ``top_x`` at height ``dz``, parallel to y.\n\n        Parameters\n        ----------\n        dx, dy, dz : float\n            Base width, base depth, height in metres.\n        top_x : float, optional\n            x-extent of the top edge. ``0`` = triangular wedge; ``dx`` =\n            ordinary box. Default 0.\n        position : tuple[float, float, float], optional\n            Lower-left corner of the base. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            Volume.\n        \"\"\"\n        x, y, z = position\n        tag = gmsh.model.occ.addWedge(x, y, z, dx, dy, dz, ltx=top_x)\n        return self._wrap_volume(tag)\n\n    def torus(self, major_radius: float, minor_radius: float,\n              center: tuple[float, float, float] = (0, 0, 0),\n              angle: float = 2 * math.pi) -> GeoObject:\n        \"\"\"Add a torus primitive.\n\n        Parameters\n        ----------\n        major_radius : float\n            Donut radius (centre of the tube to torus axis).\n        minor_radius : float\n            Tube radius.\n        center : tuple[float, float, float], optional\n            Torus centre. Default origin. Axis is along +z.\n        angle : float, optional\n            Sweep angle in radians. ``< 2\u03c0`` gives a partial torus.\n\n        Returns\n        -------\n        GeoObject\n            Volume.\n        \"\"\"\n        cx, cy, cz = center\n        tag = gmsh.model.occ.addTorus(cx, cy, cz, major_radius, minor_radius, angle=angle)\n        return self._wrap_volume(tag)\n\n    def xy_plate(self, width: float, height: float,\n                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a thin rectangular plate in the xy-plane.\n\n        Parameters\n        ----------\n        width : float\n            x-extent in metres.\n        height : float\n            y-extent in metres (note: not a vertical extent).\n        position : tuple[float, float, float], optional\n            Lower corner. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            2D face (dim=2). Typically used for thin conductors like\n            patch antennas or microstrip traces.\n        \"\"\"\n        x, y, z = position\n        tag = gmsh.model.occ.addRectangle(x, y, z, width, height)\n        return self._wrap_face(tag)\n\n    def xz_plate(self, width: float, height: float,\n                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a thin rectangular plate in the xz-plane.\n\n        See :meth:`xy_plate`. ``width`` runs along x, ``height`` along z.\n        \"\"\"\n        return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height))\n\n    def yz_plate(self, width: float, height: float,\n                 position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a thin rectangular plate in the yz-plane.\n\n        See :meth:`xy_plate`. ``width`` runs along y, ``height`` along z.\n        \"\"\"\n        return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height))\n\n    def plate(self, p0: tuple[float, float, float],\n              width: tuple[float, float, float],\n              height: tuple[float, float, float]) -> GeoObject:\n        \"\"\"Add a thin rectangular plate at arbitrary orientation.\n\n        Parameters\n        ----------\n        p0 : tuple[float, float, float]\n            One corner of the rectangle.\n        width : tuple[float, float, float]\n            Edge vector from ``p0`` defining one side.\n        height : tuple[float, float, float]\n            Edge vector from ``p0`` defining the perpendicular side.\n\n        Returns\n        -------\n        GeoObject\n            2D face. Used for vertical lumped-port sheets, oblique feed\n            plates, etc.\n\n        Notes\n        -----\n        gmsh OCC has no direct arbitrary-rectangle API; we build a\n        four-vertex wire and plane-surface internally.\n        \"\"\"\n        x0, y0, z0 = p0\n        wx, wy, wz = width\n        hx, hy, hz = height\n        v1 = gmsh.model.occ.addPoint(x0, y0, z0)\n        v2 = gmsh.model.occ.addPoint(x0 + wx, y0 + wy, z0 + wz)\n        v3 = gmsh.model.occ.addPoint(x0 + wx + hx, y0 + wy + hy, z0 + wz + hz)\n        v4 = gmsh.model.occ.addPoint(x0 + hx, y0 + hy, z0 + hz)\n        l1 = gmsh.model.occ.addLine(v1, v2)\n        l2 = gmsh.model.occ.addLine(v2, v3)\n        l3 = gmsh.model.occ.addLine(v3, v4)\n        l4 = gmsh.model.occ.addLine(v4, v1)\n        loop = gmsh.model.occ.addCurveLoop([l1, l2, l3, l4])\n        tag = gmsh.model.occ.addPlaneSurface([loop])\n        return self._wrap_face(tag)\n\n    def polygon(self, points: Iterable[tuple[float, ...]],\n                position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a planar polygon face.\n\n        Parameters\n        ----------\n        points : iterable of (x, y) or (x, y, z) tuples\n            Vertices in CCW order. Polygon closes automatically. 2-tuples\n            are placed in the xy-plane (z=0); 3-tuples must all be\n            coplanar \u2014 gmsh OCC errors on non-planar input.\n        position : tuple[float, float, float], optional\n            Offset added to every vertex. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            2D face. Combine with :meth:`extrude` for a microstrip-style\n            volume, :meth:`revolve` for an axisymmetric solid, or\n            :meth:`loft` to bridge two profiles.\n\n        Examples\n        --------\n        Hexagonal xy-plane trace footprint:\n\n        >>> import math\n        >>> pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))\n        ...        for t in (i * math.pi / 3 for i in range(6))]\n        >>> hex_face = g.polygon(pts)\n\n        Rectangle in the yz-plane at ``x = L`` (waveguide aperture):\n\n        >>> aperture = g.polygon([\n        ...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),\n        ...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),\n        ... ])\n        \"\"\"\n        pts = list(points)\n        if len(pts) < 3:\n            raise ValueError(\"polygon needs at least 3 vertices\")\n        x0, y0, z0 = position\n        vtags = []\n        for p in pts:\n            if len(p) == 2:\n                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0))\n            elif len(p) == 3:\n                vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, p[2] + z0))\n            else:\n                raise ValueError(f\"polygon point must be (x,y) or (x,y,z), got {p!r}\")\n        n = len(vtags)\n        ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]\n        loop = gmsh.model.occ.addCurveLoop(ltags)\n        tag = gmsh.model.occ.addPlaneSurface([loop])\n        return self._wrap_face(tag)\n\n    def disc(self, radius: float,\n             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n        \"\"\"Add a circular face in the xy-plane.\n\n        Parameters\n        ----------\n        radius : float\n            Disc radius in metres.\n        position : tuple[float, float, float], optional\n            Disc centre. Default origin.\n\n        Returns\n        -------\n        GeoObject\n            2D face. Smooth NURBS circle (gmsh OCC ``addDisk``) \u2014 meshes\n            into curved triangles with ``MeshSizeFromCurvature``.\n        \"\"\"\n        x, y, z = position\n        tag = gmsh.model.occ.addDisk(x, y, z, radius, radius)\n        return self._wrap_face(tag)\n\n    # \u2500\u2500 Extrude / revolve \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def extrude(self, face: GeoObject, height: float,\n                axis: tuple[float, float, float] = (0, 0, 1)) -> GeoObject:\n        \"\"\"Extrude a 2D face along ``axis * height`` into a 3D volume.\n\n        Parameters\n        ----------\n        face : GeoObject\n            2D face (e.g. from :meth:`polygon`, :meth:`disc`, :meth:`plate`).\n        height : float\n            Sweep distance along ``axis``.\n        axis : tuple[float, float, float], optional\n            Sweep direction (will be scaled by ``height``). Default +z.\n\n        Returns\n        -------\n        GeoObject\n            New volume. The source ``face`` becomes the bottom cap and\n            remains tracked (boundary of the new volume).\n\n        Examples\n        --------\n        >>> poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])\n        >>> trace = g.extrude(poly, height=0.035e-3)   # 35 \u00b5m copper\n        \"\"\"\n        if face.dim != 2:\n            raise ValueError(f\"extrude expects a 2D face, got dim={face.dim}\")\n        dx, dy, dz = axis[0] * height, axis[1] * height, axis[2] * height\n        out = gmsh.model.occ.extrude([(face.dim, face._entity.tag)], dx, dy, dz)\n        gmsh.model.occ.synchronize()\n        vol_tag = next((t for d, t in out if d == 3), None)\n        if vol_tag is None:\n            raise RuntimeError(\"extrude produced no volume\")\n        return self._wrap_volume(vol_tag)\n\n    def loft(self, face_a: GeoObject, face_b: GeoObject,\n             ruled: bool = True) -> GeoObject:\n        \"\"\"Loft a volume between two coplanar / parallel 2D faces.\n\n        Linearly interpolates the perimeter of ``face_a`` onto the\n        perimeter of ``face_b``. Both faces must have the same number of\n        edges in their outer boundary (a 4-edge rectangle lofts to a\n        4-edge rectangle, producing a frustum with 4 trapezoidal sides).\n\n        Parameters\n        ----------\n        face_a, face_b : GeoObject\n            Two 2D faces to bridge. The result is a closed solid bounded\n            by the two faces plus ruled side surfaces.\n        ruled : bool, optional\n            When ``True`` (default), produce flat (ruled) side surfaces \u2014\n            the right choice for pyramidal / frustum-style horns. When\n            ``False``, gmsh fits a spline through the section profiles.\n\n        Returns\n        -------\n        GeoObject\n            New volume. The input faces are absorbed into its boundary\n            and remain tracked as the cap faces.\n\n        Examples\n        --------\n        Pyramidal horn between a throat and an aperture rectangle:\n\n        >>> throat = g.polygon([(0, -wga/2, -wgb/2), (0,  wga/2, -wgb/2),\n        ...                     (0,  wga/2,  wgb/2), (0, -wga/2,  wgb/2)])\n        >>> aper = g.polygon([(L, -WH/2, -HH/2), (L,  WH/2, -HH/2),\n        ...                   (L,  WH/2,  HH/2), (L, -WH/2,  HH/2)])\n        >>> horn = g.loft(throat, aper)\n        \"\"\"\n        if face_a.dim != 2 or face_b.dim != 2:\n            raise ValueError(\"loft expects two 2D faces\")\n        wire_a = self._face_outer_wire(face_a)\n        wire_b = self._face_outer_wire(face_b)\n        out = gmsh.model.occ.addThruSections(\n            [wire_a, wire_b], makeSolid=True, makeRuled=ruled\n        )\n        gmsh.model.occ.synchronize()\n        vol_tag = next((t for d, t in out if d == 3), None)\n        if vol_tag is None:\n            raise RuntimeError(\"loft produced no volume\")\n        return self._wrap_volume(vol_tag)\n\n    def _face_outer_wire(self, face: GeoObject) -> int:\n        \"\"\"Return a wire tag for the outer boundary of ``face``.\n\n        gmsh ``addThruSections`` expects wire tags; we build a fresh wire\n        from the face's boundary edges so the call is self-contained.\n        \"\"\"\n        bd = gmsh.model.getBoundary(\n            [(face.dim, face._entity.tag)], oriented=False, recursive=False\n        )\n        edge_tags = [t for d, t in bd if d == 1]\n        return gmsh.model.occ.addWire(edge_tags, checkClosed=True)\n\n    def revolve(self, face: GeoObject,\n                axis_point: tuple[float, float, float] = (0, 0, 0),\n                axis_dir: tuple[float, float, float] = (0, 0, 1),\n                angle: float = 2 * math.pi) -> GeoObject:\n        \"\"\"Revolve a 2D face around an axis to create a 3D volume.\n\n        Parameters\n        ----------\n        face : GeoObject\n            2D face. For ``angle == 2\u03c0`` the profile typically touches\n            the axis; otherwise you get a torus-shaped sweep.\n        axis_point : tuple[float, float, float], optional\n            A point on the rotation axis. Default origin.\n        axis_dir : tuple[float, float, float], optional\n            Axis direction. Default +z.\n        angle : float, optional\n            Sweep angle in radians. Default 2\u03c0.\n\n        Returns\n        -------\n        GeoObject\n            New volume. The source ``face`` becomes one cap (if the sweep\n            is partial) or is absorbed (if full 2\u03c0) and remains tracked.\n\n        Examples\n        --------\n        Conical horn from a 4-point profile revolved around the x-axis:\n\n        >>> profile = g.polygon([(L, 0), (L+a, 0), (L+a, R), (L, r)])\n        >>> horn = g.revolve(profile, axis_point=(0, 0, 0), axis_dir=(1, 0, 0))\n        \"\"\"\n        if face.dim != 2:\n            raise ValueError(f\"revolve expects a 2D face, got dim={face.dim}\")\n        cx, cy, cz = axis_point\n        ax, ay, az = axis_dir\n        out = gmsh.model.occ.revolve(\n            [(face.dim, face._entity.tag)], cx, cy, cz, ax, ay, az, angle\n        )\n        gmsh.model.occ.synchronize()\n        vol_tag = next((t for d, t in out if d == 3), None)\n        if vol_tag is None:\n            raise RuntimeError(\"revolve produced no volume\")\n        return self._wrap_volume(vol_tag)\n\n    # \u2500\u2500 Boolean ops \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def fragment(self, target: GeoObject, *tools: GeoObject) -> None:\n        \"\"\"Boolean fragment: make all overlaps conformal.\n\n        Splits each overlap into a shared face / volume that both\n        operands keep, so meshing produces a single mesh across the\n        interfaces. Names assigned on the operands survive.\n\n        Parameters\n        ----------\n        target : GeoObject\n            First operand.\n        *tools : GeoObject\n            Additional operands to fragment with ``target``.\n\n        Notes\n        -----\n        Uses gmsh's ``occ.fragment`` ``out_map`` to update each input's\n        tag directly \u2014 robust against the COG drift that can break naive\n        name-tracking after boolean ops. Child faces / edges are\n        re-resolved by ``(centroid, bbox)`` matching.\n\n        Examples\n        --------\n        >>> g.fragment(air, substrate, patch, feed)\n        \"\"\"\n        target_dt = [(target.dim, target._entity.tag)]\n        tools_dt = [(t.dim, t._entity.tag) for t in tools]\n        _, out_map = gmsh.model.occ.fragment(target_dt, tools_dt)\n        gmsh.model.occ.synchronize()\n        inputs = [target] + list(tools)\n        self._apply_out_map(inputs, out_map)\n        self._reresolve_children(top_level=set(id(o._entity) for o in inputs))\n\n    def cut(self, target: GeoObject, *tools: GeoObject) -> None:\n        \"\"\"Boolean subtract ``tools`` from ``target``.\n\n        Parameters\n        ----------\n        target : GeoObject\n            Object to subtract from. Survives (possibly as several pieces).\n        *tools : GeoObject\n            Objects to subtract. **Consumed** by the operation \u2014 do not\n            reference them afterwards.\n        \"\"\"\n        target_dt = [(target.dim, target._entity.tag)]\n        tools_dt = [(t.dim, t._entity.tag) for t in tools]\n        _, out_map = gmsh.model.occ.cut(target_dt, tools_dt)\n        gmsh.model.occ.synchronize()\n        # Tools are consumed by `cut`; only the target survives (with possibly\n        # multiple pieces). out_map[0] = target's new pieces.\n        self._apply_out_map([target], out_map[:1] if out_map else [[]])\n        self._reresolve_children(top_level={id(target._entity)})\n\n    def _apply_out_map(self, inputs: list[GeoObject], out_map: list) -> None:\n        \"\"\"For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.\n        If an input was split into multiple pieces, the first piece keeps the\n        original GeoObject; the others are registered as additional `_Entity`s\n        carrying the same name/material/maxh.\n        \"\"\"\n        for input_obj, new_dimtags in zip(inputs, out_map):\n            if not new_dimtags:\n                warnings.warn(\n                    f\"GeoObject (dim={input_obj.dim}, name={input_obj._entity.name!r}) \"\n                    f\"vanished during boolean op\",\n                    stacklevel=3,\n                )\n                continue\n            d0, t0 = new_dimtags[0]\n            input_obj._entity.tag = t0\n            input_obj._entity.cog = tuple(gmsh.model.occ.getCenterOfMass(d0, t0))\n            input_obj._entity.bbox = tuple(gmsh.model.getBoundingBox(d0, t0))\n            for d, t in new_dimtags[1:]:\n                extra = _Entity.from_dimtag(d, t)\n                extra.name = input_obj._entity.name\n                extra.material = input_obj._entity.material\n                extra.maxh = input_obj._entity.maxh\n                self._entities.append(extra)\n\n    def _reresolve_children(self, top_level: set[int]) -> None:\n        \"\"\"Re-resolve child entities (faces, edges) by COG+bbox. Top-level\n        entities (already updated via out_map) are skipped via `top_level` set\n        of `_Entity` ids.\"\"\"\n        survived = []\n        for ent in self._entities:\n            if id(ent) in top_level:\n                survived.append(ent)\n                continue\n            new_tag = _resolve_entity(ent)\n            if new_tag is not None:\n                ent.tag = new_tag\n                survived.append(ent)\n            elif ent.name or ent.material or ent.maxh:\n                warnings.warn(\n                    f\"Tracked entity (dim={ent.dim}, name={ent.name!r}, \"\n                    f\"cog={ent.cog}) lost during boolean op; attributes dropped.\",\n                    stacklevel=3,\n                )\n        self._entities = survived\n\n    # \u2500\u2500 Transforms \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def rotate(self, obj: GeoObject, angle: float,\n               axis: tuple[float, float, float] = (0, 0, 1),\n               center: tuple[float, float, float] = (0, 0, 0)) -> None:\n        \"\"\"Rotate ``obj`` (and all its child faces / edges) in place.\n\n        Parameters\n        ----------\n        obj : GeoObject\n            Volume or face to rotate.\n        angle : float\n            Rotation angle in radians (right-hand rule about ``axis``).\n        axis : tuple[float, float, float], optional\n            Axis direction. Default +z.\n        center : tuple[float, float, float], optional\n            Point on the rotation axis. Default origin.\n\n        Notes\n        -----\n        gmsh dimtags survive the transform unchanged; only the geometric\n        attributes (COG, bbox) of every tracked entity descending from\n        ``obj`` are refreshed. Named selectors keep working \u2014 the resolver\n        sees the new positions.\n        \"\"\"\n        cx, cy, cz = center\n        ax, ay, az = axis\n        gmsh.model.occ.rotate([(obj.dim, obj._entity.tag)], cx, cy, cz, ax, ay, az, angle)\n        gmsh.model.occ.synchronize()\n        self._refresh_descendants(obj)\n\n    def stretch(self, obj: GeoObject,\n                fx: float = 1.0, fy: float = 1.0, fz: float = 1.0,\n                center: tuple[float, float, float] = (0, 0, 0)) -> None:\n        \"\"\"Anisotropic scale ``obj`` about ``center`` by ``(fx, fy, fz)``.\n\n        Parameters\n        ----------\n        obj : GeoObject\n            Volume or face to scale.\n        fx, fy, fz : float, optional\n            Scale factors along each axis. Default 1 (no change).\n        center : tuple[float, float, float], optional\n            Scaling centre \u2014 stays fixed. Default origin.\n\n        Examples\n        --------\n        Squash a circular waveguide by 0.1% to split degenerate modes:\n\n        >>> g.stretch(feed, fy=1.001)\n        \"\"\"\n        cx, cy, cz = center\n        gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)], cx, cy, cz, fx, fy, fz)\n        gmsh.model.occ.synchronize()\n        self._refresh_descendants(obj)\n\n    def _refresh_descendants(self, obj: GeoObject) -> None:\n        \"\"\"Refresh COG/bbox for every tracked entity in ``obj``'s boundary\n        tree (plus ``obj`` itself). In-place transforms keep dimtags but\n        move centroids \u2014 without this, named-face resolvers would miss.\n\n        gmsh's ``getBoundary(recursive=True)`` descends straight to the\n        vertices, so we walk one dimension at a time to collect faces and\n        edges as well.\n        \"\"\"\n        descendants = {(obj.dim, obj._entity.tag)}\n        current = [(obj.dim, obj._entity.tag)]\n        while current and current[0][0] > 0:\n            next_level = gmsh.model.getBoundary(current, oriented=False, recursive=False)\n            descendants.update(next_level)\n            current = list(next_level)\n        for ent in self._entities:\n            if (ent.dim, ent.tag) in descendants:\n                ent.cog = tuple(gmsh.model.occ.getCenterOfMass(ent.dim, ent.tag))\n                ent.bbox = tuple(gmsh.model.getBoundingBox(ent.dim, ent.tag))\n\n    def intersect(self, target: GeoObject, *tools: GeoObject) -> None:\n        \"\"\"Boolean intersect ``target \u2229 tools``.\n\n        Parameters\n        ----------\n        target : GeoObject\n            Object to intersect. Survives as the intersection region.\n        *tools : GeoObject\n            Objects to intersect with. **Consumed** by the operation \u2014\n            do not reference them afterwards.\n\n        Examples\n        --------\n        >>> g.intersect(horn, halfspace)   # clip horn to z >= 0\n        \"\"\"\n        target_dt = [(target.dim, target._entity.tag)]\n        tools_dt = [(t.dim, t._entity.tag) for t in tools]\n        _, out_map = gmsh.model.occ.intersect(target_dt, tools_dt)\n        gmsh.model.occ.synchronize()\n        # Tools are consumed; only target survives (possibly as several pieces).\n        self._apply_out_map([target], out_map[:1] if out_map else [[]])\n        self._reresolve_children(top_level={id(target._entity)})\n\n    def fuse(self, target: GeoObject, *tools: GeoObject) -> None:\n        \"\"\"Boolean union ``target \u222a tools``.\n\n        Parameters\n        ----------\n        target : GeoObject\n            First operand. Survives as the merged object.\n        *tools : GeoObject\n            Operands to merge in.\n\n        Warnings\n        --------\n        Face names on the operands are NOT preserved (faces merge and\n        centroids shift). Top-level volume names survive via the gmsh\n        out_map, but **set face names AFTER fuse**, or use\n        :meth:`fragment` if interface preservation matters.\n        \"\"\"\n        warnings.warn(\n            \"fuse() merges faces and shifts their COGs; named faces on the \"\n            \"operands will not be reliably re-resolvable. Set face names AFTER \"\n            \"fuse, or use fragment() if you need them preserved.\",\n            stacklevel=2,\n        )\n        target_dt = [(target.dim, target._entity.tag)]\n        tools_dt = [(t.dim, t._entity.tag) for t in tools]\n        _, out_map = gmsh.model.occ.fuse(target_dt, tools_dt)\n        gmsh.model.occ.synchronize()\n        inputs = [target] + list(tools)\n        self._apply_out_map(inputs, out_map)\n        self._reresolve_children(top_level=set(id(o._entity) for o in inputs))\n\n    # \u2500\u2500 Mesh emit \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    def auto_refine_features(\n        self,\n        base_maxh: float,\n        resolution: int = 3,\n        min_maxh: float | None = None,\n    ) -> dict[str, float]:\n        \"\"\"Auto-assign per-volume ``maxh`` for any volume thinner than ``base_maxh``.\n\n        Walks every 3D volume in the geometry. For each, computes the smallest\n        bbox dimension (the \"feature size\"). If that dimension is smaller than\n        ``base_maxh`` *and* the user hasn't already set ``vol.maxh`` explicitly,\n        sets ``vol.maxh = max(min_dim / resolution, min_maxh)`` so the volume\n        is resolved with at least ``resolution`` tets across its thinnest axis.\n\n        Idempotent \u2014 only writes ``maxh`` when it's currently ``None``, so\n        explicit per-volume sizes always win.\n\n        Parameters\n        ----------\n        base_maxh : float\n            Reference size (typically what you'll pass to ``g.mesh(maxh=...)``).\n            Volumes wider than this in all directions are left untouched.\n        resolution : int, optional\n            Target number of tets across the thinnest dimension. Default 3 \u2014\n            enough for ND-2 to capture per-element gradients; bump to 4\u20135 for\n            very high accuracy near a specific feature. Default 3.\n        min_maxh : float, optional\n            Floor on the auto-assigned size, to avoid catastrophic refinement\n            on micron-scale features. ``None`` means no floor.\n\n        Returns\n        -------\n        dict[str, float]\n            Map ``{volume_descriptor: assigned_maxh}`` for the volumes touched,\n            for logging. The descriptor is ``name`` if the volume has one, else\n            ``\"vol@(cx,cy,cz)\"`` from its centroid.\n        \"\"\"\n        assigned: dict[str, float] = {}\n        for obj in self._objects:\n            if obj.dim != 3 or obj.maxh is not None:\n                continue\n            bbox = obj._entity.bbox\n            dims = (bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])\n            min_dim = min(d for d in dims if d > 0)\n            if min_dim >= base_maxh:\n                continue\n            h = min_dim / resolution\n            if min_maxh is not None:\n                h = max(h, min_maxh)\n            obj.maxh = h\n            cog = obj._entity.cog\n            desc = obj.name or f\"vol@({cog[0]*1e3:.1f},{cog[1]*1e3:.1f},{cog[2]*1e3:.1f})mm\"\n            assigned[desc] = h\n        return assigned\n\n    def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:\n        \"\"\"Generate the 3D tet mesh of the current geometry.\n\n        Calls gmsh's OCC mesher with the configured per-entity sizes\n        and global cap. Per-entity ``obj.maxh = h`` is honoured via\n        gmsh ``Distance + Threshold`` background fields so refinement\n        transitions are smooth, not abrupt.\n\n        Parameters\n        ----------\n        maxh : float, optional\n            Global maximum tet edge length in metres. Default 1.0\n            (always pass a real value).\n        transition_distance : float, optional\n            Distance over which a refined region's element size grows\n            from its local ``h`` to the global cap. Default ``5 \u00b7 h``\n            per-entity.\n\n        Returns\n        -------\n        mesh_bytes : bytes\n            gmsh ``.msh`` v4 file as bytes \u2014 feed to\n            :meth:`SimulationBuilder.mesh` or use ``.mesh_from(g)`` to\n            pick it up from the geometry's cache.\n        name_to_tag : dict[str, int]\n            Map from every user-supplied name (face / edge / volume,\n            and ``material=``) to its physical-group integer tag.\n\n        Notes\n        -----\n        Side effect: caches ``(mesh_bytes, name_to_tag)`` on\n        ``self._last_mesh`` so ``SimulationBuilder.mesh_from(g)`` can\n        find it without re-meshing.\n        \"\"\"\n        gmsh.model.occ.synchronize()\n        # Wipe any prior mesh state AND physical groups. Without the latter,\n        # re-running this cell hits \"Physical surface 1 already exists\".\n        # Without the former, gmsh reuses stale 1D/2D meshes and partially\n        # ignores the new maxh.\n        try:\n            gmsh.model.mesh.clear()\n        except Exception:\n            pass\n        try:\n            for dim, ptag in gmsh.model.getPhysicalGroups():\n                gmsh.model.removePhysicalGroups([(dim, ptag)])\n        except Exception:\n            pass\n\n        # \u2500\u2500 Per-entity mesh size: gmsh Distance + Threshold background fields \u2500\u2500\n        threshold_field_ids: list[int] = []\n        for ent in self._entities:\n            if ent.maxh is None:\n                continue\n            dist_id = gmsh.model.mesh.field.add(\"Distance\")\n            if ent.dim == 0:\n                gmsh.model.mesh.field.setNumbers(dist_id, \"PointsList\", [ent.tag])\n            elif ent.dim == 1:\n                gmsh.model.mesh.field.setNumbers(dist_id, \"CurvesList\", [ent.tag])\n            elif ent.dim == 2:\n                gmsh.model.mesh.field.setNumbers(dist_id, \"SurfacesList\", [ent.tag])\n            elif ent.dim == 3:\n                # Volumes: refine across their boundary surfaces\n                boundary = gmsh.model.getBoundary([(3, ent.tag)], oriented=False)\n                surf_tags = [t for d, t in boundary if d == 2]\n                if not surf_tags:\n                    continue\n                gmsh.model.mesh.field.setNumbers(dist_id, \"SurfacesList\", surf_tags)\n            else:\n                continue\n\n            thr_id = gmsh.model.mesh.field.add(\"Threshold\")\n            gmsh.model.mesh.field.setNumber(thr_id, \"InField\", dist_id)\n            gmsh.model.mesh.field.setNumber(thr_id, \"SizeMin\", ent.maxh)\n            gmsh.model.mesh.field.setNumber(thr_id, \"SizeMax\", maxh)\n            gmsh.model.mesh.field.setNumber(thr_id, \"DistMin\", 0.0)\n            gmsh.model.mesh.field.setNumber(\n                thr_id, \"DistMax\",\n                transition_distance if transition_distance is not None else 5 * ent.maxh,\n            )\n            threshold_field_ids.append(thr_id)\n\n        if threshold_field_ids:\n            min_id = gmsh.model.mesh.field.add(\"Min\")\n            gmsh.model.mesh.field.setNumbers(min_id, \"FieldsList\", threshold_field_ids)\n            gmsh.model.mesh.field.setAsBackgroundMesh(min_id)\n            # When threshold fields are active the user explicitly cares about\n            # local size \u2014 keep `ExtendFromBoundary` off so global Max applies\n            # away from refined regions, but leave Curvature on (combined via\n            # Min) so curved features get resolved cleanly even if the user\n            # only set per-volume sizes.\n            gmsh.option.setNumber(\"Mesh.MeshSizeFromPoints\", 0)\n            gmsh.option.setNumber(\"Mesh.MeshSizeExtendFromBoundary\", 0)\n\n        # Curvature-based sizing: gmsh disables this by default. Turning it\n        # on gives curved primitives (cylinder, sphere, cone, torus) a\n        # geometry-accurate facet count without the user having to refine\n        # those surfaces by hand. Value = target elements per 2\u03c0 radians.\n        # 12 is a reasonable balance between fidelity and DoF count for\n        # second-kind N\u00e9d\u00e9lec-2 (high-order absorbs some discretisation\n        # error already). User can override before calling .mesh().\n        gmsh.option.setNumber(\"Mesh.MeshSizeFromCurvature\", 12)\n\n        # Assign physical groups by name. Group entities of the same name+dim.\n        by_dim_name: dict[tuple[int, str], list[int]] = {}\n        for ent in self._entities:\n            if ent.name:\n                by_dim_name.setdefault((ent.dim, ent.name), []).append(ent.tag)\n        # Material \u2192 physical group on volumes (dim=3)\n        for ent in self._entities:\n            if ent.material and ent.dim == 3:\n                key = (3, f\"_mat_{ent.material}\")\n                by_dim_name.setdefault(key, []).append(ent.tag)\n\n        name_to_tag: dict[str, int] = {}\n        next_tag = 1\n        for (dim, name), tags in by_dim_name.items():\n            phys_tag = next_tag\n            next_tag += 1\n            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=name)\n            display_name = name[len(\"_mat_\"):] if name.startswith(\"_mat_\") else name\n            name_to_tag[display_name] = phys_tag\n\n        # Generate. SaveAll=1 ensures volumes without explicit material/name still\n        # land in the .msh (otherwise gmsh writes only physical-group elements).\n        gmsh.option.setNumber(\"Mesh.MeshSizeMax\", maxh)\n        gmsh.option.setNumber(\"Mesh.SaveAll\", 1)\n        gmsh.model.mesh.generate(3)\n\n        # Write to a temp file, read bytes back\n        with tempfile.NamedTemporaryFile(suffix=\".msh\", delete=False) as f:\n            tmp_path = f.name\n        try:\n            gmsh.write(tmp_path)\n            with open(tmp_path, \"rb\") as f:\n                mesh_bytes = f.read()\n        finally:\n            try:\n                os.unlink(tmp_path)\n            except OSError:\n                pass\n\n        self._last_mesh = (mesh_bytes, name_to_tag)\n        return mesh_bytes, name_to_tag",
      "bases": [],
      "methods": [
@@ -1545,58 +1161,6 @@
        "method_type": "staticmethod"
       },
       {
-       "name": "_plate_polygon",
-       "description": "Create a 2D plane surface from a closed polygon at height z.",
-       "docstring_html": "<p>Create a 2D plane surface from a closed polygon at height z.</p>\n<p>Used by <cite>from_gds(thin_conductors=True)</cite> so metals stay 2D and their\nlayer-name physical group lands on FACES (PEC-compatible).</p>\n",
-       "source": "def _plate_polygon(self, pts: \"np.ndarray\", z: float) -> GeoObject:\n    \"\"\"Create a 2D plane surface from a closed polygon at height z.\n\n    Used by `from_gds(thin_conductors=True)` so metals stay 2D and their\n    layer-name physical group lands on FACES (PEC-compatible).\n    \"\"\"\n    import numpy as np\n    # Rectangle fast path\n    if pts.shape[0] in (4, 5):\n        p = pts[:4]\n        xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))\n        if len(xs) == 2 and len(ys) == 2:\n            tag = gmsh.model.occ.addRectangle(\n                xs[0], ys[0], z, xs[1] - xs[0], ys[1] - ys[0]\n            )\n            return self._wrap_face(tag)\n    # General polygon\n    if np.allclose(pts[0], pts[-1]):\n        pts = pts[:-1]\n    tol = 1e-9\n    keep = [pts[0]]\n    for p in pts[1:]:\n        if np.linalg.norm(p - keep[-1]) > tol:\n            keep.append(p)\n    if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:\n        keep = keep[:-1]\n    pts = np.asarray(keep)\n    if len(pts) < 3:\n        raise ValueError(f\"Polygon collapsed to {len(pts)} unique vertices\")\n    pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]\n    line_tags = [\n        gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])\n        for i in range(len(pt_tags))\n    ]\n    loop = gmsh.model.occ.addCurveLoop(line_tags)\n    surf = gmsh.model.occ.addPlaneSurface([loop])\n    return self._wrap_face(surf)",
-       "signature": "(pts: 'np.ndarray', z: float)",
-       "parameters": [
-        {
-         "name": "pts",
-         "type": "'np.ndarray'",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "z",
-         "type": "float",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "GeoObject",
-       "method_type": "method"
-      },
-      {
-       "name": "_extrude_polygon",
-       "description": "Extrude a 2D polygon (Nx2 numpy array) vertically into a 3D solid.",
-       "docstring_html": "<p>Extrude a 2D polygon (Nx2 numpy array) vertically into a 3D solid.</p>\n<p>Rectangular axis-aligned polygons \u2192 addBox (fast path).\nOtherwise: build a wire \u2192 plane surface \u2192 extrude.</p>\n",
-       "source": "def _extrude_polygon(\n    self,\n    pts: \"np.ndarray\",\n    z: float,\n    thickness: float,\n) -> GeoObject:\n    \"\"\"Extrude a 2D polygon (Nx2 numpy array) vertically into a 3D solid.\n\n    Rectangular axis-aligned polygons \u2192 addBox (fast path).\n    Otherwise: build a wire \u2192 plane surface \u2192 extrude.\n    \"\"\"\n    import numpy as np\n\n    # Detect axis-aligned rectangle (4 points, 90\u00b0 corners)\n    if pts.shape[0] in (4, 5):\n        p = pts[:4]\n        xs, ys = sorted(set(p[:, 0])), sorted(set(p[:, 1]))\n        if len(xs) == 2 and len(ys) == 2:\n            tag = gmsh.model.occ.addBox(\n                xs[0], ys[0], z,\n                xs[1] - xs[0], ys[1] - ys[0], thickness,\n            )\n            return self._wrap_volume(tag)\n\n    # General polygon: wire \u2192 plane \u2192 extrude\n    # Drop duplicated last point (gdstk includes it sometimes)\n    if np.allclose(pts[0], pts[-1]):\n        pts = pts[:-1]\n    # Drop adjacent coincident vertices \u2014 gdstk boolean unions can leave\n    # them at shared corners and they'd collapse OCC line endpoints into a\n    # broken loop. Keep one of every coincident-pair (within ~1nm).\n    tol = 1e-9\n    keep = [pts[0]]\n    for p in pts[1:]:\n        if np.linalg.norm(p - keep[-1]) > tol:\n            keep.append(p)\n    # Also check wraparound (last vs first)\n    if len(keep) > 1 and np.linalg.norm(keep[-1] - keep[0]) <= tol:\n        keep = keep[:-1]\n    pts = np.asarray(keep)\n    if len(pts) < 3:\n        raise ValueError(f\"Polygon collapsed to {len(pts)} unique vertices\")\n    pt_tags = [gmsh.model.occ.addPoint(p[0], p[1], z) for p in pts]\n    line_tags = [\n        gmsh.model.occ.addLine(pt_tags[i], pt_tags[(i + 1) % len(pt_tags)])\n        for i in range(len(pt_tags))\n    ]\n    loop = gmsh.model.occ.addCurveLoop(line_tags)\n    surf = gmsh.model.occ.addPlaneSurface([loop])\n    # Extrude vertically by thickness; second elt of return is the top cap\n    out = gmsh.model.occ.extrude([(2, surf)], 0, 0, thickness)\n    # gmsh's extrude returns: [top_face, volume, side_faces...]\n    vol_tag = next(t for d, t in out if d == 3)\n    return self._wrap_volume(vol_tag)",
-       "signature": "(pts: 'np.ndarray', z: float, thickness: float)",
-       "parameters": [
-        {
-         "name": "pts",
-         "type": "'np.ndarray'",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "z",
-         "type": "float",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "thickness",
-         "type": "float",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "GeoObject",
-       "method_type": "method"
-      },
-      {
        "name": "close",
        "description": "",
        "docstring_html": "",
@@ -1604,40 +1168,6 @@
        "signature": "()",
        "parameters": [],
        "returns": null,
-       "method_type": "method"
-      },
-      {
-       "name": "_wrap_volume",
-       "description": "",
-       "docstring_html": "",
-       "source": "def _wrap_volume(self, tag: int) -> GeoObject:\n    gmsh.model.occ.synchronize()\n    ent = _Entity.from_dimtag(3, tag)\n    obj = GeoObject(self, ent)\n    self._objects.append(obj)\n    self._entities.append(ent)\n    return obj",
-       "signature": "(tag: int)",
-       "parameters": [
-        {
-         "name": "tag",
-         "type": "int",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "GeoObject",
-       "method_type": "method"
-      },
-      {
-       "name": "_wrap_face",
-       "description": "",
-       "docstring_html": "",
-       "source": "def _wrap_face(self, tag: int) -> GeoObject:\n    gmsh.model.occ.synchronize()\n    ent = _Entity.from_dimtag(2, tag)\n    obj = GeoObject(self, ent)\n    self._objects.append(obj)\n    self._entities.append(ent)\n    return obj",
-       "signature": "(tag: int)",
-       "parameters": [
-        {
-         "name": "tag",
-         "type": "int",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "GeoObject",
        "method_type": "method"
       },
       {
@@ -1894,7 +1424,7 @@
       {
        "name": "xz_plate",
        "description": "Add a thin rectangular plate in the xz-plane.",
-       "docstring_html": "<p>Add a thin rectangular plate in the xz-plane.</p>\n<p>See :meth:`xy_plate`. <tt class=\"docutils literal\">width</tt> runs along x, <tt class=\"docutils literal\">height</tt> along z.</p>\n",
+       "docstring_html": "<p>Add a thin rectangular plate in the xz-plane.</p>\n<p>See <tt class=\"docutils literal\">xy_plate</tt>. <tt class=\"docutils literal\">width</tt> runs along x, <tt class=\"docutils literal\">height</tt> along z.</p>\n",
        "source": "def xz_plate(self, width: float, height: float,\n             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n    \"\"\"Add a thin rectangular plate in the xz-plane.\n\n    See :meth:`xy_plate`. ``width`` runs along x, ``height`` along z.\n    \"\"\"\n    return self.plate(p0=position, width=(width, 0, 0), height=(0, 0, height))",
        "signature": "(width: float, height: float, position: tuple[float, float, float] = (0, 0, 0))",
        "parameters": [
@@ -1923,7 +1453,7 @@
       {
        "name": "yz_plate",
        "description": "Add a thin rectangular plate in the yz-plane.",
-       "docstring_html": "<p>Add a thin rectangular plate in the yz-plane.</p>\n<p>See :meth:`xy_plate`. <tt class=\"docutils literal\">width</tt> runs along y, <tt class=\"docutils literal\">height</tt> along z.</p>\n",
+       "docstring_html": "<p>Add a thin rectangular plate in the yz-plane.</p>\n<p>See <tt class=\"docutils literal\">xy_plate</tt>. <tt class=\"docutils literal\">width</tt> runs along y, <tt class=\"docutils literal\">height</tt> along z.</p>\n",
        "source": "def yz_plate(self, width: float, height: float,\n             position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n    \"\"\"Add a thin rectangular plate in the yz-plane.\n\n    See :meth:`xy_plate`. ``width`` runs along y, ``height`` along z.\n    \"\"\"\n    return self.plate(p0=position, width=(0, width, 0), height=(0, 0, height))",
        "signature": "(width: float, height: float, position: tuple[float, float, float] = (0, 0, 0))",
        "parameters": [
@@ -1981,7 +1511,7 @@
       {
        "name": "polygon",
        "description": "Add a planar polygon face.",
-       "docstring_html": "<p>Add a planar polygon face.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>points <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">iterable of (x, y) or (x, y, z) tuples</span></dt>\n<dd>Vertices in CCW order. Polygon closes automatically. 2-tuples\nare placed in the xy-plane (z=0); 3-tuples must all be\ncoplanar \u2014 gmsh OCC errors on non-planar input.</dd>\n<dt>position <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Offset added to every vertex. Default origin.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>GeoObject</dt>\n<dd>2D face. Combine with :meth:`extrude` for a microstrip-style\nvolume, :meth:`revolve` for an axisymmetric solid, or\n:meth:`loft` to bridge two profiles.</dd>\n</dl>\n<p><strong>Examples</strong></p>\n<p>Hexagonal xy-plane trace footprint:</p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; import math\n&gt;&gt;&gt; pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))\n...        for t in (i * math.pi / 3 for i in range(6))]\n&gt;&gt;&gt; hex_face = g.polygon(pts)\n</pre>\n<p>Rectangle in the yz-plane at <tt class=\"docutils literal\">x = L</tt> (waveguide aperture):</p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; aperture = g.polygon([\n...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),\n...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),\n... ])\n</pre>\n",
+       "docstring_html": "<p>Add a planar polygon face.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>points <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">iterable of (x, y) or (x, y, z) tuples</span></dt>\n<dd>Vertices in CCW order. Polygon closes automatically. 2-tuples\nare placed in the xy-plane (z=0); 3-tuples must all be\ncoplanar \u2014 gmsh OCC errors on non-planar input.</dd>\n<dt>position <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Offset added to every vertex. Default origin.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>GeoObject</dt>\n<dd>2D face. Combine with <tt class=\"docutils literal\">extrude</tt> for a microstrip-style\nvolume, <tt class=\"docutils literal\">revolve</tt> for an axisymmetric solid, or\n<tt class=\"docutils literal\">loft</tt> to bridge two profiles.</dd>\n</dl>\n<p><strong>Examples</strong></p>\n<p>Hexagonal xy-plane trace footprint:</p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; import math\n&gt;&gt;&gt; pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))\n...        for t in (i * math.pi / 3 for i in range(6))]\n&gt;&gt;&gt; hex_face = g.polygon(pts)\n</pre>\n<p>Rectangle in the yz-plane at <tt class=\"docutils literal\">x = L</tt> (waveguide aperture):</p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; aperture = g.polygon([\n...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),\n...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),\n... ])\n</pre>\n",
        "source": "def polygon(self, points: Iterable[tuple[float, ...]],\n            position: tuple[float, float, float] = (0, 0, 0)) -> GeoObject:\n    \"\"\"Add a planar polygon face.\n\n    Parameters\n    ----------\n    points : iterable of (x, y) or (x, y, z) tuples\n        Vertices in CCW order. Polygon closes automatically. 2-tuples\n        are placed in the xy-plane (z=0); 3-tuples must all be\n        coplanar \u2014 gmsh OCC errors on non-planar input.\n    position : tuple[float, float, float], optional\n        Offset added to every vertex. Default origin.\n\n    Returns\n    -------\n    GeoObject\n        2D face. Combine with :meth:`extrude` for a microstrip-style\n        volume, :meth:`revolve` for an axisymmetric solid, or\n        :meth:`loft` to bridge two profiles.\n\n    Examples\n    --------\n    Hexagonal xy-plane trace footprint:\n\n    >>> import math\n    >>> pts = [(0.5 * math.cos(t), 0.5 * math.sin(t))\n    ...        for t in (i * math.pi / 3 for i in range(6))]\n    >>> hex_face = g.polygon(pts)\n\n    Rectangle in the yz-plane at ``x = L`` (waveguide aperture):\n\n    >>> aperture = g.polygon([\n    ...     (L, -W / 2, -H / 2), (L,  W / 2, -H / 2),\n    ...     (L,  W / 2,  H / 2), (L, -W / 2,  H / 2),\n    ... ])\n    \"\"\"\n    pts = list(points)\n    if len(pts) < 3:\n        raise ValueError(\"polygon needs at least 3 vertices\")\n    x0, y0, z0 = position\n    vtags = []\n    for p in pts:\n        if len(p) == 2:\n            vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, z0))\n        elif len(p) == 3:\n            vtags.append(gmsh.model.occ.addPoint(p[0] + x0, p[1] + y0, p[2] + z0))\n        else:\n            raise ValueError(f\"polygon point must be (x,y) or (x,y,z), got {p!r}\")\n    n = len(vtags)\n    ltags = [gmsh.model.occ.addLine(vtags[i], vtags[(i + 1) % n]) for i in range(n)]\n    loop = gmsh.model.occ.addCurveLoop(ltags)\n    tag = gmsh.model.occ.addPlaneSurface([loop])\n    return self._wrap_face(tag)",
        "signature": "(points: Iterable[tuple[float, ...]], position: tuple[float, float, float] = (0, 0, 0))",
        "parameters": [
@@ -2027,7 +1557,7 @@
       {
        "name": "extrude",
        "description": "Extrude a 2D face along ``axis * height`` into a 3D volume.",
-       "docstring_html": "<p>Extrude a 2D face along <tt class=\"docutils literal\">axis * height</tt> into a 3D volume.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>face <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>2D face (e.g. from :meth:`polygon`, :meth:`disc`, :meth:`plate`).</dd>\n<dt>height <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float</span></dt>\n<dd>Sweep distance along <tt class=\"docutils literal\">axis</tt>.</dd>\n<dt>axis <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Sweep direction (will be scaled by <tt class=\"docutils literal\">height</tt>). Default +z.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>GeoObject</dt>\n<dd>New volume. The source <tt class=\"docutils literal\">face</tt> becomes the bottom cap and\nremains tracked (boundary of the new volume).</dd>\n</dl>\n<p><strong>Examples</strong></p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])\n&gt;&gt;&gt; trace = g.extrude(poly, height=0.035e-3)   # 35 \u00b5m copper\n</pre>\n",
+       "docstring_html": "<p>Extrude a 2D face along <tt class=\"docutils literal\">axis * height</tt> into a 3D volume.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>face <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>2D face (e.g. from <tt class=\"docutils literal\">polygon</tt>, <tt class=\"docutils literal\">disc</tt>, <tt class=\"docutils literal\">plate</tt>).</dd>\n<dt>height <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float</span></dt>\n<dd>Sweep distance along <tt class=\"docutils literal\">axis</tt>.</dd>\n<dt>axis <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Sweep direction (will be scaled by <tt class=\"docutils literal\">height</tt>). Default +z.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>GeoObject</dt>\n<dd>New volume. The source <tt class=\"docutils literal\">face</tt> becomes the bottom cap and\nremains tracked (boundary of the new volume).</dd>\n</dl>\n<p><strong>Examples</strong></p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])\n&gt;&gt;&gt; trace = g.extrude(poly, height=0.035e-3)   # 35 \u00b5m copper\n</pre>\n",
        "source": "def extrude(self, face: GeoObject, height: float,\n            axis: tuple[float, float, float] = (0, 0, 1)) -> GeoObject:\n    \"\"\"Extrude a 2D face along ``axis * height`` into a 3D volume.\n\n    Parameters\n    ----------\n    face : GeoObject\n        2D face (e.g. from :meth:`polygon`, :meth:`disc`, :meth:`plate`).\n    height : float\n        Sweep distance along ``axis``.\n    axis : tuple[float, float, float], optional\n        Sweep direction (will be scaled by ``height``). Default +z.\n\n    Returns\n    -------\n    GeoObject\n        New volume. The source ``face`` becomes the bottom cap and\n        remains tracked (boundary of the new volume).\n\n    Examples\n    --------\n    >>> poly = g.polygon([(0, 0), (1, 0), (1, 0.5), (0, 0.5)])\n    >>> trace = g.extrude(poly, height=0.035e-3)   # 35 \u00b5m copper\n    \"\"\"\n    if face.dim != 2:\n        raise ValueError(f\"extrude expects a 2D face, got dim={face.dim}\")\n    dx, dy, dz = axis[0] * height, axis[1] * height, axis[2] * height\n    out = gmsh.model.occ.extrude([(face.dim, face._entity.tag)], dx, dy, dz)\n    gmsh.model.occ.synchronize()\n    vol_tag = next((t for d, t in out if d == 3), None)\n    if vol_tag is None:\n        raise RuntimeError(\"extrude produced no volume\")\n    return self._wrap_volume(vol_tag)",
        "signature": "(face: GeoObject, height: float, axis: tuple[float, float, float] = (0, 0, 1))",
        "parameters": [
@@ -2080,23 +1610,6 @@
         }
        ],
        "returns": "GeoObject",
-       "method_type": "method"
-      },
-      {
-       "name": "_face_outer_wire",
-       "description": "Return a wire tag for the outer boundary of ``face``.",
-       "docstring_html": "<p>Return a wire tag for the outer boundary of <tt class=\"docutils literal\">face</tt>.</p>\n<p>gmsh <tt class=\"docutils literal\">addThruSections</tt> expects wire tags; we build a fresh wire\nfrom the face's boundary edges so the call is self-contained.</p>\n",
-       "source": "def _face_outer_wire(self, face: GeoObject) -> int:\n    \"\"\"Return a wire tag for the outer boundary of ``face``.\n\n    gmsh ``addThruSections`` expects wire tags; we build a fresh wire\n    from the face's boundary edges so the call is self-contained.\n    \"\"\"\n    bd = gmsh.model.getBoundary(\n        [(face.dim, face._entity.tag)], oriented=False, recursive=False\n    )\n    edge_tags = [t for d, t in bd if d == 1]\n    return gmsh.model.occ.addWire(edge_tags, checkClosed=True)",
-       "signature": "(face: GeoObject)",
-       "parameters": [
-        {
-         "name": "face",
-         "type": "GeoObject",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "int",
        "method_type": "method"
       },
       {
@@ -2181,46 +1694,6 @@
        "method_type": "method"
       },
       {
-       "name": "_apply_out_map",
-       "description": "For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.",
-       "docstring_html": "<p>For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.\nIf an input was split into multiple pieces, the first piece keeps the\noriginal GeoObject; the others are registered as additional `_Entity`s\ncarrying the same name/material/maxh.</p>\n",
-       "source": "def _apply_out_map(self, inputs: list[GeoObject], out_map: list) -> None:\n    \"\"\"For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.\n    If an input was split into multiple pieces, the first piece keeps the\n    original GeoObject; the others are registered as additional `_Entity`s\n    carrying the same name/material/maxh.\n    \"\"\"\n    for input_obj, new_dimtags in zip(inputs, out_map):\n        if not new_dimtags:\n            warnings.warn(\n                f\"GeoObject (dim={input_obj.dim}, name={input_obj._entity.name!r}) \"\n                f\"vanished during boolean op\",\n                stacklevel=3,\n            )\n            continue\n        d0, t0 = new_dimtags[0]\n        input_obj._entity.tag = t0\n        input_obj._entity.cog = tuple(gmsh.model.occ.getCenterOfMass(d0, t0))\n        input_obj._entity.bbox = tuple(gmsh.model.getBoundingBox(d0, t0))\n        for d, t in new_dimtags[1:]:\n            extra = _Entity.from_dimtag(d, t)\n            extra.name = input_obj._entity.name\n            extra.material = input_obj._entity.material\n            extra.maxh = input_obj._entity.maxh\n            self._entities.append(extra)",
-       "signature": "(inputs: list[GeoObject], out_map: list)",
-       "parameters": [
-        {
-         "name": "inputs",
-         "type": "list[GeoObject]",
-         "default": null,
-         "description": ""
-        },
-        {
-         "name": "out_map",
-         "type": "list",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "None",
-       "method_type": "method"
-      },
-      {
-       "name": "_reresolve_children",
-       "description": "Re-resolve child entities (faces, edges) by COG+bbox. Top-level",
-       "docstring_html": "<p>Re-resolve child entities (faces, edges) by COG+bbox. Top-level\nentities (already updated via out_map) are skipped via <cite>top_level</cite> set\nof <cite>_Entity</cite> ids.</p>\n",
-       "source": "def _reresolve_children(self, top_level: set[int]) -> None:\n    \"\"\"Re-resolve child entities (faces, edges) by COG+bbox. Top-level\n    entities (already updated via out_map) are skipped via `top_level` set\n    of `_Entity` ids.\"\"\"\n    survived = []\n    for ent in self._entities:\n        if id(ent) in top_level:\n            survived.append(ent)\n            continue\n        new_tag = _resolve_entity(ent)\n        if new_tag is not None:\n            ent.tag = new_tag\n            survived.append(ent)\n        elif ent.name or ent.material or ent.maxh:\n            warnings.warn(\n                f\"Tracked entity (dim={ent.dim}, name={ent.name!r}, \"\n                f\"cog={ent.cog}) lost during boolean op; attributes dropped.\",\n                stacklevel=3,\n            )\n    self._entities = survived",
-       "signature": "(top_level: set[int])",
-       "parameters": [
-        {
-         "name": "top_level",
-         "type": "set[int]",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "None",
-       "method_type": "method"
-      },
-      {
        "name": "rotate",
        "description": "Rotate ``obj`` (and all its child faces / edges) in place.",
        "docstring_html": "<p>Rotate <tt class=\"docutils literal\">obj</tt> (and all its child faces / edges) in place.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>obj <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>Volume or face to rotate.</dd>\n<dt>angle <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float</span></dt>\n<dd>Rotation angle in radians (right-hand rule about <tt class=\"docutils literal\">axis</tt>).</dd>\n<dt>axis <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Axis direction. Default +z.</dd>\n<dt>center <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">tuple[float, float, float], optional</span></dt>\n<dd>Point on the rotation axis. Default origin.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>gmsh dimtags survive the transform unchanged; only the geometric\nattributes (COG, bbox) of every tracked entity descending from\n<tt class=\"docutils literal\">obj</tt> are refreshed. Named selectors keep working \u2014 the resolver\nsees the new positions.</p>\n",
@@ -2297,23 +1770,6 @@
        "method_type": "method"
       },
       {
-       "name": "_refresh_descendants",
-       "description": "Refresh COG/bbox for every tracked entity in ``obj``'s boundary",
-       "docstring_html": "<p>Refresh COG/bbox for every tracked entity in <tt class=\"docutils literal\">obj</tt>'s boundary\ntree (plus <tt class=\"docutils literal\">obj</tt> itself). In-place transforms keep dimtags but\nmove centroids \u2014 without this, named-face resolvers would miss.</p>\n<p>gmsh's <tt class=\"docutils literal\">getBoundary(recursive=True)</tt> descends straight to the\nvertices, so we walk one dimension at a time to collect faces and\nedges as well.</p>\n",
-       "source": "def _refresh_descendants(self, obj: GeoObject) -> None:\n    \"\"\"Refresh COG/bbox for every tracked entity in ``obj``'s boundary\n    tree (plus ``obj`` itself). In-place transforms keep dimtags but\n    move centroids \u2014 without this, named-face resolvers would miss.\n\n    gmsh's ``getBoundary(recursive=True)`` descends straight to the\n    vertices, so we walk one dimension at a time to collect faces and\n    edges as well.\n    \"\"\"\n    descendants = {(obj.dim, obj._entity.tag)}\n    current = [(obj.dim, obj._entity.tag)]\n    while current and current[0][0] > 0:\n        next_level = gmsh.model.getBoundary(current, oriented=False, recursive=False)\n        descendants.update(next_level)\n        current = list(next_level)\n    for ent in self._entities:\n        if (ent.dim, ent.tag) in descendants:\n            ent.cog = tuple(gmsh.model.occ.getCenterOfMass(ent.dim, ent.tag))\n            ent.bbox = tuple(gmsh.model.getBoundingBox(ent.dim, ent.tag))",
-       "signature": "(obj: GeoObject)",
-       "parameters": [
-        {
-         "name": "obj",
-         "type": "GeoObject",
-         "default": null,
-         "description": ""
-        }
-       ],
-       "returns": "None",
-       "method_type": "method"
-      },
-      {
        "name": "intersect",
        "description": "Boolean intersect ``target \u2229 tools``.",
        "docstring_html": "<p>Boolean intersect <tt class=\"docutils literal\">target \u2229 tools</tt>.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>target <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>Object to intersect. Survives as the intersection region.</dd>\n<dt>*tools <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>Objects to intersect with. <strong>Consumed</strong> by the operation \u2014\ndo not reference them afterwards.</dd>\n</dl>\n<p><strong>Examples</strong></p>\n<pre class=\"doctest-block\">\n&gt;&gt;&gt; g.intersect(horn, halfspace)   # clip horn to z &gt;= 0\n</pre>\n",
@@ -2339,7 +1795,7 @@
       {
        "name": "fuse",
        "description": "Boolean union ``target \u222a tools``.",
-       "docstring_html": "<p>Boolean union <tt class=\"docutils literal\">target \u222a tools</tt>.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>target <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>First operand. Survives as the merged object.</dd>\n<dt>*tools <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>Operands to merge in.</dd>\n</dl>\n<div class=\"section\" id=\"warnings\">\n<h4>Warnings</h4>\n<p>Face names on the operands are NOT preserved (faces merge and\ncentroids shift). Top-level volume names survive via the gmsh\nout_map, but <strong>set face names AFTER fuse</strong>, or use\n:meth:`fragment` if interface preservation matters.</p>\n</div>\n",
+       "docstring_html": "<p>Boolean union <tt class=\"docutils literal\">target \u222a tools</tt>.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>target <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>First operand. Survives as the merged object.</dd>\n<dt>*tools <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">GeoObject</span></dt>\n<dd>Operands to merge in.</dd>\n</dl>\n<div class=\"section\" id=\"warnings\">\n<h4>Warnings</h4>\n<p>Face names on the operands are NOT preserved (faces merge and\ncentroids shift). Top-level volume names survive via the gmsh\nout_map, but <strong>set face names AFTER fuse</strong>, or use\n<tt class=\"docutils literal\">fragment</tt> if interface preservation matters.</p>\n</div>\n",
        "source": "def fuse(self, target: GeoObject, *tools: GeoObject) -> None:\n    \"\"\"Boolean union ``target \u222a tools``.\n\n    Parameters\n    ----------\n    target : GeoObject\n        First operand. Survives as the merged object.\n    *tools : GeoObject\n        Operands to merge in.\n\n    Warnings\n    --------\n    Face names on the operands are NOT preserved (faces merge and\n    centroids shift). Top-level volume names survive via the gmsh\n    out_map, but **set face names AFTER fuse**, or use\n    :meth:`fragment` if interface preservation matters.\n    \"\"\"\n    warnings.warn(\n        \"fuse() merges faces and shifts their COGs; named faces on the \"\n        \"operands will not be reliably re-resolvable. Set face names AFTER \"\n        \"fuse, or use fragment() if you need them preserved.\",\n        stacklevel=2,\n    )\n    target_dt = [(target.dim, target._entity.tag)]\n    tools_dt = [(t.dim, t._entity.tag) for t in tools]\n    _, out_map = gmsh.model.occ.fuse(target_dt, tools_dt)\n    gmsh.model.occ.synchronize()\n    inputs = [target] + list(tools)\n    self._apply_out_map(inputs, out_map)\n    self._reresolve_children(top_level=set(id(o._entity) for o in inputs))",
        "signature": "(target: GeoObject, tools: GeoObject = ())",
        "parameters": [
@@ -2391,7 +1847,7 @@
       {
        "name": "mesh",
        "description": "Generate the 3D tet mesh of the current geometry.",
-       "docstring_html": "<p>Generate the 3D tet mesh of the current geometry.</p>\n<p>Calls gmsh's OCC mesher with the configured per-entity sizes\nand global cap. Per-entity <tt class=\"docutils literal\">obj.maxh = h</tt> is honoured via\ngmsh <tt class=\"docutils literal\">Distance + Threshold</tt> background fields so refinement\ntransitions are smooth, not abrupt.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>maxh <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Global maximum tet edge length in metres. Default 1.0\n(always pass a real value).</dd>\n<dt>transition_distance <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Distance over which a refined region's element size grows\nfrom its local <tt class=\"docutils literal\">h</tt> to the global cap. Default <tt class=\"docutils literal\">5 \u00b7 h</tt>\nper-entity.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>mesh_bytes <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">bytes</span></dt>\n<dd>gmsh <tt class=\"docutils literal\">.msh</tt> v4 file as bytes \u2014 feed to\n:meth:`SimulationBuilder.mesh` or use <tt class=\"docutils literal\">.mesh_from(g)</tt> to\npick it up from the geometry's cache.</dd>\n<dt>name_to_tag <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">dict[str, int]</span></dt>\n<dd>Map from every user-supplied name (face / edge / volume,\nand <tt class=\"docutils literal\">material=</tt>) to its physical-group integer tag.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>Side effect: caches <tt class=\"docutils literal\">(mesh_bytes, name_to_tag)</tt> on\n<tt class=\"docutils literal\">self._last_mesh</tt> so <tt class=\"docutils literal\">SimulationBuilder.mesh_from(g)</tt> can\nfind it without re-meshing.</p>\n",
+       "docstring_html": "<p>Generate the 3D tet mesh of the current geometry.</p>\n<p>Calls gmsh's OCC mesher with the configured per-entity sizes\nand global cap. Per-entity <tt class=\"docutils literal\">obj.maxh = h</tt> is honoured via\ngmsh <tt class=\"docutils literal\">Distance + Threshold</tt> background fields so refinement\ntransitions are smooth, not abrupt.</p>\n<p><strong>Parameters</strong></p>\n<dl class=\"docutils\">\n<dt>maxh <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Global maximum tet edge length in metres. Default 1.0\n(always pass a real value).</dd>\n<dt>transition_distance <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">float, optional</span></dt>\n<dd>Distance over which a refined region's element size grows\nfrom its local <tt class=\"docutils literal\">h</tt> to the global cap. Default <tt class=\"docutils literal\">5 \u00b7 h</tt>\nper-entity.</dd>\n</dl>\n<p><strong>Returns</strong></p>\n<dl class=\"docutils\">\n<dt>mesh_bytes <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">bytes</span></dt>\n<dd>gmsh <tt class=\"docutils literal\">.msh</tt> v4 file as bytes \u2014 feed to\n<tt class=\"docutils literal\">SimulationBuilder.mesh</tt> or use <tt class=\"docutils literal\">.mesh_from(g)</tt> to\npick it up from the geometry's cache.</dd>\n<dt>name_to_tag <span class=\"classifier-delimiter\">:</span> <span class=\"classifier\">dict[str, int]</span></dt>\n<dd>Map from every user-supplied name (face / edge / volume,\nand <tt class=\"docutils literal\">material=</tt>) to its physical-group integer tag.</dd>\n</dl>\n<p><strong>Notes</strong></p>\n<p>Side effect: caches <tt class=\"docutils literal\">(mesh_bytes, name_to_tag)</tt> on\n<tt class=\"docutils literal\">self._last_mesh</tt> so <tt class=\"docutils literal\">SimulationBuilder.mesh_from(g)</tt> can\nfind it without re-meshing.</p>\n",
        "source": "def mesh(self, maxh: float = 1.0, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:\n    \"\"\"Generate the 3D tet mesh of the current geometry.\n\n    Calls gmsh's OCC mesher with the configured per-entity sizes\n    and global cap. Per-entity ``obj.maxh = h`` is honoured via\n    gmsh ``Distance + Threshold`` background fields so refinement\n    transitions are smooth, not abrupt.\n\n    Parameters\n    ----------\n    maxh : float, optional\n        Global maximum tet edge length in metres. Default 1.0\n        (always pass a real value).\n    transition_distance : float, optional\n        Distance over which a refined region's element size grows\n        from its local ``h`` to the global cap. Default ``5 \u00b7 h``\n        per-entity.\n\n    Returns\n    -------\n    mesh_bytes : bytes\n        gmsh ``.msh`` v4 file as bytes \u2014 feed to\n        :meth:`SimulationBuilder.mesh` or use ``.mesh_from(g)`` to\n        pick it up from the geometry's cache.\n    name_to_tag : dict[str, int]\n        Map from every user-supplied name (face / edge / volume,\n        and ``material=``) to its physical-group integer tag.\n\n    Notes\n    -----\n    Side effect: caches ``(mesh_bytes, name_to_tag)`` on\n    ``self._last_mesh`` so ``SimulationBuilder.mesh_from(g)`` can\n    find it without re-meshing.\n    \"\"\"\n    gmsh.model.occ.synchronize()\n    # Wipe any prior mesh state AND physical groups. Without the latter,\n    # re-running this cell hits \"Physical surface 1 already exists\".\n    # Without the former, gmsh reuses stale 1D/2D meshes and partially\n    # ignores the new maxh.\n    try:\n        gmsh.model.mesh.clear()\n    except Exception:\n        pass\n    try:\n        for dim, ptag in gmsh.model.getPhysicalGroups():\n            gmsh.model.removePhysicalGroups([(dim, ptag)])\n    except Exception:\n        pass\n\n    # \u2500\u2500 Per-entity mesh size: gmsh Distance + Threshold background fields \u2500\u2500\n    threshold_field_ids: list[int] = []\n    for ent in self._entities:\n        if ent.maxh is None:\n            continue\n        dist_id = gmsh.model.mesh.field.add(\"Distance\")\n        if ent.dim == 0:\n            gmsh.model.mesh.field.setNumbers(dist_id, \"PointsList\", [ent.tag])\n        elif ent.dim == 1:\n            gmsh.model.mesh.field.setNumbers(dist_id, \"CurvesList\", [ent.tag])\n        elif ent.dim == 2:\n            gmsh.model.mesh.field.setNumbers(dist_id, \"SurfacesList\", [ent.tag])\n        elif ent.dim == 3:\n            # Volumes: refine across their boundary surfaces\n            boundary = gmsh.model.getBoundary([(3, ent.tag)], oriented=False)\n            surf_tags = [t for d, t in boundary if d == 2]\n            if not surf_tags:\n                continue\n            gmsh.model.mesh.field.setNumbers(dist_id, \"SurfacesList\", surf_tags)\n        else:\n            continue\n\n        thr_id = gmsh.model.mesh.field.add(\"Threshold\")\n        gmsh.model.mesh.field.setNumber(thr_id, \"InField\", dist_id)\n        gmsh.model.mesh.field.setNumber(thr_id, \"SizeMin\", ent.maxh)\n        gmsh.model.mesh.field.setNumber(thr_id, \"SizeMax\", maxh)\n        gmsh.model.mesh.field.setNumber(thr_id, \"DistMin\", 0.0)\n        gmsh.model.mesh.field.setNumber(\n            thr_id, \"DistMax\",\n            transition_distance if transition_distance is not None else 5 * ent.maxh,\n        )\n        threshold_field_ids.append(thr_id)\n\n    if threshold_field_ids:\n        min_id = gmsh.model.mesh.field.add(\"Min\")\n        gmsh.model.mesh.field.setNumbers(min_id, \"FieldsList\", threshold_field_ids)\n        gmsh.model.mesh.field.setAsBackgroundMesh(min_id)\n        # When threshold fields are active the user explicitly cares about\n        # local size \u2014 keep `ExtendFromBoundary` off so global Max applies\n        # away from refined regions, but leave Curvature on (combined via\n        # Min) so curved features get resolved cleanly even if the user\n        # only set per-volume sizes.\n        gmsh.option.setNumber(\"Mesh.MeshSizeFromPoints\", 0)\n        gmsh.option.setNumber(\"Mesh.MeshSizeExtendFromBoundary\", 0)\n\n    # Curvature-based sizing: gmsh disables this by default. Turning it\n    # on gives curved primitives (cylinder, sphere, cone, torus) a\n    # geometry-accurate facet count without the user having to refine\n    # those surfaces by hand. Value = target elements per 2\u03c0 radians.\n    # 12 is a reasonable balance between fidelity and DoF count for\n    # second-kind N\u00e9d\u00e9lec-2 (high-order absorbs some discretisation\n    # error already). User can override before calling .mesh().\n    gmsh.option.setNumber(\"Mesh.MeshSizeFromCurvature\", 12)\n\n    # Assign physical groups by name. Group entities of the same name+dim.\n    by_dim_name: dict[tuple[int, str], list[int]] = {}\n    for ent in self._entities:\n        if ent.name:\n            by_dim_name.setdefault((ent.dim, ent.name), []).append(ent.tag)\n    # Material \u2192 physical group on volumes (dim=3)\n    for ent in self._entities:\n        if ent.material and ent.dim == 3:\n            key = (3, f\"_mat_{ent.material}\")\n            by_dim_name.setdefault(key, []).append(ent.tag)\n\n    name_to_tag: dict[str, int] = {}\n    next_tag = 1\n    for (dim, name), tags in by_dim_name.items():\n        phys_tag = next_tag\n        next_tag += 1\n        gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=name)\n        display_name = name[len(\"_mat_\"):] if name.startswith(\"_mat_\") else name\n        name_to_tag[display_name] = phys_tag\n\n    # Generate. SaveAll=1 ensures volumes without explicit material/name still\n    # land in the .msh (otherwise gmsh writes only physical-group elements).\n    gmsh.option.setNumber(\"Mesh.MeshSizeMax\", maxh)\n    gmsh.option.setNumber(\"Mesh.SaveAll\", 1)\n    gmsh.model.mesh.generate(3)\n\n    # Write to a temp file, read bytes back\n    with tempfile.NamedTemporaryFile(suffix=\".msh\", delete=False) as f:\n        tmp_path = f.name\n    try:\n        gmsh.write(tmp_path)\n        with open(tmp_path, \"rb\") as f:\n            mesh_bytes = f.read()\n    finally:\n        try:\n            os.unlink(tmp_path)\n        except OSError:\n            pass\n\n    self._last_mesh = (mesh_bytes, name_to_tag)\n    return mesh_bytes, name_to_tag",
        "signature": "(maxh: float = 1.0, transition_distance: float | None = None)",
        "parameters": [
@@ -2412,26 +1868,7 @@
        "method_type": "method"
       }
      ],
-     "attributes": [
-      {
-       "name": "_objects",
-       "description": "",
-       "type": "list[GeoObject]",
-       "value": "[]"
-      },
-      {
-       "name": "_entities",
-       "description": "",
-       "type": "list[_Entity]",
-       "value": "[]"
-      },
-      {
-       "name": "_owns_gmsh",
-       "description": "",
-       "type": null,
-       "value": "True"
-      }
-     ],
+     "attributes": [],
      "parameters": [
       {
        "name": "name",
@@ -2442,52 +1879,7 @@
      ]
     }
    ],
-   "functions": [
-    {
-     "name": "_bbox_match",
-     "description": "",
-     "docstring_html": "",
-     "source": "def _bbox_match(a: tuple, b: tuple, tol: float) -> bool:\n    return all(abs(a[i] - b[i]) < tol for i in range(6))",
-     "signature": "(a: tuple, b: tuple, tol: float)",
-     "parameters": [
-      {
-       "name": "a",
-       "type": "tuple",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "b",
-       "type": "tuple",
-       "default": null,
-       "description": ""
-      },
-      {
-       "name": "tol",
-       "type": "float",
-       "default": null,
-       "description": ""
-      }
-     ],
-     "returns": "bool"
-    },
-    {
-     "name": "_resolve_entity",
-     "description": "Find a gmsh entity in `target.dim` matching the stored (bbox, cog).",
-     "docstring_html": "<p>Find a gmsh entity in <cite>target.dim</cite> matching the stored (bbox, cog).</p>\n<p>Strategy: bbox is the primary identity (stable through fragment, even when\nsub-volumes are carved out \u2014 the outer bbox doesn't change). COG is a\nsecondary discriminator with a tolerance that scales with the bbox extent.\nThis handles two real failure modes:</p>\n<blockquote>\n<ol class=\"arabic simple\">\n<li>COG drift after carving a sub-volume out of a larger one (e.g. air\nbox minus substrate) \u2014 bbox stays put, COG shifts by mass redistribution.</li>\n<li>Coplanar overlapping faces (annulus + sub-region after fragment) \u2014\nboth have the same COG, but different bboxes.</li>\n</ol>\n</blockquote>\n",
-     "source": "def _resolve_entity(target: _Entity) -> int | None:\n    \"\"\"Find a gmsh entity in `target.dim` matching the stored (bbox, cog).\n\n    Strategy: bbox is the primary identity (stable through fragment, even when\n    sub-volumes are carved out \u2014 the outer bbox doesn't change). COG is a\n    secondary discriminator with a tolerance that scales with the bbox extent.\n    This handles two real failure modes:\n      1. COG drift after carving a sub-volume out of a larger one (e.g. air\n         box minus substrate) \u2014 bbox stays put, COG shifts by mass redistribution.\n      2. Coplanar overlapping faces (annulus + sub-region after fragment) \u2014\n         both have the same COG, but different bboxes.\n    \"\"\"\n    # bbox extent diagonal \u2014 sets an \"internal scale\" for COG drift tolerance.\n    extent = math.sqrt(sum((target.bbox[3 + i] - target.bbox[i]) ** 2 for i in range(3)))\n    cog_tol = max(_COG_TOL, 0.01 * extent)  # 1% of diagonal, or absolute floor\n\n    candidates = []\n    for d, t in gmsh.model.getEntities(target.dim):\n        if d != target.dim:\n            continue\n        bbox = tuple(gmsh.model.getBoundingBox(d, t))\n        if not _bbox_match(bbox, target.bbox, _BBOX_TOL):\n            continue\n        cog = tuple(gmsh.model.occ.getCenterOfMass(d, t))\n        if math.dist(cog, target.cog) < cog_tol:\n            candidates.append(t)\n    if len(candidates) == 1:\n        return candidates[0]\n    if len(candidates) > 1:\n        # Tie-break by smallest COG distance.\n        candidates.sort(key=lambda t: math.dist(\n            tuple(gmsh.model.occ.getCenterOfMass(target.dim, t)), target.cog))\n        return candidates[0]\n    return None",
-     "signature": "(target: _Entity)",
-     "parameters": [
-      {
-       "name": "target",
-       "type": "_Entity",
-       "default": null,
-       "description": ""
-      }
-     ],
-     "returns": "int | None"
-    }
-   ]
+   "functions": []
   },
   "rapidfem.io": {
    "name": "rapidfem.io",
@@ -2623,15 +2015,6 @@
        "description": ""
       }
      ],
-     "returns": "None"
-    },
-    {
-     "name": "_bind_methods",
-     "description": "",
-     "docstring_html": "",
-     "source": "def _bind_methods() -> None:\n    try:\n        from rapidfem._native import SweepResult\n        # PyO3 classes accept attribute assignment in pyo3 0.22+\n        SweepResult.to_network = to_network            # type: ignore[attr-defined]\n        SweepResult.to_touchstone = to_touchstone      # type: ignore[attr-defined]\n        SweepResult.to_hdf5 = to_hdf5                  # type: ignore[attr-defined]\n    except (ImportError, AttributeError, TypeError):\n        # If PyO3 classes don't accept setattr in this pyo3 version, users still\n        # get the free functions via `rapidfem.io.*`.\n        pass",
-     "signature": "()",
-     "parameters": [],
      "returns": "None"
     }
    ]
