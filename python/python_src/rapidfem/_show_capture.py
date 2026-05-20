@@ -16,7 +16,8 @@ from typing import Any, NamedTuple
 class CapturedItem(NamedTuple):
     name: str
     obj: Any
-    kind: str  # "geometry" | "builder" | "simulation" | "result" | "unknown"
+    kind: str  # "geometry" | "builder" | "simulation" | "result"
+               # | "td_result" | "td_timeseries" | "td_trajectory" | "unknown"
 
 
 _state = threading.local()
@@ -59,6 +60,15 @@ def classify(obj: Any) -> str:
         return "simulation"
     if cls == "SweepResult":
         return "result"
+    # Time-domain result wrappers (rapidfem.problem.td) — thin objects the
+    # ProblemTD verbs hand back so show() can route them to a UI panel.
+    if mod.startswith("rapidfem"):
+        if cls == "TdScattering":
+            return "td_result"
+        if cls in ("TdResponse", "TdTransfer"):
+            return "td_timeseries"
+        if cls == "TdTrajectory":
+            return "td_trajectory"
     if cls == "Eigenmode":
         return "eigenmode"
     # `run_eigenmode()` returns a list — accept that as the typical user

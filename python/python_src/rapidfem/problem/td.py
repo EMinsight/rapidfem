@@ -206,6 +206,133 @@ class TdReducedModel:
         return f"TdReducedModel(r={self.r}, n={self.n})"
 
 
+def _point_label(spec):
+    """Human-readable label for a ``(point, field, component)`` probe/source
+    spec — e.g. ``"E_z @ (0.25, 0.25, 0.5)"``."""
+    p, f, c = spec
+    coords = ", ".join(f"{v:g}" for v in np.asarray(p, dtype=float).ravel())
+    return f"{f}_{c} @ ({coords})"
+
+
+class TdScattering:
+    """Modal-port scattering matrix from :meth:`ProblemTD.sparams`.
+
+    Iterates as ``(frequencies, sparams)``, so the documented tuple
+    unpacking — ``freqs, S = ptd.sparams(...)`` — keeps working unchanged;
+    the named attributes additionally let :func:`rapidfem.show` plot the
+    result in the UI.
+
+    Attributes
+    ----------
+    frequencies : ndarray
+        frequency axis, shape ``[n_freq]``
+    sparams : ndarray of complex
+        scattering matrix, shape ``[n_freq, n_port, n_port]``
+    """
+
+    def __init__(self, frequencies, sparams):
+        self.frequencies = np.asarray(frequencies)
+        self.sparams = np.asarray(sparams)
+
+    @property
+    def n_ports(self):
+        """Number of ports — the side length of the S-matrix."""
+        return self.sparams.shape[1] if self.sparams.ndim == 3 else 0
+
+    def __iter__(self):
+        return iter((self.frequencies, self.sparams))
+
+    def __repr__(self):
+        return (f"TdScattering(n_ports={self.n_ports}, "
+                f"n_freq={self.frequencies.size})")
+
+
+class TdResponse:
+    """Probe time series from :meth:`ProblemTD.driven_transient`.
+
+    Iterates as ``(times, responses)`` so the documented tuple unpacking
+    keeps working; the stored source / probe labels let
+    :func:`rapidfem.show` annotate the time-series plot.
+
+    Attributes
+    ----------
+    times : ndarray
+        time axis, shape ``[steps + 1]``
+    responses : ndarray
+        per-probe samples, shape ``[n_probes, steps + 1]``
+    source_label, probe_labels : str, list of str
+        human-readable point/field/component labels
+    """
+
+    def __init__(self, times, responses, *, source_label="", probe_labels=None):
+        self.times = np.asarray(times)
+        self.responses = np.asarray(responses)
+        self.source_label = source_label
+        self.probe_labels = list(probe_labels or [])
+
+    def __iter__(self):
+        return iter((self.times, self.responses))
+
+    def __repr__(self):
+        return (f"TdResponse(n_probes={self.responses.shape[0]}, "
+                f"steps={self.times.size - 1})")
+
+
+class TdTransfer:
+    """Scalar field-to-field frequency response from
+    :meth:`ProblemTD.transfer_function`.
+
+    Iterates as ``(frequencies, H)`` so the documented tuple unpacking
+    keeps working; the labels let :func:`rapidfem.show` annotate the plot.
+
+    Attributes
+    ----------
+    frequencies : ndarray
+        frequency axis, shape ``[steps // 2 + 1]``
+    H : ndarray of complex
+        the transfer function ``R(f) / G(f)``
+    source_label, probe_label : str
+        human-readable point/field/component labels
+    """
+
+    def __init__(self, frequencies, H, *, source_label="", probe_label=""):
+        self.frequencies = np.asarray(frequencies)
+        self.H = np.asarray(H)
+        self.source_label = source_label
+        self.probe_label = probe_label
+
+    def __iter__(self):
+        return iter((self.frequencies, self.H))
+
+    def __repr__(self):
+        return f"TdTransfer(n_freq={self.frequencies.size})"
+
+
+class TdTrajectory(np.ndarray):
+    """A time-domain field trajectory — ``[n_snapshot, n_dof]``.
+
+    For every numerical purpose this *is* a :class:`numpy.ndarray` —
+    indexing, slicing, ``.shape``, arithmetic and
+    :meth:`ProblemTD.export_vtk` all behave exactly as before. It
+    additionally carries a back-reference to the originating
+    :class:`ProblemTD` and the time step, so :func:`rapidfem.show` can
+    sample the DG state onto renderable geometry for the 3-D field
+    animation in the UI.
+    """
+
+    def __new__(cls, data, *, problem=None, dt=None):
+        obj = np.ascontiguousarray(data, dtype=np.float64).view(cls)
+        obj._problem = problem
+        obj._dt = dt
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self._problem = getattr(obj, "_problem", None)
+        self._dt = getattr(obj, "_dt", None)
+
+
 def _fmt(a):
     """Whitespace-joined ascii of a numeric array — VTK DataArray payload."""
     return " ".join(f"{v:.9g}" for v in np.asarray(a).ravel())
@@ -550,8 +677,12 @@ class ProblemTD:
 
         Returns
         -------
-        times : ndarray, shape ``[steps+1]``
-        responses : ndarray, shape ``[n_probes, steps+1]``
+        TdResponse
+            Iterates as ``(times, responses)`` — ``times`` of shape
+            ``[steps+1]`` and ``responses`` of shape
+            ``[n_probes, steps+1]`` — so ``times, resp = ...`` unpacking
+            works unchanged; passing it to :func:`rapidfem.show` plots the
+            probe signals.
         """
         sp, sf, sc = source
         sdof = self.probe_dof(sp, field=sf, component=sc)
@@ -585,7 +716,11 @@ class ProblemTD:
                 f"driven_transient complete — {steps} steps "
                 f"in {time.time() - t0:.1f}s"
             )
-        return times, resp
+        return TdResponse(
+            times, resp,
+            source_label=_point_label(source),
+            probe_labels=[_point_label(p) for p in probes],
+        )
 
     def transfer_function(
         self, *, source, probe, pulse, dt, steps, krylov_dim=40,
@@ -621,12 +756,12 @@ class ProblemTD:
 
         Returns
         -------
-        freqs : ndarray
-            Frequency axis — Hz for a geometry in SI units, operator
-            units for a :meth:`box`. Length ``steps//2 + 1``.
-        H : ndarray of complex
-            The transfer function ``R(f)/G(f)``, zero outside the pulse
-            band where the drive carries no energy.
+        TdTransfer
+            Iterates as ``(freqs, H)`` — ``freqs`` the frequency axis (Hz
+            for an SI geometry, operator units for a :meth:`box`, length
+            ``steps//2 + 1``) and ``H`` the complex transfer function
+            ``R(f)/G(f)``, zero outside the pulse band. ``freqs, H = ...``
+            unpacking works unchanged; :func:`rapidfem.show` plots it.
         """
         times, resp = self.driven_transient(
             source=source, waveform=pulse, probes=[probe],
@@ -643,7 +778,11 @@ class ProblemTD:
         h = np.zeros_like(spec_r)
         band = np.abs(spec_g) > 1e-2 * np.abs(spec_g).max()
         h[band] = spec_r[band] / spec_g[band]
-        return freqs, h
+        return TdTransfer(
+            freqs, h,
+            source_label=_point_label(source),
+            probe_label=_point_label(probe),
+        )
 
     # -- ports: scattering parameters --------------------------------------
     def _port_impedance(self, port_idx, f):
@@ -680,10 +819,13 @@ class ProblemTD:
 
         Returns
         -------
-        freqs : ndarray
-        S : ndarray of complex, shape ``[n_freq, n_port, n_port]``
-            ``S[f, i, j]`` — the index order matches the frequency-domain
-            backend's ``SweepResult.sparams``.
+        TdScattering
+            Iterates as ``(freqs, S)`` — ``freqs`` the frequency axis and
+            ``S`` the complex scattering matrix of shape
+            ``[n_freq, n_port, n_port]``, with ``S[f, i, j]`` in the same
+            index order as the frequency-domain backend's
+            ``SweepResult.sparams``. ``freqs, S = ...`` unpacking works
+            unchanged; :func:`rapidfem.show` plots the S-parameters.
         """
         freqs = np.asarray(freqs, dtype=float).ravel()
         n_ports = self._op.n_ports()
@@ -744,13 +886,20 @@ class ProblemTD:
                 f"sparams complete — {n_ports}-port S-matrix at "
                 f"{freqs.size} frequencies"
             )
-        return freqs, s_mat
+        return TdScattering(freqs, s_mat)
 
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0, *, dt, steps, krylov_dim=40, verbose=True):
         """Propagate ``y0`` for ``steps`` steps of size ``dt``.
 
-        Returns the trajectory as an array of shape ``[steps + 1, n_dof]``.
+        Returns
+        -------
+        TdTrajectory
+            The field trajectory, shape ``[steps + 1, n_dof]``. It *is* a
+            :class:`numpy.ndarray` for every numerical purpose (indexing,
+            slicing, :meth:`export_vtk`); passing it to
+            :func:`rapidfem.show` plays it back as a 3-D field animation
+            in the UI.
         """
         y = np.asarray(y0, dtype=float).ravel()
         traj = np.empty((steps + 1, y.size))
@@ -769,7 +918,7 @@ class ProblemTD:
                 )
         if verbose:
             _log(f"transient complete — {steps} steps in {time.time() - t0:.1f}s")
-        return traj
+        return TdTrajectory(traj, problem=self, dt=dt)
 
     # -- field export ------------------------------------------------------
     def export_vtk(self, states, path, *, times=None):

@@ -153,15 +153,23 @@ def show(obj, name: str = "default"):
         rf.show(g)                  # OCC preview pre-mesh, tet mesh post-mesh
         rf.show(prob)               # E-field point cloud (after .sweep())
         rf.show(result)             # |S-params| plot
+        rf.show(ptd.transient(...)) # 3-D time-domain field animation
+        rf.show(ptd.sparams(...))   # time-domain |S-params| plot
 
 
     Parameters
     ----------
-    obj : Geometry, Problem, SweepResult, or list[Eigenmode]
+    obj : Geometry, Problem, SweepResult, list[Eigenmode], or a \
+        time-domain result
         anything renderable by the UI; pre-mesh geometries render a
         coarse OCC surface preview, post-mesh ones render the FEM tet
         mesh; Problem + SweepResult render :math:`|\\mathbf{E}(t, r)|^2`
-        point clouds plus an S-parameter plot
+        point clouds plus an S-parameter plot. The :class:`ProblemTD`
+        verb results render too — a :meth:`~rapidfem.ProblemTD.transient`
+        trajectory as a 3-D field animation,
+        :meth:`~rapidfem.ProblemTD.sparams` as an S-parameter plot, and
+        :meth:`~rapidfem.ProblemTD.driven_transient` /
+        :meth:`~rapidfem.ProblemTD.transfer_function` as time-series plots
     name : str
         display slot name; repeated ``show`` calls with the same name
         overwrite earlier outputs, different names allocate separate
