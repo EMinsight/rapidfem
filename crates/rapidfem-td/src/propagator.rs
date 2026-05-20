@@ -132,6 +132,46 @@ where
     r[..n].to_vec()
 }
 
+/// Second-order ETD step of `dy/dt = A·y + b(t)`, with the source taken
+/// **linear** across the step from `b0 = b(tₙ)` to `b1 = b(tₙ+h)`:
+/// `y ← exp(hA)y + h·φ₁(hA)·b0 + h²·φ₂(hA)·d`,  `d = (b1-b0)/h`.
+///
+/// Uses a two-row augmentation — `exp(h·[[A, d, b0],[0,0,1],[0,0,0]])` applied
+/// to `[y; 0; 1]` — so the Krylov `expmv` produces both φ-functions with no
+/// extra machinery. Exact when `b` is linear; second-order otherwise.
+pub fn etd_step2<F>(
+    matvec: F,
+    y: &[f64],
+    b0: &[f64],
+    b1: &[f64],
+    h: f64,
+    m: usize,
+) -> Vec<f64>
+where
+    F: Fn(&[f64]) -> Vec<f64>,
+{
+    let n = y.len();
+    let d: Vec<f64> =
+        b0.iter().zip(b1).map(|(a, b)| (b - a) / h).collect();
+    // Augmented state [y; p; q] with p(0)=0, q(0)=1 ⇒ q≡1, p≡t.
+    let mut z = Vec::with_capacity(n + 2);
+    z.extend_from_slice(y);
+    z.push(0.0);
+    z.push(1.0);
+    let aug = |zz: &[f64]| -> Vec<f64> {
+        let (p, q) = (zz[n], zz[n + 1]);
+        let mut out = matvec(&zz[..n]);
+        for k in 0..n {
+            out[k] += d[k] * p + b0[k] * q;
+        }
+        out.push(q);
+        out.push(0.0);
+        out
+    };
+    let r = expmv(aug, &z, h, m);
+    r[..n].to_vec()
+}
+
 /// Matrix-free `exp(t·A)·v` with an **automatically chosen** Krylov dimension.
 ///
 /// The subspace grows one vector at a time; after each step the Arnoldi
@@ -328,6 +368,45 @@ mod tests {
         let got = etd_step(matvec, &y0, &b, h, 8);
         assert!((got[0] - want[0]).abs() < 1e-12, "{got:?} vs {want:?}");
         assert!((got[1] - want[1]).abs() < 1e-12, "{got:?} vs {want:?}");
+    }
+
+    #[test]
+    fn etd_step2_is_second_order_and_exact_for_linear_sources() {
+        // A = 0: with no dynamics, etd_step2 integrates b(t) = b0 + d·t
+        // exactly — the trapezoidal value y0 + h·(b0+b1)/2.
+        let zero = |x: &[f64]| vec![0.0; x.len()];
+        let y0 = [1.0, -2.0];
+        let (b0, b1) = ([0.5, 1.5], [2.5, -0.5]);
+        let h = 0.4;
+        let got = etd_step2(zero, &y0, &b0, &b1, h, 6);
+        for k in 0..2 {
+            let want = y0[k] + h * 0.5 * (b0[k] + b1[k]);
+            assert!((got[k] - want).abs() < 1e-12, "A=0 trapezoid {got:?}");
+        }
+
+        // Second order: the error quarters when the step halves.
+        let omega = 1.7;
+        let matvec = |x: &[f64]| vec![-omega * x[1], omega * x[0]];
+        let src = |t: f64| vec![(2.3 * t).cos(), 0.4 * t];
+        let t_end = 1.2;
+        let integrate = |nsteps: usize| -> Vec<f64> {
+            let h = t_end / nsteps as f64;
+            let mut y = vec![1.0, 0.0];
+            for s in 0..nsteps {
+                let t = s as f64 * h;
+                y = etd_step2(matvec, &y, &src(t), &src(t + h), h, 6);
+            }
+            y
+        };
+        let reference = integrate(2048);
+        let err = |n: usize| -> f64 {
+            let y = integrate(n);
+            ((y[0] - reference[0]).powi(2)
+                + (y[1] - reference[1]).powi(2))
+            .sqrt()
+        };
+        let rate = err(16) / err(32);
+        assert!(rate > 3.5, "etd_step2 not ~2nd order — error ratio {rate:.2}");
     }
 
     #[test]
