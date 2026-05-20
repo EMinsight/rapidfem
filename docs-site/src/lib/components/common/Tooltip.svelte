@@ -193,7 +193,7 @@
 		background: var(--surface);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		pointer-events: none;
 		z-index: 10000;
@@ -203,7 +203,7 @@
 
 	.shortcut {
 		font-family: var(--font-mono);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text-disabled);
 		white-space: nowrap;
 	}

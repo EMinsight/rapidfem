@@ -70,7 +70,7 @@
 		display: flex;
 		align-items: center;
 		padding: 0 14px;
-		font-size: var(--font-xs);
+		font-size: var(--fs-xs);
 		font-weight: 600;
 		font-family: var(--font-mono);
 		letter-spacing: 0.5px;

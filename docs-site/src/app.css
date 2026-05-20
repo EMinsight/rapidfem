@@ -72,10 +72,10 @@
 	--radius-xl: 0;
 
 	/* ===== FONT SIZES ===== */
-	--font-xs: 11px; /* nav tabs, detail labels */
-	--font-base: 13px; /* body text, code, buttons, most UI */
-	--font-md: 15px; /* section headers, panel headers, labels */
-	--font-lg: 21px; /* page titles (h1) only */
+	--fs-xs: 11px; /* nav tabs, detail labels */
+	--fs-sm: 13px; /* body text, code, buttons, most UI */
+	--fs-md: 15px; /* section headers, panel headers, labels */
+	--fs-lg: 21px; /* page titles (h1) only */
 
 	/* ===== ICON SIZES ===== */
 	--icon-xs: 12px;
@@ -122,7 +122,7 @@ body {
 	min-width: var(--app-min-width);
 	overflow: hidden;
 	font-family: var(--font-ui);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	line-height: 1.6;
 	color: var(--text);
 	background: var(--surface);
@@ -143,12 +143,12 @@ h6 {
 }
 
 h1 {
-	font-size: var(--font-lg);
+	font-size: var(--fs-lg);
 }
 h2,
 h3,
 h4 {
-	font-size: var(--font-md);
+	font-size: var(--fs-md);
 }
 
 p {
@@ -173,7 +173,7 @@ code {
 
 pre {
 	font-family: var(--font-mono);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 500;
 	line-height: 1.55;
 	color: var(--text-muted);
@@ -198,7 +198,7 @@ button {
 	padding: var(--space-sm) var(--space-lg);
 	border-radius: 0;
 	font-family: var(--font-ui);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
@@ -301,7 +301,7 @@ button.ghost:hover {
 }
 
 .action-card .action-label {
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 500;
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
@@ -315,7 +315,7 @@ button.ghost:hover {
 	padding: var(--space-sm) var(--space-lg);
 	background: var(--surface-raised);
 	border-bottom: 1px solid var(--border);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--text-muted);
 	text-transform: uppercase;
@@ -337,7 +337,7 @@ textarea {
 	padding: var(--space-sm) var(--space-md);
 	border-radius: 0;
 	font-family: var(--font-mono);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	transition: all var(--transition-fast);
 }
 
@@ -474,7 +474,7 @@ input::placeholder {
 	background: none;
 	border: none;
 	padding: 0;
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	color: var(--text);
 }
 
@@ -483,7 +483,7 @@ input::placeholder {
 	display: inline-flex;
 	align-items: center;
 	padding: 2px 8px;
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 500;
 	border-radius: 0;
 	background: var(--surface-raised);
@@ -514,7 +514,7 @@ input::placeholder {
 /* Uppercase label / section header — lava accent */
 .label-uppercase {
 	font-family: var(--font-ui);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--accent);
 	text-transform: uppercase;
@@ -592,7 +592,7 @@ input::placeholder {
 
 /* Lead paragraph */
 .lead {
-	font-size: var(--font-md);
+	font-size: var(--fs-md);
 	color: var(--text-muted);
 	margin-bottom: var(--space-xl);
 }
@@ -615,7 +615,7 @@ input::placeholder {
 
 .prose h2 {
 	position: relative;
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--accent);
 	text-transform: uppercase;
@@ -715,7 +715,7 @@ input::placeholder {
 /* API documentation */
 .api-signature {
 	font-family: var(--font-mono);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	background: var(--surface-inset);
 	padding: var(--space-md) var(--space-lg);
 	border: 1px solid var(--border);
@@ -741,7 +741,7 @@ input::placeholder {
 .api-param-table th {
 	font-weight: 600;
 	color: var(--text-muted);
-	font-size: var(--font-base);
+	font-size: var(--fs-sm);
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
 }

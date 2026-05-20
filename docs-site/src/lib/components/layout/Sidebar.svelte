@@ -212,7 +212,7 @@
 
 	.result-name {
 		font-family: var(--font-mono);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--accent);
 	}
@@ -220,7 +220,7 @@
 	.result-meta {
 		display: flex;
 		gap: var(--space-sm);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 	}
 
 	.result-type {
@@ -257,7 +257,7 @@
 		align-items: center;
 		gap: var(--space-sm);
 		padding: var(--space-sm) var(--space-md);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--text-muted);
 		text-transform: uppercase;

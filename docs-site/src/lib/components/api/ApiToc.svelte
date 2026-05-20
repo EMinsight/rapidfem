@@ -248,7 +248,7 @@
 		padding-left: calc(var(--space-sm) + var(--depth, 0) * var(--space-md));
 		background: none;
 		border: none;
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 500;
 		text-transform: none;
 		letter-spacing: normal;
@@ -304,7 +304,7 @@
 		background: none;
 		border: none;
 		font-family: var(--font-mono);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		text-transform: none;
 		letter-spacing: normal;
 		color: var(--text-muted);

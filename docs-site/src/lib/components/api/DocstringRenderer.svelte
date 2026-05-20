@@ -158,7 +158,7 @@
 
 <style>
 	.docstring-content {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		line-height: 1.7;
 		color: var(--text-muted);
 	}
@@ -181,7 +181,7 @@
 	.docstring-content :global(.param-table) {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 	}
 
 	.docstring-content :global(.param-table thead th) {
@@ -243,7 +243,7 @@
 	.docstring-content :global(h4),
 	.docstring-content :global(p:has(> strong:only-child)) {
 		font-family: var(--font-ui);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--accent);
 		text-transform: uppercase;
@@ -276,14 +276,14 @@
 		margin: var(--space-md) 0;
 		overflow-x: auto;
 		font-family: var(--font-mono);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text);
 		line-height: 1.55;
 	}
 
 	.docstring-content :global(code) {
 		font-family: var(--font-mono);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		background: var(--surface-raised);
 		padding: 1px 4px;
 		border: 1px solid var(--border);

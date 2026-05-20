@@ -38,6 +38,6 @@
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		font-weight: 600;
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 	}
 </style>

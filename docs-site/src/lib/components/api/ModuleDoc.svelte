@@ -90,7 +90,7 @@
 
 	.api-module-name code {
 		font-family: var(--font-mono);
-		font-size: var(--font-md);
+		font-size: var(--fs-md);
 		font-weight: 600;
 		color: var(--accent);
 		background: none;
@@ -99,7 +99,7 @@
 	}
 
 	.api-module-desc {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		margin: 0;
 		line-height: 1.6;

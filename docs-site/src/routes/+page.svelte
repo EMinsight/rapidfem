@@ -136,7 +136,7 @@
 	}
 
 	.tagline {
-		font-size: var(--font-md);
+		font-size: var(--fs-md);
 		font-weight: 600;
 		color: var(--text-muted);
 		text-transform: uppercase;
@@ -145,7 +145,7 @@
 	}
 
 	.description {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		max-width: 620px;
 		margin: 0 auto var(--space-xl);
@@ -167,7 +167,7 @@
 		border: 1px solid var(--border);
 		background: var(--surface-raised);
 		color: var(--text);
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
@@ -197,7 +197,7 @@
 	}
 
 	h2 {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--accent);
 		text-transform: uppercase;
@@ -219,7 +219,7 @@
 	}
 
 	.feature-title {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		font-weight: 600;
 		color: var(--text);
 		text-transform: uppercase;
@@ -227,7 +227,7 @@
 	}
 
 	.feature-desc {
-		font-size: var(--font-base);
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
 		line-height: 1.6;
 	}
