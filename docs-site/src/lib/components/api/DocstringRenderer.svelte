@@ -333,20 +333,21 @@
 		margin: var(--space-md) 0;
 	}
 
-	/* Math blocks — no backdrop, border or scroll container; full text colour. */
+	/* Math blocks — no backdrop, border or scroll container. Same muted
+	   colour as the surrounding docstring text. */
 	.docstring-content :global(pre.math),
 	.docstring-content :global(div.math) {
 		background: none;
 		border: none;
 		padding: 0;
 		margin: var(--space-md) 0;
-		color: var(--text);
+		color: var(--text-muted);
 		white-space: normal;
 	}
 
-	/* Inline math rendered from LaTeX literals — drop the inline-code colour. */
+	/* Inline math rendered from LaTeX literals — muted, like the body text. */
 	.docstring-content :global(.katex-inline) {
-		color: var(--text);
+		color: var(--text-muted);
 	}
 
 	.docstring-content :global(.math:not(.katex-rendered)) {

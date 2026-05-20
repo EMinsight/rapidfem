@@ -3,7 +3,7 @@
 	import Icon from '$lib/components/common/Icon.svelte';
 	import { tooltip } from '$lib/components/common/Tooltip.svelte';
 	import CodeBlock from '$lib/components/common/CodeBlock.svelte';
-	import { site, external, features, installation, quickstart } from '$lib/config/rapidfem';
+	import { site, external, installation, quickstart } from '$lib/config/rapidfem';
 
 	let copiedCmd = $state<string | null>(null);
 
@@ -27,7 +27,6 @@
 		<header class="hero">
 			<img src="{base}/favicon.svg" alt="RapidFEM" class="hero-logo" />
 			<h1 class="hero-title">RapidFEM</h1>
-			<p class="tagline">{site.tagline}</p>
 			<p class="description">{site.description}</p>
 			<div class="hero-actions">
 				<a href="{base}/latest/api/" class="hero-btn primary">
@@ -44,22 +43,6 @@
 				</a>
 			</div>
 		</header>
-	</main>
-
-	<div class="separator"></div>
-
-	<main>
-		<section>
-			<h2>Features</h2>
-			<div class="tile-grid cols-4">
-				{#each features as feature}
-					<div class="card feature-card">
-						<div class="feature-title">{feature.title}</div>
-						<div class="feature-desc">{feature.description}</div>
-					</div>
-				{/each}
-			</div>
-		</section>
 	</main>
 
 	<div class="separator"></div>
@@ -135,15 +118,6 @@
 		margin-bottom: var(--space-md);
 	}
 
-	.tagline {
-		font-size: var(--fs-xs);
-		font-weight: 600;
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 1px;
-		margin-bottom: var(--space-md);
-	}
-
 	.description {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
@@ -210,26 +184,6 @@
 		max-width: var(--content-max-width);
 		margin-bottom: var(--space-lg);
 		line-height: 1.7;
-	}
-
-	.feature-card {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-sm);
-	}
-
-	.feature-title {
-		font-size: var(--fs-sm);
-		font-weight: 600;
-		color: var(--text);
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-	}
-
-	.feature-desc {
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		line-height: 1.6;
 	}
 
 	@media (max-width: 600px) {
