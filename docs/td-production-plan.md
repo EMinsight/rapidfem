@@ -8,7 +8,7 @@ and systematic cross-validation against the frequency-domain solver.
 
 ## Where we are
 
-**Phases 1–3 complete** (see commit log, `prod P1.x`–`P3.x`):
+**Phases 1–6 complete** (see commit log, `prod P1.x`–`P6.x`):
 
 - **P1** — runs on arbitrary unstructured gmsh meshes; convergence and
   conditioning verified.
@@ -16,14 +16,19 @@ and systematic cross-validation against the frequency-domain solver.
   from the geometry API.
 - **P3** — soft sources, field probes, `driven_transient`, second-order
   ETD source step, `GaussianPulse` excitation.
-- **P4.1** — physical-units (`c`) mapping; `ProblemTD.resonances()`.
+- **P4** — physical-units (`c`) mapping; `ProblemTD.resonances()`; FD↔TD
+  cross-validation (0.04 % agreement on a shared cavity).
+- **P5** — graded matched absorbing layer; magnetic conductivity; Debye
+  dispersive material via ADE, validated against the analytic `ε(ω)`.
+- **P6** — parallel matrix-free `apply` (rayon, all cores); element-wise
+  sparse `A` assembly with no densifying (`O(nnz)`, scales to 10⁵ DOF);
+  zero-copy numpy in/out for `apply`/`step`/`state_space`; benchmark.
 
-Remaining: P4.2–4.3 (FD↔TD cross-validation), P5 (ADE/PML), P6
-(performance — the dense-assembly path must go), P7 (API), P8 (hardening).
+Remaining: P7 (API completion / MOR), P8 (hardening, examples, docs).
 
-Note: P4.3's strict `<1 %` cross-validation depends on P6 — fine meshes
-need the element-wise sparse assembly, since the dense eigensolve caps mesh
-size today.
+Note: a full modal-port `sparams` verb (P7.1) needs waveguide-mode
+injection/extraction — soft sources + probe RFT give the scalar transfer
+function today; modal ports are the larger remaining item.
 
 ## What "production level" means here
 
