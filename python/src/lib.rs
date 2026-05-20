@@ -4,7 +4,10 @@
 //! See `examples/wr90.py` for usage.
 
 use num_complex::Complex64;
-use numpy::{Complex64 as NpC64, IntoPyArray, PyArray1, PyArray2, PyArray3};
+use numpy::{
+    Complex64 as NpC64, IntoPyArray, PyArray1, PyArray2, PyArray3,
+    PyReadonlyArray1,
+};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rapidfem_fd::eigenmode::Eigenmode;
@@ -440,15 +443,40 @@ impl PyTdOperator {
         self.op.n_dof()
     }
 
-    /// Apply the semi-discrete operator — `dy/dt = A·y`.
-    fn apply(&self, y: Vec<f64>) -> Vec<f64> {
-        self.op.apply(&y)
+    /// Apply the semi-discrete operator — `dy/dt = A·y`. Zero-copy numpy in
+    /// and out: `y` is read straight from its buffer, the result is handed
+    /// back as a numpy array — no Python-list round-trip.
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.op.apply(y).into_pyarray_bound(py))
     }
 
     /// Advance the state by `h` with the matrix-free exponential propagator.
+    /// Zero-copy numpy in and out.
     #[pyo3(signature = (y, h, krylov_dim = 40))]
-    fn step(&self, y: Vec<f64>, h: f64, krylov_dim: usize) -> Vec<f64> {
-        rapidfem_td::propagator::expmv(|x| self.op.apply(x), &y, h, krylov_dim)
+    fn step<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        krylov_dim: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let out = rapidfem_td::propagator::expmv(
+            |x| self.op.apply(x),
+            y,
+            h,
+            krylov_dim,
+        );
+        Ok(out.into_pyarray_bound(py))
     }
 
     /// Global DOF index for a field component at the node nearest `point` —
@@ -465,36 +493,59 @@ impl PyTdOperator {
     }
 
     /// One source-driven step — `dy/dt = A·y + b` with `b` a single-DOF soft
-    /// source — via the exponential time integrator.
+    /// source — via the exponential time integrator. Zero-copy numpy in/out.
     #[pyo3(signature = (y, source_dof, source_value, h, krylov_dim = 40))]
-    fn step_driven(
+    fn step_driven<'py>(
         &self,
-        y: Vec<f64>,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
         source_dof: usize,
         source_value: f64,
         h: f64,
         krylov_dim: usize,
-    ) -> PyResult<Vec<f64>> {
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         if source_dof >= y.len() {
             return Err(PyRuntimeError::new_err("source_dof out of range"));
         }
         let mut b = vec![0.0; y.len()];
         b[source_dof] = source_value;
-        Ok(rapidfem_td::propagator::etd_step(
+        let out = rapidfem_td::propagator::etd_step(
             |x| self.op.apply(x),
-            &y,
+            y,
             &b,
             h,
             krylov_dim,
-        ))
+        );
+        Ok(out.into_pyarray_bound(py))
     }
 
-    /// The explicit sparse state-space matrix `A`, as CSR triple
-    /// `(n, row_ptr, col_idx, values)` — feed straight into
-    /// `scipy.sparse.csr_matrix`.
-    fn state_space(&self) -> (usize, Vec<usize>, Vec<usize>, Vec<f64>) {
+    /// The explicit sparse state-space matrix `A`, as a CSR quadruple
+    /// `(n, row_ptr, col_idx, values)` — the index/value arrays come back
+    /// as numpy arrays, so they feed straight into `scipy.sparse.csr_matrix`
+    /// without a Python-list round-trip.
+    fn state_space<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (
+        usize,
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray1<f64>>,
+    ) {
         let csr = self.op.assemble_sparse();
-        (csr.n, csr.row_ptr, csr.col_idx, csr.values)
+        let row_ptr: Vec<i64> =
+            csr.row_ptr.iter().map(|&x| x as i64).collect();
+        let col_idx: Vec<i64> =
+            csr.col_idx.iter().map(|&x| x as i64).collect();
+        (
+            csr.n,
+            row_ptr.into_pyarray_bound(py),
+            col_idx.into_pyarray_bound(py),
+            csr.values.into_pyarray_bound(py),
+        )
     }
 }
 

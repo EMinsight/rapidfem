@@ -37,8 +37,10 @@ def _log(msg):
     print(f"  [rapidfem-td] {msg}", file=sys.stderr, flush=True)
 
 
-def _aslist(y):
-    return np.asarray(y, dtype=float).ravel().tolist()
+def _arr(y):
+    """A contiguous 1-D float64 array — the zero-copy form the native
+    operator reads directly from its buffer (no Python-list round-trip)."""
+    return np.ascontiguousarray(y, dtype=np.float64).ravel()
 
 
 def _collect_materials(geometry):
@@ -158,7 +160,7 @@ class ProblemTD:
     # -- low level: the ODE -------------------------------------------------
     def rhs(self, y):
         """The ODE right-hand side ``dy/dt = A·y``."""
-        return np.asarray(self._op.apply(_aslist(y)))
+        return self._op.apply(_arr(y))
 
     def jacobian(self):
         """The (constant) Jacobian of the linear system — i.e. ``A`` itself,
@@ -199,9 +201,7 @@ class ProblemTD:
         """Advance the state by ``h`` (in the same time units as ``c``) with
         the matrix-free exponential propagator — exact for the linear
         homogeneous system at any ``h``."""
-        return np.asarray(
-            self._op.step(_aslist(y), float(self.c * h), int(krylov_dim))
-        )
+        return self._op.step(_arr(y), float(self.c * h), int(krylov_dim))
 
     # -- ports: soft sources & field probes --------------------------------
     def probe_dof(self, point, *, field="E", component="z"):
@@ -248,10 +248,8 @@ class ProblemTD:
         every = max(1, steps // 10)
         for s in range(steps):
             g = float(waveform(s * dt))
-            y = np.asarray(
-                self._op.step_driven(
-                    y.tolist(), sdof, g, float(self.c * dt), krylov_dim
-                )
+            y = self._op.step_driven(
+                _arr(y), sdof, g, float(self.c * dt), krylov_dim
             )
             for k, d in enumerate(pdofs):
                 resp[k, s + 1] = y[d]
