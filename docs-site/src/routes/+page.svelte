@@ -45,8 +45,6 @@
 		</header>
 	</main>
 
-	<div class="separator"></div>
-
 	<main>
 		<section>
 			<h2>Installation</h2>
@@ -73,8 +71,6 @@
 			</div>
 		</section>
 	</main>
-
-	<div class="separator"></div>
 
 	<main>
 		<section>
@@ -110,7 +106,7 @@
 
 	.hero-title {
 		font-family: var(--font-mono);
-		font-size: 38px;
+		font-size: 28px;
 		font-weight: 700;
 		letter-spacing: 2px;
 		color: var(--accent);
@@ -121,7 +117,7 @@
 	.description {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
-		max-width: 620px;
+		max-width: 760px;
 		margin: 0 auto var(--space-xl);
 		line-height: 1.7;
 	}
@@ -167,28 +163,32 @@
 	}
 
 	section {
-		padding: var(--space-2xl) 0;
+		padding: var(--space-3xl) 0;
 	}
 
 	h2 {
-		font-size: var(--fs-xs);
-		font-weight: 600;
+		font-family: var(--font-mono);
+		font-size: 22px;
+		font-weight: 700;
 		color: var(--accent);
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: 1.6px;
+		text-align: center;
 		margin-bottom: var(--space-lg);
 	}
 
 	.section-intro {
+		font-size: var(--fs-sm);
 		color: var(--text-muted);
-		max-width: var(--content-max-width);
-		margin-bottom: var(--space-lg);
+		max-width: 880px;
+		margin: 0 auto var(--space-xl);
 		line-height: 1.7;
+		text-align: center;
 	}
 
 	@media (max-width: 600px) {
 		.hero-title {
-			font-size: 30px;
+			font-size: 22px;
 		}
 		.hero-logo {
 			height: 56px;
