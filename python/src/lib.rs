@@ -450,6 +450,44 @@ impl PyTdOperator {
         rapidfem_td::propagator::expmv(|x| self.op.apply(x), &y, h, krylov_dim)
     }
 
+    /// Global DOF index for a field component at the node nearest `point` —
+    /// the hook for a soft source or a field probe. `field`: 0 = E, 1 = H.
+    /// `comp`: 0 = x, 1 = y, 2 = z.
+    fn nearest_node_dof(
+        &self,
+        point: (f64, f64, f64),
+        field: usize,
+        comp: usize,
+    ) -> usize {
+        self.op
+            .nearest_node_dof([point.0, point.1, point.2], field, comp)
+    }
+
+    /// One source-driven step — `dy/dt = A·y + b` with `b` a single-DOF soft
+    /// source — via the exponential time integrator.
+    #[pyo3(signature = (y, source_dof, source_value, h, krylov_dim = 40))]
+    fn step_driven(
+        &self,
+        y: Vec<f64>,
+        source_dof: usize,
+        source_value: f64,
+        h: f64,
+        krylov_dim: usize,
+    ) -> PyResult<Vec<f64>> {
+        if source_dof >= y.len() {
+            return Err(PyRuntimeError::new_err("source_dof out of range"));
+        }
+        let mut b = vec![0.0; y.len()];
+        b[source_dof] = source_value;
+        Ok(rapidfem_td::propagator::etd_step(
+            |x| self.op.apply(x),
+            &y,
+            &b,
+            h,
+            krylov_dim,
+        ))
+    }
+
     /// The explicit sparse state-space matrix `A`, as CSR triple
     /// `(n, row_ptr, col_idx, values)` — feed straight into
     /// `scipy.sparse.csr_matrix`.

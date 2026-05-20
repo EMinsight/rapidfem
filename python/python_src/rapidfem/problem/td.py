@@ -20,6 +20,8 @@ import numpy as np
 from .._native import TdOperator
 
 _FLUX = {"upwind": 1.0, "central": 0.0}
+_FIELD = {"E": 0, "H": 1}
+_COMP = {"x": 0, "y": 1, "z": 2}
 
 
 def _aslist(y):
@@ -147,6 +149,57 @@ class ProblemTD:
         """Advance the state by ``h`` with the matrix-free exponential
         propagator — exact for the linear homogeneous system at any ``h``."""
         return np.asarray(self._op.step(_aslist(y), float(h), int(krylov_dim)))
+
+    # -- ports: soft sources & field probes --------------------------------
+    def probe_dof(self, point, *, field="E", component="z"):
+        """Global DOF index for a field component at the node nearest
+        ``point`` — used to place soft sources and field probes."""
+        return self._op.nearest_node_dof(
+            tuple(float(x) for x in point), _FIELD[field], _COMP[component]
+        )
+
+    def driven_transient(
+        self, *, source, waveform, probes, dt, steps, krylov_dim=40
+    ):
+        """Drive a soft point source and record field probes.
+
+        Parameters
+        ----------
+        source : (point, field, component)
+            Where and which field component to inject.
+        waveform : callable
+            ``g(t)`` — the excitation, e.g. a :class:`~rapidfem.GaussianPulse`.
+        probes : list of (point, field, component)
+            Field samples to record over the run.
+        dt, steps : float, int
+            Time step and step count.
+
+        Returns
+        -------
+        times : ndarray, shape ``[steps+1]``
+        responses : ndarray, shape ``[n_probes, steps+1]``
+        """
+        sp, sf, sc = source
+        sdof = self.probe_dof(sp, field=sf, component=sc)
+        pdofs = [
+            self.probe_dof(p, field=f, component=c) for (p, f, c) in probes
+        ]
+        n = self.n_dof
+        y = np.zeros(n)
+        times = np.arange(steps + 1) * dt
+        resp = np.zeros((len(pdofs), steps + 1))
+        for k, d in enumerate(pdofs):
+            resp[k, 0] = y[d]
+        for s in range(steps):
+            g = float(waveform(s * dt))
+            y = np.asarray(
+                self._op.step_driven(
+                    y.tolist(), sdof, g, float(dt), krylov_dim
+                )
+            )
+            for k, d in enumerate(pdofs):
+                resp[k, s + 1] = y[d]
+        return times, resp
 
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0, *, dt, steps, krylov_dim=40):
