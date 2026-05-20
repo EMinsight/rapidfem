@@ -34,6 +34,17 @@ pub struct ReferenceElement {
     pub diff_s: Vec<f64>,
     /// `∂/∂t` differentiation matrix.
     pub diff_t: Vec<f64>,
+    /// Face-node count per face, `Nfp = (p+1)(p+2)/2`.
+    pub n_face_nodes: usize,
+    /// Volume-node indices on each of the 4 local faces, aligned with
+    /// `TET_FACE_LOCAL`: face 0 = (t=0), 1 = (r=0), 2 = (s=0), 3 = (r+s+t=1).
+    pub face_nodes: [Vec<usize>; 4],
+    /// Lift matrix, `Np x (4*Nfp)` row-major. Maps face-trace values to volume
+    /// nodes (`M^-1 * surface integral of phi_i * trace`). Every face is
+    /// parametrised as the unit right triangle (reference area 1/2), so the
+    /// per-face physical scaling `Fscale = area_phys / (1/2)` is applied later
+    /// by the RHS operator.
+    pub lift: Vec<f64>,
 }
 
 impl ReferenceElement {
@@ -81,6 +92,8 @@ impl ReferenceElement {
         let diff_s = matmul(&vs, &c, n);
         let diff_t = matmul(&vt, &c, n);
 
+        let (n_face_nodes, face_nodes, lift) = build_lift(p, &mass_inv, n);
+
         ReferenceElement {
             order: p,
             n_nodes: n,
@@ -90,6 +103,9 @@ impl ReferenceElement {
             diff_r,
             diff_s,
             diff_t,
+            n_face_nodes,
+            face_nodes,
+            lift,
         }
     }
 }
@@ -226,6 +242,135 @@ fn triple_product(a: &[f64], g: &[f64], a2: &[f64], n: usize) -> Vec<f64> {
     matmul(&at_g, a2, n)
 }
 
+/// Integer node multi-indices `(i,j,k)`, same order as [`equispaced_nodes`].
+fn equispaced_ijk(p: usize) -> Vec<[usize; 3]> {
+    let mut v = Vec::new();
+    for i in 0..=p {
+        for j in 0..=(p - i) {
+            for k in 0..=(p - i - j) {
+                v.push([i, j, k]);
+            }
+        }
+    }
+    v
+}
+
+/// Exact integral of `u^a v^b` over the unit right triangle.
+fn tri_integral(a: usize, b: usize) -> f64 {
+    factorial(a) * factorial(b) / factorial(a + b + 2)
+}
+
+/// `A·B` for general row-major matrices (`ar×ac` times `ac×bc`).
+fn mat_mul(a: &[f64], ar: usize, ac: usize, b: &[f64], bc: usize) -> Vec<f64> {
+    let mut c = vec![0.0; ar * bc];
+    for i in 0..ar {
+        for k in 0..ac {
+            let aik = a[i * ac + k];
+            if aik == 0.0 {
+                continue;
+            }
+            for j in 0..bc {
+                c[i * bc + j] += aik * b[k * bc + j];
+            }
+        }
+    }
+    c
+}
+
+/// Build the per-face node sets and the lift matrix.
+fn build_lift(
+    p: usize,
+    mass_inv: &[f64],
+    n: usize,
+) -> (usize, [Vec<usize>; 4], Vec<f64>) {
+    let ijk = equispaced_ijk(p);
+    // Face membership, aligned with TET_FACE_LOCAL.
+    let on_face = |f: usize, c: [usize; 3]| match f {
+        0 => c[2] == 0,
+        1 => c[0] == 0,
+        2 => c[1] == 0,
+        3 => c[0] + c[1] + c[2] == p,
+        _ => unreachable!(),
+    };
+    // 2D coordinate of a face node — drop the constrained index.
+    let coord2d = |f: usize, c: [usize; 3]| -> [usize; 2] {
+        match f {
+            0 => [c[0], c[1]],
+            1 => [c[1], c[2]],
+            2 => [c[0], c[2]],
+            3 => [c[0], c[1]],
+            _ => unreachable!(),
+        }
+    };
+
+    let nfp = (p + 1) * (p + 2) / 2;
+    let mut face_nodes: [Vec<usize>; 4] =
+        [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (f, fnodes) in face_nodes.iter_mut().enumerate() {
+        for (idx, &c) in ijk.iter().enumerate() {
+            if on_face(f, c) {
+                fnodes.push(idx);
+            }
+        }
+        assert_eq!(fnodes.len(), nfp, "face {f} node count");
+    }
+
+    // 2D monomials (a,b) with a+b <= p.
+    let monos2: Vec<[usize; 2]> = {
+        let mut v = Vec::new();
+        for deg in 0..=p {
+            for a in 0..=deg {
+                v.push([a, deg - a]);
+            }
+        }
+        v
+    };
+
+    // Emat: Np x (4*Nfp). Column block f holds the face mass matrix scattered
+    // onto the rows of face f's volume nodes.
+    let cols = 4 * nfp;
+    let mut emat = vec![0.0; n * cols];
+    let pf = p as f64;
+    for f in 0..4 {
+        // 2D node coordinates for this face.
+        let c2: Vec<[f64; 2]> = face_nodes[f]
+            .iter()
+            .map(|&vi| {
+                let c = coord2d(f, ijk[vi]);
+                [c[0] as f64 / pf, c[1] as f64 / pf]
+            })
+            .collect();
+        // 2D Vandermonde and its inverse.
+        let mut v2 = vec![0.0; nfp * nfp];
+        for (i, xy) in c2.iter().enumerate() {
+            for (j, m) in monos2.iter().enumerate() {
+                v2[i * nfp + j] =
+                    xy[0].powi(m[0] as i32) * xy[1].powi(m[1] as i32);
+            }
+        }
+        let c2inv = invert(&v2, nfp);
+        // 2D monomial Gram matrix (exact).
+        let mut g2 = vec![0.0; nfp * nfp];
+        for (i, m) in monos2.iter().enumerate() {
+            for (j, q) in monos2.iter().enumerate() {
+                g2[i * nfp + j] = tri_integral(m[0] + q[0], m[1] + q[1]);
+            }
+        }
+        // Face mass Mf = C2ᵀ G2 C2.
+        let mf = triple_product(&c2inv, &g2, &c2inv, nfp);
+        // Scatter into Emat.
+        for a in 0..nfp {
+            let vi = face_nodes[f][a];
+            for m in 0..nfp {
+                emat[vi * cols + f * nfp + m] = mf[a * nfp + m];
+            }
+        }
+    }
+
+    let lift = mat_mul(mass_inv, n, n, &emat, cols);
+    (nfp, face_nodes, lift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +475,42 @@ mod tests {
                 assert!(
                     (got - want).abs() < 1e-8,
                     "node {i}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lift_integrates_face_traces() {
+        // 1ᵀ M (LIFT · trace) reduces to ∮ trace dA. For an all-ones trace on
+        // one face this is the reference face area — 1/2 in the unit
+        // right-triangle parametrisation used by every face.
+        for p in 1..=4 {
+            let re = ReferenceElement::new(p);
+            let n = re.n_nodes;
+            let nfp = re.n_face_nodes;
+            let cols = 4 * nfp;
+            for f in 0..4 {
+                let mut trace = vec![0.0; cols];
+                for m in 0..nfp {
+                    trace[f * nfp + m] = 1.0;
+                }
+                let g: Vec<f64> = (0..n)
+                    .map(|i| {
+                        (0..cols)
+                            .map(|c| re.lift[i * cols + c] * trace[c])
+                            .sum()
+                    })
+                    .collect();
+                let mut val = 0.0;
+                for i in 0..n {
+                    for j in 0..n {
+                        val += re.mass[i * n + j] * g[j];
+                    }
+                }
+                assert!(
+                    (val - 0.5).abs() < 1e-9,
+                    "p={p} face {f}: ∮ = {val}, expected 1/2"
                 );
             }
         }

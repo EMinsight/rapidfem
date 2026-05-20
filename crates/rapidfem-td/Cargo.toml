@@ -3,7 +3,11 @@ name = "rapidfem-td"
 version = "0.1.0"
 edition = "2024"
 
-# Time-domain DGTD solver — scaffold. See docs/td-backend-plan.md.
+# Time-domain DGTD solver. See docs/td-backend-plan.md.
+
+[lib]
+# Doc comments carry explanatory math, not runnable examples.
+doctest = false
 
 [dependencies]
 rapidfem-core = { path = "../rapidfem-core" }
