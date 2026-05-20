@@ -24,21 +24,23 @@ and systematic cross-validation against the frequency-domain solver.
   sparse `A` assembly with no densifying (`O(nnz)`, scales to 10⁵ DOF);
   zero-copy numpy in/out for `apply`/`step`/`state_space`; benchmark.
 - **P7** — `ProblemTD` progressive-disclosure verbs (`ode`, `stepper`,
-  `reduce`) wired through pyo3; `ReducedModel` exposed to Python; VTK
-  field-animation export.
+  `reduce`, `transfer_function`) wired through pyo3; `ReducedModel`
+  exposed to Python; VTK field-animation export. The frequency response
+  is delivered as the scalar on-the-fly-RFT transfer function.
 - **P8** — TD Python-API regression suite in CI alongside `cargo test`;
-  TD examples (model reduction, field/VTK export); `docs/td-backend.md`.
+  TD examples (model reduction, field/VTK export, geometry-based
+  dielectric cavity, transfer function); `docs/td-backend.md` plus a TD
+  section in the README.
 
-**Remaining for full production parity:**
+**Explicitly deferred (out of scope for now):**
 
-- A modal-port `sparams` verb (P7.1) needs waveguide-mode
-  injection/extraction — soft sources + probe RFT give the scalar
-  transfer function today; modal ports are the larger remaining item.
-- Geometry-based material / PML example scripts (P8.2) — the physics is
-  validated in the Rust suite; the example scripts would mirror the FD
-  `dielectric_resonator.py` / `wr90_pml.py`.
-- A TD section in the customer-facing README (P8.3) — held pending
-  explicit sign-off; `docs/td-backend.md` documents the backend today.
+- **Modal-port S-parameters.** Soft sources + the RFT
+  `transfer_function` give the scalar field-to-field frequency response
+  today. A true modal `sparams` verb needs waveguide-mode injection /
+  extraction (port-mode solving, modal de-embedding) — a self-contained
+  follow-up project, not a loose end of this roadmap.
+- Curvilinear / isoparametric elements; nonlinear materials;
+  PathSim co-simulation — as listed under "Explicitly out of scope".
 
 ## What "production level" means here
 

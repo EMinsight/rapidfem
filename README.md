@@ -94,6 +94,40 @@ the viewer.
 - **Output** — Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT
 - **Parallel assembly** — rayon-based element matrix evaluation
 
+## Time-domain backend (DGTD)
+
+Alongside the frequency-domain solver, RapidFEM has a **time-domain
+discontinuous-Galerkin (DGTD)** backend — `ProblemTD`, behind the same
+geometry / material / physics API. Where `ProblemFD` answers "what are the
+S-parameters", `ProblemTD` compiles a structure into an explicit linear
+ODE `dy/dt = A·y` and exposes it as a *model* at every level of
+abstraction.
+
+- **DGTD spatial discretisation** — nodal discontinuous Galerkin on
+  tetrahedra, upwind or energy-conserving central flux
+- **Exponential time integration** — matrix-free Krylov/ETD propagator,
+  exact for the linear system at any step size (no CFL limit)
+- **Model export** — the right-hand side, the verbatim sparse operator
+  `A`, an exponential stepper, or a handoff to an external ODE integrator
+- **Model-order reduction** — Krylov-projected reduced models
+- **Materials** — heterogeneous, lossy, diagonal-anisotropic and Debye
+  dispersive media; matched absorbing layers
+- **Output** — field probes, the RFT transfer function, VTK
+  field-animation export
+
+```python
+import rapidfem as rf
+
+ptd  = rf.ProblemTD.box(size=(1, 1, 1), cells=(2, 2, 2), order=2)
+traj = ptd.transient(y0, dt=0.02, steps=200)   # turnkey transient
+rom  = ptd.reduce(y0, dim=60)                   # model-order reduction
+A    = ptd.state_space()                        # the verbatim operator
+```
+
+The time-domain backend is cross-validated against the frequency-domain
+solver (0.04 % agreement on a shared cavity). Full method notes and the
+`ProblemTD` API reference are in [`docs/td-backend.md`](docs/td-backend.md).
+
 ## Solver backends
 
 | Solver | Type | Notes |

@@ -90,6 +90,7 @@ The API exposes the model at every level — pick the abstraction you need.
 | `stepper(dt)` | `TdStepper` | a reusable `dt`-bound propagator |
 | `transient(y0, dt, steps)` | trajectory `[steps+1, n_dof]` | turnkey free propagation |
 | `driven_transient(source, waveform, probes, ...)` | `(times, responses)` | soft source + field probes |
+| `transfer_function(source, probe, pulse, ...)` | `(freqs, H)` | scalar frequency response by RFT |
 | `probe_dof(point, field, comp)` | DOF index | place a source or probe |
 | `reduce(start, dim)` | `TdReducedModel` | Krylov model-order reduction |
 | `resonances(n)` | frequencies (Hz) | cavity modes from the spectrum |
@@ -129,9 +130,9 @@ y_t = rom.propagate(y0, t)                   # cheap, exact in the subspace
 ptd.export_vtk(traj, "out/cavity")
 ```
 
-Runnable scripts: `rapidfem/examples/td_cavity.py`,
-`td_model_reduction.py`, `td_field_export.py`,
-`td_fd_crossvalidation.py`.
+Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
+`td_model_reduction.py`, `td_field_export.py`, `td_transfer_function.py`,
+`td_dielectric_cavity.py` (geometry-based), `td_fd_crossvalidation.py`.
 
 ## Materials and boundaries
 
