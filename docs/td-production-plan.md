@@ -8,14 +8,22 @@ and systematic cross-validation against the frequency-domain solver.
 
 ## Where we are
 
-Working and validated: DG spatial operator (topology, reference element,
-geometric factors, upwind flux), Krylov/ETD exponential propagator, Krylov
-MOR, adaptive Krylov dimension, `ProblemTD` Python API. 39 workspace tests
-green.
+**Phases 1–3 complete** (see commit log, `prod P1.x`–`P3.x`):
 
-Hard limitations to production: **structured box cavities only**, **vacuum
-ε=μ=1**, **PEC walls only**, **no ports / excitation**, dense-assembly
-validation path, equispaced nodes.
+- **P1** — runs on arbitrary unstructured gmsh meshes; convergence and
+  conditioning verified.
+- **P2** — heterogeneous, lossy and diagonal-anisotropic materials, wired
+  from the geometry API.
+- **P3** — soft sources, field probes, `driven_transient`, second-order
+  ETD source step, `GaussianPulse` excitation.
+- **P4.1** — physical-units (`c`) mapping; `ProblemTD.resonances()`.
+
+Remaining: P4.2–4.3 (FD↔TD cross-validation), P5 (ADE/PML), P6
+(performance — the dense-assembly path must go), P7 (API), P8 (hardening).
+
+Note: P4.3's strict `<1 %` cross-validation depends on P6 — fine meshes
+need the element-wise sparse assembly, since the dense eigensolve caps mesh
+size today.
 
 ## What "production level" means here
 
