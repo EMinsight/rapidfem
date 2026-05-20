@@ -7,6 +7,7 @@
 		type GLState, type Camera
 	} from '$lib/render/canvas3d';
 	import type { MeshData } from '$lib/msh';
+	import type { TdTrajectoryPayload } from '$lib/api';
 	import { palette } from '$lib/theme';
 	import { viz_load_mesh, viz_sample } from '$lib/api';
 
@@ -24,7 +25,13 @@
 		point_density = 5,
 		scale_mode = $bindable('lin' as 'log' | 'lin'),
 		animate_field = false,
-		anim_speed = 1
+		anim_speed = 1,
+		// Time-domain field animation: a TdTrajectory point cloud, the frame
+		// to render (the notebook page owns the slider / play loop), and the
+		// E/H channel switch.
+		td_trajectory = null as TdTrajectoryPayload | null,
+		td_frame = 0,
+		td_channel = $bindable('E' as 'E' | 'H')
 	}: {
 		mesh?: MeshData | null;
 		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
@@ -38,6 +45,9 @@
 		scale_mode?: 'log' | 'lin';
 		animate_field?: boolean;
 		anim_speed?: number;
+		td_trajectory?: TdTrajectoryPayload | null;
+		td_frame?: number;
+		td_channel?: 'E' | 'H';
 	} = $props();
 
 	// Channel metadata for the colourbar — title + SI unit per channel.
@@ -114,6 +124,10 @@
 		animate_camera({ ...base, target: [...base.target] as [number, number, number], distance: base.distance * 1.3 }, 200);
 	}
 	export function fit_view() {
+		if (td_trajectory) {
+			animate_camera(fitCamera(td_trajectory.bbox.min, td_trajectory.bbox.max), 350);
+			return;
+		}
 		if (!mesh) return;
 		animate_camera(fitCamera(mesh.bbox.min, mesh.bbox.max), 350);
 	}
@@ -232,6 +246,44 @@
 		];
 	}
 
+	/** The 12 edges of an axis-aligned box as a flat line-segment buffer
+	 *  (2 verts × 3 floats per edge) — the spatial-reference frame for the
+	 *  time-domain field cloud. */
+	function bbox_edges(mn: number[], mx: number[]): number[] {
+		const c = [
+			[mn[0], mn[1], mn[2]], [mx[0], mn[1], mn[2]],
+			[mx[0], mx[1], mn[2]], [mn[0], mx[1], mn[2]],
+			[mn[0], mn[1], mx[2]], [mx[0], mn[1], mx[2]],
+			[mx[0], mx[1], mx[2]], [mn[0], mx[1], mx[2]],
+		];
+		const edges = [
+			[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
+			[6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7],
+		];
+		const out: number[] = [];
+		for (const [a, b] of edges) out.push(...c[a], ...c[b]);
+		return out;
+	}
+
+	/** Phasor-buffer encoding of a static scalar field for the point shader.
+	 *  The shader composites |E(t)|² = A·cos²φ + B·sin²φ − 2C·cosφ·sinφ;
+	 *  feeding (s², s², 0) makes that collapse to s² for every phase, so a
+	 *  time-domain snapshot reuses the frequency-domain cloud unchanged.
+	 *  Frame values arrive quantised to 0…1000 of `field_max` — rescale. */
+	function td_abc_for_frame(traj: TdTrajectoryPayload, frame: number, channel: 'E' | 'H'): Float32Array {
+		const frames = channel === 'H' ? traj.frames_h : traj.frames_e;
+		const f = frames[Math.max(0, Math.min(frames.length - 1, frame))] ?? [];
+		const scale = (channel === 'H' ? traj.field_max.H : traj.field_max.E) / 1000;
+		const abc = new Float32Array(f.length * 3);
+		for (let i = 0; i < f.length; i++) {
+			const s = f[i] * scale;
+			const s2 = s * s;
+			abc[i * 3] = s2;
+			abc[i * 3 + 1] = s2;
+		}
+		return abc;
+	}
+
 	// (compute_normals is inlined in push_group below to keep the cross-product
 	//  in full f64 precision against the original mesh.nodes Float64Array)
 
@@ -314,6 +366,23 @@
 	function rebuild() {
 		if (!gl_state) return;
 		clearMeshes(gl_state);
+		// Time-domain field animation: a point cloud with a faint bounding-box
+		// wireframe for spatial reference. The cloud itself is uploaded
+		// per-frame by the dedicated $effect below; clearMeshes leaves the
+		// point cloud intact.
+		if (td_trajectory) {
+			const bb = td_trajectory.bbox;
+			setBBox(gl_state, bb.min, bb.max);
+			field_norm = null;
+			in_field_mode = false;
+			addLineMesh(
+				gl_state,
+				Float32Array.from(bbox_edges(bb.min, bb.max)),
+				hex('#3a3a44'), -1,
+			);
+			needs_rebuild = false;
+			return;
+		}
 		// Wireframe-only view (geometry shown before any g.mesh() call).
 		if (!mesh && wireframe && wireframe.entities.length > 0) {
 			setBBox(gl_state, wireframe.bbox.min, wireframe.bbox.max);
@@ -618,16 +687,19 @@
 	// React to mesh / toggles / field / density changes
 	$effect(() => {
 		mesh; wireframe; show_geometry; show_wireframe; show_field; field; point_density;
+		td_trajectory;
 		if (!mounted || !gl_state) return;
 		needs_rebuild = true;
 		schedule_render();
 	});
 
 
-	// Refit camera when the visible payload changes (mesh OR wireframe).
+	// Refit camera when the visible payload changes (mesh, wireframe or
+	// a time-domain field trajectory).
 	$effect(() => {
 		if (!mounted) return;
-		if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
+		if (td_trajectory) camera = fitCamera(td_trajectory.bbox.min, td_trajectory.bbox.max);
+		else if (mesh) camera = fitCamera(mesh.bbox.min, mesh.bbox.max);
 		else if (wireframe) camera = fitCamera(wireframe.bbox.min, wireframe.bbox.max);
 	});
 
@@ -714,6 +786,52 @@
 		anim_raf = requestAnimationFrame(tick);
 	});
 
+	// ── Time-domain field animation ────────────────────────────────────
+	// `td_trajectory` carries an energy-weighted point cloud (sampled the
+	// same way as the frequency-domain field viz) plus a per-frame |E|/|H|
+	// magnitude. The notebook page owns the time slider / play loop and
+	// feeds the frame index through `td_frame`; this just renders it.
+	const in_td_mode = $derived(td_trajectory != null);
+	let td_positions: Float32Array | null = $state(null);
+
+	$effect(() => {
+		const traj = td_trajectory;
+		if (gl_state && !traj) setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
+		if (!traj) { td_positions = null; return; }
+		td_positions = Float32Array.from(traj.points);
+		needs_rebuild = true;
+		if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
+		schedule_render();
+	});
+
+	// Upload the current frame's magnitude as a static-scalar point cloud.
+	$effect(() => {
+		const traj = td_trajectory;
+		const frame = td_frame;
+		const ch = td_channel;
+		const pos = td_positions;
+		if (!gl_state || !traj || !pos) return;
+		const abc = td_abc_for_frame(traj, frame, ch);
+		setPointScaleMode(gl_state, 'lin');
+		setPointRange(gl_state, 0, ch === 'H' ? traj.field_max.H : traj.field_max.E);
+		setPointCloud(gl_state, pos, abc);
+		schedule_render();
+	});
+
+	// Colourbar range for the time-domain cloud — a fixed 0…max scale held
+	// constant across the whole animation so frames are comparable.
+	const td_field_range = $derived(
+		td_trajectory
+			? {
+					min: 0,
+					max: td_channel === 'H'
+						? td_trajectory.field_max.H
+						: td_trajectory.field_max.E,
+					decades: 0,
+				}
+			: null,
+	);
+
 	function fmt_eng(v: number): string {
 		if (!isFinite(v) || v <= 0) return '0';
 		const exp = Math.floor(Math.log10(v) / 3) * 3;
@@ -723,14 +841,20 @@
 		return prefix !== undefined ? `${mantissa} ${prefix}` : `${m.toFixed(1)}e${exp}`;
 	}
 
+	// The colourbar tracks the frequency-domain field range, or the
+	// time-domain trajectory range when a TD animation is shown.
+	const active_range = $derived(td_field_range ?? field_range);
+
 	// Colorbar ticks. Log mode: one per decade. Lin mode: 5 evenly-spaced.
+	// The time-domain cloud is always linear.
 	const colorbar_ticks = $derived.by(() => {
-		if (!field_range) return [] as { frac: number; label: string }[];
+		const fr = active_range;
+		if (!fr) return [] as { frac: number; label: string }[];
 		const out: { frac: number; label: string }[] = [];
-		if (scale_mode === 'log') {
-			const log_max = Math.log10(field_range.max);
-			const log_min = log_max - Math.max(field_range.decades, 0.5);
-			const n_dec = Math.max(1, Math.round(field_range.decades));
+		if (scale_mode === 'log' && !in_td_mode) {
+			const log_max = Math.log10(fr.max);
+			const log_min = log_max - Math.max(fr.decades, 0.5);
+			const n_dec = Math.max(1, Math.round(fr.decades));
 			for (let i = 0; i <= n_dec; i++) {
 				const v = Math.pow(10, log_min + (log_max - log_min) * (i / n_dec));
 				out.push({ frac: i / n_dec, label: fmt_eng(v) });
@@ -738,7 +862,7 @@
 		} else {
 			const n = 4;
 			for (let i = 0; i <= n; i++) {
-				const v = field_range.min + (field_range.max - field_range.min) * (i / n);
+				const v = fr.min + (fr.max - fr.min) * (i / n);
 				out.push({ frac: i / n, label: fmt_eng(v) });
 			}
 		}
@@ -827,11 +951,12 @@
 			</div>
 		{/if}
 
-		{#if show_field && field_range}
+		{#if (show_field && field_range) || (in_td_mode && td_field_range)}
 			<div class="overlay-panel cb-panel">
 				<div class="op-title">
-					{CHANNEL_META[field_channel].sym} · {CHANNEL_META[field_channel].unit}
-					<span class="cb-mode">({scale_mode})</span>
+					{CHANNEL_META[in_td_mode ? td_channel : field_channel].sym} ·
+					{CHANNEL_META[in_td_mode ? td_channel : field_channel].unit}
+					<span class="cb-mode">({in_td_mode ? 'lin' : scale_mode})</span>
 				</div>
 				<div class="cb-body">
 					<div class="cb-gradient">
@@ -896,6 +1021,19 @@
 				<span class="tip">{scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}</span>
 				{scale_mode}
 			</button>
+		{/if}
+		{#if in_td_mode}
+			<span class="tb-sep" aria-hidden="true"></span>
+			{#each (['E', 'H'] as const) as ch}
+				<button
+					class="tb tb-label"
+					class:active={td_channel === ch}
+					onclick={() => (td_channel = ch)}
+				>
+					<span class="tip">{ch === 'E' ? 'E-field magnitude' : 'H-field magnitude'}</span>
+					{ch}
+				</button>
+			{/each}
 		{/if}
 	</div>
 

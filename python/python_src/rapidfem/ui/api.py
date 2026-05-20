@@ -228,18 +228,33 @@ def _td_timeseries_payload(obj) -> dict[str, Any]:
     }
 
 
+# Mixing weight between uniform spatial coverage and energy-following
+# density for the time-domain field cloud — the same constant as the
+# frequency-domain viz sampler (viz.ts ENERGY_FLOOR). 1.0 = perfectly
+# uniform; lower biases samples toward high-field regions.
+_TD_ENERGY_FLOOR = 0.7
+
+
 def _td_trajectory_payload(
-    traj, *, max_frames: int = 64, max_points: int = 12000,
+    traj, *, max_frames: int = 36, n_points: int = 6000,
 ) -> dict[str, Any]:
     """``TdTrajectory`` → a 3-D field-animation point cloud.
 
-    The DG state lives at the per-element nodal points; this samples the
-    field there directly — no interpolation — giving one point per DG
-    node and a ``|E|`` / ``|H|`` magnitude per point per snapshot.
-    Snapshots are decimated to at most ``max_frames`` and the point set
-    strided down to at most ``max_points`` so the animation payload stays
-    small. A global per-channel maximum lets the viewer hold a fixed
-    colour scale across the whole animation.
+    Samples the cavity volume with the *same* energy-weighted scheme as
+    the frequency-domain field viz (``viz.ts``): a two-stage draw — pick
+    a DG element with probability proportional to ``volume · weight``,
+    then a rejection-sampled barycentric point inside it, where the
+    per-unit-volume density follows ``FLOOR + (1−FLOOR)·e(x)/e_max`` with
+    ``e`` the time-averaged field energy. The sample *points are fixed*
+    for the whole animation — only the per-point ``|E|`` / ``|H|``
+    magnitude changes per frame — so playback never jitters. Snapshots
+    are decimated to at most ``max_frames``.
+
+    Per-frame magnitudes are quantised to integers ``0…1000`` of the
+    global per-channel maximum (``field_max``) — ample for an additive
+    colour ramp and an order of magnitude smaller on the wire than raw
+    floats. The viewer rescales by ``field_max`` and holds that colour
+    scale fixed across the animation.
     """
     import numpy as np
 
@@ -257,48 +272,85 @@ def _td_trajectory_payload(
     o = int(p.order)
     np_ = (o + 1) * (o + 2) * (o + 3) // 6
     n_elem = n_dof // (6 * np_)
-    pts = np.asarray(p._op.node_coords(), dtype=float).reshape(-1, 3)
-    n_pts = pts.shape[0]                                   # n_elem * np_
+    corners = np.asarray(p._op.corner_local_nodes(), dtype=np.int64)
+    coords = np.asarray(p._op.node_coords(), dtype=float).reshape(n_elem, np_, 3)
+    corner_xyz = coords[:, corners, :]                     # [n_elem, 4, 3]
 
-    # Stride the point set down to a bounded count; snapshots likewise.
-    if n_pts > max_points:
-        sel = np.unique(np.linspace(0, n_pts - 1, max_points).round()
-                        .astype(int))
-    else:
-        sel = np.arange(n_pts)
+    # Decimate snapshots to a bounded frame count.
     if n_snap > max_frames:
         idx = np.unique(np.linspace(0, n_snap - 1, max_frames).round()
                         .astype(int))
     else:
         idx = np.arange(n_snap)
+    # Corner field of every kept frame — [n_frame, n_elem, 4, 6].
+    cstates = states[idx].reshape(len(idx), n_elem, np_, 6)[:, :, corners, :]
+
+    # Per-tet volume and per-corner time-averaged |E|² energy.
+    e0 = corner_xyz[:, 1] - corner_xyz[:, 0]
+    e1 = corner_xyz[:, 2] - corner_xyz[:, 0]
+    e2 = corner_xyz[:, 3] - corner_xyz[:, 0]
+    vols = np.abs(np.einsum("ei,ei->e", e0, np.cross(e1, e2))) / 6.0
+    e_node = np.mean(np.sum(cstates[..., 0:3] ** 2, axis=-1), axis=0)  # [n_elem,4]
+    e_global = max(float(e_node.max()), 1e-30)
+
+    # Two-stage energy-weighted draw — mirrors viz.ts `viz_sample`.
+    w_max_tet = _TD_ENERGY_FLOOR + (1.0 - _TD_ENERGY_FLOOR) * \
+        e_node.max(axis=1) / e_global
+    cdf = np.cumsum(vols * w_max_tet)
+    cdf = cdf / max(float(cdf[-1]), 1e-30)
+    rng = np.random.default_rng(0)
+    tet_of = np.clip(np.searchsorted(cdf, rng.random(n_points)),
+                     0, n_elem - 1)
+
+    def _uniform_bary(m):
+        r = np.sort(rng.random((m, 3)), axis=1)
+        return np.stack([r[:, 0], r[:, 1] - r[:, 0],
+                         r[:, 2] - r[:, 1], 1.0 - r[:, 2]], axis=1)
+
+    bary = np.zeros((n_points, 4))
+    done = np.zeros(n_points, dtype=bool)
+    for _ in range(64):
+        todo = np.where(~done)[0]
+        if todo.size == 0:
+            break
+        b = _uniform_bary(todo.size)
+        t = tet_of[todo]
+        e_local = np.sum(b * e_node[t], axis=1)
+        w_local = _TD_ENERGY_FLOOR + (1.0 - _TD_ENERGY_FLOOR) * e_local / e_global
+        acc = rng.random(todo.size) * w_max_tet[t] <= w_local
+        bary[todo[acc]] = b[acc]
+        done[todo[acc]] = True
+    if not done.all():                                     # accept the rest
+        bary[~done] = _uniform_bary(int((~done).sum()))
+
+    pts = np.einsum("nk,nkc->nc", bary, corner_xyz[tet_of])  # [n_points, 3]
+
+    # Interpolate the field at the fixed sample points for every frame —
+    # [n_frame, n_points, 4, 6] corner field → barycentric mix → magnitude.
+    cf_all = cstates[:, tet_of, :, :]
+    evec = np.einsum("nk,fnkc->fnc", bary, cf_all[..., 0:3])
+    hvec = np.einsum("nk,fnkc->fnc", bary, cf_all[..., 3:6])
+    em = np.linalg.norm(evec, axis=2)                      # [n_frame, n_points]
+    hm = np.linalg.norm(hvec, axis=2)
+    e_max = max(float(em.max()), 1e-30)
+    h_max = max(float(hm.max()), 1e-30)
+    qe = np.clip(np.round(em / e_max * 1000.0), 0, 1000).astype(np.int16)
+    qh = np.clip(np.round(hm / h_max * 1000.0), 0, 1000).astype(np.int16)
 
     dt = getattr(traj, "_dt", None)
-    frames_e: list[list[float]] = []
-    frames_h: list[list[float]] = []
-    e_max = 0.0
-    h_max = 0.0
-    for s in idx:
-        f = states[int(s)].reshape(-1, 6)[sel]
-        em = np.linalg.norm(f[:, 0:3], axis=1)
-        hm = np.linalg.norm(f[:, 3:6], axis=1)
-        e_max = max(e_max, float(em.max()))
-        h_max = max(h_max, float(hm.max()))
-        frames_e.append(em.astype(np.float32).tolist())
-        frames_h.append(hm.astype(np.float32).tolist())
-
     times = (np.asarray(idx, dtype=float) * dt).tolist() if dt else \
         np.asarray(idx, dtype=float).tolist()
 
     return {
-        "points": pts[sel].astype(np.float32).ravel().tolist(),
-        "n_points": int(sel.size),
+        "points": pts.astype(np.float32).ravel().tolist(),
+        "n_points": int(n_points),
         "n_elem": int(n_elem),
-        "bbox": _bbox_for_nodes(pts),
+        "bbox": _bbox_for_nodes(corner_xyz.reshape(-1, 3)),
         "n_snapshots": len(idx),
         "times": times,
-        "field_max": {"E": e_max or 1.0, "H": h_max or 1.0},
-        "frames_e": frames_e,
-        "frames_h": frames_h,
+        "field_max": {"E": e_max, "H": h_max},
+        "frames_e": [row.tolist() for row in qe],
+        "frames_h": [row.tolist() for row in qh],
     }
 
 

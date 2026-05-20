@@ -359,10 +359,11 @@ export interface TdResultPayload {
 	n_freq: number;
 }
 
-/** `td_trajectory` payload — a field-animation point cloud. One point per
- *  sampled DG node; `frames_e` / `frames_h` carry a per-point |E| / |H|
- *  magnitude per snapshot. `field_max` is the global per-channel maximum,
- *  for a colour scale held fixed across the whole animation. */
+/** `td_trajectory` payload — an energy-weighted field-animation point cloud.
+ *  `points` is a fixed sample set; `frames_e` / `frames_h` carry a per-point
+ *  |E| / |H| magnitude per snapshot, quantised to integers 0…1000 of
+ *  `field_max` (the global per-channel maximum — rescale by `field_max/1000`,
+ *  the colour scale stays fixed across the whole animation). */
 export interface TdTrajectoryPayload {
 	points: number[];          // flat xyz
 	n_points: number;
@@ -371,7 +372,7 @@ export interface TdTrajectoryPayload {
 	n_snapshots: number;
 	times: number[];
 	field_max: { E: number; H: number };
-	frames_e: number[][];
+	frames_e: number[][];      // quantised 0…1000
 	frames_h: number[][];
 }
 
