@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rapidfem-fd = { path = "../crates/rapidfem-fd" }
+rapidfem-td = { path = "../crates/rapidfem-td" }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 numpy = "0.22"
 num-complex = "0.4.6"

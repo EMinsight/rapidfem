@@ -364,7 +364,64 @@ fn flatten_2d_complex<'py>(grid: &[Vec<Complex64>], py: Python<'py>) -> Bound<'p
     arr.into_pyarray_bound(py)
 }
 
-/// rapidfem — frequency-domain EM FEM solver.
+// --- Time-domain DGTD backend ----------------------------------------------
+
+/// Time-domain DGTD Maxwell operator (vacuum, PEC walls), built on a
+/// structured box cavity. Wraps the Rust `MaxwellOperator`.
+#[pyclass(name = "TdOperator")]
+struct PyTdOperator {
+    op: rapidfem_td::rhs::MaxwellOperator,
+}
+
+#[pymethods]
+impl PyTdOperator {
+    /// Build the operator on a structured box cavity `[0,lx]×[0,ly]×[0,lz]`
+    /// (`nx·ny·nz` cells) at polynomial `order`. `flux_alpha`: 0 = central
+    /// (energy-conserving), 1 = upwind.
+    #[new]
+    #[pyo3(signature = (nx, ny, nz, lx, ly, lz, order, flux_alpha = 1.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        lx: f64,
+        ly: f64,
+        lz: f64,
+        order: usize,
+        flux_alpha: f64,
+    ) -> Self {
+        let mesh = rapidfem_td::mesh_gen::structured_box(nx, ny, nz, lx, ly, lz);
+        let op = rapidfem_td::rhs::MaxwellOperator::new(&mesh, order, flux_alpha);
+        PyTdOperator { op }
+    }
+
+    /// Degrees of freedom, `6·Np·n_elem`.
+    fn n_dof(&self) -> usize {
+        self.op.n_dof()
+    }
+
+    /// Apply the semi-discrete operator — `dy/dt = A·y`.
+    fn apply(&self, y: Vec<f64>) -> Vec<f64> {
+        self.op.apply(&y)
+    }
+
+    /// Advance the state by `h` with the matrix-free exponential propagator.
+    #[pyo3(signature = (y, h, krylov_dim = 40))]
+    fn step(&self, y: Vec<f64>, h: f64, krylov_dim: usize) -> Vec<f64> {
+        rapidfem_td::propagator::expmv(|x| self.op.apply(x), &y, h, krylov_dim)
+    }
+
+    /// The explicit sparse state-space matrix `A`, as CSR triple
+    /// `(n, row_ptr, col_idx, values)` — feed straight into
+    /// `scipy.sparse.csr_matrix`.
+    fn state_space(&self) -> (usize, Vec<usize>, Vec<usize>, Vec<f64>) {
+        let csr = self.op.assemble_sparse();
+        (csr.n, csr.row_ptr, csr.col_idx, csr.values)
+    }
+}
+
+/// rapidfem — frequency- and time-domain EM FEM solver.
 #[pymodule]
 #[pyo3(name = "_native")]
 fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -376,5 +433,6 @@ fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySweepResult>()?;
     m.add_class::<PyEigenmode>()?;
     m.add_class::<PyRadiationPattern>()?;
+    m.add_class::<PyTdOperator>()?;
     Ok(())
 }

@@ -1439,6 +1439,7 @@ dependencies = [
  "numpy",
  "pyo3",
  "rapidfem-fd",
+ "rapidfem-td",
 ]
 
 [[package]]
