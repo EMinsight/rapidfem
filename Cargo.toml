@@ -1,31 +1,12 @@
-[package]
-name = "rapidfem"
-version = "0.1.0"
-edition = "2024"
-exclude = ["python", "target", "tests/validation"]
+[workspace]
+resolver = "2"
+members = [
+    "crates/rapidfem-core",
+    "crates/rapidfem-fd",
+    "crates/rapidfem-td",
+    "python",
+]
 
 [profile.release]
 opt-level = "z"
 lto = true
-
-[features]
-default = ["pardiso", "parallel", "vtk"]
-pardiso = ["dep:libloading"]
-parallel = ["dep:rayon"]
-vtk = ["dep:vtkio"]
-
-[target.'cfg(target_os = "macos")'.build-dependencies]
-cc = "1.0"
-
-[dependencies]
-faer = { version = "0.24.0", default-features = false, features = ["std", "sparse-linalg"] }
-hashbrown = "0.16.1"
-libloading = { version = "0.9.0", optional = true }
-mshio = "0.4.2"
-num-complex = "0.4.6"
-rayon = { version = "1.11.0", optional = true }
-serde = { version = "1.0.228", features = ["derive"] }
-sprs = "0.11.4"
-toml = "1.1.2"
-vtkio = { version = "0.6.3", optional = true }
-web-time = "1.1"

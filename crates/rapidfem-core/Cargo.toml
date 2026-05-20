@@ -1,0 +1,14 @@
+[package]
+name = "rapidfem-core"
+version = "0.1.0"
+edition = "2024"
+
+# Solver-agnostic substrate: mesh, quadrature, material data model.
+# Shared by the frequency-domain (rapidfem-fd) and time-domain
+# (rapidfem-td) backends.
+
+[dependencies]
+hashbrown = "0.16.1"
+mshio = "0.4.2"
+num-complex = "0.4.6"
+serde = { version = "1.0.228", features = ["derive"] }

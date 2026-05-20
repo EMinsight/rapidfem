@@ -1,15 +1,18 @@
-pub mod constants;
-pub mod quadrature;
+//! rapidfem-fd — frequency-domain Nédélec-FEM backend.
+//!
+//! The solver-agnostic mesh / quadrature / material data model lives in
+//! `rapidfem-core` and is re-exported here, so existing `crate::mesh`-style
+//! paths inside this crate keep resolving unchanged.
+
+pub use rapidfem_core::{constants, materials, mesh, mesh_io, quadrature};
+
 pub mod coefficients;
-pub mod mesh;
-pub mod mesh_io;
 pub mod basis;
 pub mod tet_assembly;
 pub mod tri_assembly;
 pub mod waveguide;
 pub mod sparam;
 pub mod interp;
-pub mod materials;
 pub mod abc_order2;
 pub mod port;
 pub mod touchstone;

@@ -7,9 +7,9 @@ use num_complex::Complex64;
 use numpy::{Complex64 as NpC64, IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use rapidfem::eigenmode::Eigenmode;
-use rapidfem::farfield::RadiationPattern;
-use rapidfem::simulation::{Simulation, SweepResult};
+use rapidfem_fd::eigenmode::Eigenmode;
+use rapidfem_fd::farfield::RadiationPattern;
+use rapidfem_fd::simulation::{Simulation, SweepResult};
 
 /// A frequency-sweep simulation. Build once, run sweeps, inspect results.
 ///
@@ -43,9 +43,9 @@ impl PySimulation {
     /// Construct a simulation by loading a gmsh `.msh` file and a TOML config from disk.
     #[staticmethod]
     fn from_files(mesh_path: &str, config_path: &str) -> PyResult<Self> {
-        let config = rapidfem::config::load_config(config_path)
+        let config = rapidfem_fd::config::load_config(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("config: {}", e)))?;
-        let mesh = rapidfem::mesh_io::load_mesh(mesh_path)
+        let mesh = rapidfem_fd::mesh_io::load_mesh(mesh_path)
             .map_err(|e| PyRuntimeError::new_err(format!("mesh: {}", e)))?;
         Ok(PySimulation { inner: Simulation::new(mesh, config) })
     }

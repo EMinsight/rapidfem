@@ -1,0 +1,9 @@
+[package]
+name = "rapidfem-td"
+version = "0.1.0"
+edition = "2024"
+
+# Time-domain DGTD solver — scaffold. See docs/td-backend-plan.md.
+
+[dependencies]
+rapidfem-core = { path = "../rapidfem-core" }

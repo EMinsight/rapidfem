@@ -1,12 +1,12 @@
-//! rapidfem CLI: thin TOML-driven wrapper around `rapidfem::simulation::Simulation`.
+//! rapidfem CLI: thin TOML-driven wrapper around `rapidfem_fd::simulation::Simulation`.
 //! All simulation logic lives in the library (lib.rs). This file is just I/O glue:
 //! parse args → load mesh+config → run sim → write outputs.
 
 use num_complex::Complex64 as C64;
-use rapidfem::config;
-use rapidfem::constants::PI;
-use rapidfem::mesh_io::load_mesh;
-use rapidfem::simulation::Simulation;
+use rapidfem_fd::config;
+use rapidfem_fd::constants::PI;
+use rapidfem_fd::mesh_io::load_mesh;
+use rapidfem_fd::simulation::Simulation;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -42,7 +42,7 @@ fn main() {
                     .replace(".vtk", &format!("_mode{}.vtk", i + 1))
                     .replace(".vtu", &format!("_mode{}.vtu", i + 1));
                 let label = format!("Mode {} f={:.4}GHz", i + 1, mode.frequency.re / 1e9);
-                rapidfem::vtk_export::write_vtk(&mode_path, &sim.mesh, &sim.basis, &mode.field, &label)
+                rapidfem_fd::vtk_export::write_vtk(&mode_path, &sim.mesh, &sim.basis, &mode.field, &label)
                     .expect("Failed to write eigenmode VTK");
                 eprintln!("    Wrote {}", mode_path);
             }
@@ -74,7 +74,7 @@ fn main() {
             (result.solutions.first(), result.frequencies.first())
         {
             if let Some(first_sol) = first_freq_sols.first() {
-                let k0 = 2.0 * PI * first_freq / rapidfem::constants::C0;
+                let k0 = 2.0 * PI * first_freq / rapidfem_fd::constants::C0;
                 let n_tets = sim.mesh.n_tets();
                 let materials_opt = if sim.materials.is_empty() {
                     None
@@ -82,7 +82,7 @@ fn main() {
                     Some(sim.materials.as_slice())
                 };
                 let (er_tensors, _) = if let Some(mats) = materials_opt {
-                    rapidfem::materials::build_material_tensors(n_tets, mats, first_freq)
+                    rapidfem_fd::materials::build_material_tensors(n_tets, mats, first_freq)
                 } else {
                     let id: [[C64; 3]; 3] = [
                         [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
@@ -91,17 +91,17 @@ fn main() {
                     ];
                     (vec![id; n_tets], vec![id; n_tets])
                 };
-                let estimate = rapidfem::error_estimator::estimate_error(
+                let estimate = rapidfem_fd::error_estimator::estimate_error(
                     &sim.mesh, &sim.basis, first_sol, k0, &er_tensors, adaptive.theta,
                 );
                 let error_path = sim.config.output.vtk.as_deref()
                     .unwrap_or("error.vtk")
                     .replace(".vtk", "_error.vtk");
-                rapidfem::vtk_export::write_vtk_error(&error_path, &sim.mesh, &estimate)
+                rapidfem_fd::vtk_export::write_vtk_error(&error_path, &sim.mesh, &estimate)
                     .expect("Failed to write error VTK");
                 eprintln!("Wrote error VTK: {}", error_path);
                 let size_path = sim.config.mesh.file.replace(".msh", "_size.pos");
-                rapidfem::error_estimator::write_size_field(
+                rapidfem_fd::error_estimator::write_size_field(
                     &size_path, &sim.mesh, &estimate, adaptive.refinement_ratio,
                 ).expect("Failed to write size field");
                 eprintln!("Wrote size field: {}", size_path);
@@ -116,7 +116,7 @@ fn main() {
         {
             if let Some(first_sol) = first_freq_sols.first() {
                 let label = format!("f={:.4e}Hz", first_freq);
-                rapidfem::vtk_export::write_vtk(path, &sim.mesh, &sim.basis, first_sol, &label)
+                rapidfem_fd::vtk_export::write_vtk(path, &sim.mesh, &sim.basis, first_sol, &label)
                     .expect("Failed to write VTK file");
                 eprintln!("Wrote VTK: {}", path);
             }
@@ -125,7 +125,7 @@ fn main() {
 
     // ── Touchstone export ──────────────────────────────────────────────────
     if let Some(ref path) = sim.config.output.touchstone {
-        rapidfem::touchstone::write_touchstone(
+        rapidfem_fd::touchstone::write_touchstone(
             path, &result.frequencies, &result.sparams, result.n_driven, sim.config.output.z0,
         ).expect("Failed to write Touchstone file");
         eprintln!("Wrote {}", path);
@@ -140,11 +140,11 @@ fn main() {
     // ── Far-field radiation pattern (first frequency, first excitation) ─────
     if let Some(ref ff_path) = sim.config.output.farfield {
         if let Some(pattern) = sim.compute_farfield(&result, 0, 0, 91, 72) {
-            rapidfem::farfield::write_pattern_csv(ff_path, &pattern)
+            rapidfem_fd::farfield::write_pattern_csv(ff_path, &pattern)
                 .expect("Failed to write far-field CSV");
             eprintln!("  Wrote far-field: {}", ff_path);
             let cuts_path = ff_path.replace(".csv", "_cuts.csv");
-            rapidfem::farfield::write_plane_cuts_csv(&cuts_path, &pattern)
+            rapidfem_fd::farfield::write_plane_cuts_csv(&cuts_path, &pattern)
                 .expect("Failed to write plane cuts CSV");
             eprintln!("  Wrote plane cuts: {}", cuts_path);
         }
@@ -153,7 +153,7 @@ fn main() {
 
 fn write_group_delay(
     path: &str,
-    result: &rapidfem::simulation::SweepResult,
+    result: &rapidfem_fd::simulation::SweepResult,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if result.frequencies.len() < 2 || result.n_driven < 1 {
         return Ok(());
