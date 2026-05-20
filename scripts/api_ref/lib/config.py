@@ -9,11 +9,11 @@ does not need to be installed.
 from pathlib import Path
 
 # Directory paths
-SCRIPT_DIR = Path(__file__).parent.parent          # docs-site/scripts
-DOCS_ROOT = SCRIPT_DIR.parent                      # docs-site
-REPO_ROOT = DOCS_ROOT.parent                       # rapidfem
-STATIC_DIR = DOCS_ROOT / "static"
-SRC_API_DIR = DOCS_ROOT / "src" / "lib" / "api"
+SCRIPT_DIR = Path(__file__).parent.parent          # scripts/api_ref
+REPO_ROOT = SCRIPT_DIR.parent.parent               # rapidfem
+FRONTEND = REPO_ROOT / "python" / "python_src" / "rapidfem" / "ui" / "frontend-src"
+STATIC_DIR = FRONTEND / "static"
+SRC_API_DIR = FRONTEND / "src" / "lib" / "docs" / "api"
 
 # The single documented package.
 PACKAGE = {

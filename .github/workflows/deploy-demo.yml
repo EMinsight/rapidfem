@@ -1,17 +1,15 @@
 name: Deploy site
 
-# Builds two static sites and deploys them as a single GitHub Pages
-# deployment (fem.rapidpassives.org):
+# Builds the unified RapidFEM web app (landing + notebook demo + API
+# reference) with VITE_STATIC_MODE=1 and deploys it to GitHub Pages
+# (fem.rapidpassives.org).
 #
-#   /        the static notebook demo  (SvelteKit, VITE_STATIC_MODE=1)
-#   /docs    the documentation site    (docs-site/, SvelteKit, BASE_PATH=/docs)
-#
-# The demo example outputs in
+# The notebook example outputs in
 # `python/python_src/rapidfem/ui/frontend-src/static/demo/` are pre-baked
 # LOCALLY by `python scripts/bake_demo.py` and checked into git, so CI never
-# runs gmsh + the FEM solver. Re-bake locally + commit when an example changes.
+# runs gmsh + the FEM solver.
 #
-# The docs API reference is extracted fresh in CI by `docs-site/scripts/build.py`
+# The API reference is extracted fresh in CI by `scripts/api_ref/build.py`
 # (griffe static analysis — RapidFEM itself is not installed).
 
 on:
@@ -30,13 +28,13 @@ permissions:
 
 jobs:
   build:
-    name: Build demo + docs
+    name: Build site
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          # Full history + tags — the docs build extracts the API for every
-          # released tag via throwaway git worktrees.
+          # Full history + tags — the API extraction materialises every
+          # released tag in a throwaway git worktree.
           fetch-depth: 0
 
       - name: Set up Node
@@ -49,33 +47,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build demo (static mode)
+      - name: Extract API reference
+        run: |
+          pip install -r scripts/api_ref/requirements.txt
+          python scripts/api_ref/build.py
+
+      - name: Build site (static mode)
         working-directory: python/python_src/rapidfem/ui/frontend-src
         env:
           VITE_STATIC_MODE: '1'
         run: |
           npm ci
           npm run build
-
-      - name: Extract API documentation
-        working-directory: docs-site
-        run: |
-          pip install -r scripts/requirements.txt
-          python scripts/build.py
-
-      - name: Build docs site
-        working-directory: docs-site
-        env:
-          BASE_PATH: /docs
-        run: |
-          npm ci
-          npm run build
-
-      - name: Assemble site (demo at root, docs under /docs)
-        run: |
-          site=python/python_src/rapidfem/ui/frontend/dist
-          mkdir -p "$site/docs"
-          cp -r docs-site/build/. "$site/docs/"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
