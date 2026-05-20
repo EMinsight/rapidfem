@@ -27,7 +27,10 @@
 		"@codemirror/language": "^6.10.8",
 		"@codemirror/state": "^6.5.0",
 		"@codemirror/view": "^6.36.1",
+		"@lezer/highlight": "^1.2.1",
 		"codemirror": "^6.0.1",
+		"fuse.js": "^7.0.0",
+		"katex": "^0.16.11",
 		"plotly.js-dist-min": "^3.4.0"
 	}
 }

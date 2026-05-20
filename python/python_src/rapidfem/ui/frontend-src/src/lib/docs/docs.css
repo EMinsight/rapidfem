@@ -1,0 +1,817 @@
+/* RapidFEM docs design system — scoped under .rfdocs so the ported
+ * API-reference components live inside the rapidfem frontend without
+ * colliding with its global styles. Generated from the docs-site app.css. */
+
+/* RapidFEM Documentation — Design System
+ * Layout/infrastructure adapted from PathSim Docs, re-skinned to the
+ * RapidFEM/RapidPassives "rapid" style: warm dark surfaces, red accent,
+ * sharp corners, uppercase action buttons.
+ */
+
+.rfdocs {
+	/* ===== SURFACES ===== */
+	--surface: #1c1c21;
+	--surface-raised: #232329;
+	--surface-panel: #2a2a31;
+	--surface-mid: #1a1a1f;
+	--surface-inset: #131316;
+	--surface-hover: color-mix(in srgb, var(--surface-raised) 82%, white);
+
+	/* ===== TEXT ===== */
+	--text: #e2ddd5;
+	--text-muted: #9a96a0;
+	--text-disabled: #8a8790;
+
+	/* ===== BORDERS ===== */
+	--border: #35353d;
+	--border-subtle: #2d2d34;
+	--border-focus: #4a4a52;
+
+	/* ===== ACCENT ===== */
+	--accent: #d9513c;
+	--accent-hover: #e5634f;
+	--accent-secondary: #e8944a;
+	--accent-purple: #a78bd9;
+	--accent-bg: rgba(217, 81, 60, 0.2);
+
+	/* ===== STATUS ===== */
+	--success: #6bbf8a;
+	--success-bg: rgba(107, 191, 138, 0.12);
+	--warning: #e8944a;
+	--warning-bg: rgba(232, 148, 74, 0.12);
+	--error: #d9513c;
+	--error-bg: rgba(217, 81, 60, 0.12);
+
+	/* ===== FONTS =====
+	 * The rapid style is monospace-primary — JetBrains Mono throughout,
+	 * matching the RapidFEM app and demo. --font-ui is kept as an alias
+	 * so existing rules need no change. */
+	--font-mono: 'JetBrains Mono', 'Consolas', monospace;
+	--font-ui: var(--font-mono);
+
+	/* ===== SHADOWS ===== */
+	--shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+	--shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+	--shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.55);
+
+	/* ===== TRANSITIONS ===== */
+	--transition-fast: 0.1s ease;
+	--transition-normal: 0.15s ease;
+	--transition-slow: 0.25s ease;
+
+	/* ===== SPACING ===== */
+	--space-xs: 4px;
+	--space-sm: 8px;
+	--space-md: 12px;
+	--space-lg: 16px;
+	--space-xl: 24px;
+	--space-2xl: 32px;
+	--space-3xl: 48px;
+	--space-4xl: 64px;
+
+	/* ===== BORDER RADIUS — rapid style is sharp-cornered ===== */
+	--radius-sm: 0;
+	--radius-md: 0;
+	--radius-lg: 0;
+	--radius-xl: 0;
+
+	/* ===== FONT SIZES ===== */
+	--fs-xs: 11px; /* nav tabs, detail labels */
+	--fs-sm: 13px; /* body text, code, buttons, most UI */
+	--fs-md: 15px; /* section headers, panel headers, labels */
+	--fs-lg: 21px; /* page titles (h1) only */
+
+	/* ===== ICON SIZES ===== */
+	--icon-xs: 12px;
+	--icon-sm: 14px;
+	--icon-md: 16px;
+	--icon-lg: 20px;
+	--icon-xl: 24px;
+
+	/* ===== LAYOUT ===== */
+	--header-height: 36px;
+	--sidebar-width: 240px;
+	--toc-width: 220px;
+	--content-max-width: 820px;
+	--app-min-width: 280px;
+
+	/* ===== Z-INDEX ===== */
+	--z-dropdown: 100;
+	--z-sticky: 200;
+	--z-modal: 1000;
+	--z-tooltip: 1100;
+
+	/* ===== CODE EDITOR ===== */
+	--editor-max-height-sm: 300px;
+	--editor-max-height-md: 400px;
+	--editor-max-height-lg: 600px;
+}
+
+/* Reset */
+.rfdocs *,
+.rfdocs *::before,
+.rfdocs *::after {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+/* The .rfdocs wrapper carries the design tokens + base text styling.
+   Layout (height / scrolling) is owned by the /api route, not here. */
+.rfdocs {
+	font-family: var(--font-ui);
+	font-size: var(--fs-sm);
+	line-height: 1.6;
+	color: var(--text);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* Typography */
+.rfdocs h1,
+.rfdocs h2,
+.rfdocs h3,
+.rfdocs h4,
+.rfdocs h5,
+.rfdocs h6 {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+}
+
+.rfdocs h1 {
+	font-size: var(--fs-lg);
+}
+.rfdocs h2,
+.rfdocs h3,
+.rfdocs h4 {
+	font-size: var(--fs-md);
+}
+
+.rfdocs p {
+	margin-bottom: 1em;
+}
+
+.rfdocs a {
+	color: var(--accent);
+	text-decoration: none;
+	transition: color var(--transition-fast);
+}
+
+.rfdocs a:hover {
+	color: var(--accent-hover);
+	text-decoration: underline;
+}
+
+.rfdocs code {
+	font-family: var(--font-mono);
+	font-size: inherit;
+}
+
+.rfdocs pre {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	font-weight: 500;
+	line-height: 1.55;
+	color: var(--text-muted);
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin: 0;
+}
+
+.rfdocs pre code {
+	background: none;
+	padding: 0;
+	border: none;
+	font-size: inherit;
+}
+
+/* Button base — rapid style: uppercase, sharp */
+.rfdocs button {
+	cursor: pointer;
+	border: 1px solid var(--border);
+	background: var(--surface-raised);
+	color: var(--text);
+	padding: var(--space-sm) var(--space-lg);
+	border-radius: 0;
+	font-family: var(--font-ui);
+	font-size: var(--fs-sm);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	transition: all var(--transition-fast);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--space-sm);
+}
+
+.rfdocs button:hover {
+	background: var(--surface-hover);
+	border-color: var(--border-focus);
+}
+
+.rfdocs button:active {
+	opacity: 0.9;
+}
+
+.rfdocs button:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.rfdocs button.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--surface);
+}
+
+.rfdocs button.primary:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+}
+
+.rfdocs button.ghost {
+	background: transparent;
+	border-color: transparent;
+	color: var(--text-muted);
+}
+
+.rfdocs button.ghost:hover {
+	background: var(--surface-hover);
+	color: var(--text);
+}
+
+/* Icon button — not uppercased, no border */
+.rfdocs .icon-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border-radius: 0;
+	border: none;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	text-transform: none;
+	letter-spacing: normal;
+	transition: all var(--transition-fast);
+}
+
+.rfdocs .icon-btn:hover {
+	background: var(--surface-hover);
+	color: var(--text);
+}
+
+.rfdocs .icon-btn.copied {
+	color: var(--accent);
+}
+
+/* Action card link — vertical icon + label */
+.rfdocs .action-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: var(--space-sm) var(--space-md);
+	background: transparent;
+	border: none;
+	color: var(--text-muted);
+	text-decoration: none;
+	transition: color var(--transition-fast);
+}
+
+.rfdocs .action-card svg {
+	color: var(--accent);
+	transition: transform var(--transition-fast);
+}
+
+.rfdocs .action-card:hover {
+	color: var(--text);
+	text-decoration: none;
+}
+
+.rfdocs .action-card:hover svg {
+	transform: translateY(-2px);
+}
+
+.rfdocs .action-card .action-label {
+	font-size: var(--fs-xs);
+	font-weight: 500;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+/* Panel header / body */
+.rfdocs .panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: var(--space-sm) var(--space-lg);
+	background: var(--surface-raised);
+	border-bottom: 1px solid var(--border);
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.rfdocs .panel-body {
+	padding: var(--space-lg);
+	background: var(--surface);
+}
+
+/* Form elements */
+.rfdocs input,
+.rfdocs select,
+.rfdocs textarea {
+	background: var(--surface-inset);
+	border: 1px solid var(--border);
+	color: var(--text);
+	padding: var(--space-sm) var(--space-md);
+	border-radius: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	transition: all var(--transition-fast);
+}
+
+.rfdocs input:hover,
+.rfdocs select:hover,
+.rfdocs textarea:hover {
+	border-color: var(--border-focus);
+}
+
+.rfdocs input:focus,
+.rfdocs select:focus,
+.rfdocs textarea:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.rfdocs input::placeholder {
+	color: var(--text-disabled);
+}
+
+/* Separator */
+.rfdocs .separator {
+	height: 1px;
+	background: var(--border);
+	width: 100vw;
+	position: relative;
+	left: 50%;
+	transform: translateX(-50%);
+}
+
+/* Panel + card */
+.rfdocs .panel {
+	background: var(--surface-raised);
+	border: 1px solid var(--border);
+}
+
+.rfdocs .card {
+	background: var(--surface-raised);
+	border: 1px solid var(--border);
+	padding: var(--space-lg);
+	transition: border-color var(--transition-fast);
+}
+
+.rfdocs .card:hover {
+	border-color: var(--accent);
+}
+
+/* Tile — card variant with header/body */
+.rfdocs .tile {
+	border: 1px solid var(--border);
+	overflow: hidden;
+	transition: border-color var(--transition-fast);
+	scroll-margin-top: var(--space-lg);
+}
+
+.rfdocs .tile:hover {
+	border-color: var(--accent);
+}
+
+.rfdocs .elevated {
+	box-shadow: var(--shadow-md);
+}
+
+/* Tile grid */
+.rfdocs .tile-grid {
+	display: grid;
+	gap: var(--space-lg);
+}
+
+.rfdocs .tile-grid.cols-2 {
+	grid-template-columns: repeat(2, 1fr);
+}
+.rfdocs .tile-grid.cols-3 {
+	grid-template-columns: repeat(3, 1fr);
+}
+.rfdocs .tile-grid.cols-4 {
+	grid-template-columns: repeat(4, 1fr);
+}
+
+@media (max-width: 900px) {
+
+	.rfdocs .tile-grid.cols-3,
+.rfdocs .tile-grid.cols-4 {
+		grid-template-columns: repeat(2, 1fr);
+	}
+
+}
+
+@media (max-width: 600px) {
+
+	.rfdocs .tile-grid.cols-2,
+.rfdocs .tile-grid.cols-3,
+.rfdocs .tile-grid.cols-4 {
+		grid-template-columns: 1fr;
+	}
+
+}
+
+/* Install cards */
+.rfdocs .install-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+	gap: var(--space-lg);
+}
+
+.rfdocs .install-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	border: 1px solid var(--border);
+	overflow: hidden;
+	background: transparent;
+	padding: 0;
+	text-align: left;
+	text-transform: none;
+	letter-spacing: normal;
+	cursor: pointer;
+	transition: border-color var(--transition-fast);
+}
+
+.rfdocs .install-card:hover {
+	background: transparent;
+	border-color: var(--accent);
+}
+
+.rfdocs .install-card .panel-header,
+.rfdocs .install-card .install-body {
+	width: 100%;
+}
+
+.rfdocs .install-body {
+	display: flex;
+	align-items: center;
+	padding: var(--space-lg);
+	background: var(--surface-inset);
+}
+
+.rfdocs .install-body code {
+	background: none;
+	border: none;
+	padding: 0;
+	font-size: var(--fs-xs);
+	color: var(--text);
+}
+
+/* Badge */
+.rfdocs .badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 8px;
+	font-size: var(--fs-xs);
+	font-weight: 500;
+	border-radius: 0;
+	background: var(--surface-raised);
+	border: 1px solid var(--border);
+}
+
+.rfdocs .badge.success {
+	background: var(--success-bg);
+	color: var(--success);
+	border-color: var(--success);
+}
+.rfdocs .badge.warning {
+	background: var(--warning-bg);
+	color: var(--warning);
+	border-color: var(--warning);
+}
+.rfdocs .badge.error {
+	background: var(--error-bg);
+	color: var(--error);
+	border-color: var(--error);
+}
+.rfdocs .badge.accent {
+	background: var(--accent-bg);
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+/* Uppercase label / section header — lava accent */
+.rfdocs .label-uppercase {
+	font-family: var(--font-ui);
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	color: var(--accent);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+/* Scrollbar — matches the RapidPassives / RapidFEM app */
+.rfdocs * {
+	scrollbar-color: var(--border) var(--surface);
+	scrollbar-width: thin;
+}
+
+
+
+
+
+
+
+/* Selection */
+.rfdocs ::selection {
+	background: var(--accent-bg);
+	color: var(--text);
+}
+
+.rfdocs :focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Skip link */
+.rfdocs .skip-link {
+	position: absolute;
+	top: -100%;
+	left: 0;
+	background: var(--accent);
+	color: var(--surface);
+	padding: var(--space-sm) var(--space-lg);
+	z-index: 9999;
+	transition: top var(--transition-fast);
+}
+
+.rfdocs .skip-link:focus {
+	top: 0;
+}
+
+/* Hero */
+.rfdocs .hero {
+	text-align: center;
+	padding: var(--space-3xl) 0 var(--space-2xl);
+}
+
+.rfdocs .hero .description {
+	color: var(--text-muted);
+	margin: 0 auto var(--space-lg);
+	max-width: 620px;
+}
+
+.rfdocs .hero-actions {
+	display: flex;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: var(--space-sm);
+}
+
+/* Lead paragraph */
+.rfdocs .lead {
+	font-size: var(--fs-md);
+	color: var(--text-muted);
+	margin-bottom: var(--space-xl);
+}
+
+/* Prose */
+.rfdocs .prose {
+	max-width: var(--content-max-width);
+	min-width: 0;
+	line-height: 1.7;
+}
+
+.rfdocs .prose h1 {
+	color: var(--accent);
+	margin-bottom: var(--space-md);
+}
+
+.rfdocs .prose h1:first-child {
+	margin-top: 0;
+}
+
+.rfdocs .prose h2 {
+	position: relative;
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	color: var(--accent);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	margin-top: var(--space-2xl);
+	margin-bottom: var(--space-lg);
+	padding-top: var(--space-xl);
+}
+
+.rfdocs .prose h2::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: -50vw;
+	width: 200vw;
+	height: 1px;
+	background: var(--border);
+}
+
+.rfdocs .prose h2:first-of-type {
+	margin-top: var(--space-xl);
+}
+
+.rfdocs .prose h3,
+.rfdocs .prose h4 {
+	margin-top: 1.5em;
+	margin-bottom: 0.5em;
+}
+
+.rfdocs .prose p {
+	margin-bottom: 1em;
+}
+
+.rfdocs .prose ul,
+.rfdocs .prose ol {
+	margin-bottom: 1em;
+	padding-left: 1.5em;
+}
+
+.rfdocs .prose li {
+	margin-bottom: 0.4em;
+}
+
+.rfdocs .prose blockquote {
+	border-left: 3px solid var(--accent);
+	padding-left: var(--space-lg);
+	margin: 1em 0;
+	color: var(--text-muted);
+}
+
+.rfdocs .prose hr {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 2em 0;
+}
+
+.rfdocs .prose table {
+	width: 100%;
+	border-collapse: collapse;
+	margin: 1em 0;
+}
+
+.rfdocs .prose th,
+.rfdocs .prose td {
+	padding: var(--space-sm) var(--space-md);
+	border: 1px solid var(--border);
+	text-align: left;
+}
+
+.rfdocs .prose th {
+	background: var(--surface-raised);
+	font-weight: 600;
+}
+
+/* Code panel */
+.rfdocs .code-panel {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--border);
+	overflow: hidden;
+}
+
+.rfdocs .code-panel .panel-header {
+	padding: var(--space-xs) var(--space-md);
+}
+
+.rfdocs .code-panel .panel-body {
+	padding: 0;
+	background: var(--surface-inset);
+}
+
+.rfdocs .code-panel pre {
+	padding: var(--space-md) var(--space-lg);
+	overflow-x: auto;
+}
+
+/* API documentation */
+.rfdocs .api-signature {
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	background: var(--surface-inset);
+	padding: var(--space-md) var(--space-lg);
+	border: 1px solid var(--border);
+	overflow-x: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.rfdocs .api-param-table {
+	width: 100%;
+	border-collapse: collapse;
+	margin: var(--space-lg) 0;
+}
+
+.rfdocs .api-param-table th,
+.rfdocs .api-param-table td {
+	padding: var(--space-sm) var(--space-md);
+	border-bottom: 1px solid var(--border);
+	text-align: left;
+	vertical-align: top;
+}
+
+.rfdocs .api-param-table th {
+	font-weight: 600;
+	color: var(--text-muted);
+	font-size: var(--fs-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.rfdocs .api-param-table td:first-child {
+	font-family: var(--font-mono);
+	color: var(--accent);
+	white-space: nowrap;
+}
+
+/* Syntax highlighting tokens */
+.rfdocs .syntax-keyword {
+	color: #e57373;
+}
+.rfdocs .syntax-operator {
+	color: var(--accent-secondary);
+}
+.rfdocs .syntax-class {
+	color: #f0b86a;
+}
+.rfdocs .syntax-number {
+	color: #6bbf8a;
+}
+.rfdocs .syntax-string {
+	color: #81c784;
+}
+.rfdocs .syntax-function {
+	color: var(--accent-secondary);
+}
+.rfdocs .syntax-comment {
+	color: var(--text-disabled);
+	font-style: italic;
+}
+
+/* Flex utilities */
+.rfdocs .flex-center {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.rfdocs .flex-between {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.rfdocs .flex-col {
+	display: flex;
+	flex-direction: column;
+}
+.rfdocs .flex-1 {
+	flex: 1;
+	min-width: 0;
+}
+.rfdocs .gap-xs {
+	gap: var(--space-xs);
+}
+.rfdocs .gap-sm {
+	gap: var(--space-sm);
+}
+.rfdocs .gap-md {
+	gap: var(--space-md);
+}
+.rfdocs .gap-lg {
+	gap: var(--space-lg);
+}
+
+/* Spinner */
+.rfdocs .spinner {
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--border);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+	flex-shrink: 0;
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
