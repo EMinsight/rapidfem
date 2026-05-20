@@ -1434,4 +1434,71 @@ mod tests {
             "port vs PEC contrast too weak: {pec:.3} vs {port:.3}"
         );
     }
+
+    #[test]
+    fn port_operator_only_dissipates_energy() {
+        // WP2.1: with a port the operator is no longer energy-conserving.
+        // The symmetric part of M̃A — i.e. M̃A + (M̃A)ᵀ — must be negative
+        // semidefinite: the port can only drain energy from the
+        // homogeneous (unexcited) system, never inject it. The interior
+        // central flux contributes a skew (zero-symmetric) part, so any
+        // positive eigenvalue would be a flux defect.
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+
+        let lz = 2.0;
+        let mesh = structured_box(1, 1, 2, 1.0, 1.0, lz);
+        let port_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| (mesh.nodes[nd][2] - lz).abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        // Central flux — the interior is energy-conserving, only the port
+        // dissipates.
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris }],
+        );
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mm = op.assemble_energy_mass();
+
+        // MA = M̃·A.
+        let mut ma = vec![0.0; n * n];
+        for i in 0..n {
+            for k in 0..n {
+                let mik = mm[i * n + k];
+                if mik == 0.0 {
+                    continue;
+                }
+                for j in 0..n {
+                    ma[i * n + j] += mik * a[k * n + j];
+                }
+            }
+        }
+        // S = M̃A + (M̃A)ᵀ is symmetric; check it is negative semidefinite.
+        let s = Mat::from_fn(n, n, |i, j| ma[i * n + j] + ma[j * n + i]);
+        let eig = s.eigenvalues().expect("eigenvalues");
+        let scale = ma.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        let max_re = eig
+            .iter()
+            .map(|z| z.re)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_re = eig
+            .iter()
+            .map(|z| z.re)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            max_re < 1e-7 * scale,
+            "port operator gains energy — max eig(M̃A+AᵀM̃) = {max_re:.3e}"
+        );
+        assert!(
+            min_re < -1e-3 * scale,
+            "port operator shows no dissipation — min eig = {min_re:.3e}"
+        );
+    }
 }
