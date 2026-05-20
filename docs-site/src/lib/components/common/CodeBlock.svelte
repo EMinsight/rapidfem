@@ -1,17 +1,20 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import CodeMirror from './CodeMirror.svelte';
 	import { tooltip } from './Tooltip.svelte';
 
 	interface Props {
-		/** The code to display */
+		/** The code to display. */
 		code: string;
-		/** Title shown in the panel header */
+		/** Title shown in the panel header. */
 		title?: string;
-		/** Language hint (cosmetic, shown as a label) */
+		/** Language hint, shown as a label. */
 		lang?: string;
+		/** Show line numbers. */
+		lineNumbers?: boolean;
 	}
 
-	let { code, title = 'Code', lang }: Props = $props();
+	let { code, title = 'Code', lang, lineNumbers = true }: Props = $props();
 
 	let copied = $state(false);
 
@@ -38,9 +41,7 @@
 			<Icon name={copied ? 'check' : 'copy'} size={14} />
 		</button>
 	</div>
-	<div class="panel-body">
-		<pre><code>{code}</code></pre>
-	</div>
+	<CodeMirror {code} {lineNumbers} />
 </div>
 
 <style>
@@ -48,9 +49,5 @@
 		margin-left: var(--space-sm);
 		color: var(--text-disabled);
 		font-weight: 500;
-	}
-
-	.panel-body pre {
-		color: var(--text);
 	}
 </style>

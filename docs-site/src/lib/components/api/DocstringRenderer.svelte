@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
+	import type { EditorView } from '@codemirror/view';
+	import { createViewer } from '$lib/codemirror';
 
 	// Renders docstring HTML produced by scripts/build.py (docutils RST → HTML).
 	// Post-processing: docutils definition lists become parameter tables, and
@@ -114,14 +116,39 @@
 		}
 	}
 
+	// Replace docstring <pre> code blocks with read-only CodeMirror viewers
+	// so example code reads exactly like a notebook cell.
+	let codeViews: EditorView[] = [];
+
+	function renderCodeBlocks() {
+		if (!container) return;
+		for (const pre of container.querySelectorAll('pre')) {
+			if (pre.classList.contains('cm-done')) continue;
+			const code = (pre.textContent || '').replace(/\n$/, '');
+			if (!code.trim()) continue;
+
+			const wrapper = document.createElement('div');
+			wrapper.className = 'docstring-code';
+			pre.parentNode?.replaceChild(wrapper, pre);
+			wrapper.classList.add('cm-done');
+			codeViews.push(createViewer(wrapper, code, { lineNumbers: false }));
+		}
+	}
+
 	onMount(() => {
 		if (html && container && !rendered) {
 			rendered = true;
 			tick().then(() => {
 				transformDefinitionLists();
+				renderCodeBlocks();
 				renderMath();
 			});
 		}
+	});
+
+	onDestroy(() => {
+		for (const view of codeViews) view.destroy();
+		codeViews = [];
 	});
 </script>
 
@@ -234,7 +261,14 @@
 		font-weight: 600;
 	}
 
-	/* Code blocks inside docstrings */
+	/* Code blocks inside docstrings — CodeMirror viewer */
+	.docstring-content :global(.docstring-code) {
+		margin: var(--space-md) 0;
+		border: 1px solid var(--border);
+		background: var(--surface-mid);
+	}
+
+	/* Fallback for any <pre> not yet upgraded to CodeMirror */
 	.docstring-content :global(pre) {
 		background: var(--surface-inset);
 		border: 1px solid var(--border);

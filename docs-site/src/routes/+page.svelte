@@ -25,7 +25,8 @@
 <div class="page-wrapper">
 	<main>
 		<header class="hero">
-			<div class="hero-mark">rapid<span class="accent">fem</span></div>
+			<img src="{base}/favicon.svg" alt="RapidFEM" class="hero-logo" />
+			<h1 class="hero-title">RapidFEM</h1>
 			<p class="tagline">{site.tagline}</p>
 			<p class="description">{site.description}</p>
 			<div class="hero-actions">
@@ -118,18 +119,20 @@
 		padding: var(--space-4xl) 0 var(--space-3xl);
 	}
 
-	.hero-mark {
-		font-family: var(--font-mono);
-		font-size: 56px;
-		font-weight: 600;
-		letter-spacing: -0.03em;
-		color: var(--text);
-		line-height: 1;
+	.hero-logo {
+		height: 72px;
+		width: auto;
 		margin-bottom: var(--space-lg);
 	}
 
-	.hero-mark .accent {
-		color: var(--accent);
+	.hero-title {
+		font-family: var(--font-mono);
+		font-size: 40px;
+		font-weight: 600;
+		letter-spacing: -0.02em;
+		color: var(--text);
+		line-height: 1;
+		margin-bottom: var(--space-md);
 	}
 
 	.tagline {
@@ -230,8 +233,11 @@
 	}
 
 	@media (max-width: 600px) {
-		.hero-mark {
-			font-size: 40px;
+		.hero-title {
+			font-size: 30px;
+		}
+		.hero-logo {
+			height: 56px;
 		}
 		main {
 			padding: 0 var(--space-md);

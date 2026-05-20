@@ -3,6 +3,7 @@
 	import type { APIFunction, APIMethod } from '$lib/api/types';
 	import DocstringRenderer from './DocstringRenderer.svelte';
 	import TypeRef from './TypeRef.svelte';
+	import CodeMirror from '$lib/components/common/CodeMirror.svelte';
 	import Icon from '$lib/components/common/Icon.svelte';
 	import { tooltip } from '$lib/components/common/Tooltip.svelte';
 	import { searchTarget, clearSearchTarget } from '$lib/stores/searchNavigation';
@@ -99,8 +100,8 @@
 				{/if}
 			</div>
 		{:else}
-			<div class="panel-body source-body">
-				<pre><code>{func.source}</code></pre>
+			<div class="source-body">
+				<CodeMirror code={func.source ?? ''} />
 			</div>
 		{/if}
 	{/if}
@@ -186,16 +187,7 @@
 	}
 
 	.source-body {
-		padding: 0;
-	}
-
-	.source-body pre {
-		background: var(--surface-inset);
-		padding: var(--space-md);
-		overflow-x: auto;
-		color: var(--text);
-		font-size: var(--font-base);
-		line-height: 1.55;
+		border-top: 1px solid var(--border);
 	}
 
 	.method-returns {
