@@ -8,7 +8,7 @@ and systematic cross-validation against the frequency-domain solver.
 
 ## Where we are
 
-**Phases 1–6 complete** (see commit log, `prod P1.x`–`P6.x`):
+**Phases 1–8 complete** (see commit log, `prod P1.x`–`P8.x`):
 
 - **P1** — runs on arbitrary unstructured gmsh meshes; convergence and
   conditioning verified.
@@ -23,12 +23,22 @@ and systematic cross-validation against the frequency-domain solver.
 - **P6** — parallel matrix-free `apply` (rayon, all cores); element-wise
   sparse `A` assembly with no densifying (`O(nnz)`, scales to 10⁵ DOF);
   zero-copy numpy in/out for `apply`/`step`/`state_space`; benchmark.
+- **P7** — `ProblemTD` progressive-disclosure verbs (`ode`, `stepper`,
+  `reduce`) wired through pyo3; `ReducedModel` exposed to Python; VTK
+  field-animation export.
+- **P8** — TD Python-API regression suite in CI alongside `cargo test`;
+  TD examples (model reduction, field/VTK export); `docs/td-backend.md`.
 
-Remaining: P7 (API completion / MOR), P8 (hardening, examples, docs).
+**Remaining for full production parity:**
 
-Note: a full modal-port `sparams` verb (P7.1) needs waveguide-mode
-injection/extraction — soft sources + probe RFT give the scalar transfer
-function today; modal ports are the larger remaining item.
+- A modal-port `sparams` verb (P7.1) needs waveguide-mode
+  injection/extraction — soft sources + probe RFT give the scalar
+  transfer function today; modal ports are the larger remaining item.
+- Geometry-based material / PML example scripts (P8.2) — the physics is
+  validated in the Rust suite; the example scripts would mirror the FD
+  `dielectric_resonator.py` / `wr90_pml.py`.
+- A TD section in the customer-facing README (P8.3) — held pending
+  explicit sign-off; `docs/td-backend.md` documents the backend today.
 
 ## What "production level" means here
 
