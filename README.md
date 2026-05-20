@@ -1,9 +1,12 @@
 # RapidFEM
 
-Frequency-domain electromagnetic FEM solver written in Rust, distributed as a
-Python package on PyPI. Second-kind Nedelec edge elements, complex-symmetric
-sparse linear algebra, optional Flask-based local UI with a code editor and
-live geometry viewer.
+Electromagnetic FEM solver written in Rust, distributed as a Python package
+on PyPI. Two backends behind one geometry/material/physics API: a
+**frequency-domain** solver (second-kind Nedelec edge elements,
+complex-symmetric sparse linear algebra) and a **time-domain** DGTD solver
+(discontinuous Galerkin, Krylov/ETD exponential time integration, model-order
+reduction). Optional Flask-based local UI with a code editor and live
+geometry viewer.
 
 ## Install
 

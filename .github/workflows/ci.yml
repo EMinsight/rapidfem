@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: cargo build + test (workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The Rust solver crates. rapidfem-python is a pyo3 cdylib built by
+      # maturin, not plain cargo, so it is excluded here.
+      - name: Build
+        run: cargo build --workspace --exclude rapidfem-python
+
+      # Element-level accuracy checks plus the full DGTD validation suite:
+      # cavity-eigenmode gate, energy conservation, ETD vs analytic ODE,
+      # Krylov / MOR / adaptive-dimension checks.
+      - name: Test
+        run: cargo test --release -p rapidfem-core -p rapidfem-fd -p rapidfem-td
