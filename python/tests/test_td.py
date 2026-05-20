@@ -115,6 +115,37 @@ def test_driven_transient_injects_energy(cavity):
     assert np.abs(resp).max() > 0.0
 
 
+def test_transfer_function_peaks_at_a_resonance(cavity):
+    # The RFT transfer function of the linear cavity peaks at its
+    # resonances — within coarse-mesh discretisation error of the
+    # analytic unit-cube set f = √(m²+n²+p²)/2.
+    freqs, h = cavity.transfer_function(
+        source=([0.5, 0.5, 0.5], "E", "z"),
+        probe=([0.3, 0.7, 0.5], "E", "z"),
+        pulse=GaussianPulse(t0=2.0, tau=0.6, f0=0.0),
+        dt=0.05,
+        steps=300,
+        verbose=False,
+    )
+    assert freqs.shape == h.shape
+    assert np.all(np.isfinite(h))
+
+    mag = np.abs(h)
+    band = (freqs > 0.1) & (freqs < 3.0)
+    # a genuine resonance peak stands well clear of the band floor
+    assert mag[band].max() > 5.0 * np.median(mag[band])
+    f_peak = freqs[band][np.argmax(mag[band])]
+
+    analytic = {
+        np.sqrt(m * m + n * n + q * q) / 2
+        for m in range(4)
+        for n in range(4)
+        for q in range(4)
+        if 0 < m * m + n * n + q * q <= 9
+    }
+    assert min(abs(a - f_peak) for a in analytic) < 0.15
+
+
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):
     import xml.etree.ElementTree as ET
 

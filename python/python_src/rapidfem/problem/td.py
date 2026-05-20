@@ -486,6 +486,64 @@ class ProblemTD:
             )
         return times, resp
 
+    def transfer_function(
+        self, *, source, probe, pulse, dt, steps, krylov_dim=40,
+        verbose=True,
+    ):
+        """Field-to-field frequency response by on-the-fly RFT.
+
+        Drives a broadband ``pulse`` at ``source``, records ``probe``,
+        then divides the probe spectrum by the source spectrum —
+        ``H(f) = R(f) / G(f)`` — to recover the linear cavity's transfer
+        function in one transient run. Peaks of ``|H(f)|`` mark the
+        resonances.
+
+        This is the scalar, on-the-fly-RFT observable. It is a transfer
+        function between two *field points*, not a normalised port wave:
+        true modal-port S-parameters need waveguide-mode injection /
+        extraction.
+
+        Parameters
+        ----------
+        source : (point, field, component)
+            Soft-source location and field component to inject.
+        probe : (point, field, component)
+            Field sample to record.
+        pulse : callable
+            Broadband excitation ``g(t)`` — its spectrum sets the usable
+            frequency band (a :class:`~rapidfem.GaussianPulse` is the
+            typical choice).
+        dt, steps : float, int
+            Time step and step count; together they fix the frequency
+            resolution ``1/(steps·dt)`` and the Nyquist limit
+            ``1/(2·dt)``.
+
+        Returns
+        -------
+        freqs : ndarray
+            Frequency axis — Hz for a geometry in SI units, operator
+            units for a :meth:`box`. Length ``steps//2 + 1``.
+        H : ndarray of complex
+            The transfer function ``R(f)/G(f)``, zero outside the pulse
+            band where the drive carries no energy.
+        """
+        times, resp = self.driven_transient(
+            source=source, waveform=pulse, probes=[probe],
+            dt=dt, steps=steps, krylov_dim=krylov_dim, verbose=verbose,
+        )
+        g = np.array([float(pulse(t)) for t in times])
+        spec_g = np.fft.rfft(g)
+        spec_r = np.fft.rfft(resp[0])
+        freqs = np.fft.rfftfreq(times.size, dt)
+        # H = R/G only where the drive carries real energy. Outside the
+        # pulse band G→0, and dividing by it amplifies pure numerical
+        # noise — the classic deconvolution artefact — so H is held at
+        # zero below 1 % of the peak source spectrum.
+        h = np.zeros_like(spec_r)
+        band = np.abs(spec_g) > 1e-2 * np.abs(spec_g).max()
+        h[band] = spec_r[band] / spec_g[band]
+        return freqs, h
+
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0, *, dt, steps, krylov_dim=40, verbose=True):
         """Propagate ``y0`` for ``steps`` steps of size ``dt``.
