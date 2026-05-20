@@ -13,52 +13,78 @@ use crate::geom_factors::{GeometricFactors, all_geometric_factors};
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
 use rayon::prelude::*;
+use std::sync::Mutex;
 
 /// Physical curl of a vector field on a single element.
 ///
 /// `field` holds `3·Np` values (`field[node*3 + comp]`); the result has the
-/// same layout and contains `∇×field` sampled at the element nodes.
+/// same layout and contains `∇×field` sampled at the element nodes. This is
+/// the allocating wrapper around [`element_curl_into`] — the hot path uses
+/// the scratch-buffer form.
 pub fn element_curl(
     re: &ReferenceElement,
     gf: &GeometricFactors,
     field: &[f64],
 ) -> Vec<f64> {
     let n = re.n_nodes;
+    let mut out = vec![0.0; 3 * n];
+    let mut rd = vec![0.0; 3 * n];
+    let mut pd = vec![0.0; 9 * n];
+    element_curl_into(re, gf, field, &mut out, &mut rd, &mut pd);
+    out
+}
+
+/// Physical curl, writing into caller-provided buffers — no allocation.
+///
+/// `out` (`3·Np`) receives `∇×field`; `rd` (`3·Np`) and `pd` (`9·Np`) are
+/// scratch. `rd[k·n+i]` holds the `ξ_k` reference derivative; `pd[(p·3+c)·n+i]`
+/// holds `∂(field_c)/∂x_p`.
+fn element_curl_into(
+    re: &ReferenceElement,
+    gf: &GeometricFactors,
+    field: &[f64],
+    out: &mut [f64],
+    rd: &mut [f64],
+    pd: &mut [f64],
+) {
+    let n = re.n_nodes;
     debug_assert_eq!(field.len(), 3 * n);
     let dref = [&re.diff_r, &re.diff_s, &re.diff_t];
 
-    // pd[phys][comp][node] = ∂(field_comp)/∂x_phys.
-    let mut pd = [[(); 3]; 3].map(|row| row.map(|_| vec![0.0; n]));
     for comp in 0..3 {
-        // Reference derivatives of this component.
-        let mut rd = [vec![0.0; n], vec![0.0; n], vec![0.0; n]];
+        // Reference derivatives of this component: rd[k·n + i].
         for (k, d) in dref.iter().enumerate() {
             for i in 0..n {
                 let mut acc = 0.0;
                 for j in 0..n {
                     acc += d[i * n + j] * field[j * 3 + comp];
                 }
-                rd[k][i] = acc;
+                rd[k * n + i] = acc;
             }
         }
-        // Combine via the metric into physical derivatives.
-        for (phys, pd_phys) in pd.iter_mut().enumerate() {
+        // Combine via the metric into physical derivatives pd[(p·3+comp)·n+i].
+        for phys in 0..3 {
+            let jinv = [
+                gf.jacobian_inv[0][phys],
+                gf.jacobian_inv[1][phys],
+                gf.jacobian_inv[2][phys],
+            ];
+            let base = (phys * 3 + comp) * n;
             for i in 0..n {
-                pd_phys[comp][i] = gf.jacobian_inv[0][phys] * rd[0][i]
-                    + gf.jacobian_inv[1][phys] * rd[1][i]
-                    + gf.jacobian_inv[2][phys] * rd[2][i];
+                pd[base + i] = jinv[0] * rd[i]
+                    + jinv[1] * rd[n + i]
+                    + jinv[2] * rd[2 * n + i];
             }
         }
     }
 
-    // curl_x = ∂Fz/∂y - ∂Fy/∂z, and cyclic.
-    let mut out = vec![0.0; 3 * n];
+    // curl_x = ∂Fz/∂y - ∂Fy/∂z, and cyclic; pd index = (phys·3 + comp)·n + i.
+    let idx = |phys: usize, comp: usize, i: usize| (phys * 3 + comp) * n + i;
     for i in 0..n {
-        out[i * 3] = pd[1][2][i] - pd[2][1][i];
-        out[i * 3 + 1] = pd[2][0][i] - pd[0][2][i];
-        out[i * 3 + 2] = pd[0][1][i] - pd[1][0][i];
+        out[i * 3] = pd[idx(1, 2, i)] - pd[idx(2, 1, i)];
+        out[i * 3 + 1] = pd[idx(2, 0, i)] - pd[idx(0, 2, i)];
+        out[i * 3 + 2] = pd[idx(0, 1, i)] - pd[idx(1, 0, i)];
     }
-    out
 }
 
 #[inline]
@@ -86,6 +112,62 @@ struct FaceInfo {
     neighbor_local_face: usize,
     /// `perm[m]` = neighbour face-node local index matching this face's node `m`.
     perm: Vec<usize>,
+}
+
+/// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
+/// fixed-size scratch, allocated once and reused so the operator hot path
+/// performs no per-element heap allocation.
+struct Scratch {
+    /// Element E / H fields, deinterleaved (`3·Np` each).
+    ee: Vec<f64>,
+    hh: Vec<f64>,
+    /// Curl results dE / dH (`3·Np` each).
+    de: Vec<f64>,
+    dh: Vec<f64>,
+    /// `element_curl_into` scratch — reference (`3·Np`) and physical (`9·Np`)
+    /// derivatives.
+    rd: Vec<f64>,
+    pd: Vec<f64>,
+}
+
+impl Scratch {
+    fn new(np: usize) -> Self {
+        Scratch {
+            ee: vec![0.0; 3 * np],
+            hh: vec![0.0; 3 * np],
+            de: vec![0.0; 3 * np],
+            dh: vec![0.0; 3 * np],
+            rd: vec![0.0; 3 * np],
+            pd: vec![0.0; 9 * np],
+        }
+    }
+
+    /// A non-allocating placeholder — the value swapped in when a real
+    /// `Scratch` is returned to the pool.
+    fn empty() -> Self {
+        Scratch {
+            ee: Vec::new(),
+            hh: Vec::new(),
+            de: Vec::new(),
+            dh: Vec::new(),
+            rd: Vec::new(),
+            pd: Vec::new(),
+        }
+    }
+}
+
+/// Checkout handle for a pooled [`Scratch`]; returns it to the pool on drop,
+/// so steady-state `apply` calls allocate no scratch at all.
+struct ScratchGuard<'a> {
+    pool: &'a Mutex<Vec<Scratch>>,
+    scratch: Scratch,
+}
+
+impl Drop for ScratchGuard<'_> {
+    fn drop(&mut self) {
+        let s = std::mem::replace(&mut self.scratch, Scratch::empty());
+        self.pool.lock().unwrap().push(s);
+    }
 }
 
 /// Per-element electromagnetic material — diagonal relative permittivity /
@@ -153,6 +235,9 @@ pub struct MaxwellOperator {
     inv_mu: Vec<[f64; 3]>,
     sigma_eps: Vec<[f64; 3]>,
     sigma_mu: Vec<[f64; 3]>,
+    /// Reusable per-thread scratch buffers — keeps `apply` allocation-free
+    /// after the first call (see [`Scratch`]).
+    scratch_pool: Mutex<Vec<Scratch>>,
 }
 
 impl MaxwellOperator {
@@ -249,6 +334,7 @@ impl MaxwellOperator {
             inv_mu,
             sigma_eps,
             sigma_mu,
+            scratch_pool: Mutex::new(Vec::new()),
         }
     }
 
@@ -319,113 +405,144 @@ impl MaxwellOperator {
         })
     }
 
-    /// Evaluate `dy/dt = A·y`. The per-element work is independent — each
-    /// element writes only its own slice of `dy` — so it runs in parallel
-    /// across cores.
+    /// Evaluate `dy/dt = A·y`, allocating the result. See [`apply_into`](Self::apply_into)
+    /// for the allocation-free form.
     pub fn apply(&self, y: &[f64]) -> Vec<f64> {
-        let stride = self.re.n_nodes * 6;
         let mut dy = vec![0.0; self.n_dof()];
-        dy.par_chunks_mut(stride)
-            .enumerate()
-            .for_each(|(e, out)| self.apply_element(e, y, out));
+        self.apply_into(y, &mut dy);
         dy
     }
 
+    /// Evaluate `dy/dt = A·y` into the caller's buffer — the allocation-free
+    /// hot path. The per-element work is independent (each element writes
+    /// only its own slice of `dy`), so it runs in parallel across cores;
+    /// every worker reuses a pooled [`Scratch`], so after the first call
+    /// this performs no heap allocation at all.
+    pub fn apply_into(&self, y: &[f64], dy: &mut [f64]) {
+        debug_assert_eq!(dy.len(), self.n_dof());
+        let stride = self.re.n_nodes * 6;
+        let np = self.re.n_nodes;
+        dy.par_chunks_mut(stride).enumerate().for_each_init(
+            || self.checkout_scratch(np),
+            |guard, (e, out)| {
+                self.apply_element(e, y, out, &mut guard.scratch)
+            },
+        );
+    }
+
+    /// Take a [`Scratch`] from the pool, allocating one only on first use.
+    fn checkout_scratch(&self, np: usize) -> ScratchGuard<'_> {
+        let scratch = self
+            .scratch_pool
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Scratch::new(np));
+        ScratchGuard { pool: &self.scratch_pool, scratch }
+    }
+
     /// Compute element `e`'s block of `dy = A·y` into `out` — its `Np·6`
-    /// contiguous slice.
-    fn apply_element(&self, e: usize, y: &[f64], out: &mut [f64]) {
+    /// contiguous slice. `s` supplies the reusable per-thread working
+    /// buffers, so this allocates nothing.
+    fn apply_element(
+        &self,
+        e: usize,
+        y: &[f64],
+        out: &mut [f64],
+        s: &mut Scratch,
+    ) {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let cols = 4 * nfp;
-        {
-            let base = e * np * 6;
-            let mut ee = vec![0.0; 3 * np];
-            let mut hh = vec![0.0; 3 * np];
-            for node in 0..np {
-                for c in 0..3 {
-                    ee[node * 3 + c] = y[base + node * 6 + c];
-                    hh[node * 3 + c] = y[base + node * 6 + 3 + c];
-                }
+        let base = e * np * 6;
+        for node in 0..np {
+            for c in 0..3 {
+                s.ee[node * 3 + c] = y[base + node * 6 + c];
+                s.hh[node * 3 + c] = y[base + node * 6 + 3 + c];
             }
+        }
 
-            // Volume term:  dE = ∇×H,  dH = -∇×E.
-            let mut de = element_curl(&self.re, &self.geom[e], &hh);
-            let mut dh = element_curl(&self.re, &self.geom[e], &ee);
-            for v in dh.iter_mut() {
-                *v = -*v;
-            }
+        // Volume term:  dE = ∇×H,  dH = -∇×E.
+        element_curl_into(
+            &self.re, &self.geom[e], &s.hh, &mut s.de, &mut s.rd, &mut s.pd,
+        );
+        element_curl_into(
+            &self.re, &self.geom[e], &s.ee, &mut s.dh, &mut s.rd, &mut s.pd,
+        );
+        for v in s.dh.iter_mut() {
+            *v = -*v;
+        }
 
-            // Surface term — central flux.
-            for f in 0..4 {
-                let fi = &self.faces[e * 4 + f];
-                let n = fi.normal;
-                let coef = 0.5 * fi.fscale;
-                for m in 0..nfp {
-                    let vi = self.re.face_nodes[f][m];
-                    let em = [ee[vi * 3], ee[vi * 3 + 1], ee[vi * 3 + 2]];
-                    let hm = [hh[vi * 3], hh[vi * 3 + 1], hh[vi * 3 + 2]];
-                    // Jumps [E] = E⁻-E⁺, [H] = H⁻-H⁺.
-                    let (je, jh) = if fi.neighbor == usize::MAX {
-                        // PEC ghost: [E] = 2·E_tangential, [H] = 2·H_normal.
-                        let edn = dot3(n, em);
-                        let hdn = dot3(n, hm);
-                        (
-                            [
-                                2.0 * (em[0] - edn * n[0]),
-                                2.0 * (em[1] - edn * n[1]),
-                                2.0 * (em[2] - edn * n[2]),
-                            ],
-                            [
-                                2.0 * hdn * n[0],
-                                2.0 * hdn * n[1],
-                                2.0 * hdn * n[2],
-                            ],
-                        )
-                    } else {
-                        let vj = self.re.face_nodes[fi.neighbor_local_face]
-                            [fi.perm[m]];
-                        let nbb = fi.neighbor * np * 6;
-                        (
-                            [
-                                em[0] - y[nbb + vj * 6],
-                                em[1] - y[nbb + vj * 6 + 1],
-                                em[2] - y[nbb + vj * 6 + 2],
-                            ],
-                            [
-                                hm[0] - y[nbb + vj * 6 + 3],
-                                hm[1] - y[nbb + vj * 6 + 4],
-                                hm[2] - y[nbb + vj * 6 + 5],
-                            ],
-                        )
-                    };
-                    let nxjh = cross3(n, jh);
-                    let nxje = cross3(n, je);
-                    // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential — dissipative,
-                    // damps the discontinuous spurious modes.
-                    let a = self.flux_alpha;
-                    let pe = cross3(n, cross3(n, je));
-                    let ph = cross3(n, cross3(n, jh));
-                    for i in 0..np {
-                        let w = coef * self.re.lift[i * cols + f * nfp + m];
-                        for c in 0..3 {
-                            de[i * 3 + c] += w * (-nxjh[c] + a * pe[c]);
-                            dh[i * 3 + c] += w * (nxje[c] + a * ph[c]);
-                        }
+        // Surface term — central flux.
+        for f in 0..4 {
+            let fi = &self.faces[e * 4 + f];
+            let n = fi.normal;
+            let coef = 0.5 * fi.fscale;
+            for m in 0..nfp {
+                let vi = self.re.face_nodes[f][m];
+                let em = [s.ee[vi * 3], s.ee[vi * 3 + 1], s.ee[vi * 3 + 2]];
+                let hm = [s.hh[vi * 3], s.hh[vi * 3 + 1], s.hh[vi * 3 + 2]];
+                // Jumps [E] = E⁻-E⁺, [H] = H⁻-H⁺.
+                let (je, jh) = if fi.neighbor == usize::MAX {
+                    // PEC ghost: [E] = 2·E_tangential, [H] = 2·H_normal.
+                    let edn = dot3(n, em);
+                    let hdn = dot3(n, hm);
+                    (
+                        [
+                            2.0 * (em[0] - edn * n[0]),
+                            2.0 * (em[1] - edn * n[1]),
+                            2.0 * (em[2] - edn * n[2]),
+                        ],
+                        [
+                            2.0 * hdn * n[0],
+                            2.0 * hdn * n[1],
+                            2.0 * hdn * n[2],
+                        ],
+                    )
+                } else {
+                    let vj = self.re.face_nodes[fi.neighbor_local_face]
+                        [fi.perm[m]];
+                    let nbb = fi.neighbor * np * 6;
+                    (
+                        [
+                            em[0] - y[nbb + vj * 6],
+                            em[1] - y[nbb + vj * 6 + 1],
+                            em[2] - y[nbb + vj * 6 + 2],
+                        ],
+                        [
+                            hm[0] - y[nbb + vj * 6 + 3],
+                            hm[1] - y[nbb + vj * 6 + 4],
+                            hm[2] - y[nbb + vj * 6 + 5],
+                        ],
+                    )
+                };
+                let nxjh = cross3(n, jh);
+                let nxje = cross3(n, je);
+                // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential — dissipative,
+                // damps the discontinuous spurious modes.
+                let a = self.flux_alpha;
+                let pe = cross3(n, cross3(n, je));
+                let ph = cross3(n, cross3(n, jh));
+                for i in 0..np {
+                    let w = coef * self.re.lift[i * cols + f * nfp + m];
+                    for c in 0..3 {
+                        s.de[i * 3 + c] += w * (-nxjh[c] + a * pe[c]);
+                        s.dh[i * 3 + c] += w * (nxje[c] + a * ph[c]);
                     }
                 }
             }
+        }
 
-            // Apply per-element materials: ∂E/∂t = (1/ε)(∇×H + flux) - (σ/ε)E,
-            // ∂H/∂t = (1/μ)(-∇×E + flux).
-            let (ie, im) = (self.inv_eps[e], self.inv_mu[e]);
-            let (se, sm) = (self.sigma_eps[e], self.sigma_mu[e]);
-            for node in 0..np {
-                for c in 0..3 {
-                    out[node * 6 + c] =
-                        ie[c] * de[node * 3 + c] - se[c] * ee[node * 3 + c];
-                    out[node * 6 + 3 + c] =
-                        im[c] * dh[node * 3 + c] - sm[c] * hh[node * 3 + c];
-                }
+        // Apply per-element materials: ∂E/∂t = (1/ε)(∇×H + flux) - (σ/ε)E,
+        // ∂H/∂t = (1/μ)(-∇×E + flux).
+        let (ie, im) = (self.inv_eps[e], self.inv_mu[e]);
+        let (se, sm) = (self.sigma_eps[e], self.sigma_mu[e]);
+        for node in 0..np {
+            for c in 0..3 {
+                out[node * 6 + c] =
+                    ie[c] * s.de[node * 3 + c] - se[c] * s.ee[node * 3 + c];
+                out[node * 6 + 3 + c] =
+                    im[c] * s.dh[node * 3 + c] - sm[c] * s.hh[node * 3 + c];
             }
         }
     }
@@ -542,8 +659,14 @@ impl MaxwellOperator {
         let blocks: Vec<(Vec<usize>, Vec<usize>, Vec<f64>)> = (0..self.n_elem)
             .into_par_iter()
             .map_init(
-                || (vec![0.0_f64; n], vec![0.0_f64; stride]),
-                |(y, out), e| {
+                || {
+                    (
+                        vec![0.0_f64; n],
+                        vec![0.0_f64; stride],
+                        Scratch::new(self.re.n_nodes),
+                    )
+                },
+                |(y, out, scr), e| {
                     let cols = stencil(e);
                     // (col, val) per local row, filled in ascending column
                     // order — so the assembled CSR row stays sorted.
@@ -554,7 +677,7 @@ impl MaxwellOperator {
                             let j = c * stride + jl;
                             y[j] = 1.0;
                             out.iter_mut().for_each(|v| *v = 0.0);
-                            self.apply_element(e, y, out);
+                            self.apply_element(e, y, out, scr);
                             y[j] = 0.0;
                             for (il, &v) in out.iter().enumerate() {
                                 if v != 0.0 {
