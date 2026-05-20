@@ -87,8 +87,26 @@ struct FaceInfo {
     perm: Vec<usize>,
 }
 
-/// Semi-discrete DG operator for the vacuum Maxwell curl equations on a
-/// tetrahedral mesh with PEC outer walls.
+/// Per-element electromagnetic material — relative permittivity / permeability
+/// and conductivity, in the solver's normalised units (`c = ε₀ = μ₀ = 1`).
+#[derive(Clone, Copy, Debug)]
+pub struct ElemMaterial {
+    /// Relative permittivity `ε_r`.
+    pub eps: f64,
+    /// Relative permeability `μ_r`.
+    pub mu: f64,
+    /// Conductivity `σ` (Ohmic loss).
+    pub sigma: f64,
+}
+
+impl ElemMaterial {
+    /// Vacuum — `ε = μ = 1`, `σ = 0`.
+    pub const VACUUM: ElemMaterial =
+        ElemMaterial { eps: 1.0, mu: 1.0, sigma: 0.0 };
+}
+
+/// Semi-discrete DG operator for the Maxwell curl equations on a tetrahedral
+/// mesh with PEC outer walls and per-element materials.
 ///
 /// State layout: `y[(e*Np + node)*6 + comp]`, `comp` 0..3 = E, 3..6 = H.
 /// `apply` evaluates `dy/dt`. The numerical flux blends central (`alpha = 0`,
@@ -102,12 +120,27 @@ pub struct MaxwellOperator {
     faces: Vec<FaceInfo>,
     /// Upwind blend: 0 = central, 1 = full upwind.
     flux_alpha: f64,
+    /// Per-element `1/ε`, `1/μ`, `σ/ε`.
+    inv_eps: Vec<f64>,
+    inv_mu: Vec<f64>,
+    sigma_eps: Vec<f64>,
 }
 
 impl MaxwellOperator {
-    /// Build the operator for a mesh at polynomial order `p` with the given
-    /// upwind blend (`flux_alpha` in `[0, 1]`).
+    /// Build a vacuum operator (`ε = μ = 1`, `σ = 0`).
     pub fn new(mesh: &Mesh, order: usize, flux_alpha: f64) -> Self {
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        Self::new_with_materials(mesh, order, flux_alpha, &vacuum)
+    }
+
+    /// Build the operator with per-element materials and the given upwind
+    /// blend (`flux_alpha` in `[0, 1]`).
+    pub fn new_with_materials(
+        mesh: &Mesh,
+        order: usize,
+        flux_alpha: f64,
+        materials: &[ElemMaterial],
+    ) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
         let topo = FaceTopology::build(mesh);
@@ -157,7 +190,20 @@ impl MaxwellOperator {
                 });
             }
         }
-        MaxwellOperator { re, n_elem, geom, faces, flux_alpha }
+        assert_eq!(materials.len(), n_elem, "one material per element");
+        let inv_eps = materials.iter().map(|m| 1.0 / m.eps).collect();
+        let inv_mu = materials.iter().map(|m| 1.0 / m.mu).collect();
+        let sigma_eps = materials.iter().map(|m| m.sigma / m.eps).collect();
+        MaxwellOperator {
+            re,
+            n_elem,
+            geom,
+            faces,
+            flux_alpha,
+            inv_eps,
+            inv_mu,
+            sigma_eps,
+        }
     }
 
     /// Degrees of freedom, `6 · Np · n_elem`.
@@ -250,10 +296,15 @@ impl MaxwellOperator {
                 }
             }
 
+            // Apply per-element materials: ∂E/∂t = (1/ε)(∇×H + flux) - (σ/ε)E,
+            // ∂H/∂t = (1/μ)(-∇×E + flux).
+            let (ie, im, se) =
+                (self.inv_eps[e], self.inv_mu[e], self.sigma_eps[e]);
             for node in 0..np {
                 for c in 0..3 {
-                    dy[base + node * 6 + c] = de[node * 3 + c];
-                    dy[base + node * 6 + 3 + c] = dh[node * 3 + c];
+                    dy[base + node * 6 + c] =
+                        ie * de[node * 3 + c] - se * ee[node * 3 + c];
+                    dy[base + node * 6 + 3 + c] = im * dh[node * 3 + c];
                 }
             }
         }
@@ -277,20 +328,26 @@ impl MaxwellOperator {
         a
     }
 
-    /// Dense block-diagonal energy mass `M̃`: per element and field component a
-    /// copy of `|det J_e|·M_ref`. `yᵀ M̃ y` is the discrete field energy.
+    /// Dense block-diagonal energy mass `M̃` — the material-weighted field
+    /// energy `yᵀM̃y = ∫(ε|E|² + μ|H|²)`: per element a copy of
+    /// `|det J_e|·M_ref`, scaled by `ε` on the E components and `μ` on the H
+    /// components.
     pub fn assemble_energy_mass(&self) -> Vec<f64> {
         let np = self.re.n_nodes;
         let n = self.n_dof();
         let mut m = vec![0.0; n * n];
         for e in 0..self.n_elem {
             let scale = self.geom[e].det.abs();
+            let eps = 1.0 / self.inv_eps[e];
+            let mu = 1.0 / self.inv_mu[e];
             let base = e * np * 6;
             for ni in 0..np {
                 for nj in 0..np {
                     let mij = scale * self.re.mass[ni * np + nj];
                     for c in 0..6 {
-                        m[(base + ni * 6 + c) * n + (base + nj * 6 + c)] = mij;
+                        let w = if c < 3 { eps } else { mu };
+                        m[(base + ni * 6 + c) * n + (base + nj * 6 + c)] =
+                            w * mij;
                     }
                 }
             }
@@ -451,6 +508,115 @@ mod tests {
         assert!(
             worst < 1e-9 * scale.max(1.0),
             "M̃A not skew-symmetric: worst {worst}, scale {scale}"
+        );
+    }
+
+    #[test]
+    fn uniform_dielectric_shifts_cavity_resonance() {
+        // Filling the cavity with ε_r scales every resonance by 1/√(ε_r·μ_r).
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let eps_r = 4.0;
+        let mats =
+            vec![ElemMaterial { eps: eps_r, mu: 1.0, sigma: 0.0 }; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mat = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+        let eig = mat.eigenvalues().expect("eig");
+        let mut fund = (f64::NEG_INFINITY, 0.0_f64);
+        for z in &eig {
+            if z.im.abs() > 0.5 && z.re > fund.0 {
+                fund = (z.re, z.im.abs());
+            }
+        }
+        let want = std::f64::consts::PI * 2.0_f64.sqrt() / eps_r.sqrt();
+        let err = (fund.1 - want).abs() / want;
+        assert!(
+            err < 0.02,
+            "ε_r={eps_r}: |Im| = {:.4}, analytic π√2/√ε_r = {want:.4}, err {err:.3}",
+            fund.1
+        );
+    }
+
+    #[test]
+    fn heterogeneous_central_flux_conserves_energy() {
+        // With heterogeneous ε, μ the central-flux operator still conserves
+        // the material-weighted energy: M̃·A is skew-symmetric.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let mats: Vec<ElemMaterial> = (0..mesh.n_tets())
+            .map(|i| ElemMaterial {
+                eps: 1.0 + 0.7 * i as f64,
+                mu: 1.0 + 0.3 * i as f64,
+                sigma: 0.0,
+            })
+            .collect();
+        let op = MaxwellOperator::new_with_materials(&mesh, 2, 0.0, &mats);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mm = op.assemble_energy_mass();
+
+        let mut ma = vec![0.0; n * n];
+        for i in 0..n {
+            for k in 0..n {
+                let mik = mm[i * n + k];
+                if mik == 0.0 {
+                    continue;
+                }
+                for j in 0..n {
+                    ma[i * n + j] += mik * a[k * n + j];
+                }
+            }
+        }
+        let mut worst = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for p in 0..n {
+            for q in 0..n {
+                worst = worst.max((ma[p * n + q] + ma[q * n + p]).abs());
+                scale = scale.max(ma[p * n + q].abs());
+            }
+        }
+        assert!(
+            worst < 1e-9 * scale.max(1.0),
+            "heterogeneous M̃A not skew: worst {worst}, scale {scale}"
+        );
+    }
+
+    #[test]
+    fn conductivity_damps_at_the_analytic_rate() {
+        // A uniform conductivity σ damps every mode by Re = -σ/(2ε) on top of
+        // the numerical (upwind) damping — isolated by differencing σ>0
+        // against σ=0.
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let eps_r = 1.0;
+
+        let least_damped_re = |sigma: f64| -> f64 {
+            let mats = vec![
+                ElemMaterial { eps: eps_r, mu: 1.0, sigma };
+                mesh.n_tets()
+            ];
+            let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
+            let n = op.n_dof();
+            let a = op.assemble_dense();
+            let mat = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+            let eig = mat.eigenvalues().expect("eig");
+            eig.iter()
+                .filter(|z| z.im.abs() > 1.0)
+                .map(|z| z.re)
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+
+        let sigma = 0.2;
+        let delta = least_damped_re(sigma) - least_damped_re(0.0);
+        let want = -sigma / (2.0 * eps_r);
+        let err = (delta - want).abs() / want.abs();
+        assert!(
+            err < 0.1,
+            "conductivity damping ΔRe = {delta:.5}, analytic -σ/2ε = {want:.5}, err {err:.3}"
         );
     }
 
