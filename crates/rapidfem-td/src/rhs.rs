@@ -91,18 +91,23 @@ struct FaceInfo {
 /// tetrahedral mesh with PEC outer walls.
 ///
 /// State layout: `y[(e*Np + node)*6 + comp]`, `comp` 0..3 = E, 3..6 = H.
-/// Central numerical flux (energy-conserving). `apply` evaluates `dy/dt`.
+/// `apply` evaluates `dy/dt`. The numerical flux blends central (`alpha = 0`,
+/// energy-conserving) and upwind (`alpha = 1`, dissipates the discontinuous
+/// spurious modes).
 pub struct MaxwellOperator {
     re: ReferenceElement,
     n_elem: usize,
     geom: Vec<GeometricFactors>,
     /// 4 faces per element, flattened: `faces[e*4 + f]`.
     faces: Vec<FaceInfo>,
+    /// Upwind blend: 0 = central, 1 = full upwind.
+    flux_alpha: f64,
 }
 
 impl MaxwellOperator {
-    /// Build the operator for a mesh at polynomial order `p`.
-    pub fn new(mesh: &Mesh, order: usize) -> Self {
+    /// Build the operator for a mesh at polynomial order `p` with the given
+    /// upwind blend (`flux_alpha` in `[0, 1]`).
+    pub fn new(mesh: &Mesh, order: usize, flux_alpha: f64) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
         let topo = FaceTopology::build(mesh);
@@ -152,7 +157,7 @@ impl MaxwellOperator {
                 });
             }
         }
-        MaxwellOperator { re, n_elem, geom, faces }
+        MaxwellOperator { re, n_elem, geom, faces, flux_alpha }
     }
 
     /// Degrees of freedom, `6 · Np · n_elem`.
@@ -230,11 +235,16 @@ impl MaxwellOperator {
                     };
                     let nxjh = cross3(n, jh);
                     let nxje = cross3(n, je);
+                    // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential — dissipative,
+                    // damps the discontinuous spurious modes.
+                    let a = self.flux_alpha;
+                    let pe = cross3(n, cross3(n, je));
+                    let ph = cross3(n, cross3(n, jh));
                     for i in 0..np {
                         let w = coef * self.re.lift[i * cols + f * nfp + m];
                         for c in 0..3 {
-                            de[i * 3 + c] -= w * nxjh[c];
-                            dh[i * 3 + c] += w * nxje[c];
+                            de[i * 3 + c] += w * (-nxjh[c] + a * pe[c]);
+                            dh[i * 3 + c] += w * (nxje[c] + a * ph[c]);
                         }
                     }
                 }
@@ -351,7 +361,8 @@ mod tests {
         // surface scaling and the PEC boundary treatment all at once.
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
-        let op = MaxwellOperator::new(&mesh, 2);
+        // Central flux (alpha = 0) is the energy-conserving case.
+        let op = MaxwellOperator::new(&mesh, 2, 0.0);
         let n = op.n_dof();
         let a = op.assemble_dense();
         let mm = op.assemble_energy_mass();
@@ -381,6 +392,44 @@ mod tests {
         assert!(
             worst < 1e-9 * scale.max(1.0),
             "M̃A not skew-symmetric: worst {worst}, scale {scale}"
+        );
+    }
+
+    #[test]
+    fn cavity_eigenfrequencies_match_analytic() {
+        // P3.5 gate: eigenvalues of A for a unit cubic PEC cavity vs the
+        // analytic resonances ω = π·√(m²+n²+p²). Lowest physical mode is
+        // (1,1,0) ⇒ ω = π√2.
+        use crate::mesh_gen::structured_box;
+        use faer::Mat;
+
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        // Upwind flux (alpha = 1) damps the discontinuous spurious modes;
+        // the physical cavity modes survive as the least-damped ones.
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let a = op.assemble_dense();
+        let mat = Mat::from_fn(n, n, |i, j| a[i * n + j]);
+        let eig = mat.eigenvalues().expect("eigenvalues");
+
+        // Among the non-static modes (|Im| > 1), the physical fundamental is
+        // the least-damped — the largest (least-negative) real part.
+        let want = std::f64::consts::PI * 2.0_f64.sqrt();
+        let mut fundamental = (f64::NEG_INFINITY, 0.0_f64);
+        for z in &eig {
+            if z.im.abs() > 1.0 && z.re > fundamental.0 {
+                fundamental = (z.re, z.im.abs());
+            }
+        }
+        let (re, im) = fundamental;
+        let err = (im - want).abs() / want;
+        eprintln!(
+            "DIAG cavity: fundamental Re={re:.5} |Im|={im:.5}  analytic π√2={want:.5}  rel.err={err:.4}"
+        );
+        assert!(re < 0.0, "upwind flux must damp — fundamental Re = {re}");
+        assert!(
+            err < 0.05,
+            "fundamental |Im| = {im:.4}, analytic π√2 = {want:.4}, rel.err {err:.3}"
         );
     }
 }

@@ -11,3 +11,7 @@ doctest = false
 
 [dependencies]
 rapidfem-core = { path = "../rapidfem-core" }
+
+[dev-dependencies]
+# Dense eigensolver — used only by the cavity-mode validation gate.
+faer = "0.24"
