@@ -170,6 +170,40 @@ impl Drop for ScratchGuard<'_> {
     }
 }
 
+/// Per-job working buffers for the sparse assembly — reused across every
+/// element a rayon worker folds, so `assemble_sparse`'s element loop
+/// allocates nothing beyond the geometric growth of the output accumulators.
+struct SparseFragment {
+    /// Global probe vector — one DOF set to 1 at a time.
+    probe: Vec<f64>,
+    /// Element output block (`stride`).
+    out: Vec<f64>,
+    /// Operator scratch.
+    scratch: Scratch,
+    /// `(local_row, global_col, value)` triples for one element — cleared
+    /// and refilled per element; pre-sized to the worst-case stencil count.
+    entries: Vec<(usize, usize, f64)>,
+    /// Accumulated CSR fragment for this job, in element order.
+    col_idx: Vec<usize>,
+    values: Vec<f64>,
+    row_len: Vec<usize>,
+}
+
+impl SparseFragment {
+    fn new(n: usize, stride: usize, np: usize) -> Self {
+        SparseFragment {
+            probe: vec![0.0; n],
+            out: vec![0.0; stride],
+            scratch: Scratch::new(np),
+            // ≤ 5 stencil columns × stride columns × stride rows nonzeros.
+            entries: Vec::with_capacity(5 * stride * stride),
+            col_idx: Vec::new(),
+            values: Vec::new(),
+            row_len: Vec::new(),
+        }
+    }
+}
+
 /// Per-element electromagnetic material — diagonal relative permittivity /
 /// permeability tensors and conductivity, in the solver's normalised units
 /// (`c = ε₀ = μ₀ = 1`). Diagonal tensors cover isotropic and uniaxial /
@@ -634,86 +668,100 @@ impl MaxwellOperator {
     /// block. Element blocks are independent and assemble in parallel.
     /// Memory is `O(nnz)`, not `O(N²)`, so this scales to production meshes
     /// where [`assemble_dense`](Self::assemble_dense) cannot.
+    /// Sorted column-element stencil of row block `e` — itself plus every
+    /// distinct face neighbour. Returns the fixed `[usize; 5]` array and the
+    /// number of entries used; never allocates.
+    fn element_stencil(&self, e: usize) -> ([usize; 5], usize) {
+        let mut s = [0usize; 5];
+        s[0] = e;
+        let mut count = 1;
+        for f in 0..4 {
+            let nb = self.faces[e * 4 + f].neighbor;
+            if nb != usize::MAX && !s[..count].contains(&nb) {
+                s[count] = nb;
+                count += 1;
+            }
+        }
+        s[..count].sort_unstable();
+        (s, count)
+    }
+
     pub fn assemble_sparse(&self) -> CsrMatrix {
         let stride = self.re.n_nodes * 6;
+        let np = self.re.n_nodes;
         let n = self.n_dof();
 
-        // Sorted column-element stencil of row block `e`: itself plus every
-        // distinct face neighbour.
-        let stencil = |e: usize| -> Vec<usize> {
-            let mut s = Vec::with_capacity(5);
-            s.push(e);
-            for f in 0..4 {
-                let nb = self.faces[e * 4 + f].neighbor;
-                if nb != usize::MAX && !s.contains(&nb) {
-                    s.push(nb);
-                }
-            }
-            s.sort_unstable();
-            s
-        };
-
-        // Each element block computes its own `stride` rows independently.
-        // `map_init` keeps one probe vector per worker thread, reused across
-        // elements (each probe resets the single entry it touched).
-        let blocks: Vec<(Vec<usize>, Vec<usize>, Vec<f64>)> = (0..self.n_elem)
+        // Each rayon worker folds a contiguous run of elements into one
+        // `SparseFragment`, reusing its buffers across every element — the
+        // element loop allocates nothing. `with_min_len` forces chunks
+        // coarse enough for that reuse to pay off while still giving the
+        // thread pool plenty of independent work. `fold` keeps the
+        // fragments in element order, so concatenating them yields a
+        // row-ordered CSR.
+        let min_len =
+            (self.n_elem / (4 * rayon::current_num_threads())).max(1);
+        let frags: Vec<SparseFragment> = (0..self.n_elem)
             .into_par_iter()
-            .map_init(
-                || {
-                    (
-                        vec![0.0_f64; n],
-                        vec![0.0_f64; stride],
-                        Scratch::new(self.re.n_nodes),
-                    )
-                },
-                |(y, out, scr), e| {
-                    let cols = stencil(e);
-                    // (col, val) per local row, filled in ascending column
-                    // order — so the assembled CSR row stays sorted.
-                    let mut rows: Vec<Vec<(usize, f64)>> =
-                        vec![Vec::new(); stride];
-                    for &c in &cols {
+            .with_min_len(min_len)
+            .fold(
+                || SparseFragment::new(n, stride, np),
+                |mut f, e| {
+                    let (sten, ns) = self.element_stencil(e);
+                    f.entries.clear();
+                    for &c in &sten[..ns] {
                         for jl in 0..stride {
                             let j = c * stride + jl;
-                            y[j] = 1.0;
-                            out.iter_mut().for_each(|v| *v = 0.0);
-                            self.apply_element(e, y, out, scr);
-                            y[j] = 0.0;
-                            for (il, &v) in out.iter().enumerate() {
+                            f.probe[j] = 1.0;
+                            f.out.iter_mut().for_each(|v| *v = 0.0);
+                            self.apply_element(
+                                e,
+                                &f.probe,
+                                &mut f.out,
+                                &mut f.scratch,
+                            );
+                            f.probe[j] = 0.0;
+                            for il in 0..stride {
+                                let v = f.out[il];
                                 if v != 0.0 {
-                                    rows[il].push((j, v));
+                                    f.entries.push((il, j, v));
                                 }
                             }
                         }
                     }
-                    let mut lens = Vec::with_capacity(stride);
-                    let mut col_idx = Vec::new();
-                    let mut values = Vec::new();
-                    for r in rows {
-                        lens.push(r.len());
-                        for (c, v) in r {
-                            col_idx.push(c);
-                            values.push(v);
+                    // Group by local row, columns ascending within a row —
+                    // sorting on the full key needs no stable-sort scratch.
+                    f.entries.sort_unstable_by_key(|&(il, j, _)| (il, j));
+                    let mut cursor = 0;
+                    for il in 0..stride {
+                        let mut cnt = 0;
+                        while cursor < f.entries.len()
+                            && f.entries[cursor].0 == il
+                        {
+                            f.col_idx.push(f.entries[cursor].1);
+                            f.values.push(f.entries[cursor].2);
+                            cnt += 1;
+                            cursor += 1;
                         }
+                        f.row_len.push(cnt);
                     }
-                    (lens, col_idx, values)
+                    f
                 },
             )
             .collect();
 
-        // Concatenate the element blocks in row order into one CSR matrix.
+        // Concatenate the per-job fragments — already in element order.
         let mut row_ptr = Vec::with_capacity(n + 1);
         let mut col_idx = Vec::new();
         let mut values = Vec::new();
         row_ptr.push(0);
         let mut acc = 0;
-        for (lens, ci, vv) in blocks {
-            col_idx.extend(ci);
-            values.extend(vv);
-            for l in lens {
+        for f in &frags {
+            for &l in &f.row_len {
                 acc += l;
                 row_ptr.push(acc);
             }
+            col_idx.extend_from_slice(&f.col_idx);
+            values.extend_from_slice(&f.values);
         }
         CsrMatrix { n, row_ptr, col_idx, values }
     }
