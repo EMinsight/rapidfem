@@ -6,3 +6,4 @@ pub mod quadrature;
 pub mod mesh;
 pub mod mesh_io;
 pub mod materials;
+pub mod topology;
