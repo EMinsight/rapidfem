@@ -61,8 +61,7 @@ DEMO_EXAMPLES = frozenset({
     # RFIC layout import
     "fd_rfic_spiral_from_json",
     # time-domain
-    "td_cavity",
-    "td_dielectric_cavity",
+    "td_power_divider",
     "td_ring_resonator",
     "td_waveguide_sparams",
     "td_transfer_function",
