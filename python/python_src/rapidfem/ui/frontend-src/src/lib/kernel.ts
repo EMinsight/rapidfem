@@ -222,6 +222,12 @@ export class KernelClient {
 			return false;
 		}
 	}
+
+	/** No binary field sidecar in live mode — the WebSocket delivers field
+	 *  arrays inline. Present so callers can treat both kernels uniformly. */
+	async fieldBuffer(_file: string): Promise<ArrayBuffer | null> {
+		return null;
+	}
 }
 
 // ── Static-demo replay client ──────────────────────────────────────────
@@ -232,16 +238,7 @@ export class KernelClient {
 // so consumers (Cell, Notebook, +page.svelte) don't have to branch.
 
 import { IS_STATIC_MODE, DEMO_BASE } from './static_mode';
-
-interface BakedFieldsStub {
-	$bin: true;
-	magic: number;
-	version: number;
-	n_freq: number;
-	n_port: number;
-	stride: number;
-	url: string;
-}
+import { checkBinHeader, resolveGeoRefs } from './binpack';
 
 interface BakedDisplayEvent {
 	kind: DisplayKind | 'error';
@@ -283,7 +280,10 @@ interface Manifest {
 class StaticKernelClient {
 	private manifest_promise: Promise<Manifest> | null = null;
 	private examples = new Map<string, Promise<BakedExample>>();
-	private bins = new Map<string, Promise<ArrayBuffer>>();
+	/** Cached `<name>.geo.bin` / `<name>.field.bin` buffers, keyed
+	 *  `"<name>.<geo|field>"`. `null` once it is known the example carries
+	 *  no buffer of that kind. */
+	private blobs = new Map<string, Promise<ArrayBuffer | null>>();
 
 	private load_manifest(): Promise<Manifest> {
 		if (!this.manifest_promise) {
@@ -313,53 +313,36 @@ class StaticKernelClient {
 		return p;
 	}
 
-	private async load_bin(url: string): Promise<ArrayBuffer> {
-		let p = this.bins.get(url);
+	/** Fetch a `<name>.geo.bin` / `<name>.field.bin` sidecar, cached.
+	 *  Resolves to `null` when the example carries no buffer of that kind
+	 *  (the manifest does not list it). */
+	private load_blob(name: string, suffix: 'geo' | 'field'): Promise<ArrayBuffer | null> {
+		const key = `${name}.${suffix}`;
+		let p = this.blobs.get(key);
 		if (p) return p;
-		p = fetch(`${DEMO_BASE}${url}`).then((r) => {
-			if (!r.ok) throw new Error(`bin fetch failed: ${r.status} ${url}`);
-			return r.arrayBuffer();
-		});
-		this.bins.set(url, p);
+		p = (async () => {
+			const fname = `${name}.${suffix}.bin`;
+			const m = await this.load_manifest();
+			const entry = m.examples.find((e) => e.name === name);
+			if (entry && Array.isArray(entry.bin_files) && !entry.bin_files.includes(fname)) {
+				return null;
+			}
+			const r = await fetch(`${DEMO_BASE}${fname}`);
+			if (!r.ok) return null;
+			const buf = await r.arrayBuffer();
+			checkBinHeader(buf, fname);
+			return buf;
+		})();
+		this.blobs.set(key, p);
 		return p;
 	}
 
-	/** Hydrate the binary field stub back into the nested-array shape the
-	 *  live UI's `fields_raw` expects: ``(number[] | null)[][]``. */
-	private async hydrate_fields(stub: BakedFieldsStub): Promise<(number[] | null)[][]> {
-		const buf = await this.load_bin(stub.url);
-		const dv = new DataView(buf);
-		const magic = dv.getUint32(0, true);
-		const version = dv.getUint32(4, true);
-		if (magic !== stub.magic || version !== stub.version) {
-			throw new Error(`field bin header mismatch (got ${magic.toString(16)}/${version})`);
-		}
-		const n_freq = dv.getUint32(8, true);
-		const n_port = dv.getUint32(12, true);
-		const stride = dv.getUint32(16, true);
-		const mask_off = 20;
-		const mask = new Uint8Array(buf, mask_off, n_freq * n_port);
-		// The mask block is zero-padded so the float block starts on a
-		// 4-byte boundary — required by Float32Array's offset constraint.
-		const mask_padded = (mask.byteLength + 3) & ~3;
-		const floats_off = mask_off + mask_padded;
-		const all_floats = new Float32Array(buf, floats_off);
-
-		const out: (number[] | null)[][] = [];
-		let cursor = 0;
-		for (let fi = 0; fi < n_freq; fi++) {
-			const row: (number[] | null)[] = [];
-			for (let pi = 0; pi < n_port; pi++) {
-				if (mask[fi * n_port + pi] === 0) {
-					row.push(null);
-				} else {
-					row.push(Array.from(all_floats.subarray(cursor, cursor + stride)));
-					cursor += stride;
-				}
-			}
-			out.push(row);
-		}
-		return out;
+	/** The `field` buffer of an example — fetched lazily, only when the
+	 *  field viewer (or a trajectory) actually asks for it. `null` in
+	 *  examples without field data, or in any non-static kernel. */
+	async fieldBuffer(file: string): Promise<ArrayBuffer | null> {
+		const ex = await this.load_example(file);
+		return this.load_blob(ex.name, 'field');
 	}
 
 	/** Find the baked cell matching the source the editor just sent. */
@@ -390,21 +373,23 @@ class StaticKernelClient {
 
 			for (const s of cell.stream_lines) opts.onStream?.(s.stream, s.line);
 
+			// The `geo` buffer (mesh / geometry) is resolved up front — the
+			// 3-D view needs it immediately. `field`-buffer refs are left in
+			// the payload; the field viewer hydrates those lazily through
+			// `fieldBuffer()`, so an example browsed for geometry + S-params
+			// never fetches its field data at all.
+			const geo = await this.load_blob(example.name, 'geo');
 			for (const ev of cell.display_events) {
 				if (ev.kind === 'error') {
 					if (ev.error) opts.onStream?.('stderr', `${ev.error.type}: ${ev.error.message}`);
 					continue;
 				}
-				let payload = ev.payload ?? {};
-				if (ev.kind === 'result') {
-					const f = (payload as Record<string, unknown>).fields as BakedFieldsStub | undefined | null;
-					if (f && (f as BakedFieldsStub).$bin) {
-						try {
-							const hydrated = await this.hydrate_fields(f as BakedFieldsStub);
-							payload = { ...payload, fields: hydrated };
-						} catch (err) {
-							opts.onStream?.('stderr', `[static-demo] field load failed: ${err}`);
-						}
+				const payload = ev.payload ?? {};
+				if (geo) {
+					try {
+						resolveGeoRefs(payload, geo);
+					} catch (err) {
+						opts.onStream?.('stderr', `[static-demo] geometry load failed: ${err}`);
 					}
 				}
 				opts.onDisplay?.(ev.kind, payload, ev.name);

@@ -8,6 +8,7 @@
 	} from '$lib/api';
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
+	import { isBinRef, type BinRef } from '$lib/binpack';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -54,9 +55,12 @@
 	let wireframe = $state<import('$lib/api').GeometryPayload | null>(null);
 	let smats = $state<SMatrix[]>([]);
 	let freqs = $state<number[]>([]);
-	let fields_raw = $state<(number[] | null)[][] | null>(null);
-	let fields_j_raw = $state<(number[] | null)[][] | null>(null);
-	let fields_h_raw = $state<(number[] | null)[][] | null>(null);
+	// A field channel is either resolved nested arrays, or — in the static
+	// demo — a `$bin` reference still to be fetched lazily, or null.
+	type FieldChannelData = (number[] | null)[][] | BinRef | null;
+	let fields_raw = $state<FieldChannelData>(null);
+	let fields_j_raw = $state<FieldChannelData>(null);
+	let fields_h_raw = $state<FieldChannelData>(null);
 	let field_channel = $state<'E' | 'J' | 'H'>('E');
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
@@ -69,10 +73,17 @@
 	let mode_q_factors = $state<(number | null)[]>([]);
 	let field_density = $state(3);
 	let field_scale_mode = $state<'log' | 'lin'>('lin');
-	let active_channel_raw = $derived<(number[] | null)[][] | null>(
+	let active_channel_raw = $derived<FieldChannelData>(
 		field_channel === 'J' ? fields_j_raw :
 		field_channel === 'H' ? fields_h_raw :
 		fields_raw,
+	);
+	// The active channel once resolved — null while a `$bin` ref is still
+	// being fetched lazily.
+	let active_channel_data = $derived<(number[] | null)[][] | null>(
+		active_channel_raw && !isBinRef(active_channel_raw)
+			? (active_channel_raw as (number[] | null)[][])
+			: null,
 	);
 	let available_channels = $derived<('E' | 'J' | 'H')[]>([
 		...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
@@ -80,10 +91,38 @@
 		...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
 	]);
 	let field_abc = $derived<Float32Array | null>(
-		active_channel_raw && active_channel_raw[field_freq_idx] && active_channel_raw[field_freq_idx][field_port_idx]
-			? new Float32Array(active_channel_raw[field_freq_idx][field_port_idx] as number[])
+		active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
+			? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
 			: null,
 	);
+
+	// Lazily fetch + resolve a channel's `$bin` field ref the first time
+	// its channel is shown — an example browsed for geometry + S-parameters
+	// never downloads its field buffer at all.
+	let _field_resolving = false;
+	$effect(() => {
+		if (!show_field) return;
+		const ch = field_channel;
+		const raw = ch === 'J' ? fields_j_raw : ch === 'H' ? fields_h_raw : fields_raw;
+		if (!raw || !isBinRef(raw) || _field_resolving) return;
+		_field_resolving = true;
+		void (async () => {
+			try {
+				const buf = await get_kernel().fieldBuffer(active_path ?? '<unnamed>');
+				if (buf) {
+					const { resolveFields } = await import('$lib/binpack');
+					const arr = resolveFields(buf, raw);
+					if (ch === 'E') fields_raw = arr;
+					else if (ch === 'J') fields_j_raw = arr;
+					else fields_h_raw = arr;
+				}
+			} catch (e) {
+				log_lines = [...log_lines, `[field] load failed: ${e}`];
+			} finally {
+				_field_resolving = false;
+			}
+		})();
+	});
 
 	let last_geom_stats = $state<{ n_entities: number; n_triangles: number } | null>(null);
 	let last_mesh_stats = $state<{ n_tets: number; n_tris: number; mesh_time_s: number } | null>(null);
@@ -475,6 +514,28 @@
 		td_playing = true;
 	}
 
+	/** A `td_trajectory` payload carries `$bin` field refs (points / frames)
+	 *  in the static demo. The trajectory *is* the displayed content, so
+	 *  resolve them now — fetch the field buffer and hydrate in place. */
+	async function hydrate_trajectory(payload: TdTrajectoryPayload) {
+		const p = payload as unknown as Record<string, unknown>;
+		if (isBinRef(p.points) || isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
+			try {
+				const buf = await get_kernel().fieldBuffer(active_path ?? '<unnamed>');
+				if (buf) {
+					const { resolveFieldRefs } = await import('$lib/binpack');
+					resolveFieldRefs(p, buf);
+				}
+			} catch (e) {
+				log_lines = [...log_lines, `[trajectory] load failed: ${e}`];
+			}
+		}
+		td_trajectory_payload = payload;
+		td_frame = 0;
+		td_playing = true;
+		display = 'view3d';
+	}
+
 	// Notebook → backend cell exec. Uses the single WS kernel channel —
 	// streams logs + display events in order, returns final ok/error.
 	async function on_run_cell(cell_source: string, reset_first: boolean): Promise<'ok' | 'error'> {
@@ -547,10 +608,7 @@
 					td_timeseries_payload = payload as TdTimeSeriesPayload;
 					display = 'timeseries';
 				} else if (kind === 'td_trajectory') {
-					td_trajectory_payload = payload as TdTrajectoryPayload;
-					td_frame = 0;
-					td_playing = true;
-					display = 'view3d';
+					void hydrate_trajectory(payload as TdTrajectoryPayload);
 				}
 			},
 		});
@@ -883,7 +941,7 @@
 							<ResultsPanel {freqs} {smats} metrics={[]} />
 						{/if}
 					</div>
-					{#if display === 'view3d' && show_field && fields_raw && freqs.length}
+					{#if display === 'view3d' && show_field && active_channel_raw && freqs.length}
 						<div class="field-controls">
 							<label class="field-ctrl">
 								<span class="lbl">{eigenmode_mode ? 'Mode' : 'Freq'}</span>
@@ -904,13 +962,13 @@
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
 								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
-							{#if fields_raw[field_freq_idx] && fields_raw[field_freq_idx].length > 1}
+							{#if active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx]!.length > 1}
 								<div class="field-ctrl">
 									<span class="lbl">Excitation</span>
 									<Select
 										bind:value={field_port_idx}
 										open_up
-										options={fields_raw[field_freq_idx].map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
+										options={active_channel_data[field_freq_idx]!.map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
 									/>
 								</div>
 							{/if}
