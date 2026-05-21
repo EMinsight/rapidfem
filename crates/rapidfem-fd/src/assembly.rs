@@ -335,7 +335,12 @@ pub fn frequency_sweep_with_pml(
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
     let mut first_factor = true;
 
-    let mut triplets: Vec<faer::sparse::Triplet<usize, usize, faer::c64>> = Vec::new();
+    // COO buffers for the per-frequency system matrix, reused across the
+    // sweep. Capacity covers the K block plus the Robin upper bound.
+    let coo_cap = k_free_indices.len() + robin_free_indices.len();
+    let mut coo_rows: Vec<usize> = Vec::with_capacity(coo_cap);
+    let mut coo_cols: Vec<usize> = Vec::with_capacity(coo_cap);
+    let mut coo_vals: Vec<C64> = Vec::with_capacity(coo_cap);
     let mut bempty = basis.empty_tri_matrix();
 
     for (fi, &freq) in frequencies.iter().enumerate() {
@@ -402,32 +407,28 @@ pub fn frequency_sweep_with_pml(
             port_bvecs.push(bvec);
         }
 
-        // Build faer triplets: K = (E - k0²*B) + Robin — reuse allocation
-        triplets.clear();
+        // Build the system matrix COO: K = (E - k0^2*B) + Robin, straight
+        // into the solver's COO buffers, reusing the allocation.
+        coo_rows.clear();
+        coo_cols.clear();
+        coo_vals.clear();
 
         for (ti, &orig_i) in k_free_indices.iter().enumerate() {
-            let val = data_e[orig_i] - k0_sq * data_b[orig_i];
-            triplets.push(faer::sparse::Triplet {
-                row: k_free_rows[ti], col: k_free_cols[ti],
-                val: faer::c64 { re: val.re, im: val.im },
-            });
+            coo_rows.push(k_free_rows[ti]);
+            coo_cols.push(k_free_cols[ti]);
+            coo_vals.push(data_e[orig_i] - k0_sq * data_b[orig_i]);
         }
         for &idx in &robin_free_indices {
             let val = bempty[idx];
             if val.re == 0.0 && val.im == 0.0 { continue; }
-            triplets.push(faer::sparse::Triplet {
-                row: dof_to_free[basis.tri_rows[idx]],
-                col: dof_to_free[basis.tri_cols[idx]],
-                val: faer::c64 { re: val.re, im: val.im },
-            });
+            coo_rows.push(dof_to_free[basis.tri_rows[idx]]);
+            coo_cols.push(dof_to_free[basis.tri_cols[idx]]);
+            coo_vals.push(val);
         }
 
         // Factor (symbolic once via `factorize`, then `refactorize` per freq
         // reusing the sparsity pattern) and solve via the backend-agnostic
         // SparseSolver trait.
-        let coo_rows: Vec<usize> = triplets.iter().map(|t| t.row).collect();
-        let coo_cols: Vec<usize> = triplets.iter().map(|t| t.col).collect();
-        let coo_vals: Vec<C64> = triplets.iter().map(|t| C64::new(t.val.re, t.val.im)).collect();
         if first_factor {
             solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
             first_factor = false;
