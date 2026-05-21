@@ -23,7 +23,7 @@ import {
 	addMesh, addLineMesh, setBBox, setPointCloud,
 	type GLState,
 } from './canvas3d';
-import { buildVolumeBoundaries } from './mesh_scene';
+import { buildVolumeBoundaries, buildTriSoupF64 } from './mesh_scene';
 
 // ── Mesh-payload contract ────────────────────────────────────────────
 
@@ -105,38 +105,7 @@ function pushGroup(
 	fieldNorm: Float32Array | null,
 ): void {
 	const ntri = idx.length / 3;
-	const pos64 = new Float64Array(ntri * 9);
-	for (let t = 0; t < ntri; t++) {
-		for (let v = 0; v < 3; v++) {
-			const ni = idx[t * 3 + v] * 3;
-			pos64[t * 9 + v * 3 + 0] = mesh.nodes[ni];
-			pos64[t * 9 + v * 3 + 1] = mesh.nodes[ni + 1];
-			pos64[t * 9 + v * 3 + 2] = mesh.nodes[ni + 2];
-		}
-	}
-	const norm64 = new Float64Array(ntri * 9);
-	for (let t = 0; t < ntri; t++) {
-		const i = t * 9;
-		const ax = pos64[i + 0], ay = pos64[i + 1], az = pos64[i + 2];
-		const bx = pos64[i + 3], by = pos64[i + 4], bz = pos64[i + 5];
-		const cx = pos64[i + 6], cy = pos64[i + 7], cz = pos64[i + 8];
-		const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-		const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-		let nx = e1y * e2z - e1z * e2y;
-		let ny = e1z * e2x - e1x * e2z;
-		let nz = e1x * e2y - e1y * e2x;
-		const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-		nx /= l; ny /= l; nz /= l;
-		// Snap axis-aligned normals so coplanar walls share an exact value.
-		if (Math.abs(nx) > 0.9999)      { nx = Math.sign(nx); ny = 0; nz = 0; }
-		else if (Math.abs(ny) > 0.9999) { ny = Math.sign(ny); nx = 0; nz = 0; }
-		else if (Math.abs(nz) > 0.9999) { nz = Math.sign(nz); nx = 0; ny = 0; }
-		for (let k = 0; k < 3; k++) {
-			norm64[i + k * 3 + 0] = nx;
-			norm64[i + k * 3 + 1] = ny;
-			norm64[i + k * 3 + 2] = nz;
-		}
-	}
+	const { positions, normals } = buildTriSoupF64(mesh.nodes, idx);
 	let scalars: Float32Array | undefined;
 	if (fieldNorm) {
 		scalars = new Float32Array(ntri * 3);
@@ -146,12 +115,7 @@ function pushGroup(
 			}
 		}
 	}
-	addMesh(
-		state,
-		Float32Array.from(pos64),
-		Float32Array.from(norm64),
-		color, tag, depthOffset, scalars,
-	);
+	addMesh(state, positions, normals, color, tag, depthOffset, scalars);
 }
 
 // ── Wireframe edges of every named surface tri ───────────────────────
