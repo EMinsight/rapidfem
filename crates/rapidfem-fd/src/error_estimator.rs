@@ -129,9 +129,6 @@ pub fn estimate_error(
             // E-field at this point
             let (ex, ey, ez) = interp::eval_field_in_tet(mesh, basis, solution, itet, x, y, z);
 
-            // curl(E) at this point
-            let curl_e = eval_curl_in_tet(mesh, basis, solution, itet, x, y, z);
-
             // For volume residual, we need curl(curl E) + k₀²εE
             // curl(curl E) is approximately constant per tet for Nedelec-2
             // We approximate it from the curl variation across quad points
