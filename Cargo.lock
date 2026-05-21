@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "rapidfem-python"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "num-complex 0.4.6",
  "numpy",
