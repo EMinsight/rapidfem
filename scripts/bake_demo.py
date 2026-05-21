@@ -168,111 +168,36 @@ def _bake_cell(cell: Cell, kernel) -> dict:
     return record
 
 
-# ── Field payload binarisation ───────────────────────────────────────────
-
-# Magic + version for the field-bin format. Anything reading these files must
-# verify both before slicing — float32 byte-soup with the wrong stride is a
-# pain to debug after the fact.
-_FIELD_BIN_MAGIC = 0x52464D46  # "RFMF" little-endian
-_FIELD_BIN_VERSION = 1
+# ── Bulk-payload binarisation ────────────────────────────────────────────
 
 
-def _binarise_fields(fields) -> tuple[bytes, dict] | None:
-    """Pack a ``[n_freq][n_port]`` nested list of per-node field arrays into
-    a single binary buffer, returning ``(bytes, replacement_dict)``.
+def _extract_payloads_to_bin(record: dict, bin_dir: Path) -> list[Path]:
+    """Lift every bulk numeric array out of a baked record into the two
+    binary sidecars — ``<name>.geo.bin`` (mesh / geometry) and
+    ``<name>.field.bin`` (field / trajectory data) — replacing each array
+    in the record with a ``$bin`` reference.
 
-    Layout (little-endian):
-        u32 magic, u32 version, u32 n_freq, u32 n_port, u32 stride
-        u8[n_freq*n_port]                    presence mask (0 = null, 1 = present)
-        float32[stride] * sum(mask)          concatenated payloads, row-major (f,p)
-
-    ``stride`` is the per-(f,p) array length. We assert it is uniform across
-    every non-null entry — the FEM mesh is global, so this holds in practice;
-    if it ever doesn't we want to fail loudly rather than silently truncate.
-
-    Returns ``None`` if the input is missing/empty/all-null (nothing to bake).
+    Reuses :mod:`rapidfem.ui.binpack`, the single packer the live
+    WebSocket protocol shares. Returns the bin files actually written; a
+    buffer holding nothing but its 8-byte header (an example with no mesh,
+    or no field data) is skipped.
     """
-    import struct
+    from rapidfem.ui import binpack
 
-    if fields is None:
-        return None
-    n_freq = len(fields)
-    if n_freq == 0:
-        return None
-    n_port = len(fields[0]) if isinstance(fields[0], list) else 0
-    if n_port == 0:
-        return None
+    events = [
+        ev
+        for cell in record.get("cells", [])
+        for ev in cell.get("display_events", [])
+    ]
+    geo, field = binpack.pack(events)
 
-    # Find stride from the first non-null entry; verify uniformity.
-    stride: int | None = None
-    for row in fields:
-        for x in row:
-            if x is not None:
-                if stride is None:
-                    stride = len(x)
-                elif len(x) != stride:
-                    raise ValueError(
-                        f"non-uniform field stride: {len(x)} vs {stride}"
-                    )
-    if stride is None:
-        return None  # all-null, nothing to bake
-
-    mask_bytes = bytearray(n_freq * n_port)
-    payload_floats: list[float] = []
-    for fi, row in enumerate(fields):
-        for pi, x in enumerate(row):
-            if x is None:
-                continue
-            mask_bytes[fi * n_port + pi] = 1
-            payload_floats.extend(x)
-
-    # Pad the mask up to a 4-byte boundary so the following Float32 block
-    # is naturally aligned. JS's `new Float32Array(buf, offset)` REQUIRES
-    # `offset % 4 == 0` — without padding the FE can't decode the field.
-    mask_pad = (-len(mask_bytes)) % 4
-    mask_bytes.extend(b"\x00" * mask_pad)
-
-    header = struct.pack("<5I", _FIELD_BIN_MAGIC, _FIELD_BIN_VERSION,
-                         n_freq, n_port, stride)
-    payload = struct.pack(f"<{len(payload_floats)}f", *payload_floats)
-    buf = bytes(header) + bytes(mask_bytes) + payload
-
-    return buf, {
-        "$bin": True,
-        "magic": _FIELD_BIN_MAGIC,
-        "version": _FIELD_BIN_VERSION,
-        "n_freq": n_freq,
-        "n_port": n_port,
-        "stride": stride,
-    }
-
-
-def _extract_fields_to_bin(record: dict, bin_dir: Path) -> list[Path]:
-    """Walk a baked record, pull field arrays out of every result event,
-    write them as .bin sidecars, and replace the array in-place with a
-    binary-reference stub.
-
-    Returns the list of bin files written, in deterministic order.
-    """
-    written: list[Path] = []
     name = record["name"]
-
-    for ci, cell in enumerate(record.get("cells", [])):
-        for di, ev in enumerate(cell.get("display_events", [])):
-            if ev.get("kind") != "result":
-                continue
-            payload = ev.get("payload") or {}
-            fields = payload.get("fields")
-            res = _binarise_fields(fields)
-            if res is None:
-                continue
-            buf, stub = res
-            bin_name = f"{name}_c{ci}_d{di}.bin"
-            stub["url"] = bin_name
-            (bin_dir / bin_name).write_bytes(buf)
-            written.append(bin_dir / bin_name)
-            payload["fields"] = stub
-
+    written: list[Path] = []
+    for blob, suffix in ((geo, "geo"), (field, "field")):
+        if len(blob) > 8:  # more than the bare header
+            path = bin_dir / f"{name}.{suffix}.bin"
+            path.write_bytes(blob)
+            written.append(path)
     return written
 
 
@@ -445,8 +370,8 @@ def bake_all(force: bool = False) -> dict:
             except OSError:
                 pass
     for old in list(out_dir.glob("*.bin")):
-        # bin names: <example>_c<i>_d<j>.bin → keyed on prefix before _c
-        prefix = old.name.split("_c")[0]
+        # bin names: <example>.geo.bin / <example>.field.bin
+        prefix = old.name.rsplit(".", 2)[0]
         if prefix not in expected_names:
             try:
                 old.unlink()
@@ -464,7 +389,7 @@ def bake_all(force: bool = False) -> dict:
             # Re-use existing artefacts; just rebuild the manifest entry
             # from the on-disk record so summaries stay in sync.
             record = json.loads(json_path.read_text(encoding="utf-8"))
-            bin_files = sorted(out_dir.glob(f"{path.stem}_c*_d*.bin"))
+            bin_files = sorted(out_dir.glob(f"{path.stem}.*.bin"))
             json_bytes = json_path.stat().st_size
             bin_bytes = sum(p.stat().st_size for p in bin_files)
             dt = 0.0
@@ -475,7 +400,7 @@ def bake_all(force: bool = False) -> dict:
             t0 = time.perf_counter()
             print(f"\n── baking {path.name}", file=sys.stderr)
             record = bake_example(path)
-            bin_files = _extract_fields_to_bin(record, out_dir)
+            bin_files = _extract_payloads_to_bin(record, out_dir)
             json_path.write_text(json.dumps(record), encoding="utf-8")
             dt = time.perf_counter() - t0
             json_bytes = json_path.stat().st_size
@@ -560,7 +485,7 @@ def _bake_one(name: str) -> int:
 
     raw_json_size = len(json.dumps(record))
 
-    bin_files = _extract_fields_to_bin(record, out_dir)
+    bin_files = _extract_payloads_to_bin(record, out_dir)
     json_path = out_dir / f"{record['name']}.json"
     json_path.write_text(json.dumps(record), encoding="utf-8")
 
