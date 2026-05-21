@@ -18,6 +18,14 @@ from rapidfem import GaussianPulse, ProblemTD
 _PML_CLOSED_MIN_KEEP = 1.0
 _PML_DRAIN_FRACTION = 0.5
 
+# Field-energy diagnostic tolerance. The central flux is exactly energy-
+# conserving in the continuous form; on a discrete transient the matrix-free
+# field_energy must stay within this relative band over a free run. The
+# upwind flux is dissipative, so its energy is non-increasing up to a tiny
+# slack for floating-point round-off.
+_ENERGY_CONSERVE_TOL = 0.03
+_ENERGY_MONOTONE_SLACK = 1e-9
+
 
 @pytest.fixture(scope="module")
 def cavity():
@@ -73,6 +81,53 @@ def test_transient_decays_under_upwind(cavity, spike):
     assert traj.shape == (21, cavity.n_dof)
     assert np.all(np.isfinite(traj))
     assert np.linalg.norm(traj[-1]) < np.linalg.norm(traj[0])
+
+
+def test_field_energy_is_finite_and_positive(cavity, spike):
+    # The matrix-free field-energy diagnostic of a seeded state is a finite,
+    # strictly positive scalar -- the material-weighted EM field energy.
+    e = cavity.field_energy(spike)
+    assert np.isscalar(e) or np.ndim(e) == 0
+    assert np.isfinite(e)
+    assert e > 0.0
+    # The rest state carries no energy.
+    assert cavity.field_energy(np.zeros(cavity.n_dof)) == pytest.approx(0.0)
+
+
+def test_field_energy_conserved_under_central_flux(spike):
+    # The central flux is energy-conserving: a free transient keeps the
+    # field energy roughly constant across the run.
+    cav = ProblemTD.box(
+        size=(1, 1, 1), cells=(2, 2, 2), order=2, flux="central", c=1.0
+    )
+    sp = np.zeros(cav.n_dof)
+    sp[cav.probe_dof([0.5, 0.5, 0.5], field="E", component="z")] = 1.0
+    traj = cav.transient(sp, dt=0.02, steps=40, verbose=False)
+    energies = np.array([cav.field_energy(traj[k]) for k in range(len(traj))])
+    assert np.all(np.isfinite(energies))
+    e0 = energies[0]
+    assert e0 > 0.0
+    rel = np.abs(energies - e0) / e0
+    assert rel.max() < _ENERGY_CONSERVE_TOL, (
+        f"central flux drifted energy by {rel.max():.3%}"
+    )
+
+
+def test_field_energy_non_increasing_under_upwind(cavity, spike):
+    # The upwind flux is dissipative: a free transient's field energy is
+    # monotonically non-increasing (up to floating-point round-off).
+    traj = cavity.transient(spike, dt=0.02, steps=40, verbose=False)
+    energies = np.array(
+        [cavity.field_energy(traj[k]) for k in range(len(traj))]
+    )
+    assert np.all(np.isfinite(energies))
+    assert energies[0] > 0.0
+    diffs = np.diff(energies)
+    assert np.all(diffs <= _ENERGY_MONOTONE_SLACK * energies[0]), (
+        f"upwind flux raised the field energy: max step {diffs.max():.3e}"
+    )
+    # And it actually decays over the run.
+    assert energies[-1] < energies[0]
 
 
 def test_ode_export_integrates(cavity, spike):

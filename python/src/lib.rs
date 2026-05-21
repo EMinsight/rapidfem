@@ -579,6 +579,19 @@ impl PyTdOperator {
         Ok(self.op.apply(y).into_pyarray_bound(py))
     }
 
+    /// Instantaneous electromagnetic field energy
+    /// `½·∫(ε|E|² + μ|H|²) dV` — the material-weighted DG energy norm,
+    /// evaluated matrix-free (a cheap per-element sum, no `N×N` matrix).
+    /// Zero-copy numpy in: `y` is read straight from its buffer. Only the
+    /// `6·Np·n_elem` E,H entries are used, so a state with trailing
+    /// auxiliary DOFs is accepted.
+    fn field_energy(&self, y: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(self.op.field_energy(y))
+    }
+
     /// Advance the state by `h` with the matrix-free exponential propagator.
     /// Zero-copy numpy in and out; the Krylov workspace is reused, so a
     /// transient loop allocates only the returned array per step.

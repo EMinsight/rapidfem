@@ -673,6 +673,34 @@ class ProblemTD:
         """The ODE right-hand side ``dy/dt = A·y``."""
         return self._op.apply(_arr(y))
 
+    def field_energy(self, state):
+        """Instantaneous electromagnetic field energy of a state.
+
+        Returns ``(1/2) * integral(eps*|E|^2 + mu*|H|^2) dV`` in the
+        operator's units -- the material-weighted EM field energy carried
+        by ``state``. This is a physically exact diagnostic: the DG
+        energy-mass matrix is block-diagonal per element, so the energy is
+        a cheap per-element quadratic-form sum, evaluated matrix-free with
+        no n-by-n matrix ever materialised.
+
+        Unlike a raw state norm ``numpy.dot(y, y)``, this weights each
+        component by the local permittivity / permeability, so it is the
+        quantity the central flux conserves exactly and the upwind flux
+        leaves non-increasing.
+
+        Parameters
+        ----------
+        state : array_like
+            A state vector ``[n_dof]``. Trailing auxiliary DOFs beyond the
+            ``6*Np*n_elem`` E,H block are ignored.
+
+        Returns
+        -------
+        float
+            The field energy, finite and non-negative for any real state.
+        """
+        return self._op.field_energy(_arr(state))
+
     def jacobian(self):
         """The (constant) Jacobian of the linear system — i.e. ``A`` itself,
         as a sparse matrix. See :meth:`state_space`."""

@@ -1025,6 +1025,60 @@ impl MaxwellOperator {
         a
     }
 
+    /// Instantaneous electromagnetic field energy
+    /// `E_field = ½·∫(ε|E|² + μ|H|²) dV` — evaluated matrix-free.
+    ///
+    /// The DG energy-mass matrix `M̃` (see [`assemble_energy_mass`]) is
+    /// block-diagonal per element, so `½·yᵀM̃y` is a plain per-element sum:
+    /// no `N×N` matrix is ever materialised. For element `e` the physical
+    /// mass block is `|det J_e|·M_ref`, weighted by `ε_c` on the E
+    /// components and `μ_c` on the H components, and this routine accumulates
+    /// the scalar quadratic form `½·Σ_e Σ_c w_c·(fᵀ·(scale·M_ref)·f)`
+    /// directly — `f` the element's per-component nodal vector.
+    ///
+    /// Only the first `6·Np·n_elem` entries of `y` (the E,H state) are read;
+    /// any auxiliary state appended after that is ignored, so this does NOT
+    /// require `y.len() == n_dof`. The per-element work is independent and
+    /// runs in parallel, like [`apply_into`](Self::apply_into).
+    ///
+    /// [`assemble_energy_mass`]: Self::assemble_energy_mass
+    pub fn field_energy(&self, y: &[f64]) -> f64 {
+        let np = self.re.n_nodes;
+        let stride = np * 6;
+        debug_assert!(
+            y.len() >= stride * self.n_elem,
+            "state shorter than the 6·Np·n_elem E,H block"
+        );
+        // Per element: ½·Σ_c w_c·Σ_{ni,nj} scale·M_ref[ni,nj]·f_c[ni]·f_c[nj].
+        // Element blocks are disjoint, so the sum folds in parallel.
+        let half = (0..self.n_elem)
+            .into_par_iter()
+            .map(|e| {
+                let scale = self.geom[e].det.abs();
+                let eps = self.inv_eps[e].map(|x| 1.0 / x);
+                let mu = self.inv_mu[e].map(|x| 1.0 / x);
+                let base = e * stride;
+                let mut acc = 0.0;
+                for ni in 0..np {
+                    for nj in 0..np {
+                        let mij = scale * self.re.mass[ni * np + nj];
+                        if mij == 0.0 {
+                            continue;
+                        }
+                        let bi = base + ni * 6;
+                        let bj = base + nj * 6;
+                        for c in 0..6 {
+                            let w = if c < 3 { eps[c] } else { mu[c - 3] };
+                            acc += w * mij * y[bi + c] * y[bj + c];
+                        }
+                    }
+                }
+                acc
+            })
+            .sum::<f64>();
+        0.5 * half
+    }
+
     /// Dense block-diagonal energy mass `M̃` — the material-weighted field
     /// energy `yᵀM̃y = ∫(ε|E|² + μ|H|²)`: per element a copy of
     /// `|det J_e|·M_ref`, scaled by `ε` on the E components and `μ` on the H
@@ -1420,6 +1474,57 @@ mod tests {
             worst < 1e-9 * scale.max(1.0),
             "heterogeneous M̃A not skew: worst {worst}, scale {scale}"
         );
+    }
+
+    #[test]
+    fn field_energy_matches_dense_energy_mass() {
+        // The matrix-free `field_energy` is exactly the quadratic form
+        // `½·yᵀM̃y` of the dense block-diagonal energy mass — proven here on
+        // a tiny heterogeneous box so the dense `N×N` matrix is affordable.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let mats: Vec<ElemMaterial> = (0..mesh.n_tets())
+            .map(|i| ElemMaterial {
+                eps: [2.0 + i as f64, 3.0, 1.5],
+                mu: [1.0, 1.2 + 0.3 * i as f64, 2.0],
+                sigma: 0.0,
+                sigma_m: 0.0,
+            })
+            .collect();
+        let op = MaxwellOperator::new_with_materials(&mesh, 2, 1.0, &mats);
+        let n = op.n_dof();
+        let mm = op.assemble_energy_mass();
+
+        // A deterministic, non-trivial state.
+        let y: Vec<f64> = (0..n)
+            .map(|i| (0.3 * i as f64).sin() + 0.2 * (i as f64).cos())
+            .collect();
+
+        // Reference dense quadratic form ½·yᵀM̃y.
+        let mut dense = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                dense += y[i] * mm[i * n + j] * y[j];
+            }
+        }
+        dense *= 0.5;
+
+        let mf = op.field_energy(&y);
+        let err = (mf - dense).abs() / dense.abs().max(1.0);
+        assert!(
+            err < 1e-12,
+            "matrix-free field_energy = {mf}, dense ½yᵀM̃y = {dense}, err {err:.2e}"
+        );
+
+        // Trailing auxiliary state must be ignored: padding `y` leaves the
+        // result unchanged.
+        let mut padded = y.clone();
+        padded.extend_from_slice(&[7.0, -3.0, 11.0]);
+        let mf_padded = op.field_energy(&padded);
+        assert_eq!(mf, mf_padded, "auxiliary tail must not affect the energy");
+
+        // A nonzero physical state has strictly positive field energy.
+        assert!(mf > 0.0, "field energy must be positive, got {mf}");
     }
 
     #[test]
