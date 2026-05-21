@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779360976,
+  "baked_at": 1779364587,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -50,9 +50,9 @@
           "stream_lines": 44
         }
       ],
-      "json_bytes": 19002,
+      "json_bytes": 19001,
       "bin_bytes": 3193032,
-      "bake_seconds": 6.79
+      "bake_seconds": 7.05
     },
     {
       "name": "fd_dielectric_resonator",
@@ -104,7 +104,7 @@
       ],
       "json_bytes": 12030,
       "bin_bytes": 769492,
-      "bake_seconds": 6.51
+      "bake_seconds": 6.74
     },
     {
       "name": "fd_iris_filter",
@@ -156,7 +156,7 @@
       ],
       "json_bytes": 31756,
       "bin_bytes": 7980440,
-      "bake_seconds": 20.12
+      "bake_seconds": 22.0
     },
     {
       "name": "fd_microstrip_line",
@@ -208,7 +208,7 @@
       ],
       "json_bytes": 19986,
       "bin_bytes": 3222584,
-      "bake_seconds": 8.35
+      "bake_seconds": 9.08
     },
     {
       "name": "fd_patch_antenna",
@@ -258,9 +258,9 @@
           "stream_lines": 37
         }
       ],
-      "json_bytes": 27500,
+      "json_bytes": 27503,
       "bin_bytes": 5897344,
-      "bake_seconds": 82.16
+      "bake_seconds": 88.02
     },
     {
       "name": "fd_pyramidal_horn",
@@ -312,7 +312,7 @@
       ],
       "json_bytes": 19565,
       "bin_bytes": 6105328,
-      "bake_seconds": 176.33
+      "bake_seconds": 189.84
     },
     {
       "name": "fd_rfic_spiral_from_json",
@@ -368,9 +368,9 @@
           "stream_lines": 22
         }
       ],
-      "json_bytes": 22488,
+      "json_bytes": 22494,
       "bin_bytes": 14775024,
-      "bake_seconds": 138.16
+      "bake_seconds": 136.24
     },
     {
       "name": "fd_wr90",
@@ -420,9 +420,9 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 14522,
+      "json_bytes": 14531,
       "bin_bytes": 1832016,
-      "bake_seconds": 5.66
+      "bake_seconds": 5.51
     },
     {
       "name": "td_cavity",
@@ -472,9 +472,9 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 6738,
-      "bin_bytes": 1800008,
-      "bake_seconds": 0.95
+      "json_bytes": 6744,
+      "bin_bytes": 4800008,
+      "bake_seconds": 1.17
     },
     {
       "name": "td_dielectric_cavity",
@@ -527,9 +527,9 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 8293,
-      "bin_bytes": 1835780,
-      "bake_seconds": 2.4
+      "json_bytes": 8297,
+      "bin_bytes": 4835780,
+      "bake_seconds": 2.61
     },
     {
       "name": "td_ring_resonator",
@@ -582,9 +582,9 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 8985,
-      "bin_bytes": 2066256,
-      "bake_seconds": 74.08
+      "json_bytes": 8990,
+      "bin_bytes": 5066256,
+      "bake_seconds": 72.03
     },
     {
       "name": "td_transfer_function",
@@ -636,7 +636,7 @@
       ],
       "json_bytes": 48595,
       "bin_bytes": 0,
-      "bake_seconds": 6.36
+      "bake_seconds": 6.51
     },
     {
       "name": "td_waveguide_sparams",
@@ -688,9 +688,9 @@
           "stream_lines": 13
         }
       ],
-      "json_bytes": 14081,
+      "json_bytes": 14080,
       "bin_bytes": 64756,
-      "bake_seconds": 102.35
+      "bake_seconds": 100.99
     }
   ]
 }

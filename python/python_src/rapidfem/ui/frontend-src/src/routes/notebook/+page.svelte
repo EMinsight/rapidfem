@@ -548,11 +548,11 @@
 		td_trajectory_payload = payload;
 		td_frame = 0;
 		td_playing = true;
-		// The trajectory IS a field animation: surface it via the Field
-		// toggle (the frame slider rides along), geometry off so the cloud
-		// is unobstructed.
+		// The trajectory IS a field animation: same defaults as an FD field
+		// view (geometry on, field on, mesh off), the frame slider rides
+		// along with the Field toggle.
 		show_field = true;
-		show_geometry = false;
+		show_geometry = true;
 		show_wireframe = false;
 		display = 'view3d';
 	}
@@ -1028,8 +1028,13 @@
 								/>
 								<span class="val">
 									{td_frame + 1}/{td_trajectory_payload.n_snapshots}
-									· t={td_trajectory_payload.times[td_frame]?.toExponential(2) ?? '—'}
+									· t={td_trajectory_payload.times[td_frame]?.toExponential(2) ?? '?'}
 								</span>
+							</label>
+							<label class="field-ctrl">
+								<span class="lbl">Density</span>
+								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
+								<span class="val">{((td_trajectory_payload.n_points * field_density) / 1e4).toFixed(1)}k pts</span>
 							</label>
 						</div>
 					{/if}

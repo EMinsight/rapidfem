@@ -272,12 +272,13 @@
 	 *  feeding (s², s², 0) makes that collapse to s² for every phase, so a
 	 *  time-domain snapshot reuses the frequency-domain cloud unchanged.
 	 *  Frame values arrive quantised to 0…1000 of `field_max` — rescale. */
-	function td_abc_for_frame(traj: TdTrajectoryPayload, frame: number, channel: 'E' | 'H'): Float32Array {
+	function td_abc_for_frame(traj: TdTrajectoryPayload, frame: number, channel: 'E' | 'H', count: number): Float32Array {
 		const frames = channel === 'H' ? traj.frames_h : traj.frames_e;
 		const f = frames[Math.max(0, Math.min(frames.length - 1, frame))] ?? [];
 		const scale = (channel === 'H' ? traj.field_max.H : traj.field_max.E) / 1000;
-		const abc = new Float32Array(f.length * 3);
-		for (let i = 0; i < f.length; i++) {
+		const n = Math.min(count, f.length);
+		const abc = new Float32Array(n * 3);
+		for (let i = 0; i < n; i++) {
 			const s = f[i] * scale;
 			const s2 = s * s;
 			abc[i * 3] = s2;
@@ -824,7 +825,14 @@
 			schedule_render();
 			return;
 		}
-		td_positions = Float32Array.from(traj.points);
+		// Subsample the baked cloud by the density slider. The baked points
+		// are a random energy-weighted draw, so a prefix is itself a valid
+		// (sparser) sample — no need to re-sample.
+		const src = traj.points as unknown as Float32Array;
+		if (!src || typeof src.slice !== 'function') { td_positions = null; return; }
+		const total = traj.n_points || src.length / 3;
+		const k = Math.max(1, Math.min(total, Math.round(total * point_density / 10)));
+		td_positions = src.slice(0, k * 3);
 		needs_rebuild = true;
 		if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
 		schedule_render();
@@ -838,7 +846,7 @@
 		const pos = td_positions;
 		const mode = scale_mode;
 		if (!gl_state || !traj || !pos) return;
-		const abc = td_abc_for_frame(traj, frame, ch);
+		const abc = td_abc_for_frame(traj, frame, ch, pos.length / 3);
 		const fmax = ch === 'H' ? traj.field_max.H : traj.field_max.E;
 		setPointScaleMode(gl_state, mode);
 		if (mode === 'log') {
@@ -1036,7 +1044,7 @@
 				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
 			</svg>
 		</button>
-		{#if show_field}
+		{#if show_field && !td_trajectory}
 			<span class="tb-sep" aria-hidden="true"></span>
 			{#each (['E', 'J', 'H'] as const) as ch}
 				{@const enabled = available_channels.includes(ch)}

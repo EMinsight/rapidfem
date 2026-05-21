@@ -1,4 +1,4 @@
-bake_demo run at 2026-05-21 12:45:46
+bake_demo run at 2026-05-21 13:45:39
 
 ======================================================================
 fd_coax_step  attempt 1  -> ok
@@ -10,9 +10,9 @@ baking fd_coax_step.py...
   [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
   [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=44
 
-wrote fd_coax_step.json (19,002 B) + 2 bin file(s) totalling 3,193,032 B
-  JSON savings: 6,327,458 -> 19,002 B  (99.7% reduction)
-  combined on-disk: 3,212,034 B (50.8% of raw JSON)
+wrote fd_coax_step.json (19,001 B) + 2 bin file(s) totalling 3,193,032 B
+  JSON savings: 6,327,457 -> 19,001 B  (99.7% reduction)
+  combined on-disk: 3,212,033 B (50.8% of raw JSON)
 
 
 ======================================================================
@@ -70,9 +70,9 @@ baking fd_patch_antenna.py...
   [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
   [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=37
 
-wrote fd_patch_antenna.json (27,500 B) + 2 bin file(s) totalling 5,897,344 B
-  JSON savings: 18,447,199 -> 27,500 B  (99.9% reduction)
-  combined on-disk: 5,924,844 B (32.1% of raw JSON)
+wrote fd_patch_antenna.json (27,503 B) + 2 bin file(s) totalling 5,897,344 B
+  JSON savings: 18,447,202 -> 27,503 B  (99.9% reduction)
+  combined on-disk: 5,924,847 B (32.1% of raw JSON)
 
 
 ======================================================================
@@ -101,9 +101,9 @@ baking fd_rfic_spiral_from_json.py...
   [4] # %% Sweep across the RF band   status=ok     display=[mesh,result]  stream=33
   [5] # %% Series-L extraction (de-embedded from common-mode shunt)  status=ok     display=[â€”]  stream=22
 
-wrote fd_rfic_spiral_from_json.json (22,488 B) + 2 bin file(s) totalling 14,775,024 B
-  JSON savings: 34,778,589 -> 22,488 B  (99.9% reduction)
-  combined on-disk: 14,797,512 B (42.5% of raw JSON)
+wrote fd_rfic_spiral_from_json.json (22,494 B) + 2 bin file(s) totalling 14,775,024 B
+  JSON savings: 34,778,595 -> 22,494 B  (99.9% reduction)
+  combined on-disk: 14,797,518 B (42.5% of raw JSON)
 
 
 ======================================================================
@@ -116,9 +116,9 @@ baking fd_wr90.py...
   [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
   [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=32
 
-wrote fd_wr90.json (14,522 B) + 2 bin file(s) totalling 1,832,016 B
-  JSON savings: 5,633,996 -> 14,522 B  (99.7% reduction)
-  combined on-disk: 1,846,538 B (32.8% of raw JSON)
+wrote fd_wr90.json (14,531 B) + 2 bin file(s) totalling 1,832,016 B
+  JSON savings: 5,634,005 -> 14,531 B  (99.7% reduction)
+  combined on-disk: 1,846,547 B (32.8% of raw JSON)
 
 
 ======================================================================
@@ -132,9 +132,9 @@ baking td_cavity.py...
   [4] # %% Turnkey: seed a field pulse and propagate it in time  status=ok     display=[â€”]  stream=12
   [5] # %% Visualise: play the trajectory back as a 3D field animation  status=ok     display=[td_trajectory]  stream=0
 
-wrote td_cavity.json (6,738 B) + 1 bin file(s) totalling 1,800,008 B
-  JSON savings: 3,370,565 -> 6,738 B  (99.8% reduction)
-  combined on-disk: 1,806,746 B (53.6% of raw JSON)
+wrote td_cavity.json (6,744 B) + 1 bin file(s) totalling 4,800,008 B
+  JSON savings: 8,903,006 -> 6,744 B  (99.9% reduction)
+  combined on-disk: 4,806,752 B (54.0% of raw JSON)
 
 
 ======================================================================
@@ -148,9 +148,9 @@ baking td_dielectric_cavity.py...
   [4] # %% Propagate an impulse â€” the DG operator stays stable on the  status=ok     display=[â€”]  stream=13
   [5] # %% Visualise â€” the impulse spreading and dissipating in the cavity  status=ok     display=[td_trajectory]  stream=0
 
-wrote td_dielectric_cavity.json (8,293 B) + 2 bin file(s) totalling 1,835,780 B
-  JSON savings: 3,091,686 -> 8,293 B  (99.7% reduction)
-  combined on-disk: 1,844,073 B (59.6% of raw JSON)
+wrote td_dielectric_cavity.json (8,297 B) + 2 bin file(s) totalling 4,835,780 B
+  JSON savings: 8,163,644 -> 8,297 B  (99.9% reduction)
+  combined on-disk: 4,844,077 B (59.3% of raw JSON)
 
 
 ======================================================================
@@ -164,9 +164,9 @@ baking td_ring_resonator.py...
   [4] # %% Light up one point on the ring and let the field orbit it  status=ok     display=[â€”]  stream=12
   [5] # %% Visualise â€” the field circulating in the dielectric ring  status=ok     display=[td_trajectory]  stream=0
 
-wrote td_ring_resonator.json (8,985 B) + 2 bin file(s) totalling 2,066,256 B
-  JSON savings: 3,516,024 -> 8,985 B  (99.7% reduction)
-  combined on-disk: 2,075,241 B (59.0% of raw JSON)
+wrote td_ring_resonator.json (8,990 B) + 2 bin file(s) totalling 5,066,256 B
+  JSON savings: 8,541,520 -> 8,990 B  (99.9% reduction)
+  combined on-disk: 5,075,246 B (59.4% of raw JSON)
 
 
 ======================================================================
@@ -196,7 +196,7 @@ baking td_waveguide_sparams.py...
   [4] # %% Time-domain S-parameters   status=ok     display=[td_result]  stream=13
   [5] # %% Compare                    status=ok     display=[â€”]  stream=13
 
-wrote td_waveguide_sparams.json (14,081 B) + 1 bin file(s) totalling 64,756 B
-  JSON savings: 122,629 -> 14,081 B  (88.5% reduction)
-  combined on-disk: 78,837 B (64.3% of raw JSON)
+wrote td_waveguide_sparams.json (14,080 B) + 1 bin file(s) totalling 64,756 B
+  JSON savings: 122,628 -> 14,080 B  (88.5% reduction)
+  combined on-disk: 78,836 B (64.3% of raw JSON)
 

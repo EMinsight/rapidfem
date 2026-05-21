@@ -236,7 +236,7 @@ _TD_ENERGY_FLOOR = 0.7
 
 
 def _td_trajectory_payload(
-    traj, *, max_frames: int = 72, n_points: int = 6000,
+    traj, *, max_frames: int = 72, n_points: int = 16000,
 ) -> dict[str, Any]:
     """``TdTrajectory`` → a 3-D field-animation point cloud.
 
