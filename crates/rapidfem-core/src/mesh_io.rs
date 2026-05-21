@@ -29,31 +29,26 @@ pub fn parse_mesh_bytes(bytes: &[u8]) -> Result<Mesh, String> {
     let mut tag_to_idx: HashMap<u64, usize> = HashMap::with_capacity(total_nodes);
 
     for block in &msh_nodes.node_blocks {
+        // `node_tags` maps tag -> block-local index. We need the inverse
+        // (local index -> tag). Invert it once per block into a flat Vec
+        // rather than scanning the whole map for every node, which was
+        // O(N^2) on a block with sparse tags.
+        let block_tags: Option<Vec<u64>> = block.node_tags.as_ref().map(|tag_map| {
+            let mut tags = vec![0u64; block.nodes.len()];
+            for (&t, &local_i) in tag_map.iter() {
+                if local_i < tags.len() {
+                    tags[local_i] = t;
+                }
+            }
+            tags
+        });
         for (i, node) in block.nodes.iter().enumerate() {
             let idx = nodes.len();
-            // Node tag: if sparse tags exist, use the HashMap; otherwise sequential
-            let tag = if let Some(ref tag_map) = block.node_tags {
-                // tag_map maps tag → local index, but we need the inverse
-                // Actually, node_tags maps tag → index within the block
-                // We need to find the tag for index i
-                // This is inefficient but mshio doesn't give us a better way
-                let mut found_tag = 0u64;
-                for (&t, &local_i) in tag_map.iter() {
-                    if local_i == i {
-                        found_tag = t;
-                        break;
-                    }
-                }
-                found_tag
-            } else {
-                // Sequential tags: first block starts at min_node_tag
-                // Actually, each NodeBlock just stores nodes sequentially
-                // and the tags are implicit from position within the Nodes struct
-                // For sequential tags, tag = min_node_tag + global_offset
-                // But we don't track that easily. Let's just use the linear index.
-                // Actually mshio gives us min_node_tag and max_node_tag on the Nodes struct.
-                // For simple meshes, tags are 1..N.
-                msh_nodes.min_node_tag + idx as u64
+            // Sparse tags: looked up in the inverted block list. Otherwise
+            // tags are sequential, implicit from position (min_node_tag + i).
+            let tag = match &block_tags {
+                Some(tags) => tags[i],
+                None => msh_nodes.min_node_tag + idx as u64,
             };
             tag_to_idx.insert(tag, idx);
             nodes.push([node.x, node.y, node.z]);
