@@ -983,6 +983,18 @@ class ProblemTD:
                 "ProblemTD has no ports — attach RectWaveguidePort(s) or "
                 "LumpedPort(s) to the geometry before constructing it"
             )
+        # Below a waveguide port's cutoff the modal wave impedance turns
+        # imaginary and the scattering parameters are undefined; reject the
+        # run up front rather than let NaN poison the whole S-matrix.
+        f_min = float(freqs.min())
+        for p in range(n_ports):
+            f_cut = self.c * self._op.port_cutoff(p) / (2.0 * np.pi)
+            if f_min <= f_cut:
+                raise ValueError(
+                    f"frequency {f_min:.4g} is at or below the cutoff "
+                    f"{f_cut:.4g} of port {p}; restrict freqs to the "
+                    f"propagating band"
+                )
         n = self.n_dof
         times = np.arange(steps) * dt
 
@@ -1029,9 +1041,9 @@ class ProblemTD:
                 if i == j or peak <= 0.0:
                     continue
                 env = np.abs(pe[i])
-                hit = int(np.argmax(env > _SPARAM_ARRIVAL_FRAC * peak))
-                if env[hit] > _SPARAM_ARRIVAL_FRAC * peak:
-                    arrivals.append(hit)
+                above = np.flatnonzero(env > _SPARAM_ARRIVAL_FRAC * peak)
+                if above.size:
+                    arrivals.append(int(above[0]))
             refl_w = (
                 int(np.clip(2 * min(arrivals), steps // 4, steps))
                 if arrivals else steps

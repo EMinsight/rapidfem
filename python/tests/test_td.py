@@ -246,6 +246,30 @@ def test_sparams_verb_runs():
         assert abs(s[k, 0, 0]) < 0.2, f"reflection too high at f[{k}]"
 
 
+def test_sparams_rejects_subcutoff_frequencies():
+    # B3: a sweep frequency at or below a waveguide port's cutoff makes the
+    # modal wave impedance imaginary; sparams must reject it up front rather
+    # than return a NaN-poisoned S-matrix.
+    import rapidfem as rf
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=14 * mm)
+    air = g.box(22.86 * mm, 10.16 * mm, 30 * mm, material=rf.Air())
+    rf.RectWaveguidePort(air.faces.min(axis="z"))
+    rf.RectWaveguidePort(air.faces.max(axis="z"))
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+    )
+    g.mesh()
+
+    ptd = rf.ProblemTD(g, order=2, flux="central")
+    # WR-90 TE10 cutoff is ~6.56 GHz; 4 GHz is evanescent. The guard fires
+    # before any stepping, so steps can be minimal.
+    with pytest.raises(ValueError, match="cutoff"):
+        ptd.sparams(np.array([4e9]), dt=5e-12, steps=2, verbose=False)
+
+
 def test_lumped_port_wires_through():
     # WP-B: a LumpedPort is collected as a TD port and maps to the (0,0)
     # sentinel mode — the operator's uniform-profile / TEM port. The native
