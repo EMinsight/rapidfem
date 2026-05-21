@@ -240,12 +240,14 @@ impl Simulation {
             .filter(|&i| port_dyn[i].is_driven())
             .collect();
 
+        // The tet-locating grid depends only on the mesh, not the
+        // frequency - build it once for the whole sweep.
+        let grid = interp::TetGrid::new(&self.mesh);
         let mut all_sparams = Vec::with_capacity(frequencies.len());
         for (fi, freq_result) in results.iter().enumerate() {
             let k0 = 2.0 * PI * frequencies[fi] / C0;
             let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
 
-            let grid = interp::TetGrid::new(&self.mesh);
             for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
                 let fieldf = |x: f64, y: f64, z: f64| -> (C64, C64, C64) {
                     match grid.find_containing_tet(&self.mesh, x, y, z) {
