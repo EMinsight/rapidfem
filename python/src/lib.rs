@@ -369,6 +369,10 @@ fn flatten_2d_complex<'py>(grid: &[Vec<Complex64>], py: Python<'py>) -> Bound<'p
 
 // --- Time-domain DGTD backend ----------------------------------------------
 
+// The Krylov propagator tolerance lives with the other TD numerical
+// constants — see `rapidfem_td::constants`.
+use rapidfem_td::constants::KRYLOV_TOL;
+
 /// Time-domain DGTD Maxwell operator (vacuum, PEC walls), built on a
 /// structured box cavity. Wraps the Rust `MaxwellOperator`.
 #[pyclass(name = "TdOperator")]
@@ -509,6 +513,7 @@ impl PyTdOperator {
             y,
             h,
             krylov_dim,
+            KRYLOV_TOL,
             &mut out,
         );
         Ok(out.into_pyarray_bound(py))
@@ -559,6 +564,7 @@ impl PyTdOperator {
             &self.driven_b,
             h,
             krylov_dim,
+            KRYLOV_TOL,
             &mut out,
         );
         self.driven_b[source_dof] = 0.0;
@@ -630,6 +636,7 @@ impl PyTdOperator {
             src,
             h,
             krylov_dim,
+            KRYLOV_TOL,
             &mut out,
         );
         Ok(out.into_pyarray_bound(py))

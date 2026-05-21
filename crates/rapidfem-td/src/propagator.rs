@@ -9,6 +9,10 @@
 //! [`KrylovWorkspace`] holds the Arnoldi basis and the dense buffers so a
 //! repeated time step allocates nothing.
 
+use crate::constants::{
+    ARNOLDI_BREAKDOWN, EXPM_SCALE_THRESHOLD, EXPM_TAYLOR_TERMS,
+};
+
 /// Dense matrix exponential of an `n×n` row-major matrix, via
 /// scaling-and-squaring with a Taylor core.
 pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
@@ -18,8 +22,8 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
         let row: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
         norm = norm.max(row);
     }
-    // Scale so ‖B‖ ≤ 1/2.
-    let s: u32 = if norm > 0.5 {
+    // Scale so the ∞-norm is within EXPM_SCALE_THRESHOLD.
+    let s: u32 = if norm > EXPM_SCALE_THRESHOLD {
         (norm.log2().ceil() as i64 + 1).max(0) as u32
     } else {
         0
@@ -30,7 +34,7 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
     // exp(B) = Σ Bᵏ/k!  (≈18 terms suffice for ‖B‖ ≤ 1/2).
     let mut result = identity(n);
     let mut term = identity(n);
-    for k in 1..=18 {
+    for k in 1..=EXPM_TAYLOR_TERMS {
         term = matmul(&term, &b, n);
         let inv = 1.0 / k as f64;
         for x in term.iter_mut() {
@@ -118,7 +122,7 @@ fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
         let row: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
         norm = norm.max(row);
     }
-    let sq: u32 = if norm > 0.5 {
+    let sq: u32 = if norm > EXPM_SCALE_THRESHOLD {
         (norm.log2().ceil() as i64 + 1).max(0) as u32
     } else {
         0
@@ -136,7 +140,7 @@ fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
         s.term[i * n + i] = 1.0;
     }
     // exp(B) = Σ Bᵏ/k!  (≈18 terms suffice for ‖B‖ ≤ 1/2).
-    for k in 1..=18 {
+    for k in 1..=EXPM_TAYLOR_TERMS {
         matmul_into(&s.term[..nn], &s.b[..nn], n, &mut s.term2);
         let inv = 1.0 / k as f64;
         for x in s.term2[..nn].iter_mut() {
@@ -211,64 +215,91 @@ impl KrylovWorkspace {
 
     /// Matrix-free `exp(t·A)·v` into `out`, with `matvec(x, ax)` writing
     /// `A·x` into `ax`. After the buffers have grown once to fit `n` and
-    /// `m`, this allocates nothing — the form to call in a step loop.
-    /// `m` is the Krylov dimension; Arnoldi stops early on a breakdown.
+    /// `max_dim`, this allocates nothing — the form to call in a step loop.
+    ///
+    /// `max_dim` caps the Krylov dimension. `tol` is a *relative*
+    /// a-posteriori error tolerance: after each new basis vector the
+    /// estimate `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked, and the subspace
+    /// stops growing once it drops below `tol` (or on a lucky breakdown).
+    /// `tol = 0` skips the estimate and runs the full `max_dim` — the
+    /// fixed-dimension behaviour. Returns the Krylov dimension actually used.
     pub fn expmv_into<F>(
         &mut self,
         matvec: F,
         v: &[f64],
         t: f64,
-        m: usize,
+        max_dim: usize,
+        tol: f64,
         out: &mut [f64],
-    ) where
+    ) -> usize
+    where
         F: Fn(&[f64], &mut [f64]),
     {
         let n = v.len();
-        self.ensure(n, m);
+        self.ensure(n, max_dim);
 
         let beta = norm2(v);
         if beta == 0.0 {
             out[..n].fill(0.0);
-            return;
+            return 0;
         }
         let inv_beta = 1.0 / beta;
         for k in 0..n {
             self.basis[k] = v[k] * inv_beta;
         }
-        self.h[..m * m].fill(0.0);
+        self.h[..max_dim * max_dim].fill(0.0);
 
-        // Arnoldi — modified Gram-Schmidt. Kept serial: blocked CGS2 and
-        // per-vector parallel dot/axpy were both measured slower here — at
-        // these vector lengths the orthogonalisation is memory-bound and
-        // the rayon fan-out costs more than it saves.
-        let mut dim = m;
-        for j in 0..m {
+        // Arnoldi — modified Gram-Schmidt, kept serial (blocked CGS2 and
+        // per-vector parallel dot/axpy were measured slower here). After
+        // each new basis vector the relative a-posteriori estimate
+        // `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked against `tol`; the
+        // subspace stops growing once it converges. The dim×dim `exp(tH)`
+        // for the estimate is cheap — O(dim³) against the O(n) basis work.
+        let mut dim = max_dim;
+        for j in 0..max_dim {
             matvec(&self.basis[j * n..j * n + n], &mut self.w[..n]);
             for i in 0..=j {
                 let bi = &self.basis[i * n..i * n + n];
                 let hij = dot(&self.w[..n], bi);
-                self.h[i * m + j] = hij;
+                self.h[i * max_dim + j] = hij;
                 axpy_neg(&mut self.w[..n], hij, bi);
             }
             let hnext = norm2(&self.w[..n]);
-            if hnext < 1e-12 {
-                dim = j + 1;
+            let d = j + 1;
+
+            if hnext < ARNOLDI_BREAKDOWN || d == max_dim {
+                dim = d;
                 break;
             }
-            if j + 1 < m {
-                self.h[(j + 1) * m + j] = hnext;
-                let inv = 1.0 / hnext;
-                let dst = (j + 1) * n;
-                for k in 0..n {
-                    self.basis[dst + k] = self.w[k] * inv;
+            if tol > 0.0 {
+                for a in 0..d {
+                    for b in 0..d {
+                        self.th[a * d + b] = t * self.h[a * max_dim + b];
+                    }
                 }
+                expm_into(
+                    &self.th[..d * d],
+                    d,
+                    &mut self.exp_th[..d * d],
+                    &mut self.expm_scratch,
+                );
+                if hnext * self.exp_th[(d - 1) * d].abs() < tol {
+                    dim = d;
+                    break;
+                }
+            }
+            self.h[(j + 1) * max_dim + j] = hnext;
+            let inv = 1.0 / hnext;
+            let dst = (j + 1) * n;
+            for k in 0..n {
+                self.basis[dst + k] = self.w[k] * inv;
             }
         }
 
         // exp(t·H) on the dim×dim leading block, packed tightly.
         for i in 0..dim {
             for j in 0..dim {
-                self.th[i * dim + j] = t * self.h[i * m + j];
+                self.th[i * dim + j] = t * self.h[i * max_dim + j];
             }
         }
         expm_into(
@@ -287,6 +318,7 @@ impl KrylovWorkspace {
                 out[k] += c * bi[k];
             }
         }
+        dim
     }
 
     /// Allocation-free ETD step of `dy/dt = A·y + b` with `b` constant over
@@ -294,14 +326,16 @@ impl KrylovWorkspace {
     ///
     /// Uses the augmented-matrix identity (see [`etd_step`]) — the Krylov
     /// projection runs on the `(n+1)`-dimensional augmented system, reusing
-    /// this workspace throughout.
+    /// this workspace throughout. `max_dim` / `tol` cap and adaptively
+    /// truncate the Krylov subspace exactly as in [`expmv_into`](Self::expmv_into).
     pub fn etd_step_into<F>(
         &mut self,
         matvec: F,
         y: &[f64],
         b: &[f64],
         h: f64,
-        m: usize,
+        max_dim: usize,
+        tol: f64,
         out: &mut [f64],
     ) where
         F: Fn(&[f64], &mut [f64]),
@@ -324,7 +358,7 @@ impl KrylovWorkspace {
             }
             o[n] = 0.0;
         };
-        self.expmv_into(aug, &z, h, m, &mut r);
+        self.expmv_into(aug, &z, h, max_dim, tol, &mut r);
         out[..n].copy_from_slice(&r[..n]);
 
         self.aug_in = z;
@@ -344,7 +378,9 @@ where
 {
     let mut ws = KrylovWorkspace::new();
     let mut out = vec![0.0; v.len()];
-    ws.expmv_into(|x, ax| ax.copy_from_slice(&matvec(x)), v, t, m, &mut out);
+    // tol = 0 → the fixed full-`m` subspace, the behaviour callers of the
+    // allocating `expmv` (and the ETD wrappers) rely on.
+    ws.expmv_into(|x, ax| ax.copy_from_slice(&matvec(x)), v, t, m, 0.0, &mut out);
     out
 }
 
@@ -465,7 +501,7 @@ where
         let e = expm(&th, m);
         let estimate = beta * hn * e[(m - 1) * m].abs();
 
-        if estimate < tol || hn < 1e-12 || m == md {
+        if estimate < tol || hn < ARNOLDI_BREAKDOWN || m == md {
             let mut out = vec![0.0; n];
             for i in 0..m {
                 let c = beta * e[i * m];
@@ -611,6 +647,7 @@ mod tests {
             &v,
             t,
             150,
+            0.0,
             &mut got,
         );
         let (want, _) = expmv_adaptive(|x| op.apply(x), &v, t, 1e-11, 200);
@@ -627,6 +664,54 @@ mod tests {
             "blocked CGS2 vs serial Arnoldi: rel.err {}",
             err / scale
         );
+    }
+
+    #[test]
+    fn adaptive_expmv_into_stops_early_and_stays_accurate() {
+        // With a tolerance, expmv_into must truncate the Krylov subspace
+        // well before `max_dim` yet still match the full-dimension result.
+        use crate::mesh_gen::structured_box;
+        use crate::rhs::MaxwellOperator;
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let v: Vec<f64> =
+            (0..n).map(|i| (0.3 + i as f64 * 0.011).sin()).collect();
+        let t = 0.02;
+
+        let mut ws = KrylovWorkspace::new();
+        // tol = 0 → the full fixed subspace, as the reference.
+        let mut reference = vec![0.0; n];
+        let full = ws.expmv_into(
+            |x, ax| ax.copy_from_slice(&op.apply(x)),
+            &v, t, 80, 0.0, &mut reference,
+        );
+
+        // A moderate tolerance must stop well short of `max_dim`.
+        let mut got = vec![0.0; n];
+        let dim = ws.expmv_into(
+            |x, ax| ax.copy_from_slice(&op.apply(x)),
+            &v, t, 80, 1e-9, &mut got,
+        );
+        assert!(dim < full, "no early stop — adaptive {dim}, fixed {full}");
+
+        let err: f64 = got
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 =
+            reference.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(err < 1e-7 * scale, "adaptive rel.err {}", err / scale);
+
+        // A tighter tolerance never truncates earlier than a looser one.
+        let mut tight = vec![0.0; n];
+        let dim_tight = ws.expmv_into(
+            |x, ax| ax.copy_from_slice(&op.apply(x)),
+            &v, t, 80, 1e-13, &mut tight,
+        );
+        assert!(dim_tight >= dim, "tighter tol {dim_tight} < looser {dim}");
     }
 
     #[test]

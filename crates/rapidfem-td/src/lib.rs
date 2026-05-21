@@ -5,6 +5,7 @@
 //! `docs/td-backend-plan.md` for the work-package breakdown.
 
 pub mod absorber;
+pub mod constants;
 pub mod dg_basis;
 pub mod dispersive;
 pub mod geom_factors;

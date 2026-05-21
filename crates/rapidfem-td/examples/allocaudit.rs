@@ -90,10 +90,10 @@ fn main() {
     {
         let mut ws = KrylovWorkspace::new();
         let mut out = vec![0.0; n];
-        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, &mut out);
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, 0.0, &mut out);
         let (a0, b0) = snap();
         let t = Instant::now();
-        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, &mut out);
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, 40, 0.0, &mut out);
         let dt = t.elapsed();
         let (a1, b1) = snap();
         println!(

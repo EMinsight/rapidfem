@@ -76,9 +76,9 @@ fn main() {
     for &m in &[12usize, 24, 40] {
         let mut ws = KrylovWorkspace::new();
         let mut out = vec![0.0; n];
-        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, &mut out); // warm
+        ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, 0.0, &mut out); // warm
         let t = time_median(20, || {
-            ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, &mut out);
+            ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, 0.0, &mut out);
         });
         println!("  krylov_dim {m:>3}:  {:>7.2} ms/step", t * 1e3);
     }
