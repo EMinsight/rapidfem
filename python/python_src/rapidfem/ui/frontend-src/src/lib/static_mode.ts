@@ -13,10 +13,14 @@
  * anywhere else.
  */
 
-// Vite injects `import.meta.env` at build time. The flag is a string
-// ("1"/"true") because Vite stringifies all env values; coerce to bool.
-const raw = (import.meta.env.VITE_STATIC_MODE ?? '').toString().toLowerCase();
-export const IS_STATIC_MODE: boolean = raw === '1' || raw === 'true';
+// Vite injects `import.meta.env` at build time and stringifies env values
+// ("1"/"true"). Comparing the literal directly - no `.toString()` chain -
+// keeps this a build-time constant, so every `{#if IS_STATIC_MODE}` block
+// (the marketing landing page, the analytics beacon, ...) is dead-code-
+// eliminated from the pip-installed UI build rather than merely hidden.
+export const IS_STATIC_MODE: boolean =
+	import.meta.env.VITE_STATIC_MODE === '1' ||
+	import.meta.env.VITE_STATIC_MODE === 'true';
 
 /** Base URL prefix for fetching baked artefacts. */
 export const DEMO_BASE = `${import.meta.env.BASE_URL ?? '/'}demo/`.replace(/\/+/g, '/');

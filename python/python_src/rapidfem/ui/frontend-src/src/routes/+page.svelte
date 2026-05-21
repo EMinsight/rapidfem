@@ -33,6 +33,16 @@
 			goto(`${base}/notebook`, { replaceState: true });
 			return;
 		}
+		// whatsmytraffic analytics beacon - deployed static demo only. This
+		// whole branch is dead-code-eliminated from the pip-installed UI
+		// build (IS_STATIC_MODE is a build-time constant), so the local UI
+		// never loads it.
+		const beacon = document.createElement('script');
+		beacon.defer = true;
+		beacon.src = 'https://app.whatsmytraffic.com/beacon.js';
+		beacon.setAttribute('data-website-id', '074c6b1d-f8ff-4aad-809c-7eeaf7ccad77');
+		document.head.appendChild(beacon);
+
 		// Static-demo only: define <fem-viewer> for the card grid.
 		if (customElements.get('fem-viewer')) return;
 		const script = document.createElement('script');
