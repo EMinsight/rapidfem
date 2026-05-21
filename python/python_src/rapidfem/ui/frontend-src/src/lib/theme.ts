@@ -50,23 +50,6 @@ export const canvas = {
 	highlightBrighten: 0.4,
 } as const;
 
-// --- Layer colors ---
-
-export const layerColors = {
-	guard_ring:    '#4a9ec2',
-	windings:      '#e8944a',
-	crossings:     '#d9513c',
-	windings_m2:   '#c94a3a',
-	crossings_m1:  '#5aad78',
-	windings_m4:   '#f0b86a',
-	vias:          '#5a5a62',
-	vias1:         '#5a5a62',
-	vias2:         '#6e6e78',
-	vias3:         '#7a7a84',
-	centertap:     '#6bbf8a',
-	pgs:           '#7b5e8a',
-} as const;
-
 // --- Plot colors ---
 
 export const plotColors = {

@@ -2,12 +2,11 @@
  * Backend client for the rapidfem UI.
  *
  * Talks to the Flask app started by `rapidfem serve`:
- *   POST /api/run    — exec user code, return rendered Geometry payloads
- *   POST /api/mesh   — gmsh the captured Geometry, return tet/tri mesh
- *   POST /api/solve  — build + run_sweep, return frequencies + sparams
- *   GET  /api/files  — list .py files in the workdir
- *   GET  /api/files/<path>, PUT /api/files/<path>
- *   WS   /ws         — pub/sub event stream (stage_start, stage_end, …)
+ *   GET /api/files, PUT/DELETE /api/files/<path>  (workdir file access)
+ *   GET /api/examples, GET /api/examples/<name>   (shipped examples)
+ *   GET /api/health
+ *
+ * Cell execution runs through the subprocess kernel in `kernel.ts`.
  */
 
 import type { MeshData } from './msh';
@@ -26,13 +25,6 @@ export function api_base(): string {
 	return '';
 }
 
-function ws_url(): string {
-	if (typeof window === 'undefined') return '';
-	const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	if (window.location.port === '5173') return `${proto}//127.0.0.1:5174/ws`;
-	return `${proto}//${window.location.host}/ws`;
-}
-
 // ── Shared types ──────────────────────────────────────────────────────────
 
 export type SParam = { re: number; im: number };
@@ -42,19 +34,6 @@ export interface PythonError {
 	type: string;
 	message: string;
 	traceback: string;
-}
-
-export interface RunResponse {
-	ok: boolean;
-	error?: PythonError;
-	stdout: string;
-	stderr: string;
-	captures: Array<{
-		name: string;
-		kind: 'geometry' | 'builder' | 'simulation' | 'result' | 'unknown';
-		payload?: GeometryPayload;
-		error?: PythonError;
-	}>;
 }
 
 export interface GeometryEntity {
@@ -92,41 +71,6 @@ export interface MeshPayload {
 	stats: { n_nodes: number; n_tets: number; n_tris: number; mesh_time_s: number; msh_bytes: number };
 }
 
-export interface MeshResponse {
-	ok: boolean;
-	error?: PythonError;
-	stdout: string;
-	stderr: string;
-	mesh?: MeshPayload;
-	name?: string;
-}
-
-export interface SolveResponse {
-	ok: boolean;
-	error?: PythonError;
-	stdout: string;
-	stderr: string;
-	result?: {
-		frequencies: number[];
-		sparams: number[][][][];  // [n_freq][n_p][n_p][re,im]
-		n_driven: number;
-		n_freq: number;
-		n_dofs: number;
-		n_tets: number;
-		solve_time_s: number;
-		/** Per-(freq, port) flat [A0,B0,C0, A1,B1,C1, …] node phasor terms
-		 *  for the E-field channel. */
-		fields?: (number[] | null)[][];
-		/** Same shape as `fields`, conduction current density J = σE. Zero
-		 *  in PEC / lossless regions; null when not computed. */
-		fields_j?: (number[] | null)[][] | null;
-		/** Same shape as `fields`, magnetic field H = ∇×E / (jωμ). */
-		fields_h?: (number[] | null)[][] | null;
-	};
-	mesh?: MeshPayload;
-	name?: string;
-}
-
 export interface FileEntry {
 	path: string;
 	size: number;
@@ -153,39 +97,6 @@ async function get_json<T>(path: string): Promise<T> {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-export async function runCode(code: string): Promise<RunResponse> {
-	return post_json<RunResponse>('/api/run', { code });
-}
-
-export interface CellResponse {
-	ok: boolean;
-	error?: PythonError;
-	stdout: string;
-	stderr: string;
-	captures: RunResponse['captures'];
-	mesh?: MeshPayload | null;
-	result?: {
-		frequencies: number[];
-		sparams: number[][][][];
-		n_driven: number;
-		n_freq: number;
-		n_dofs: number;
-		n_tets: number;
-		solve_time_s: number;
-		fields?: (number[] | null)[][];
-		fields_j?: (number[] | null)[][] | null;
-		fields_h?: (number[] | null)[][] | null;
-	} | null;
-}
-
-export async function runCell(file: string, code: string, reset: boolean = false): Promise<CellResponse> {
-	return post_json<CellResponse>('/api/cell/run', { file, code, reset });
-}
-
-export async function resetKernel(file: string): Promise<{ ok: boolean }> {
-	return post_json<{ ok: boolean }>('/api/cell/reset', { file });
-}
-
 export async function listExamples(): Promise<{ examples: { name: string }[] }> {
 	return get_json<{ examples: { name: string }[] }>('/api/examples');
 }
@@ -203,14 +114,6 @@ export async function readExample(name: string): Promise<string> {
 	const r = await get_json<{ ok: boolean; content?: string; error?: string }>(`/api/examples/${encodeURIComponent(name)}`);
 	if (!r.ok || r.content === undefined) throw new Error(r.error ?? 'example not found');
 	return r.content;
-}
-
-export async function meshGeometry(code: string, opts: { maxh?: number; geometry_name?: string } = {}): Promise<MeshResponse> {
-	return post_json<MeshResponse>('/api/mesh', { code, ...opts });
-}
-
-export async function solve(code: string, opts: { builder_name?: string } = {}): Promise<SolveResponse> {
-	return post_json<SolveResponse>('/api/solve', { code, ...opts });
 }
 
 export async function listFiles(): Promise<{ workdir: string; files: FileEntry[] }> {
@@ -245,59 +148,6 @@ export async function renameFile(from: string, to: string): Promise<void> {
 
 export async function health(): Promise<{ ok: boolean; workdir: string; frontend_bundled: boolean }> {
 	return get_json('/api/health');
-}
-
-// ── WebSocket bus ─────────────────────────────────────────────────────────
-
-export type BusEvent =
-	| { kind: 'hello'; ok: boolean }
-	| { kind: 'stage_start'; stage: string }
-	| { kind: 'stage_end'; stage: string; ok: boolean; [k: string]: unknown }
-	| { kind: 'log'; line: string }
-	| { kind: string; [k: string]: unknown };
-
-export function subscribeBus(handler: (e: BusEvent) => void): () => void {
-	if (typeof window === 'undefined') return () => {};
-	let stopped = false;
-	let ws: WebSocket | null = null;
-	let reconnect_timer: ReturnType<typeof setTimeout> | null = null;
-
-	const connect = () => {
-		if (stopped) return;
-		try {
-			ws = new WebSocket(ws_url());
-		} catch (err) {
-			console.warn('[bus] open failed', err);
-			schedule_reconnect();
-			return;
-		}
-		ws.onmessage = (m) => {
-			try {
-				handler(JSON.parse(m.data) as BusEvent);
-			} catch (err) {
-				console.warn('[bus] bad payload', err);
-			}
-		};
-		ws.onerror = () => {};
-		ws.onclose = () => {
-			ws = null;
-			schedule_reconnect();
-		};
-	};
-	const schedule_reconnect = () => {
-		if (stopped || reconnect_timer) return;
-		reconnect_timer = setTimeout(() => {
-			reconnect_timer = null;
-			connect();
-		}, 1500);
-	};
-
-	connect();
-	return () => {
-		stopped = true;
-		if (reconnect_timer) clearTimeout(reconnect_timer);
-		ws?.close();
-	};
 }
 
 // ── Adapters: server payload → frontend types ─────────────────────────────

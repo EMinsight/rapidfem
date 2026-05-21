@@ -59,11 +59,6 @@ export function L_eq_pH(S: SMatrix, freq_hz: number, z0 = 50): number {
 	return 1e12 / (omega * Y[1][0].im);
 }
 
-export function Q_factor(S: SMatrix, z0 = 50): number {
-	const Z = sToZ(S, z0);
-	return Z[0][0].im / Z[0][0].re;
-}
-
 /** Find SRF by linear interpolation on Im(Y21) zero-crossing.
  *  Returns null if the sweep doesn't cross. */
 export function find_srf(
@@ -82,14 +77,6 @@ export function find_srf(
 		}
 	}
 	return null;
-}
-
-/** |S|_ij from a stream of S-matrices for plotting. */
-export function abs_s(smats: SMatrix[], i: number, j: number): number[] {
-	return smats.map((S) => {
-		if (!S[i] || !S[i][j]) return NaN;
-		return Math.hypot(S[i][j].re, S[i][j].im);
-	});
 }
 
 /** Characteristic impedance of a uniform 2-port transmission line.

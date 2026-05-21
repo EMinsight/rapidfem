@@ -8,8 +8,6 @@
  * keep them centralised here.
  */
 
-import { addMesh, addLineMesh, type GLState } from './canvas3d';
-
 /** Subset of the mesh payload everyone needs. */
 export interface MeshLike {
 	nodes: number[] | Float32Array | Float64Array;
@@ -92,104 +90,4 @@ export function buildVolumeBoundaries(m: MeshLike): Map<number, number[]> {
 		if (arr.length) out.set(vol, arr);
 	}
 	return out;
-}
-
-// ── Tri-soup with high-quality normals ────────────────────────────────
-//
-// Float64 cross product (Float32 accumulates enough rounding error to
-// produce visibly different normals on coplanar faces, which the
-// flat-shading lighting then turns into dapple). Axis-aligned normals
-// get snapped to their exact axis value so adjacent walls of an
-// axis-aligned box receive identical shading.
-
-export function buildTriSoupF64(
-	nodes: number[] | Float32Array | Float64Array,
-	tris: number[],
-): { positions: Float32Array; normals: Float32Array } {
-	const ntri = tris.length / 3;
-	const pos64 = new Float64Array(ntri * 9);
-	for (let t = 0; t < ntri; t++) {
-		for (let v = 0; v < 3; v++) {
-			const ni = tris[t * 3 + v] * 3;
-			pos64[t * 9 + v * 3 + 0] = nodes[ni];
-			pos64[t * 9 + v * 3 + 1] = nodes[ni + 1];
-			pos64[t * 9 + v * 3 + 2] = nodes[ni + 2];
-		}
-	}
-	const norm64 = new Float64Array(ntri * 9);
-	for (let t = 0; t < ntri; t++) {
-		const i = t * 9;
-		const ax = pos64[i + 0], ay = pos64[i + 1], az = pos64[i + 2];
-		const bx = pos64[i + 3], by = pos64[i + 4], bz = pos64[i + 5];
-		const cx = pos64[i + 6], cy = pos64[i + 7], cz = pos64[i + 8];
-		const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-		const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-		let nx = e1y * e2z - e1z * e2y;
-		let ny = e1z * e2x - e1x * e2z;
-		let nz = e1x * e2y - e1y * e2x;
-		const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-		nx /= l; ny /= l; nz /= l;
-		// Snap axis-aligned normals to their exact value — kills sub-bit
-		// FP noise that would dapple coplanar shading.
-		if (Math.abs(nx) > 0.9999)      { nx = Math.sign(nx); ny = 0; nz = 0; }
-		else if (Math.abs(ny) > 0.9999) { ny = Math.sign(ny); nx = 0; nz = 0; }
-		else if (Math.abs(nz) > 0.9999) { nz = Math.sign(nz); nx = 0; ny = 0; }
-		for (let k = 0; k < 3; k++) {
-			norm64[i + k * 3 + 0] = nx;
-			norm64[i + k * 3 + 1] = ny;
-			norm64[i + k * 3 + 2] = nz;
-		}
-	}
-	return { positions: Float32Array.from(pos64), normals: Float32Array.from(norm64) };
-}
-
-// ── Edge-list from triangle faces ─────────────────────────────────────
-
-export function buildEdgeLines(
-	nodes: number[] | Float32Array | Float64Array,
-	tris: number[],
-): Float32Array {
-	const seen = new Set<bigint>();
-	const out: number[] = [];
-	const push = (a: number, b: number) => {
-		const lo = a < b ? a : b, hi = a < b ? b : a;
-		const k = (BigInt(lo) << 32n) | BigInt(hi);
-		if (seen.has(k)) return;
-		seen.add(k);
-		out.push(
-			nodes[a * 3], nodes[a * 3 + 1], nodes[a * 3 + 2],
-			nodes[b * 3], nodes[b * 3 + 1], nodes[b * 3 + 2],
-		);
-	};
-	const n_tris = tris.length / 3;
-	for (let t = 0; t < n_tris; t++) {
-		const i = tris[t * 3], j = tris[t * 3 + 1], k = tris[t * 3 + 2];
-		push(i, j); push(j, k); push(k, i);
-	}
-	return Float32Array.from(out);
-}
-
-// ── One-shot: add the full per-volume hull to a GL state ──────────────
-
-export function addVolumeHullMeshes(
-	state: GLState,
-	mesh: MeshLike,
-	color: [number, number, number],
-	hullTag: number,
-	wireTag: number | null,
-	wireColor: [number, number, number] | null,
-	/** Polygon depth offset for the hull pass — push it back so coplanar
-	 *  conductor surfaces win the depth test cleanly. Pair with a
-	 *  zero-offset second `addMesh` call for the named conductors. */
-	depthOffset: [number, number] | undefined = [2, 2],
-): void {
-	const per_vol = buildVolumeBoundaries(mesh);
-	for (const [, tris] of per_vol.entries()) {
-		const { positions, normals } = buildTriSoupF64(mesh.nodes, tris);
-		addMesh(state, positions, normals, color, hullTag, depthOffset);
-		if (wireTag !== null && wireColor !== null) {
-			const edges = buildEdgeLines(mesh.nodes, tris);
-			if (edges.length) addLineMesh(state, edges, wireColor, wireTag);
-		}
-	}
 }
