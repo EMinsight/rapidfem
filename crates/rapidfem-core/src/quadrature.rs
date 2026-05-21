@@ -134,13 +134,13 @@ mod tests {
 
     #[test]
     fn test_tet_quad_weights_sum() {
+        // Tet quadrature weights are normalised to sum to 1 over the
+        // reference tet. The order-4 rule's tabulated literals are slightly
+        // truncated, so allow a wider tolerance than the triangle rules.
         for order in 1..=4 {
             let pts = gaus_quad_tet(order);
             let sum: f64 = pts.iter().map(|p| p[0]).sum();
-            // Tet weights sum to 1/6 (reference tet volume)
-            // Actually EMerge weights sum to 1.0 for the reference tet
-            // Let's just check they're reasonable
-            assert!(pts.len() > 0, "Order {} has no points", order);
+            assert!((sum - 1.0).abs() < 1e-6, "Order {}: weight sum = {}", order, sum);
         }
     }
 
