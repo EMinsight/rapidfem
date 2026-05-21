@@ -113,16 +113,30 @@ impl Mesh {
             }
         }
 
-        // Build tri_to_tet
+        // Build tri_to_tet. An interior face is shared by exactly two tets,
+        // a boundary face by one. A face shared by three or more tets means
+        // a non-manifold mesh; report it rather than silently overwriting
+        // slot [1], which would corrupt the DG face-jump terms downstream.
         let mut tri_to_tet = vec![[usize::MAX; 2]; n_tris];
+        let mut non_manifold = 0usize;
         for (ti, tet_tris) in tet_to_tri.iter().enumerate() {
             for &tri_idx in tet_tris {
                 if tri_to_tet[tri_idx][0] == usize::MAX {
                     tri_to_tet[tri_idx][0] = ti;
-                } else {
+                } else if tri_to_tet[tri_idx][1] == usize::MAX {
                     tri_to_tet[tri_idx][1] = ti;
+                } else {
+                    non_manifold += 1;
                 }
             }
+        }
+        if non_manifold > 0 {
+            eprintln!(
+                "WARNING: non-manifold mesh: {} face-tet incidences beyond \
+                 the two-per-face limit were dropped; face-jump terms on \
+                 those faces will be wrong",
+                non_manifold
+            );
         }
 
         // Compute edge lengths
@@ -157,5 +171,29 @@ impl Mesh {
     /// Get triangles for a face tag.
     pub fn tris_for_tag(&self, tag: i32) -> &[usize] {
         self.ftag_to_tri.get(&tag).map_or(&[], |v| v.as_slice())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_manifold_face_keeps_the_first_two_tets() {
+        // Three tets all listing nodes {0,1,2} as a face is a non-manifold
+        // connectivity. from_tets must keep the first two incidences in
+        // tri_to_tet rather than overwriting slot [1] with the third.
+        let nodes = vec![
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1.0, 1.0, 1.0],
+        ];
+        let tets = vec![[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 2, 5]];
+        let mesh = Mesh::from_tets(nodes, tets);
+        assert_eq!(mesh.n_tets(), 3);
+
+        let shared = mesh.inv_tris[&(0, 1, 2)];
+        let adj = mesh.tri_to_tet[shared];
+        assert_eq!(adj[0], 0, "first tet kept");
+        assert_eq!(adj[1], 1, "second tet kept, not overwritten by the third");
     }
 }
