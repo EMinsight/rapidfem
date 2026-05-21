@@ -16,7 +16,6 @@ pub mod interp;
 pub mod abc_order2;
 pub mod port;
 pub mod touchstone;
-pub mod csym_ldlt;
 pub mod pardiso;
 pub mod solver;
 #[cfg(feature = "vtk")]
