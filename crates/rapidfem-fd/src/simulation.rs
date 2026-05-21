@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::basis::Nedelec2Basis;
 use crate::config::{Config, PortConfig};
-use crate::constants::{C0, EPS0, MU0, PI};
+use crate::constants::{C0, EPS0, LUMPED_PORT_PROJ_EPS, MU0, PI};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
 use crate::interp;
@@ -794,7 +794,7 @@ fn build_lumped_lines(
                 min_proj = proj;
             }
         }
-        let proj_tol = 1e-9 * height.max(1.0);
+        let proj_tol = LUMPED_PORT_PROJ_EPS * height.max(1.0);
         let start_verts: Vec<usize> = verts
             .iter()
             .copied()

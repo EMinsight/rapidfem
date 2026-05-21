@@ -36,7 +36,7 @@ fn matinv3(m: &[[C64; 3]; 3]) -> [[C64; 3]; 3] {
     // determinant means a degenerate tensor. Fail loudly rather than let
     // 1/det produce NaN/inf that silently poisons the assembled system.
     assert!(
-        det.norm() > crate::constants::MATINV3_SINGULAR_TOL,
+        det.norm() > crate::constants::SINGULAR_EPS,
         "matinv3: singular 3x3 material tensor (|det| = {:.3e})",
         det.norm()
     );

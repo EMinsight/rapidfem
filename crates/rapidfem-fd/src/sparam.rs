@@ -77,7 +77,7 @@ pub fn sparam_waveport(
         C64::from(mx*mx + my*my + mz*mz)
     }, gq_order);
 
-    if norm.norm() < 1e-30 {
+    if norm.norm() < crate::constants::SINGULAR_EPS {
         return C64::new(0.0, 0.0);
     }
 

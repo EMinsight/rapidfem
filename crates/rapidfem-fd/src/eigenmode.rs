@@ -148,7 +148,7 @@ pub fn solve_eigenmode(
         let w_norm: f64 = w.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
         betas.push(w_norm);
 
-        if w_norm < 1e-12 { break; }
+        if w_norm < LANCZOS_BREAKDOWN { break; }
 
         v_prev = v;
         beta_prev = w_norm;
@@ -181,7 +181,7 @@ pub fn solve_eigenmode(
 
     for k in 0..m {
         let mu = C64::new(eigenvalues[k].re, eigenvalues[k].im);
-        if mu.norm() < 1e-30 { continue; }
+        if mu.norm() < SINGULAR_EPS { continue; }
         let lambda = sigma + C64::new(1.0, 0.0) / mu;
         if lambda.re <= 0.0 { continue; }
 
@@ -209,7 +209,7 @@ pub fn solve_eigenmode(
     Ok(modes.into_iter().take(n_modes).map(|(lambda, field)| {
         let k0 = lambda.sqrt();
         let freq = k0 * C64::from(C0 / (2.0 * PI));
-        let q = if freq.im.abs() > 1e-30 { 0.5 * freq.re / freq.im.abs() } else { f64::INFINITY };
+        let q = if freq.im.abs() > SINGULAR_EPS { 0.5 * freq.re / freq.im.abs() } else { f64::INFINITY };
         Eigenmode { frequency: freq, q_factor: q, eigenvalue: lambda, field }
     }).collect())
 }

@@ -214,7 +214,7 @@ impl TetGrid {
 }
 
 fn point_in_tet(mesh: &Mesh, itet: usize, x: f64, y: f64, z: f64) -> bool {
-    let eps = 1e-8;
+    let eps = crate::constants::POINT_IN_TET_EPS;
     let tet = &mesh.tets[itet];
     let v1 = mesh.nodes[tet[0]];
     let v2 = mesh.nodes[tet[1]];
@@ -226,7 +226,7 @@ fn point_in_tet(mesh: &Mesh, itet: usize, x: f64, y: f64, z: f64) -> bool {
     let m20 = v2[2]-v1[2]; let m21 = v3[2]-v1[2]; let m22 = v4[2]-v1[2];
 
     let det = m00*(m11*m22 - m12*m21) - m01*(m10*m22 - m12*m20) + m02*(m10*m21 - m11*m20);
-    if det.abs() < 1e-30 { return false; }
+    if det.abs() < crate::constants::SINGULAR_EPS { return false; }
     let inv_det = 1.0 / det;
 
     let dx = x - v1[0];

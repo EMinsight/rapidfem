@@ -8,7 +8,21 @@ pub const PI: f64 = std::f64::consts::PI;
 
 // --- Numerical tolerances ---
 
-/// Below this modulus a 3x3 material-tensor determinant is treated as
-/// singular: `1/det` would otherwise produce NaN/inf that silently
-/// poisons the assembled system.
-pub const MATINV3_SINGULAR_TOL: f64 = 1e-30;
+/// Magnitudes below this are treated as zero. A determinant this small
+/// marks a singular matrix or degenerate element (`1/det` would produce
+/// NaN/inf); a power or norm this small is numerical noise. A uniform
+/// "negligible" floor across the solver.
+pub const SINGULAR_EPS: f64 = 1e-30;
+
+/// Barycentric-coordinate slack for point-in-tetrahedron containment.
+pub const POINT_IN_TET_EPS: f64 = 1e-8;
+
+/// Lanczos lucky-breakdown threshold for the eigenmode solver: the Krylov
+/// subspace stops growing once the next vector's norm drops below this.
+pub const LANCZOS_BREAKDOWN: f64 = 1e-12;
+
+/// dB value reported for a far-field power at or below `SINGULAR_EPS`.
+pub const FARFIELD_DB_FLOOR: f64 = -100.0;
+
+/// Relative slack for the lumped-port voltage-integration axis projection.
+pub const LUMPED_PORT_PROJ_EPS: f64 = 1e-9;

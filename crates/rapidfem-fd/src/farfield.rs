@@ -322,7 +322,7 @@ pub fn compute_farfield_full(
             } else {
                 0.0
             };
-            let d_dbi = if d > 1e-30 { 10.0 * d.log10() } else { -100.0 };
+            let d_dbi = if d > SINGULAR_EPS { 10.0 * d.log10() } else { FARFIELD_DB_FLOOR };
             directivity[ip][it] = d_dbi;
             peak_d = peak_d.max(d_dbi);
         }
@@ -330,7 +330,7 @@ pub fn compute_farfield_full(
 
     // Gain: directivity scaled by user-supplied radiation efficiency.
     let efficiency = radiation_efficiency.unwrap_or(1.0).clamp(0.0, 1.0);
-    let efficiency_db_offset = if efficiency > 1e-30 { 10.0 * efficiency.log10() } else { -100.0 };
+    let efficiency_db_offset = if efficiency > SINGULAR_EPS { 10.0 * efficiency.log10() } else { FARFIELD_DB_FLOOR };
 
     let mut gain = vec![vec![0.0f64; n_theta]; n_phi];
     let mut ar = vec![vec![0.0f64; n_theta]; n_phi];
@@ -355,14 +355,14 @@ pub fn compute_farfield_full(
             let etn = et.norm();
             let epn = ep.norm();
             let mag_sq_sum = etn * etn + epn * epn;
-            if mag_sq_sum > 1e-30 {
+            if mag_sq_sum > SINGULAR_EPS {
                 let delta = ep.arg() - et.arg();
                 let cos_d = delta.cos();
                 let diff_sq = (etn * etn - epn * epn).powi(2) + 4.0 * etn * etn * epn * epn * cos_d * cos_d;
                 let a_sq_minus_b_sq = diff_sq.sqrt();
                 let a_sq = 0.5 * (mag_sq_sum + a_sq_minus_b_sq);
                 let b_sq = 0.5 * (mag_sq_sum - a_sq_minus_b_sq).max(0.0);
-                ar[ip][it] = if b_sq > 1e-30 {
+                ar[ip][it] = if b_sq > SINGULAR_EPS {
                     10.0 * (a_sq / b_sq).log10()
                 } else {
                     99.0  // effectively linear polarization
@@ -383,11 +383,11 @@ pub fn compute_farfield_full(
             // via the same 4π·U/P normalization used for directivity.
             let u_lcp = e_lcp.norm_sqr() / (2.0 * Z0);
             let u_rcp = e_rcp.norm_sqr() / (2.0 * Z0);
-            let denom = total_power.max(1e-30);
+            let denom = total_power.max(SINGULAR_EPS);
             let d_lcp = 4.0 * PI * u_lcp / denom;
             let d_rcp = 4.0 * PI * u_rcp / denom;
-            lcp[ip][it] = if d_lcp > 1e-30 { 10.0 * d_lcp.log10() } else { -100.0 };
-            rcp[ip][it] = if d_rcp > 1e-30 { 10.0 * d_rcp.log10() } else { -100.0 };
+            lcp[ip][it] = if d_lcp > SINGULAR_EPS { 10.0 * d_lcp.log10() } else { FARFIELD_DB_FLOOR };
+            rcp[ip][it] = if d_rcp > SINGULAR_EPS { 10.0 * d_rcp.log10() } else { FARFIELD_DB_FLOOR };
         }
     }
 
