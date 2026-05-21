@@ -69,20 +69,13 @@ def _arr(y):
     return np.ascontiguousarray(y, dtype=np.float64).ravel()
 
 
-def _collect_materials(geometry):
-    """Walk the geometry's volume materials.
-
-    Returns ``[(tag, eps_diag, mu_diag, sigma)]`` for the native TD operator.
-    A material's *non-dispersive* permittivity is reported here; a Debye
-    material's non-dispersive permittivity is its ``er_inf`` (the
-    high-frequency limit), since the dispersion above ``er_inf`` is supplied
-    by the ADE polarisation machinery (see :func:`_collect_dispersive`), not
-    as a constant permittivity. A loss tangent is a frequency-domain effect
-    and is not turned into a constant conductivity here.
+def _volume_materials(geometry):
+    """Yield ``(material, tag)`` for each unique volume :class:`Material`
+    carrying a physical-group tag. The single walk + ``id``-dedup that
+    :func:`_collect_materials` and :func:`_collect_dispersive` share.
     """
     from ..materials import Material
 
-    out = []
     seen = set()
     for ent in getattr(geometry, "_entities", []):
         mat = getattr(ent, "material", None)
@@ -94,6 +87,22 @@ def _collect_materials(geometry):
         tag = geometry._material_tags.get(id(mat))
         if tag is None:
             continue
+        yield mat, int(tag)
+
+
+def _collect_materials(geometry):
+    """Walk the geometry's volume materials.
+
+    Returns ``[(tag, eps_diag, mu_diag, sigma)]`` for the native TD operator.
+    A material's *non-dispersive* permittivity is reported here; a Debye
+    material's non-dispersive permittivity is its ``er_inf`` (the
+    high-frequency limit), since the dispersion above ``er_inf`` is supplied
+    by the ADE polarisation machinery (see :func:`_collect_dispersive`), not
+    as a constant permittivity. A loss tangent is a frequency-domain effect
+    and is not turned into a constant conductivity here.
+    """
+    out = []
+    for mat, tag in _volume_materials(geometry):
         eps = mat.er_diag if mat.er_diag is not None else (mat.er,) * 3
         # A Debye material's non-dispersive permittivity is its er_inf; the
         # dispersive operator forces eps = er_inf on these tets anyway, but
@@ -102,7 +111,7 @@ def _collect_materials(geometry):
             eps = (mat.debye.er_inf,) * 3
         mu = mat.ur_diag if mat.ur_diag is not None else (mat.ur,) * 3
         out.append((
-            int(tag),
+            tag,
             tuple(float(v) for v in eps),
             tuple(float(v) for v in mu),
             float(mat.conductivity),
@@ -123,25 +132,13 @@ def _collect_dispersive(geometry):
     backend's ``dispersive.rs`` carries only the first-order Debye ADE.
     Drude (a second-order auxiliary equation) is a future extension.
     """
-    from ..materials import Material
-
     out = []
-    seen = set()
-    for ent in getattr(geometry, "_entities", []):
-        mat = getattr(ent, "material", None)
-        if not isinstance(mat, Material) or getattr(ent, "dim", None) != 3:
-            continue
-        if id(mat) in seen:
-            continue
-        seen.add(id(mat))
+    for mat, tag in _volume_materials(geometry):
         debye = getattr(mat, "debye", None)
         if debye is None:
             continue
-        tag = geometry._material_tags.get(id(mat))
-        if tag is None:
-            continue
         out.append((
-            int(tag),
+            tag,
             float(debye.er_inf),
             float(debye.er_static),
             float(debye.tau_s),
