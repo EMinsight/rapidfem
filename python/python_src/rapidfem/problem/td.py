@@ -73,9 +73,12 @@ def _collect_materials(geometry):
     """Walk the geometry's volume materials.
 
     Returns ``[(tag, eps_diag, mu_diag, sigma)]`` for the native TD operator.
-    Non-dispersive materials only — loss-tangent dispersion is a frequency-
-    domain effect and is handled by the ADE machinery, not as a constant
-    conductivity.
+    A material's *non-dispersive* permittivity is reported here; a Debye
+    material's non-dispersive permittivity is its ``er_inf`` (the
+    high-frequency limit), since the dispersion above ``er_inf`` is supplied
+    by the ADE polarisation machinery (see :func:`_collect_dispersive`), not
+    as a constant permittivity. A loss tangent is a frequency-domain effect
+    and is not turned into a constant conductivity here.
     """
     from ..materials import Material
 
@@ -92,12 +95,56 @@ def _collect_materials(geometry):
         if tag is None:
             continue
         eps = mat.er_diag if mat.er_diag is not None else (mat.er,) * 3
+        # A Debye material's non-dispersive permittivity is its er_inf; the
+        # dispersive operator forces eps = er_inf on these tets anyway, but
+        # reporting it here keeps the material assignment self-consistent.
+        if getattr(mat, "debye", None) is not None:
+            eps = (mat.debye.er_inf,) * 3
         mu = mat.ur_diag if mat.ur_diag is not None else (mat.ur,) * 3
         out.append((
             int(tag),
             tuple(float(v) for v in eps),
             tuple(float(v) for v in mu),
             float(mat.conductivity),
+        ))
+    return out
+
+
+def _collect_dispersive(geometry):
+    """Walk the geometry's volume materials for Debye dispersive components.
+
+    Returns ``[(tag, er_inf, er_static, tau_s)]`` for the native TD
+    operator's ``dispersive`` argument. Each volume :class:`Material`
+    carrying a :class:`rapidfem.Debye` component runs the time-domain
+    auxiliary-differential-equation (ADE) update — the operator appends a
+    per-element polarisation field and integrates ``dP/dt = a*P + g*E``.
+
+    The Drude model is intentionally not collected here: the time-domain
+    backend's ``dispersive.rs`` carries only the first-order Debye ADE.
+    Drude (a second-order auxiliary equation) is a future extension.
+    """
+    from ..materials import Material
+
+    out = []
+    seen = set()
+    for ent in getattr(geometry, "_entities", []):
+        mat = getattr(ent, "material", None)
+        if not isinstance(mat, Material) or getattr(ent, "dim", None) != 3:
+            continue
+        if id(mat) in seen:
+            continue
+        seen.add(id(mat))
+        debye = getattr(mat, "debye", None)
+        if debye is None:
+            continue
+        tag = geometry._material_tags.get(id(mat))
+        if tag is None:
+            continue
+        out.append((
+            int(tag),
+            float(debye.er_inf),
+            float(debye.er_static),
+            float(debye.tau_s),
         ))
     return out
 
@@ -555,24 +602,33 @@ class ProblemTD:
                 "geometry not meshed yet — call g.mesh() before "
                 "constructing a ProblemTD"
             )
+        self.c = float(c)
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
         tag_ports = _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
+        # The TD operator runs in normalised units (c = 1, time measured in
+        # the mesh's length units), so a Debye relaxation time given in
+        # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /
+        # eps_static are dimensionless and pass through unchanged.
+        tag_dispersive = [
+            (tag, er_inf, er_static, self.c * tau_s)
+            for (tag, er_inf, er_static, tau_s) in _collect_dispersive(geometry)
+        ]
         self._op = TdOperator.from_mesh_bytes(
             bytes(mesh_bytes), order, _FLUX[flux],
             tag_materials or None, tag_ports or None,
-            tag_absorbers or None,
+            tag_absorbers or None, tag_dispersive or None,
         )
         self._geometry = geometry
         self.order = order
         self.flux = flux
-        self.c = float(c)
         _log(
             f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
             f"{len(tag_ports)} ports, "
-            f"{len(tag_absorbers)} matched-absorber (PML) regions"
+            f"{len(tag_absorbers)} matched-absorber (PML) regions, "
+            f"{len(tag_dispersive)} Debye dispersive regions"
         )
 
     @classmethod

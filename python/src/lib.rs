@@ -431,8 +431,17 @@ impl PyTdOperator {
     /// matched electric/magnetic loss `sigma = nu*eps`, `sigma_m = nu*mu`.
     /// Applied after `tag_materials`, so an absorber overrides a plain
     /// material assignment on the same volume.
+    ///
+    /// `dispersive` maps a gmsh volume tag to a Debye dispersive material —
+    /// `(volume_tag, eps_inf, eps_static, tau)`. Tets in the tagged volume
+    /// run the auxiliary-polarisation ADE: their non-dispersive permittivity
+    /// is `eps_inf`, and an appended per-element polarisation block carries
+    /// the relaxation `dP/dt = a*P + g*E`. With `dispersive` empty or None
+    /// the operator is byte-identical to before — `n_dof = 6*Np*n_elem` and
+    /// no polarisation state. Applied after `tag_materials` / `absorbers`,
+    /// so a Debye material overrides their permittivity on the same volume.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -443,7 +452,9 @@ impl PyTdOperator {
         >,
         ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>)>>,
         absorbers: Option<Vec<(i32, usize, f64, f64, f64, bool)>>,
+        dispersive: Option<Vec<(i32, f64, f64, f64)>>,
     ) -> PyResult<Self> {
+        use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
             .map_err(PyRuntimeError::new_err)?;
@@ -496,6 +507,26 @@ impl PyTdOperator {
                 }
             }
         }
+        // Debye dispersive volumes — applied after tag_materials / absorbers.
+        // Each tagged tet's permittivity is forced to eps_inf (the static
+        // curl term) and the tet is added to the ADE list; the appended
+        // polarisation block then carries the dispersion. An empty list
+        // leaves the operator byte-identical to the non-dispersive build.
+        let mut disp_elems: Vec<(usize, DebyeMaterial)> = Vec::new();
+        if let Some(dsp) = dispersive {
+            for (tag, eps_inf, eps_static, tau) in dsp {
+                let tets = match mesh.vtag_to_tet.get(&tag) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let mat =
+                    DebyeMaterial { eps_inf, eps_static, tau };
+                for &t in tets {
+                    materials[t].eps = [eps_inf; 3];
+                    disp_elems.push((t, mat));
+                }
+            }
+        }
         let mut port_specs: Vec<PortSpec> = Vec::new();
         if let Some(ps) = ports {
             for (tag, m, n, dir) in ps {
@@ -510,8 +541,8 @@ impl PyTdOperator {
                 port_specs.push(spec);
             }
         }
-        let op = MaxwellOperator::new_with_materials_ports(
-            &mesh, order, flux_alpha, &materials, &port_specs,
+        let op = MaxwellOperator::new_with_materials_ports_dispersive(
+            &mesh, order, flux_alpha, &materials, &port_specs, &disp_elems,
         );
         Ok(PyTdOperator {
             op,
@@ -520,9 +551,18 @@ impl PyTdOperator {
         })
     }
 
-    /// Degrees of freedom, `6·Np·n_elem`.
+    /// Degrees of freedom — `6·Np·n_elem` for the `[E,H]` block, plus
+    /// `3·Np` per Debye dispersive element for the appended
+    /// auxiliary-polarisation block. Exactly `6·Np·n_elem` with no
+    /// dispersive material.
     fn n_dof(&self) -> usize {
         self.op.n_dof()
+    }
+
+    /// Number of Debye dispersive elements — the count of appended
+    /// polarisation blocks. Zero for a non-dispersive problem.
+    fn n_dispersive(&self) -> usize {
+        self.op.n_dispersive()
     }
 
     /// Apply the semi-discrete operator — `dy/dt = A·y`. Zero-copy numpy in

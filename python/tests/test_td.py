@@ -397,6 +397,193 @@ def test_pml_drains_td_field_energy():
     )
 
 
+def _debye_geometry(debye_mat, *, maxh_mm=14.0, size_mm=(24, 12, 40)):
+    """A small PEC box filled with one volume material — the shared fixture
+    geometry for the dispersive-material tests."""
+    import rapidfem as rf
+
+    mm = 1e-3
+    w, h, lz = (s * mm for s in size_mm)
+    g = rf.Geometry(maxh=maxh_mm * mm)
+    air = g.box(w, h, lz, material=debye_mat)
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+        air.faces.min(axis="z"), air.faces.max(axis="z"),
+    )
+    g.mesh()
+    return g
+
+
+def test_non_dispersive_problem_keeps_the_plain_dof_count():
+    # Safety property: a problem with NO Debye material has the operator
+    # byte-identical to before — n_dof is exactly 6*Np*n_elem and the
+    # native operator reports zero dispersive regions.
+    import rapidfem as rf
+
+    g = _debye_geometry(rf.Air())
+    ptd = rf.ProblemTD(g, order=2, flux="upwind")
+    assert ptd._op.n_dispersive() == 0
+    np_ = (2 + 1) * (2 + 2) * (2 + 3) // 6  # order-2 Np = 10
+    n_elem = ptd.n_dof // (6 * np_)
+    assert ptd.n_dof == 6 * np_ * n_elem
+
+
+def test_debye_material_appends_a_polarisation_block():
+    # A Debye-material problem carries the augmented state: n_dof exceeds
+    # the plain 6*Np*n_elem by exactly 3*Np per dispersive element, and a
+    # free transient stays finite and bounded under the upwind flux.
+    import rapidfem as rf
+
+    debye = rf.Material(debye=rf.Debye(
+        er_inf=2.0, er_static=6.0, tau_s=20e-12,
+    ))
+    g = _debye_geometry(debye)
+    ptd = rf.ProblemTD(g, order=2, flux="upwind")
+
+    n_disp = ptd._op.n_dispersive()
+    assert n_disp > 0, "the Debye volume produced no dispersive elements"
+    np_ = (2 + 1) * (2 + 2) * (2 + 3) // 6  # order-2 Np = 10
+    n_elem = (ptd.n_dof - 3 * np_ * n_disp) // (6 * np_)
+    # n_dof = 6*Np*n_elem + 3*Np*n_disp_elem.
+    assert ptd.n_dof == 6 * np_ * n_elem + 3 * np_ * n_disp
+
+    # A free transient from a seeded impulse stays finite and does not grow.
+    y = np.zeros(ptd.n_dof)
+    y[ptd.probe_dof([12e-3, 6e-3, 20e-3], field="E", component="z")] = 1.0
+    traj = ptd.transient(y, dt=5e-12, steps=40, verbose=False)
+    assert traj.shape == (41, ptd.n_dof)
+    assert np.all(np.isfinite(traj))
+    assert np.linalg.norm(traj[-1]) <= np.linalg.norm(traj[0]) + 1e-9
+
+
+def test_debye_state_space_matches_rhs():
+    # The augmented sparse operator A (with the P rows/cols and the E<->P
+    # coupling) reproduces the matrix-free rhs on a dispersive problem.
+    import rapidfem as rf
+
+    pytest.importorskip("scipy")
+    debye = rf.Material(debye=rf.Debye(
+        er_inf=2.5, er_static=7.0, tau_s=15e-12,
+    ))
+    g = _debye_geometry(debye)
+    ptd = rf.ProblemTD(g, order=2, flux="upwind")
+    a = ptd.state_space()
+    assert a.shape == (ptd.n_dof, ptd.n_dof)
+
+    rng = np.random.default_rng(0)
+    v = rng.standard_normal(ptd.n_dof)
+    ref = ptd.rhs(v)
+    rel = np.linalg.norm(a @ v - ref) / np.linalg.norm(ref)
+    assert rel < 1e-10, f"sparse vs matrix-free rel.err {rel:.2e}"
+
+
+def test_debye_operator_reproduces_the_analytic_permittivity():
+    # Physics gate: the assembled time-domain operator implements the Debye
+    # auxiliary-differential-equation, so its polarisation block reproduces
+    # the analytic complex permittivity eps(omega) = eps_inf +
+    # (eps_s - eps_inf)/(1 + j*omega*tau).
+    #
+    # The augmented operator's polarisation rows carry the ADE Pdot = a*P +
+    # g*E with a = -1/tau, g = (eps_s - eps_inf)/tau. Sinusoidal steady
+    # state of that linear ODE gives the polarisation phasor
+    # P = g/(j*omega - a) * E, and D = eps_inf*E + P, so the medium's
+    # complex permittivity is eps(omega) = eps_inf + g/(j*omega - a).
+    # Extracting (a, g) straight from the verbatim sparse state-space matrix
+    # and reconstructing eps(omega) is an exact, operator-level check that
+    # the TD backend is consistent with rapidfem.Debye over a full sweep.
+    import rapidfem as rf
+    from rapidfem.materials import Debye
+
+    pytest.importorskip("scipy")
+    er_inf, er_static, tau_s = 4.5, 80.1, 8.27e-12  # water-like Debye
+    mm = 1e-3
+    side = 20 * mm
+
+    g = rf.Geometry(maxh=14 * mm)
+    air = g.box(side, side, side, material=rf.Material(debye=Debye(
+        er_inf=er_inf, er_static=er_static, tau_s=tau_s,
+    )))
+    rf.PEC(
+        air.faces.min(axis="x"), air.faces.max(axis="x"),
+        air.faces.min(axis="y"), air.faces.max(axis="y"),
+        air.faces.min(axis="z"), air.faces.max(axis="z"),
+    )
+    g.mesh()
+    ptd = rf.ProblemTD(g, order=2, flux="upwind")
+    n_disp = ptd._op.n_dispersive()
+    assert n_disp > 0, "the Debye volume produced no dispersive elements"
+
+    # The augmented state is [E,H] (6*Np*n_elem) then the appended P block
+    # (3*Np per dispersive element). Read the operator units back from the
+    # mesh: c maps operator time to seconds, so a = -1/tau and g have the
+    # 1/length scaling 1/c relative to the SI tau.
+    a_csr = ptd.state_space()
+    np_ = (ptd.order + 1) * (ptd.order + 2) * (ptd.order + 3) // 6
+    n_dof = ptd.n_dof
+    eh_len = n_dof - 3 * np_ * n_disp
+    assert eh_len == n_dof - 3 * np_ * n_disp and eh_len > 0
+
+    # Every polarisation row carries exactly two entries: g (the E coupling,
+    # in the [E,H] block) and a (the P self-relaxation, on the diagonal).
+    a_lil = a_csr.tolil()
+    a_vals, g_vals = [], []
+    for row in range(eh_len, n_dof):
+        cols = a_lil.rows[row]
+        data = a_lil.data[row]
+        assert len(cols) == 2, (
+            f"polarisation row {row} has {len(cols)} entries, expected 2 "
+            f"(the g*E coupling and the a*P diagonal)"
+        )
+        # The diagonal entry is `a`; the off-diagonal (into the [E,H]
+        # block) is `g`.
+        for c, v in zip(cols, data):
+            if c == row:
+                a_vals.append(v)
+            else:
+                assert c < eh_len, "P row couples outside the [E,H] block"
+                g_vals.append(v)
+    a_op = float(np.mean(a_vals))
+    g_op = float(np.mean(g_vals))
+    # All dispersive elements share one material, so the coefficients are
+    # uniform across the whole P block.
+    assert np.allclose(a_vals, a_op, rtol=1e-9)
+    assert np.allclose(g_vals, g_op, rtol=1e-9)
+
+    # The operator runs in normalised units (c = 1, time in metres): the
+    # ADE coefficients carry a 1/c factor relative to the SI tau, but their
+    # ratio reconstructs eps(omega) at SI omega all the same. Convert to SI.
+    c = ptd.c
+    a_si = a_op * c          # a = -1/tau   (rad/s)
+    g_si = g_op * c          # g = (eps_s - eps_inf)/tau   (rad/s)
+    tau_rec = -1.0 / a_si
+    es_rec = er_inf + g_si * tau_rec
+    assert abs(tau_rec - tau_s) < 1e-3 * tau_s, (
+        f"recovered tau {tau_rec:.4e} != {tau_s:.4e}"
+    )
+    assert abs(es_rec - er_static) < 1e-6 * er_static, (
+        f"recovered er_static {es_rec:.4f} != {er_static}"
+    )
+
+    # Reconstruct eps(omega) from the operator's ADE coefficients and
+    # compare to the analytic Debye permittivity across a microwave sweep.
+    debye = Debye(er_inf=er_inf, er_static=er_static, tau_s=tau_s)
+    for f_hz in (1e9, 5e9, 19.2e9, 60e9):  # spans omega*tau from 0.05 .. 3
+        omega = 2.0 * np.pi * f_hz
+        eps_op = er_inf + g_si / (1j * omega - a_si)
+        # Analytic Debye permittivity (the rapidfem.Debye model).
+        denom = 1.0 + 1j * omega * debye.tau_s
+        eps_ana = debye.er_inf + (debye.er_static - debye.er_inf) / denom
+        assert abs(eps_op - eps_ana) < 1e-9 * abs(eps_ana), (
+            f"f={f_hz:.2e}: operator eps {eps_op:.6f} != analytic "
+            f"{eps_ana:.6f}"
+        )
+
+    # Sanity: the static and high-frequency limits bracket the sweep.
+    assert abs((er_inf + g_si / (1j * 1e14 - a_si)).real - er_inf) < 1e-3
+    assert abs((er_inf + g_si / (1j * 1e6 - a_si)).real - er_static) < 1e-2
+
+
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):
     import xml.etree.ElementTree as ET
 

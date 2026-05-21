@@ -9,6 +9,7 @@
 //! with components ordered `x, y, z`.
 
 use crate::dg_basis::ReferenceElement;
+use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
 use crate::waveguide::RectPort;
 use rapidfem_core::mesh::Mesh;
@@ -358,10 +359,36 @@ impl ElemMaterial {
     }
 }
 
+/// Per-element Debye dispersive data — resolved at build time.
+///
+/// A Debye element runs the auxiliary-differential-equation (ADE) update: its
+/// `eps` in [`ElemMaterial`] is `ε_∞`, and a per-node polarisation field `P`
+/// relaxes by `Ṗ = a·P + g·E`, contributing the polarisation current
+/// `−Ṗ/ε_∞` to Ampere's law. Stored only for the elements actually carrying a
+/// Debye material; a non-dispersive problem has none and the augmented state
+/// is byte-identical to the plain `[E,H]` system.
+#[derive(Clone, Copy, Debug)]
+struct DispersiveElem {
+    /// Mesh element index this Debye data is attached to.
+    elem: usize,
+    /// Relaxation coefficient `a = -1/τ` of `Ṗ = a·P + g·E`.
+    a: f64,
+    /// Source gain `g = (ε_s − ε_∞)/τ` of `Ṗ = a·P + g·E`.
+    g: f64,
+    /// `1/ε_∞` — the augmented Ampere-law scaling on this element's E nodes.
+    inv_eps_inf: f64,
+}
+
 /// Semi-discrete DG operator for the Maxwell curl equations on a tetrahedral
 /// mesh with PEC outer walls and per-element materials.
 ///
-/// State layout: `y[(e*Np + node)*6 + comp]`, `comp` 0..3 = E, 3..6 = H.
+/// State layout: the `[E,H]` block comes first, `y[(e*Np + node)*6 + comp]`
+/// with `comp` 0..3 = E, 3..6 = H — `6·Np·n_elem` entries, unchanged from the
+/// non-dispersive operator. When Debye dispersive materials are present an
+/// auxiliary-polarisation block is APPENDED: `3·Np` entries per Debye element,
+/// `P[base + node*3 + comp]`. With no dispersive material that block is empty
+/// and `n_dof` is exactly `6·Np·n_elem`.
+///
 /// `apply` evaluates `dy/dt`. The numerical flux blends central (`alpha = 0`,
 /// energy-conserving) and upwind (`alpha = 1`, dissipates the discontinuous
 /// spurious modes).
@@ -383,6 +410,13 @@ pub struct MaxwellOperator {
     scratch_pool: Mutex<Vec<Scratch>>,
     /// Resolved port data — faces and waveguide mode per port.
     ports: Vec<PortData>,
+    /// Per-Debye-element ADE data, in P-block order (slot `s` owns the P
+    /// segment `[(6*Np*n_elem) + s*3*Np .. + 3*Np]`). Empty for a
+    /// non-dispersive problem.
+    disp: Vec<DispersiveElem>,
+    /// Map mesh element index -> P-block slot, or `usize::MAX` if the element
+    /// is non-dispersive. Length `n_elem`.
+    disp_slot: Vec<usize>,
 }
 
 impl MaxwellOperator {
@@ -412,6 +446,29 @@ impl MaxwellOperator {
         flux_alpha: f64,
         materials: &[ElemMaterial],
         ports: &[PortSpec],
+    ) -> Self {
+        Self::new_with_materials_ports_dispersive(
+            mesh, order, flux_alpha, materials, ports, &[],
+        )
+    }
+
+    /// Build the operator with per-element materials, waveguide ports and an
+    /// optional list of Debye dispersive elements.
+    ///
+    /// `dispersive` carries `(element_index, DebyeMaterial)` pairs — each
+    /// listed element runs the auxiliary-polarisation ADE, and its
+    /// `materials[element]` entry must already carry `ε = ε_∞` (the
+    /// high-frequency permittivity) so the static curl term and the dispersive
+    /// polarisation current stay consistent. With an empty `dispersive` list
+    /// the operator is byte-identical to [`new_with_materials_ports`](Self::new_with_materials_ports):
+    /// same `n_dof`, same state layout, same behaviour.
+    pub fn new_with_materials_ports_dispersive(
+        mesh: &Mesh,
+        order: usize,
+        flux_alpha: f64,
+        materials: &[ElemMaterial],
+        ports: &[PortSpec],
+        dispersive: &[(usize, DebyeMaterial)],
     ) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
@@ -508,6 +565,28 @@ impl MaxwellOperator {
             }
         }
 
+        // Resolve the Debye dispersive elements. Each listed element gets a
+        // P-block slot, in list order; `disp_slot` maps element -> slot so
+        // `apply` can find a tet's polarisation segment in O(1). An empty
+        // list leaves `disp` empty and the operator non-dispersive.
+        let mut disp: Vec<DispersiveElem> = Vec::with_capacity(dispersive.len());
+        let mut disp_slot = vec![usize::MAX; n_elem];
+        for &(elem, mat) in dispersive {
+            assert!(elem < n_elem, "dispersive element index out of range");
+            assert!(
+                disp_slot[elem] == usize::MAX,
+                "element {elem} listed twice as dispersive"
+            );
+            let (a, g) = mat.relaxation_coeffs();
+            disp_slot[elem] = disp.len();
+            disp.push(DispersiveElem {
+                elem,
+                a,
+                g,
+                inv_eps_inf: 1.0 / mat.eps_inf,
+            });
+        }
+
         MaxwellOperator {
             re,
             n_elem,
@@ -520,12 +599,28 @@ impl MaxwellOperator {
             sigma_mu,
             scratch_pool: Mutex::new(Vec::new()),
             ports: port_data,
+            disp,
+            disp_slot,
         }
     }
 
-    /// Degrees of freedom, `6 · Np · n_elem`.
+    /// Degrees of freedom: `6·Np·n_elem` for the `[E,H]` block plus `3·Np`
+    /// per Debye dispersive element for the appended auxiliary-polarisation
+    /// block. With no dispersive material this is exactly `6·Np·n_elem`.
     pub fn n_dof(&self) -> usize {
         6 * self.re.n_nodes * self.n_elem
+            + 3 * self.re.n_nodes * self.disp.len()
+    }
+
+    /// Length of the leading `[E,H]` block, `6·Np·n_elem` — the offset at
+    /// which the appended polarisation block begins.
+    fn eh_len(&self) -> usize {
+        6 * self.re.n_nodes * self.n_elem
+    }
+
+    /// Number of Debye dispersive elements (P-block slots).
+    pub fn n_dispersive(&self) -> usize {
+        self.disp.len()
     }
 
     /// Global DOF index for a field component at the mesh node nearest
@@ -723,16 +818,46 @@ impl MaxwellOperator {
     /// only its own slice of `dy`), so it runs in parallel across cores;
     /// every worker reuses a pooled [`Scratch`], so after the first call
     /// this performs no heap allocation at all.
+    ///
+    /// With Debye dispersive materials the appended polarisation block is
+    /// updated after the `[E,H]` block: `Ṗ = a·P + g·E` is a per-node local
+    /// ODE (no spatial derivative), and the `[E,H]` block already picked up
+    /// the `−Ṗ/ε_∞` polarisation current on every dispersive element.
     pub fn apply_into(&self, y: &[f64], dy: &mut [f64]) {
         debug_assert_eq!(dy.len(), self.n_dof());
-        let stride = self.re.n_nodes * 6;
         let np = self.re.n_nodes;
-        dy.par_chunks_mut(stride).enumerate().for_each_init(
+        let stride = np * 6;
+        let eh_len = self.eh_len();
+        let (dy_eh, dy_p) = dy.split_at_mut(eh_len);
+        // The [E,H] block — per-element curl + flux + materials, plus the
+        // dispersive polarisation current on Debye elements (reads P from
+        // y's appended block).
+        dy_eh.par_chunks_mut(stride).enumerate().for_each_init(
             || self.checkout_scratch(np),
             |guard, (e, out)| {
                 self.apply_element(e, y, out, &mut guard.scratch)
             },
         );
+        // The appended polarisation block — one local relaxation ODE per
+        // Debye element: dP = a*P + g*E. No spatial coupling, so a flat
+        // parallel chunk over P-block slots.
+        if !self.disp.is_empty() {
+            let p_stride = np * 3;
+            dy_p.par_chunks_mut(p_stride).enumerate().for_each(
+                |(slot, out)| {
+                    let d = &self.disp[slot];
+                    let e_base = d.elem * stride;
+                    let p_base = eh_len + slot * p_stride;
+                    for node in 0..np {
+                        for c in 0..3 {
+                            let e_val = y[e_base + node * 6 + c];
+                            let p_val = y[p_base + node * 3 + c];
+                            out[node * 3 + c] = d.a * p_val + d.g * e_val;
+                        }
+                    }
+                },
+            );
+        }
     }
 
     /// Take a [`Scratch`] from the pool, allocating one only on first use.
@@ -863,6 +988,24 @@ impl MaxwellOperator {
                     im[c] * s.dh[node * 3 + c] - sm[c] * s.hh[node * 3 + c];
             }
         }
+
+        // Dispersive polarisation current — on a Debye element D = ε_∞·E + P,
+        // so Ampere's law carries an extra −Ṗ/ε_∞ term with Ṗ = a·P + g·E.
+        // P lives in y's appended block; the E block above already used
+        // ε = ε_∞ for this element, so this only subtracts the current.
+        let slot = self.disp_slot[e];
+        if slot != usize::MAX {
+            let d = &self.disp[slot];
+            let p_base = self.eh_len() + slot * np * 3;
+            for node in 0..np {
+                for c in 0..3 {
+                    let p_val = y[p_base + node * 3 + c];
+                    let e_val = s.ee[node * 3 + c];
+                    let p_dot = d.a * p_val + d.g * e_val;
+                    out[node * 6 + c] -= d.inv_eps_inf * p_dot;
+                }
+            }
+        }
     }
 
     /// Assemble the operator as a dense `N×N` row-major matrix by applying it
@@ -973,7 +1116,9 @@ impl MaxwellOperator {
     pub fn assemble_sparse(&self) -> CsrMatrix {
         let stride = self.re.n_nodes * 6;
         let np = self.re.n_nodes;
+        let p_stride = np * 3;
         let n = self.n_dof();
+        let eh_len = self.eh_len();
 
         // Each rayon worker folds a contiguous run of elements into one
         // `SparseFragment`, reusing its buffers across every element — the
@@ -982,6 +1127,13 @@ impl MaxwellOperator {
         // thread pool plenty of independent work. `fold` keeps the
         // fragments in element order, so concatenating them yields a
         // row-ordered CSR.
+        //
+        // Each element block's column stencil is the element itself plus its
+        // face neighbours. On a dispersive element the `[E,H]` rows also
+        // couple to the appended polarisation block (the `−Ṗ/ε_∞` current),
+        // so the polarisation columns of every dispersive stencil element are
+        // probed too. The non-dispersive case has no such columns, so the
+        // assembled `[E,H]` block stays byte-identical.
         let min_len =
             (self.n_elem / (4 * rayon::current_num_threads())).max(1);
         let frags: Vec<SparseFragment> = (0..self.n_elem)
@@ -993,6 +1145,7 @@ impl MaxwellOperator {
                     let (sten, ns) = self.element_stencil(e);
                     f.entries.clear();
                     for &c in &sten[..ns] {
+                        // The element's [E,H] columns.
                         for jl in 0..stride {
                             let j = c * stride + jl;
                             f.probe[j] = 1.0;
@@ -1008,6 +1161,29 @@ impl MaxwellOperator {
                                 let v = f.out[il];
                                 if v != 0.0 {
                                     f.entries.push((il, j, v));
+                                }
+                            }
+                        }
+                        // The element's polarisation columns, if dispersive —
+                        // the E<->P coupling into this element's [E,H] rows.
+                        let slot = self.disp_slot[c];
+                        if slot != usize::MAX {
+                            for jl in 0..p_stride {
+                                let j = eh_len + slot * p_stride + jl;
+                                f.probe[j] = 1.0;
+                                f.out.iter_mut().for_each(|v| *v = 0.0);
+                                self.apply_element(
+                                    e,
+                                    &f.probe,
+                                    &mut f.out,
+                                    &mut f.scratch,
+                                );
+                                f.probe[j] = 0.0;
+                                for il in 0..stride {
+                                    let v = f.out[il];
+                                    if v != 0.0 {
+                                        f.entries.push((il, j, v));
+                                    }
                                 }
                             }
                         }
@@ -1033,7 +1209,8 @@ impl MaxwellOperator {
             )
             .collect();
 
-        // Concatenate the per-job fragments — already in element order.
+        // Concatenate the per-job fragments — already in element order, so
+        // these are the leading `eh_len` rows of the CSR.
         let mut row_ptr = Vec::with_capacity(n + 1);
         let mut col_idx = Vec::new();
         let mut values = Vec::new();
@@ -1046,6 +1223,29 @@ impl MaxwellOperator {
             }
             col_idx.extend_from_slice(&f.col_idx);
             values.extend_from_slice(&f.values);
+        }
+
+        // The appended polarisation rows — one local ODE per Debye element,
+        // dP = a*P + g*E. Each P row carries exactly two entries: the
+        // diagonal `a` (its own P DOF) and `g` (the matching E DOF). Columns
+        // ascending: the E DOF (in the [E,H] block) precedes the P DOF.
+        for d in &self.disp {
+            let slot = self.disp_slot[d.elem];
+            let p_base = eh_len + slot * p_stride;
+            let e_base = d.elem * stride;
+            for node in 0..np {
+                for c in 0..3 {
+                    let e_col = e_base + node * 6 + c;
+                    let p_col = p_base + node * 3 + c;
+                    // g*E coupling, then a*P diagonal — ascending columns.
+                    col_idx.push(e_col);
+                    values.push(d.g);
+                    col_idx.push(p_col);
+                    values.push(d.a);
+                    acc += 2;
+                    row_ptr.push(acc);
+                }
+            }
         }
         CsrMatrix { n, row_ptr, col_idx, values }
     }
@@ -2265,5 +2465,181 @@ mod tests {
                 "reciprocity violated: S21 {s21:.3}, S12 {s12:.3}"
             );
         }
+    }
+
+    #[test]
+    fn non_dispersive_operator_has_the_unchanged_dof_count() {
+        // Safety property: with no Debye material the operator is byte
+        // identical to before — n_dof is exactly 6*Np*n_elem and the P
+        // block is empty.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let np = 10; // order 2
+        assert_eq!(op.n_dispersive(), 0);
+        assert_eq!(op.n_dof(), 6 * np * mesh.n_tets());
+    }
+
+    #[test]
+    fn dispersive_operator_appends_a_polarisation_block() {
+        // A Debye material on every element appends a 3*Np P block per
+        // element; n_dof grows by exactly 3*Np*n_disp_elem.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let n_elem = mesh.n_tets();
+        let np = 10; // order 2
+        let mat = DebyeMaterial { eps_inf: 2.0, eps_static: 5.0, tau: 0.4 };
+        let mats =
+            vec![ElemMaterial::isotropic(mat.eps_inf, 1.0, 0.0); n_elem];
+        let disp: Vec<(usize, DebyeMaterial)> =
+            (0..n_elem).map(|e| (e, mat)).collect();
+        let op = MaxwellOperator::new_with_materials_ports_dispersive(
+            &mesh, 2, 1.0, &mats, &[], &disp,
+        );
+        assert_eq!(op.n_dispersive(), n_elem);
+        assert_eq!(
+            op.n_dof(),
+            6 * np * n_elem + 3 * np * n_elem,
+            "augmented n_dof = [E,H] + appended P block"
+        );
+
+        // The augmented apply must stay finite on a generic state.
+        let n = op.n_dof();
+        let y: Vec<f64> =
+            (0..n).map(|i| (0.3 + i as f64 * 0.017).sin()).collect();
+        let dy = op.apply(&y);
+        assert!(dy.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn dispersive_sparse_assembly_matches_matrix_free_apply() {
+        // The augmented sparse CSR (with the P rows/cols and the E<->P
+        // coupling) reproduces the matrix-free apply on a Debye mesh.
+        use crate::mesh_gen::structured_box;
+        let mesh = structured_box(2, 2, 1, 1.0, 1.0, 1.0);
+        let n_elem = mesh.n_tets();
+        let mat = DebyeMaterial { eps_inf: 2.5, eps_static: 7.0, tau: 0.3 };
+        let mats =
+            vec![ElemMaterial::isotropic(mat.eps_inf, 1.0, 0.0); n_elem];
+        // Make half the elements dispersive — exercise the mixed path.
+        let disp: Vec<(usize, DebyeMaterial)> =
+            (0..n_elem).step_by(2).map(|e| (e, mat)).collect();
+        let op = MaxwellOperator::new_with_materials_ports_dispersive(
+            &mesh, 2, 1.0, &mats, &[], &disp,
+        );
+        let n = op.n_dof();
+        let csr = op.assemble_sparse();
+        assert_eq!(csr.n, n);
+
+        let v: Vec<f64> =
+            (0..n).map(|i| (1.0 + i as f64 * 0.07).cos()).collect();
+        let sp = csr.matvec(&v);
+        let mf = op.apply(&v);
+        let err: f64 = sp
+            .iter()
+            .zip(&mf)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = mf.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(
+            err < 1e-10 * scale.max(1.0),
+            "dispersive sparse vs matrix-free: err {err}, scale {scale}"
+        );
+    }
+
+    #[test]
+    fn debye_operator_reproduces_the_analytic_permittivity() {
+        // Physics gate: the assembled augmented operator implements the
+        // Debye ADE, so its polarisation block reproduces the analytic
+        // complex permittivity ε(ω) = ε_∞ + (ε_s − ε_∞)/(1 + iωτ).
+        //
+        // Every appended P row carries Ṗ = a·P + g·E with a = −1/τ,
+        // g = (ε_s − ε_∞)/τ. Sinusoidal steady state gives the polarisation
+        // phasor P = g/(iω − a)·E, and D = ε_∞·E + P, so the medium's
+        // permittivity is ε(ω) = ε_∞ + g/(iω − a). Reading (a, g) straight
+        // off the verbatim sparse state-space matrix and reconstructing
+        // ε(ω) is an exact, mesh-independent check that the ADE-augmented
+        // operator agrees with `DebyeMaterial::permittivity` across a sweep.
+        use crate::mesh_gen::structured_box;
+
+        // The polarisation phasor P/E = g/(iω − a), evaluated with plain
+        // (re, im) tuples to keep the td crate free of a complex-number
+        // dependency. g/(iω − a) = g·(−a − iω)/(a² + ω²).
+        let p_phasor = |g: f64, a: f64, omega: f64| -> (f64, f64) {
+            let d = a * a + omega * omega;
+            (g * (-a) / d, g * (-omega) / d)
+        };
+
+        let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
+        let n_elem = mesh.n_tets();
+        let np = 10; // order 2
+        let debye =
+            DebyeMaterial { eps_inf: 2.0, eps_static: 6.0, tau: 0.3 };
+        let mats =
+            vec![ElemMaterial::isotropic(debye.eps_inf, 1.0, 0.0); n_elem];
+        let disp: Vec<(usize, DebyeMaterial)> =
+            (0..n_elem).map(|e| (e, debye)).collect();
+        let op = MaxwellOperator::new_with_materials_ports_dispersive(
+            &mesh, 2, 0.0, &mats, &[], &disp,
+        );
+
+        let csr = op.assemble_sparse();
+        let eh_len = 6 * np * n_elem;
+        assert_eq!(csr.n, eh_len + 3 * np * n_elem);
+
+        // Each polarisation row carries exactly two entries: g (the E
+        // coupling, into the [E,H] block) and a (the P self-relaxation, on
+        // the diagonal).
+        let (mut a_vals, mut g_vals) = (Vec::new(), Vec::new());
+        for row in eh_len..csr.n {
+            let span = csr.row_ptr[row]..csr.row_ptr[row + 1];
+            assert_eq!(
+                span.len(),
+                2,
+                "polarisation row {row} must carry exactly the g*E \
+                 coupling and the a*P diagonal"
+            );
+            for k in span {
+                let col = csr.col_idx[k];
+                if col == row {
+                    a_vals.push(csr.values[k]);
+                } else {
+                    assert!(col < eh_len, "P row couples outside [E,H]");
+                    g_vals.push(csr.values[k]);
+                }
+            }
+        }
+        // One uniform Debye material -> uniform coefficients across the
+        // whole P block.
+        let (want_a, want_g) = debye.relaxation_coeffs();
+        for &a in &a_vals {
+            assert!((a - want_a).abs() < 1e-12, "P-row a = {a}");
+        }
+        for &g in &g_vals {
+            assert!((g - want_g).abs() < 1e-12, "P-row g = {g}");
+        }
+
+        // Reconstruct ε(ω) = ε_∞ + g/(iω − a) from the operator's ADE
+        // coefficients and compare to the analytic Debye permittivity over
+        // a sweep spanning ωτ from 0.06 to 6.
+        for &omega in &[0.2, 1.0, 3.3, 12.0, 20.0] {
+            let (pr, pi) = p_phasor(want_g, want_a, omega);
+            let (op_re, op_im) = (debye.eps_inf + pr, pi);
+            let (re, im) = debye.permittivity(omega);
+            let err = ((op_re - re).powi(2) + (op_im - im).powi(2)).sqrt();
+            let scale = (re * re + im * im).sqrt();
+            assert!(
+                err < 1e-12 * scale,
+                "ω={omega}: operator ε = ({op_re}, {op_im}), \
+                 analytic ({re}, {im})"
+            );
+        }
+
+        // Static and high-frequency limits bracket the dispersion.
+        let (lo_re, _) = p_phasor(want_g, want_a, 1e-6);
+        let (hi_re, _) = p_phasor(want_g, want_a, 1e6);
+        assert!((debye.eps_inf + lo_re - debye.eps_static).abs() < 1e-3);
+        assert!((debye.eps_inf + hi_re - debye.eps_inf).abs() < 1e-3);
     }
 }
