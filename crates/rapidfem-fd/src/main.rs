@@ -25,7 +25,7 @@ fn main() {
     // ── Eigenmode analysis (if configured) ────────────────────────────────
     if sim.config.eigenmode.is_some() {
         eprintln!("\n--- Eigenmode Analysis ---");
-        let modes = sim.run_eigenmode();
+        let modes = sim.run_eigenmode().expect("eigenmode analysis failed");
         eprintln!("\n  {} modes found:", modes.len());
         for (i, mode) in modes.iter().enumerate() {
             let f_ghz = mode.frequency.re / 1e9;
@@ -53,7 +53,7 @@ fn main() {
     }
 
     // ── Frequency sweep ─────────────────────────────────────────────────────
-    let result = sim.run_sweep();
+    let result = sim.run_sweep().expect("frequency sweep failed");
     eprintln!("\nTotal: {:.3}s for {} frequency points",
         result.solve_time_s, result.frequencies.len());
 

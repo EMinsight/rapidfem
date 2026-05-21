@@ -193,7 +193,7 @@ impl Simulation {
     }
 
     /// Run a frequency sweep and extract S-parameters.
-    pub fn run_sweep(&self) -> SweepResult {
+    pub fn run_sweep(&self) -> Result<SweepResult, String> {
         let frequencies = self.frequencies();
         let port_dyn = self.ports_dyn();
         let port_tri_refs = self.port_tris_slices();
@@ -209,7 +209,7 @@ impl Simulation {
             &frequencies,
             self.materials_opt(),
             self.pml_opt(),
-        );
+        )?;
         let solve_time_s = t0.elapsed().as_secs_f64();
 
         let sparams = self.extract_sparams(&port_dyn, &port_tri_refs, &frequencies, &results, n_driven);
@@ -219,13 +219,13 @@ impl Simulation {
             .map(|r| r.solutions.into_iter().collect())
             .collect();
 
-        SweepResult {
+        Ok(SweepResult {
             frequencies,
             sparams,
             solutions,
             n_driven,
             solve_time_s,
-        }
+        })
     }
 
     fn extract_sparams(
@@ -282,8 +282,9 @@ impl Simulation {
     }
 
     /// Run an eigenmode analysis (requires `config.eigenmode` to be set).
-    pub fn run_eigenmode(&self) -> Vec<Eigenmode> {
-        let eig = self.config.eigenmode.as_ref().expect("config.eigenmode not set");
+    pub fn run_eigenmode(&self) -> Result<Vec<Eigenmode>, String> {
+        let eig = self.config.eigenmode.as_ref()
+            .ok_or("config.eigenmode not set")?;
         crate::eigenmode::solve_eigenmode(
             &self.mesh,
             &self.basis,

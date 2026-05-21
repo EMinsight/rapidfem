@@ -42,7 +42,8 @@ fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let t0 = std::time::Instant::now();
-    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None);
+    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None)
+        .expect("assemble_and_solve failed");
     let solve_time = t0.elapsed().as_secs_f64();
 
     // S-param extraction with TetGrid

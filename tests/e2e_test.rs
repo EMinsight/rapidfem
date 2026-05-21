@@ -42,7 +42,8 @@ fn test_straight_waveguide_sparams() {
     let ports: Vec<&dyn rapidfem::port::Port> = vec![&port1, &port2];
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
-    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None);
+    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None)
+        .expect("assemble_and_solve failed");
 
     // S-param extraction: exact port of EMerge's approach
     // EMerge: fieldf = self.basis.interpolate_Ef(solution, tetids=port_tets)

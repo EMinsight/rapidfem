@@ -35,7 +35,8 @@ fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let t0 = std::time::Instant::now();
-    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None);
+    let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None)
+        .expect("assemble_and_solve failed");
     let solve_time = t0.elapsed().as_secs_f64();
 
     let sol0 = &result.solutions[0];

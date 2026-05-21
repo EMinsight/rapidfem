@@ -34,7 +34,7 @@ pub fn assemble_and_solve(
     pec_tri_indices: &[usize],
     freq: f64,
     materials: Option<&[crate::materials::Material]>,
-) -> SolveResult {
+) -> Result<SolveResult, String> {
     assemble_and_solve_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, freq, materials, None)
 }
 
@@ -47,7 +47,7 @@ pub fn assemble_and_solve_with_pml(
     freq: f64,
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
-) -> SolveResult {
+) -> Result<SolveResult, String> {
     let c0 = crate::constants::C0;
     let k0 = 2.0 * PI * freq / c0;
     let n_field = basis.n_field;
@@ -219,14 +219,13 @@ pub fn assemble_and_solve_with_pml(
     // honours RAPIDFEM_SOLVER (auto|pardiso|accelerate|faer).
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
     let t_solve = web_time::Instant::now();
-    solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)
-        .expect("solver factorize failed");
+    solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
     eprintln!("  {}: factorized in {:.1}ms", solver.name(), t_solve.elapsed().as_secs_f64()*1e3);
 
     let mut solutions = Vec::new();
     for (pi, bvec) in port_vectors.iter().enumerate() {
         let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
-        let x_free = solver.solve(&b_free).expect("solver solve failed");
+        let x_free = solver.solve(&b_free)?;
         let mut x_full = vec![C64::new(0.0, 0.0); n_field];
         for (fi, &d) in free_dofs.iter().enumerate() {
             x_full[d] = x_free[fi];
@@ -237,7 +236,7 @@ pub fn assemble_and_solve_with_pml(
         solutions.push(x_full);
     }
 
-    SolveResult { solutions, n_field }
+    Ok(SolveResult { solutions, n_field })
 }
 
 /// Frequency sweep: solve at multiple frequencies.
@@ -252,7 +251,7 @@ pub fn frequency_sweep(
     pec_tri_indices: &[usize],
     frequencies: &[f64],
     materials: Option<&[crate::materials::Material]>,
-) -> Vec<SolveResult> {
+) -> Result<Vec<SolveResult>, String> {
     frequency_sweep_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, frequencies, materials, None)
 }
 
@@ -265,7 +264,7 @@ pub fn frequency_sweep_with_pml(
     frequencies: &[f64],
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
-) -> Vec<SolveResult> {
+) -> Result<Vec<SolveResult>, String> {
     // Detect if any material is frequency-dependent — if so, K must be rebuilt every frequency
     let materials_dispersive = materials
         .map(|m| m.iter().any(|x| x.dispersion.is_dispersive()))
@@ -430,18 +429,16 @@ pub fn frequency_sweep_with_pml(
         let coo_cols: Vec<usize> = triplets.iter().map(|t| t.col).collect();
         let coo_vals: Vec<C64> = triplets.iter().map(|t| C64::new(t.val.re, t.val.im)).collect();
         if first_factor {
-            solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)
-                .expect("solver factorize failed");
+            solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
             first_factor = false;
         } else {
-            solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)
-                .expect("solver refactorize failed");
+            solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
         }
 
         let mut solutions = Vec::new();
         for bvec in &port_bvecs {
             let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
-            let x_free = solver.solve(&b_free).expect("solver solve failed");
+            let x_free = solver.solve(&b_free)?;
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
             for (fi_d, &d) in free_dofs.iter().enumerate() {
                 x_full[d] = x_free[fi_d];
@@ -457,5 +454,5 @@ pub fn frequency_sweep_with_pml(
         results.push(SolveResult { solutions, n_field });
     }
 
-    results
+    Ok(results)
 }

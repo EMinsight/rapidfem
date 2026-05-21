@@ -25,7 +25,7 @@ pub fn solve_eigenmode(
     materials: Option<&[crate::materials::Material]>,
     target_freq: f64,
     n_modes: usize,
-) -> Vec<Eigenmode> {
+) -> Result<Vec<Eigenmode>, String> {
     let n_tets = mesh.n_tets();
     let n_field = basis.n_field;
 
@@ -90,8 +90,7 @@ pub fn solve_eigenmode(
     // Factor (E - σB) via the backend-agnostic SparseSolver trait.
     let t1 = web_time::Instant::now();
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
-    solver.factorize(n_free, &shift_rows, &shift_cols, &shift_vals)
-        .expect("eigenmode shift-invert factorize failed");
+    solver.factorize(n_free, &shift_rows, &shift_cols, &shift_vals)?;
     eprintln!("  Eigenmode: {} shift-invert in {:.1}ms",
         solver.name(), t1.elapsed().as_secs_f64()*1e3);
 
@@ -128,7 +127,7 @@ pub fn solve_eigenmode(
 
         // w = (E - σB)⁻¹ * B * v
         let bv = b_matvec(&v);
-        let mut w = solver.solve(&bv).expect("eigenmode shift-solve failed");
+        let mut w = solver.solve(&bv)?;
 
         // α = v^T * w (complex-symmetric inner product, NOT Hermitian)
         let alpha: C64 = v.iter().zip(w.iter()).map(|(vi, wi)| vi * wi).sum();
@@ -172,7 +171,8 @@ pub fn solve_eigenmode(
         }
     });
 
-    let eig = t_mat.eigen().expect("Eigendecomposition failed");
+    let eig = t_mat.eigen()
+        .map_err(|e| format!("eigendecomposition failed: {:?}", e))?;
     let eigenvalues = eig.S().column_vector();
     let eigenvectors = eig.U();
 
@@ -206,10 +206,10 @@ pub fn solve_eigenmode(
     // Sort by distance to target
     modes.sort_by(|a, b| (a.0 - sigma).norm().partial_cmp(&(b.0 - sigma).norm()).unwrap());
 
-    modes.into_iter().take(n_modes).map(|(lambda, field)| {
+    Ok(modes.into_iter().take(n_modes).map(|(lambda, field)| {
         let k0 = lambda.sqrt();
         let freq = k0 * C64::from(C0 / (2.0 * PI));
         let q = if freq.im.abs() > 1e-30 { 0.5 * freq.re / freq.im.abs() } else { f64::INFINITY };
         Eigenmode { frequency: freq, q_factor: q, eigenvalue: lambda, field }
-    }).collect()
+    }).collect())
 }

@@ -65,7 +65,7 @@ impl PySimulation {
     /// Run the configured frequency sweep. Returns a SweepResult with frequencies
     /// (float64 array, shape `[n_freq]`) and S-parameters (complex128 array,
     /// shape `[n_freq, n_driven, n_driven]`).
-    fn run_sweep(&self) -> PySweepResult {
+    fn run_sweep(&self) -> PyResult<PySweepResult> {
         // Release the GIL so log-streaming reader threads + WS workers run
         // during the (potentially long) sweep. `Python::allow_threads`
         // wants `Send`, but Simulation is `unsendable` (Box<dyn Port> is
@@ -75,8 +75,8 @@ impl PySimulation {
             let r = self.inner.run_sweep();
             pyo3::ffi::PyEval_RestoreThread(save);
             r
-        };
-        PySweepResult { inner }
+        }.map_err(PyRuntimeError::new_err)?;
+        Ok(PySweepResult { inner })
     }
 
     /// Number of tetrahedra in the mesh.
@@ -104,6 +104,7 @@ impl PySimulation {
         Ok(self
             .inner
             .run_eigenmode()
+            .map_err(PyRuntimeError::new_err)?
             .into_iter()
             .map(|m| PyEigenmode { inner: m })
             .collect())
