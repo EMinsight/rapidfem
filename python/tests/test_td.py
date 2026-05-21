@@ -11,6 +11,13 @@ import pytest
 
 from rapidfem import GaussianPulse, ProblemTD
 
+# PML drain test tolerances. A closed PEC cavity must retain at least this
+# fraction of the seeded impulse energy; the PML-terminated run must keep
+# below this fraction of whatever the closed cavity keeps - a decisive
+# absorb-vs-conserve contrast.
+_PML_CLOSED_MIN_KEEP = 1.0
+_PML_DRAIN_FRACTION = 0.5
+
 
 @pytest.fixture(scope="module")
 def cavity():
@@ -304,6 +311,90 @@ def test_sparams_runs_on_lumped_ports():
     f, s = ptd.sparams(freqs, dt=5e-12, steps=200, verbose=False)
     assert s.shape == (2, 2, 2)
     assert np.all(np.isfinite(s))
+
+
+def test_pml_collects_as_matched_absorber():
+    # WP: an rf.PML region is collected for the TD backend as a graded
+    # matched-absorber spec (volume_tag, axis, inner_face, thickness,
+    # nu_max, is_low). The axis/is_low derive from the outward direction,
+    # nu_max from the loss budget over the slab thickness.
+    import rapidfem as rf
+    from rapidfem.problem.td import _ABSORBER_LOSS_BUDGET, _collect_absorbers
+
+    mm = 1e-3
+    g = rf.Geometry(maxh=14 * mm)
+    air = g.box(24 * mm, 12 * mm, 50 * mm, material=rf.Air())
+    slab = g.box(
+        24 * mm, 12 * mm, 80 * mm, position=(0, 0, 50 * mm),
+        material=rf.Air(),
+    )
+    rf.PML(slab, direction=(0, 0, 1), inner_face=50 * mm, thickness=80 * mm)
+    rf.PEC(air.faces.min(axis="x"), air.faces.max(axis="x"))
+    g.mesh()
+
+    specs = _collect_absorbers(g)
+    assert len(specs) == 1
+    tag, axis, inner_face, thickness, nu_max, is_low = specs[0]
+    assert axis == 2                       # +z direction
+    assert is_low is False                 # outward toward increasing z
+    assert inner_face == pytest.approx(50 * mm)
+    assert thickness == pytest.approx(80 * mm)
+    assert nu_max == pytest.approx(_ABSORBER_LOSS_BUDGET / (80 * mm))
+
+
+def test_pml_drains_td_field_energy():
+    # WP: an rf.PML slab wires through to the TD operator as a graded
+    # matched absorber. An impulse in the slab region drains away under the
+    # PML, but the SAME geometry with the slab left as plain air (a closed
+    # PEC cavity) conserves the bulk of it. The decisive contrast confirms
+    # the PML is no longer silently ignored in time domain.
+    import rapidfem as rf
+
+    mm = 1e-3
+    air_l, slab_t = 50 * mm, 80 * mm
+    w, h = 24 * mm, 12 * mm
+
+    def build(with_pml):
+        g = rf.Geometry(maxh=14 * mm)
+        air = g.box(w, h, air_l, material=rf.Air())
+        slab = g.box(
+            w, h, slab_t, position=(0, 0, air_l), material=rf.Air()
+        )
+        if with_pml:
+            rf.PML(
+                slab, direction=(0, 0, 1), inner_face=air_l,
+                thickness=slab_t,
+            )
+        rf.PEC(
+            air.faces.min(axis="x"), air.faces.max(axis="x"),
+            air.faces.min(axis="y"), air.faces.max(axis="y"),
+            air.faces.min(axis="z"),
+            slab.faces.min(axis="x"), slab.faces.max(axis="x"),
+            slab.faces.min(axis="y"), slab.faces.max(axis="y"),
+            slab.faces.max(axis="z"),
+        )
+        g.mesh()
+        return rf.ProblemTD(g, order=2, flux="central")
+
+    def retained(with_pml):
+        ptd = build(with_pml)
+        y = np.zeros(ptd.n_dof)
+        seed_z = air_l + 0.5 * slab_t
+        y[ptd.probe_dof([w / 2, h / 2, seed_z], field="E", component="y")] = 1.0
+        e0 = float(np.dot(y, y))
+        traj = ptd.transient(y, dt=20e-12, steps=300, verbose=False)
+        return float(np.dot(traj[-1], traj[-1])) / e0
+
+    frac_pml = retained(True)
+    frac_closed = retained(False)
+    # The closed PEC cavity keeps a substantial fraction; the PML drains it.
+    assert frac_closed > _PML_CLOSED_MIN_KEEP, (
+        f"closed cavity should retain energy - kept {frac_closed:.4f}"
+    )
+    assert frac_pml < _PML_DRAIN_FRACTION * frac_closed, (
+        f"PML must drain decisively - kept {frac_pml:.5f} vs closed "
+        f"{frac_closed:.4f}"
+    )
 
 
 def test_export_vtk_is_well_formed(cavity, spike, tmp_path):

@@ -45,6 +45,18 @@ _SPARAM_PASSIVITY_TOL = 0.02
 # time after which the reflection (diagonal) DFT window must close.
 _SPARAM_ARRIVAL_FRAC = 0.05
 
+# Matched-absorber loss budget. An rf.PML region wires through to the TD
+# backend as a graded impedance-matched absorbing layer. The loss rate `nu`
+# ramps quadratically (`nu_max·frac²`) by depth into the layer; round-trip
+# attenuation through a quadratically graded slab of thickness `t` is roughly
+# `exp(-2·nu_max·t/3)`. Setting `nu_max = _ABSORBER_LOSS_BUDGET / thickness`
+# fixes `nu_max·t` regardless of slab depth, so the layer absorbs equally well
+# at any thickness. `_ABSORBER_LOSS_BUDGET = 24` gives a round-trip reflection
+# of `exp(-2·24/3) ≈ 1e-7` — far below 1 %. (`rf.PML.delta_max` is the
+# frequency-domain coordinate-stretch magnitude, a different quantity, and is
+# deliberately NOT used as the TD loss rate.)
+_ABSORBER_LOSS_BUDGET = 24.0
+
 
 def _log(msg):
     """Progress logging for long TD runs — to stderr, like the FD solver."""
@@ -119,6 +131,44 @@ def _collect_ports(geometry):
         if tag is None:
             continue
         out.append((int(tag), mode[0], mode[1], direction))
+    return out
+
+
+def _collect_absorbers(geometry):
+    """Walk the geometry's :class:`PML` physics regions.
+
+    Each :class:`rapidfem.PML` terminates the domain with a volumetric
+    absorbing slab. In time domain it wires through to the native operator
+    as a graded impedance-matched absorbing layer — there is no separate
+    coordinate-stretch PML in the TD backend; the matched absorber is the
+    TD equivalent.
+
+    Returns ``[(volume_tag, axis, inner_face, thickness, nu_max, is_low)]``
+    for the native TD operator's ``absorbers`` argument. ``axis`` is the
+    index (0/1/2) of the dominant component of the PML's outward
+    ``direction``; ``is_low`` is true when that component points toward
+    decreasing coordinate (the layer extends to the low-coordinate end).
+    ``nu_max`` is derived from the slab thickness so the round-trip
+    reflection stays well below 1 % — see :data:`_ABSORBER_LOSS_BUDGET`.
+    """
+    from ..physics import PML
+
+    out = []
+    for phys in getattr(geometry, "_physics", []):
+        if not isinstance(phys, PML):
+            continue
+        tag = geometry._physics_tags.get(id(phys))
+        if tag is None:
+            continue
+        d = phys.direction
+        axis = int(np.argmax(np.abs(np.asarray(d, dtype=float))))
+        is_low = bool(d[axis] < 0.0)
+        thickness = float(phys.thickness)
+        nu_max = _ABSORBER_LOSS_BUDGET / thickness if thickness > 0.0 else 0.0
+        out.append((
+            int(tag), axis, float(phys.inner_face), thickness,
+            float(nu_max), is_low,
+        ))
     return out
 
 
@@ -508,9 +558,11 @@ class ProblemTD:
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
         tag_ports = _collect_ports(geometry)
+        tag_absorbers = _collect_absorbers(geometry)
         self._op = TdOperator.from_mesh_bytes(
             bytes(mesh_bytes), order, _FLUX[flux],
             tag_materials or None, tag_ports or None,
+            tag_absorbers or None,
         )
         self._geometry = geometry
         self.order = order
@@ -519,7 +571,8 @@ class ProblemTD:
         _log(
             f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
-            f"{len(tag_ports)} ports"
+            f"{len(tag_ports)} ports, "
+            f"{len(tag_absorbers)} matched-absorber (PML) regions"
         )
 
     @classmethod
@@ -950,8 +1003,30 @@ class ProblemTD:
         return TdScattering(freqs, s_mat)
 
     # -- turnkey: a transient run ------------------------------------------
-    def transient(self, y0, *, dt, steps, krylov_dim=40, verbose=True):
-        """Propagate ``y0`` for ``steps`` steps of size ``dt``.
+    def transient(self, y0=None, *, dt, steps, source=None, waveform=None,
+                  krylov_dim=40, verbose=True):
+        """Propagate the field for ``steps`` steps of size ``dt``.
+
+        With ``y0`` only this is the free (homogeneous) evolution of an
+        initial state. Passing ``source`` (a ``(point, field, component)``
+        spec) together with ``waveform`` (a callable ``g(t)``) instead
+        drives a soft point source every step -- a driven transient whose
+        full field history is returned, so :func:`rapidfem.show` animates
+        the driven problem (e.g. a pulse radiating into a PML-terminated
+        domain).
+
+        Parameters
+        ----------
+        y0 : array_like, optional
+            Initial state; defaults to zero (the rest state for a driven
+            run).
+        dt, steps : float, int
+            Time step and step count.
+        source : (point, field, component), optional
+            Soft-source location and field component. Driving needs both
+            ``source`` and ``waveform``.
+        waveform : callable, optional
+            Excitation ``g(t)``, e.g. a :class:`~rapidfem.GaussianPulse`.
 
         Returns
         -------
@@ -962,23 +1037,36 @@ class ProblemTD:
             :func:`rapidfem.show` plays it back as a 3-D field animation
             in the UI.
         """
-        y = np.asarray(y0, dtype=float).ravel()
-        traj = np.empty((steps + 1, y.size))
+        n = self.n_dof
+        y = np.zeros(n) if y0 is None else _arr(y0)
+        driven = source is not None and waveform is not None
+        sdof = None
+        if driven:
+            sp, sf, sc = source
+            sdof = self.probe_dof(sp, field=sf, component=sc)
+        h_op = float(self.c * dt)
+        traj = np.empty((steps + 1, n))
         traj[0] = y
         t0 = time.time()
         every = max(1, steps // 10)
+        label = "driven transient" if driven else "transient"
         for k in range(steps):
-            y = self.step(y, dt, krylov_dim)
+            if driven:
+                g = float(waveform(k * dt))
+                y = self._op.step_driven(_arr(y), sdof, g, h_op, krylov_dim)
+            else:
+                y = self.step(y, dt, krylov_dim)
             traj[k + 1] = y
             if verbose and (k + 1) % every == 0:
                 el = time.time() - t0
                 eta = el / (k + 1) * (steps - k - 1)
                 _log(
-                    f"transient {k + 1}/{steps}  "
+                    f"{label} {k + 1}/{steps}  "
                     f"({el:.1f}s elapsed, ETA {eta:.0f}s)"
                 )
         if verbose:
-            _log(f"transient complete - {steps} steps in {time.time() - t0:.1f}s")
+            _log(f"{label} complete - {steps} steps "
+                 f"in {time.time() - t0:.1f}s")
         return TdTrajectory(traj, problem=self, dt=dt)
 
     # -- field export ------------------------------------------------------

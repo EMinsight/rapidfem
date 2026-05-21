@@ -420,8 +420,20 @@ impl PyTdOperator {
     /// tag to `(mode_m, mode_n, direction)` — each becomes a waveguide port,
     /// indexed in the given order. `direction` is `None` for a waveguide
     /// port, or a `(dx, dy, dz)` field axis for a lumped port.
+    ///
+    /// `absorbers` maps a gmsh volume tag to a graded impedance-matched
+    /// absorbing layer — `(volume_tag, axis, inner_face, thickness, nu_max,
+    /// is_low)`. `axis` is 0/1/2 for x/y/z; the loss ramps quadratically
+    /// from zero at `inner_face` to `nu_max` at the layer's outer face,
+    /// `thickness` away. `is_low` selects the low-coordinate end (the layer
+    /// extends toward decreasing `axis`) versus the high-coordinate end.
+    /// Each tet in the tagged volume keeps its `eps`/`mu` and gains the
+    /// matched electric/magnetic loss `sigma = nu*eps`, `sigma_m = nu*mu`.
+    /// Applied after `tag_materials`, so an absorber overrides a plain
+    /// material assignment on the same volume.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None))]
+    #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
         order: usize,
@@ -430,6 +442,7 @@ impl PyTdOperator {
             Vec<(i32, (f64, f64, f64), (f64, f64, f64), f64)>,
         >,
         ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>)>>,
+        absorbers: Option<Vec<(i32, usize, f64, f64, f64, bool)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
@@ -446,6 +459,40 @@ impl PyTdOperator {
                             sigma_m: 0.0,
                         };
                     }
+                }
+            }
+        }
+        // Graded matched absorbers — per tet, depth into the layer sets a
+        // quadratically ramped loss rate `nu`, mirroring `absorber.rs`. The
+        // tet keeps its eps/mu; the matched pair `sigma = nu*eps`,
+        // `sigma_m = nu*mu` keeps `sigma*/mu = sigma/eps = nu`, so the layer
+        // is reflectionless at the interface.
+        if let Some(abs_specs) = absorbers {
+            for (tag, axis, inner_face, thickness, nu_max, is_low) in abs_specs
+            {
+                let tets = match mesh.vtag_to_tet.get(&tag) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                for &t in tets {
+                    let centroid: f64 = mesh.tets[t]
+                        .iter()
+                        .map(|&n| mesh.nodes[n][axis])
+                        .sum::<f64>()
+                        / 4.0;
+                    let depth = if is_low {
+                        inner_face - centroid
+                    } else {
+                        centroid - inner_face
+                    };
+                    if depth <= 0.0 {
+                        continue;
+                    }
+                    let frac = (depth / thickness).clamp(0.0, 1.0);
+                    let nu = nu_max * frac * frac;
+                    let m = &mut materials[t];
+                    m.sigma = nu * m.eps[0];
+                    m.sigma_m = nu * m.mu[0];
                 }
             }
         }
