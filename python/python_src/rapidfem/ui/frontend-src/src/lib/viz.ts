@@ -234,6 +234,162 @@ export async function viz_sample(
 	};
 }
 
+/**
+ * Energy-weighted sampling of N points from the cached mesh against a
+ * per-node *scalar* weight (the time-domain trajectory path).
+ *
+ * Reuses the exact tet-pick CDF + in-tet rejection from `viz_sample`, but
+ * the weight is the supplied per-node scalar instead of `e_node`, and the
+ * sample is *static*: rather than evaluating an (A,B,C) phasor, it records
+ * the picked tet index and the 4 barycentric weights so the cheap
+ * `viz_eval_static` can interpolate any per-frame field at those fixed
+ * sample points.
+ *
+ * @param weight  per-node scalar density driver (e.g. peak |E| per node)
+ * @param n       number of points to draw
+ */
+export async function viz_sample_static(
+	weight: Float32Array,
+	n: number,
+): Promise<{ positions: Float32Array; tet: Uint32Array; bary: Float32Array }> {
+	const empty = {
+		positions: new Float32Array(0),
+		tet: new Uint32Array(0),
+		bary: new Float32Array(0),
+	};
+	if (!cache || n <= 0 || !weight || weight.length === 0) return empty;
+
+	const { nodes, tets, vols } = cache;
+	const n_tets = vols.length;
+	const n_nodes = weight.length;
+
+	// ── Per-node non-negative density driver ────────────────────────────
+	const e_node = new Float64Array(n_nodes);
+	let e_global_max = 0;
+	for (let i = 0; i < n_nodes; i++) {
+		const e = weight[i] > 0 ? weight[i] : 0;
+		e_node[i] = e;
+		if (e > e_global_max) e_global_max = e;
+	}
+	if (e_global_max <= 0) return empty;
+	const inv_e_global = 1 / e_global_max;
+
+	// ── Per-tet max weight (upper bound for rejection inside the tet) ───
+	const w_max_tet = new Float64Array(n_tets);
+	for (let t = 0; t < n_tets; t++) {
+		let em = 0;
+		for (let k = 0; k < 4; k++) {
+			const en = e_node[tets[t * 4 + k]];
+			if (en > em) em = en;
+		}
+		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_global;
+	}
+
+	// ── Tet-pick CDF: weight = vol · w_max_tet ──────────────────────────
+	const cdf = new Float64Array(n_tets);
+	let acc = 0;
+	for (let t = 0; t < n_tets; t++) {
+		acc += vols[t] * w_max_tet[t];
+		cdf[t] = acc;
+	}
+	if (acc <= 0) return empty;
+	const inv_total = 1 / acc;
+	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
+
+	// ── Draw N points with rejection inside the picked tet ──────────────
+	const MAX_PROPOSALS = 64;
+	const positions = new Float32Array(n * 3);
+	const tet = new Uint32Array(n);
+	const bary = new Float32Array(n * 4);
+	const w: [number, number, number, number] = [0, 0, 0, 0];
+	for (let i = 0; i < n; i++) {
+		const t_idx = bsearch_cdf(cdf, Math.random());
+		const a = tets[t_idx * 4 + 0];
+		const b = tets[t_idx * 4 + 1];
+		const c = tets[t_idx * 4 + 2];
+		const d = tets[t_idx * 4 + 3];
+		const ea = e_node[a], eb = e_node[b], ec_ = e_node[c], ed = e_node[d];
+		const wmax = w_max_tet[t_idx];
+
+		for (let attempt = 0; attempt < MAX_PROPOSALS; attempt++) {
+			uniform_bary(w);
+			const e_local = w[0] * ea + w[1] * eb + w[2] * ec_ + w[3] * ed;
+			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_global;
+			if (Math.random() * wmax <= w_local) break;
+		}
+
+		positions[i * 3] =
+			w[0] * nodes[a * 3]     + w[1] * nodes[b * 3]     +
+			w[2] * nodes[c * 3]     + w[3] * nodes[d * 3];
+		positions[i * 3 + 1] =
+			w[0] * nodes[a * 3 + 1] + w[1] * nodes[b * 3 + 1] +
+			w[2] * nodes[c * 3 + 1] + w[3] * nodes[d * 3 + 1];
+		positions[i * 3 + 2] =
+			w[0] * nodes[a * 3 + 2] + w[1] * nodes[b * 3 + 2] +
+			w[2] * nodes[c * 3 + 2] + w[3] * nodes[d * 3 + 2];
+		tet[i] = t_idx;
+		bary[i * 4]     = w[0];
+		bary[i * 4 + 1] = w[1];
+		bary[i * 4 + 2] = w[2];
+		bary[i * 4 + 3] = w[3];
+	}
+
+	return { positions, tet, bary };
+}
+
+/**
+ * Cheap per-frame evaluator for a static sample (`viz_sample_static`).
+ *
+ * For each point `i`, the magnitude is the barycentric mix of the
+ * per-node `field` over the 4 corners of the recorded tet:
+ *     mag[i] = Σ_k bary[i·4+k] · field[ cache.tets[tet[i]·4+k] ].
+ *
+ * @param field  per-node scalar field for one frame
+ * @param tet    per-point tet index   (from `viz_sample_static`)
+ * @param bary   per-point 4 bary weights (from `viz_sample_static`)
+ */
+export function viz_eval_static(
+	field: Float32Array,
+	tet: Uint32Array,
+	bary: Float32Array,
+): Float32Array {
+	const n = tet.length;
+	const out = new Float32Array(n);
+	if (!cache || n === 0) return out;
+	const { tets } = cache;
+	for (let i = 0; i < n; i++) {
+		const base = tet[i] * 4;
+		out[i] =
+			bary[i * 4]     * field[tets[base]]     +
+			bary[i * 4 + 1] * field[tets[base + 1]] +
+			bary[i * 4 + 2] * field[tets[base + 2]] +
+			bary[i * 4 + 3] * field[tets[base + 3]];
+	}
+	return out;
+}
+
+/**
+ * Colour range (min/max) from a per-node *scalar* field — the static-field
+ * analogue of `field_energy_range`. Clips the auto-range to the
+ * RANGE_PERCENTILE band so a handful of outlier nodes don't dominate.
+ */
+export function viz_scalar_range(field: Float32Array): {
+	min: number;
+	max: number;
+} {
+	const vals: number[] = [];
+	for (let i = 0; i < field.length; i++) {
+		if (field[i] > 0) vals.push(field[i]);
+	}
+	if (vals.length === 0) return { min: 0, max: 1 };
+	vals.sort((a, b) => a - b);
+	const lo_idx = Math.min(vals.length - 1, Math.floor(vals.length * (1 - RANGE_PERCENTILE)));
+	const hi_idx = Math.min(vals.length - 1, Math.floor(vals.length * RANGE_PERCENTILE));
+	const max = vals[hi_idx];
+	const min = Math.max(vals[lo_idx], max * 1e-3);
+	return { min, max };
+}
+
 function field_energy_range(field_abc: Float32Array): {
 	log_floor: number;
 	log_range: number;

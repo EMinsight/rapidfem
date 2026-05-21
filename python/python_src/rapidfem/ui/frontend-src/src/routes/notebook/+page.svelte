@@ -518,12 +518,13 @@
 		display = 'view3d';
 	}
 
-	/** A `td_trajectory` payload carries `$bin` field refs (points / frames)
-	 *  in the static demo. The trajectory *is* the displayed content, so
-	 *  resolve them now — fetch the field buffer and hydrate in place. */
+	/** A `td_trajectory` payload carries `$bin` field refs (nodes / tets /
+	 *  frames) in the static demo. The trajectory *is* the displayed content,
+	 *  so resolve them now — fetch the field buffer and hydrate in place. */
 	async function hydrate_trajectory(payload: TdTrajectoryPayload) {
 		const p = payload as unknown as Record<string, unknown>;
-		if (isBinRef(p.points) || isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
+		if (isBinRef(p.nodes) || isBinRef(p.tets)
+			|| isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
 			try {
 				const buf = await get_kernel().fieldBuffer(active_path ?? '<unnamed>');
 				log_lines = [...log_lines,
@@ -537,11 +538,11 @@
 				log_lines = [...log_lines, `! [trajectory] load failed: ${e}`];
 			}
 		}
-		const pts_len = (p.points as { length?: number } | undefined)?.length;
+		const node_len = (p.nodes as { length?: number } | undefined)?.length;
 		const frm_len = Array.isArray(p.frames_e)
 			? (p.frames_e as unknown[]).length : -1;
 		log_lines = [...log_lines,
-			` [trajectory] points=${pts_len ?? 'unresolved'} `
+			` [trajectory] nodes=${node_len ?? 'unresolved'} `
 			+ `frames=${frm_len < 0 ? 'unresolved' : frm_len}`];
 		// Surface the field cloud on load; the Geometry / Mesh toggles (now
 		// available for trajectories too) compose the cavity back in.
@@ -624,13 +625,10 @@
 					fields_raw = null;
 					fields_j_raw = null;
 					fields_h_raw = null;
-					display = 'plots';
 				} else if (kind === 'td_timeseries') {
 					td_timeseries_payload = payload as TdTimeSeriesPayload;
-					display = 'timeseries';
 				} else if (kind === 'td_transfer') {
 					td_transfer_payload = payload as TdTimeSeriesPayload;
-					display = 'transfer';
 				} else if (kind === 'td_trajectory') {
 					void hydrate_trajectory(payload as TdTrajectoryPayload);
 				}
@@ -1034,7 +1032,7 @@
 							<label class="field-ctrl">
 								<span class="lbl">Density</span>
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
-								<span class="val">{((td_trajectory_payload.n_points * field_density) / 1e4).toFixed(1)}k pts</span>
+								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
 						</div>
 					{/if}

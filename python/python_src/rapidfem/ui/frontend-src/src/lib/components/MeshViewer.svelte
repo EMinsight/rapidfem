@@ -9,11 +9,15 @@
 	import type { MeshData } from '$lib/msh';
 	import type { TdTrajectoryPayload } from '$lib/api';
 	import { palette } from '$lib/theme';
-	import { viz_load_mesh, viz_sample } from '$lib/api';
+	import { viz_load_mesh, viz_sample, viz_sample_static, viz_eval_static } from '$lib/api';
 
 	const EMPTY_F32 = new Float32Array(0);
 	// Decade span of the time-domain field cloud's logarithmic colour scale.
 	const TD_LOG_DECADES = 3;
+	// Runtime sample-count ceiling for the time-domain field cloud — the
+	// density slider (1…10) maps to point_density/10 · TD_TARGET_MAX points,
+	// so the slider tops out at FD-parity (~500k).
+	const TD_TARGET_MAX = 500000;
 
 	let {
 		mesh = null as MeshData | null,
@@ -267,24 +271,38 @@
 		return out;
 	}
 
-	/** Phasor-buffer encoding of a static scalar field for the point shader.
+	/** Phasor-buffer encoding of a per-point magnitude for the point shader.
 	 *  The shader composites |E(t)|² = A·cos²φ + B·sin²φ − 2C·cosφ·sinφ;
 	 *  feeding (s², s², 0) makes that collapse to s² for every phase, so a
-	 *  time-domain snapshot reuses the frequency-domain cloud unchanged.
-	 *  Frame values arrive quantised to 0…1000 of `field_max` — rescale. */
-	function td_abc_for_frame(traj: TdTrajectoryPayload, frame: number, channel: 'E' | 'H', count: number): Float32Array {
-		const frames = channel === 'H' ? traj.frames_h : traj.frames_e;
-		const f = frames[Math.max(0, Math.min(frames.length - 1, frame))] ?? [];
-		const scale = (channel === 'H' ? traj.field_max.H : traj.field_max.E) / 1000;
-		const n = Math.min(count, f.length);
+	 *  time-domain snapshot reuses the frequency-domain cloud unchanged. */
+	function td_abc_from_mag(mag: Float32Array): Float32Array {
+		const n = mag.length;
 		const abc = new Float32Array(n * 3);
 		for (let i = 0; i < n; i++) {
-			const s = f[i] * scale;
-			const s2 = s * s;
+			const s2 = mag[i] * mag[i];
 			abc[i * 3] = s2;
 			abc[i * 3 + 1] = s2;
 		}
 		return abc;
+	}
+
+	/** A `MeshData`-shaped view onto a trajectory's DG-corner mesh, so the
+	 *  runtime sampler (`viz_load_mesh`) can cache it. Only `nodes` / `tets`
+	 *  / `bbox` matter to the sampler — the rest are empty placeholders. */
+	function traj_mesh(traj: TdTrajectoryPayload): MeshData {
+		return {
+			nodes: new Float64Array(traj.nodes as unknown as ArrayLike<number>),
+			tris: new Uint32Array(0),
+			tri_phys: new Int32Array(0),
+			tets: new Uint32Array(traj.tets as unknown as ArrayLike<number>),
+			tet_phys: new Int32Array(0),
+			phys_names: new Map<number, string>(),
+			phys_dim: new Map<number, number>(),
+			bbox: {
+				min: [...traj.bbox.min] as [number, number, number],
+				max: [...traj.bbox.max] as [number, number, number],
+			},
+		};
 	}
 
 	// (compute_normals is inlined in push_group below to keep the cross-product
@@ -721,23 +739,30 @@
 		else if (wireframe) camera = fitCamera(wireframe.bbox.min, wireframe.bbox.max);
 	});
 
-	// Upload mesh to the worker's viz cache once per mesh change. The worker
-	// then holds the nodes+tets+CDF and `viz_sample` only does the cheap
-	// random-sampling pass per density tick.
-	let viz_mesh_ready_for: MeshData | null = $state(null);
+	// Upload the active mode's mesh to the viz cache once per change. The
+	// sampler then holds the nodes+tets+volumes and `viz_sample` /
+	// `viz_sample_static` only do the cheap random-sampling pass per density
+	// tick. The viz module owns a single cache, so a TD trajectory loads its
+	// OWN DG-corner mesh here (not the FD `mesh`).
+	let viz_mesh_ready_for: MeshData | TdTrajectoryPayload | null = $state(null);
 	$effect(() => {
+		const traj = td_trajectory;
 		const m = mesh;
-		// Whenever the mesh changes (file load, regen), drop the old GPU splat
-		// cloud immediately. Otherwise the previous file's field samples linger
-		// in their old coordinates on top of the new geometry until the
-		// sampler finishes resampling.
+		// Whenever the source changes (file load, regen), drop the old GPU
+		// splat cloud immediately. Otherwise the previous file's field samples
+		// linger in their old coordinates until the sampler finishes.
 		if (gl_state) {
 			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
-		if (!m) { viz_mesh_ready_for = null; return; }
 		viz_mesh_ready_for = null;
-		viz_load_mesh(m).then(() => { viz_mesh_ready_for = m; }).catch((e) => console.error('viz_load_mesh', e));
+		// A TD trajectory takes priority — it owns the point cloud, and its
+		// DG-corner mesh is what the runtime sampler must draw from.
+		const target = traj ? traj_mesh(traj) : m;
+		const key: MeshData | TdTrajectoryPayload | null = traj ?? m;
+		if (!target || !key) return;
+		viz_load_mesh(target).then(() => { viz_mesh_ready_for = key; })
+			.catch((e) => console.error('viz_load_mesh', e));
 	});
 
 	// Async point-cloud sampling: re-runs whenever `show_field`, `field`, or
@@ -812,41 +837,83 @@
 	// A trajectory is "in TD field mode" only while the Field toggle is on —
 	// the cloud, its colourbar and its channel toolbar all ride that switch.
 	const in_td_mode = $derived(td_trajectory != null && show_field);
-	let td_positions: Float32Array | null = $state(null);
+	// A static sample of the trajectory's DG-corner mesh — positions plus the
+	// recorded tet index / barycentric weights so any per-frame field can be
+	// interpolated cheaply by `viz_eval_static`. Re-sampled only on a
+	// trajectory or density change; fixed across the animation.
+	let td_sample: { positions: Float32Array; tet: Uint32Array; bary: Float32Array } | null = $state(null);
 
+	// Per-node E-field magnitudes for the active trajectory frame, rescaled
+	// from the quantised 0…1000 ints. Cached per (traj, frame, channel) so
+	// the per-frame upload below stays a cheap interpolation.
+	function td_node_field(traj: TdTrajectoryPayload, frame: number, channel: 'E' | 'H'): Float32Array {
+		const frames = channel === 'H' ? traj.frames_h : traj.frames_e;
+		const row = frames[Math.max(0, Math.min(frames.length - 1, frame))] ?? [];
+		const scale = (channel === 'H' ? traj.field_max.H : traj.field_max.E) / 1000;
+		const out = new Float32Array(row.length);
+		for (let i = 0; i < row.length; i++) out[i] = row[i] * scale;
+		return out;
+	}
+
+	// Per-node peak |E| over all frames — the density driver for the runtime
+	// energy-weighted sampler (the cloud follows where the field is strong at
+	// any point in the animation, so it doesn't churn between frames).
+	function td_peak_weight(traj: TdTrajectoryPayload): Float32Array {
+		const frames = traj.frames_e;
+		const n_node = traj.n_node || (frames[0]?.length ?? 0);
+		const w = new Float32Array(n_node);
+		const scale = traj.field_max.E / 1000;
+		for (const row of frames) {
+			for (let i = 0; i < n_node && i < row.length; i++) {
+				const v = row[i] * scale;
+				if (v > w[i]) w[i] = v;
+			}
+		}
+		return w;
+	}
+
+	// Re-sample the trajectory cloud at runtime — like the FD `viz_sample`
+	// path — whenever the trajectory, density slider, or mesh-cache readiness
+	// changes. A token guards against out-of-order async returns.
+	let td_sample_token = 0;
 	$effect(() => {
 		const traj = td_trajectory;
+		const ready = viz_mesh_ready_for;
 		const want = show_field;
+		const dens = point_density;
 		// No trajectory, or the Field toggle is off: drop the cloud.
 		if (gl_state && (!traj || !want)) setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 		if (!traj || !want) {
-			td_positions = null;
+			td_sample = null;
 			if (traj) needs_rebuild = true;
 			schedule_render();
 			return;
 		}
-		// Subsample the baked cloud by the density slider. The baked points
-		// are a random energy-weighted draw, so a prefix is itself a valid
-		// (sparser) sample — no need to re-sample.
-		const src = traj.points as unknown as Float32Array;
-		if (!src || typeof src.slice !== 'function') { td_positions = null; return; }
-		const total = traj.n_points || src.length / 3;
-		const k = Math.max(1, Math.min(total, Math.round(total * point_density / 10)));
-		td_positions = src.slice(0, k * 3);
-		needs_rebuild = true;
-		if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
-		schedule_render();
+		// Wait for the trajectory's own DG-corner mesh to be cached.
+		if (ready !== traj) return;
+		const k = Math.max(500, Math.round((dens / 10) * TD_TARGET_MAX));
+		const my_token = ++td_sample_token;
+		viz_sample_static(td_peak_weight(traj), k).then((r) => {
+			if (my_token !== td_sample_token) return;
+			td_sample = r;
+			needs_rebuild = true;
+			if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
+			schedule_render();
+		}).catch((e) => console.error('viz_sample_static', e));
 	});
 
 	// Upload the current frame's magnitude as a static-scalar point cloud.
+	// Positions / tet / bary are fixed across frames — this is just a cheap
+	// `viz_eval_static` interpolation plus the (s², s², 0) abc encoding.
 	$effect(() => {
 		const traj = td_trajectory;
 		const frame = td_frame;
 		const ch = td_channel;
-		const pos = td_positions;
+		const samp = td_sample;
 		const mode = scale_mode;
-		if (!gl_state || !traj || !pos) return;
-		const abc = td_abc_for_frame(traj, frame, ch, pos.length / 3);
+		if (!gl_state || !traj || !samp) return;
+		const mag = viz_eval_static(td_node_field(traj, frame, ch), samp.tet, samp.bary);
+		const abc = td_abc_from_mag(mag);
 		const fmax = ch === 'H' ? traj.field_max.H : traj.field_max.E;
 		setPointScaleMode(gl_state, mode);
 		if (mode === 'log') {
@@ -860,7 +927,7 @@
 		} else {
 			setPointRange(gl_state, 0, fmax);
 		}
-		setPointCloud(gl_state, pos, abc);
+		setPointCloud(gl_state, samp.positions, abc);
 		schedule_render();
 	});
 

@@ -10,14 +10,18 @@ matrix-free exponential stepper, and a turnkey transient run.
 import numpy as np
 import rapidfem as rf
 
-# %% Build the time-domain problem — a unit cubic PEC cavity
-ptd = rf.ProblemTD.box(
-    size=(1.0, 1.0, 1.0),   # cavity dimensions
-    cells=(2, 2, 2),        # structured-mesh resolution
-    order=2,                # DG polynomial order
-    flux="upwind",          # damps the discontinuous spurious modes
-)
-print(f"DGTD cavity - {ptd.n_dof} state DOFs")
+mm = 1e-3
+L = 30.0 * mm                        # cubic PEC cavity edge
+
+# %% Build a PEC air cavity through the geometry API
+g = rf.Geometry(maxh=L / 8)
+air = g.box(L, L, L, material=rf.Air())
+rf.PEC(*air.faces.unassigned)        # closed cavity, six PEC walls
+g.mesh()
+rf.show(g)
+
+ptd = rf.ProblemTD(g, order=2, flux="upwind")
+print(f"DGTD cavity - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs")
 
 # %% Low level: the ODE right-hand side and the verbatim operator
 rng = np.random.default_rng(0)
@@ -32,8 +36,8 @@ print(f"state-space A: {A.shape[0]}x{A.shape[1]}, {A.nnz} nonzeros "
 # A localised pulse spreading through the cavity reads far better than
 # random noise; the model-export verbs above accept any state vector.
 y_pulse = np.zeros(ptd.n_dof)
-y_pulse[ptd.probe_dof((0.5, 0.5, 0.5), field="E", component="z")] = 1.0
-traj = ptd.transient(y_pulse, dt=0.02, steps=120)
+y_pulse[ptd.probe_dof((0.5 * L, 0.5 * L, 0.5 * L), field="E", component="z")] = 1.0
+traj = ptd.transient(y_pulse, dt=4e-12, steps=160)
 print(f"transient run - {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
 
 # The exponential propagator is exact for the linear homogeneous system at

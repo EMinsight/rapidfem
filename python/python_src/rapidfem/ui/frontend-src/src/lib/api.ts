@@ -359,21 +359,25 @@ export interface TdResultPayload {
 	n_freq: number;
 }
 
-/** `td_trajectory` payload — an energy-weighted field-animation point cloud.
- *  `points` is a fixed sample set; `frames_e` / `frames_h` carry a per-point
- *  |E| / |H| magnitude per snapshot, quantised to integers 0…1000 of
- *  `field_max` (the global per-channel maximum — rescale by `field_max/1000`,
- *  the colour scale stays fixed across the whole animation). */
+/** `td_trajectory` payload — a self-contained DG-corner mesh plus a
+ *  per-node field magnitude per snapshot. The frontend samples a point
+ *  cloud from `nodes` / `tets` at runtime (energy-weighted, like the FD
+ *  field viz) at the user-picked density, then evaluates `frames_e` /
+ *  `frames_h` at those fixed sample points. The per-node magnitudes are
+ *  quantised to integers 0…1000 of `field_max` (the global per-channel
+ *  maximum — rescale by `field_max/1000`, the colour scale stays fixed
+ *  across the whole animation). */
 export interface TdTrajectoryPayload {
-	points: number[];          // flat xyz
-	n_points: number;
+	nodes: number[];           // flat xyz of the deduplicated DG corners
+	tets: number[];            // flat 4 × node-idx
+	n_node: number;
 	n_elem: number;
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 	n_snapshots: number;
 	times: number[];
 	field_max: { E: number; H: number };
-	frames_e: number[][];      // quantised 0…1000
+	frames_e: number[][];      // [n_snap][n_node], quantised 0…1000
 	frames_h: number[][];
 }
 
-export { viz_load_mesh, viz_sample } from './viz';
+export { viz_load_mesh, viz_sample, viz_sample_static, viz_eval_static, viz_scalar_range } from './viz';

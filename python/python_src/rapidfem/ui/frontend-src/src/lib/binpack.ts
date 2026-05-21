@@ -100,7 +100,9 @@ export function resolveFields(buf: ArrayBuffer, ref: BinRef): (number[] | null)[
 	return out;
 }
 
-/** Resolve a `kind:"frames"` ref to the `[n_snap][n_points]` nested shape. */
+/** Resolve a `kind:"frames"` ref to the `[n_snap][n_points]` nested shape.
+ *  For a time-domain trajectory the per-frame row length (`n_points`) is the
+ *  unique-node count of the trajectory's DG-corner mesh. */
 export function resolveFrames(buf: ArrayBuffer, ref: BinRef): number[][] {
 	const n_snap = ref.n_snap ?? 0;
 	const n_points = ref.n_points ?? 0;

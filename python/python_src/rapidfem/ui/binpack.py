@@ -22,6 +22,8 @@ files vs. binary frames).
                      "off", "n", "n_freq", "n_port", "stride", "mask": [...]}``
 - frame block:   ``{"$bin": "field", "kind": "frames", "dtype": "u16",
                      "off", "n", "n_snap", "n_points"}``
+                  (``n_points`` is the per-frame row length — for a
+                  trajectory it is the unique-node count ``n_node``)
 
 ``buf`` is ``"geo"`` or ``"field"``; ``off`` is a byte offset, 4-byte
 aligned so a typed-array view can be taken directly.
@@ -133,10 +135,14 @@ def _pack_fields(field: _Buffer, fields: Any) -> Any:
 
 
 def _pack_trajectory(field: _Buffer, payload: dict) -> None:
-    """Time-domain trajectory — the point cloud and its per-frame
-    quantised magnitudes."""
-    if isinstance(payload.get("points"), list):
-        payload["points"] = _pack_array(field, "field", payload["points"], "f32")
+    """Time-domain trajectory — the self-contained DG-corner mesh
+    (``nodes`` / ``tets``) and its per-node per-frame quantised
+    magnitudes. The mesh is small but logically geo-like; it rides in the
+    field buffer so the whole trajectory is one unit fetched together."""
+    if isinstance(payload.get("nodes"), list):
+        payload["nodes"] = _pack_array(field, "field", payload["nodes"], "f32")
+    if isinstance(payload.get("tets"), list):
+        payload["tets"] = _pack_array(field, "field", payload["tets"], "i32")
     for key in ("frames_e", "frames_h"):
         frames = payload.get(key)
         if isinstance(frames, list) and frames and isinstance(frames[0], list):
