@@ -12,6 +12,8 @@
 	import { viz_load_mesh, viz_sample } from '$lib/api';
 
 	const EMPTY_F32 = new Float32Array(0);
+	// Decade span of the time-domain field cloud's logarithmic colour scale.
+	const TD_LOG_DECADES = 3;
 
 	let {
 		mesh = null as MeshData | null,
@@ -370,7 +372,10 @@
 		// wireframe for spatial reference. The cloud itself is uploaded
 		// per-frame by the dedicated $effect below; clearMeshes leaves the
 		// point cloud intact.
-		if (td_trajectory) {
+		// Time-domain trajectory with no geometry of its own (ProblemTD.box):
+		// the bounding box is the only spatial frame; the cloud is uploaded
+		// per-frame by the dedicated $effect below.
+		if (td_trajectory && !mesh) {
 			const bb = td_trajectory.bbox;
 			setBBox(gl_state, bb.min, bb.max);
 			field_norm = null;
@@ -383,6 +388,8 @@
 			needs_rebuild = false;
 			return;
 		}
+		// A trajectory WITH geometry falls through to the mesh path below —
+		// the Geometry / Mesh toggles compose freely under the cloud.
 		// Wireframe-only view (geometry shown before any g.mesh() call).
 		if (!mesh && wireframe && wireframe.entities.length > 0) {
 			setBBox(gl_state, wireframe.bbox.min, wireframe.bbox.max);
@@ -406,7 +413,8 @@
 		// Three independent toggles — geometry, wireframe, field — composed
 		// freely. The field cloud only renders when both `show_field` and
 		// actual field data are present.
-		const useField = show_field && field != null;
+		// A TD trajectory owns the point cloud; the FD field path stays off.
+		const useField = show_field && field != null && !td_trajectory;
 		const showFaces = show_geometry;
 		const showWire = show_wireframe;
 
@@ -469,7 +477,16 @@
 		// Field splat cloud is sampled asynchronously (see the dedicated
 		// `$effect` below). rebuild() just clears any stale cloud here; the
 		// sampler repopulates it.
-		if (!useField) {
+		// A TD trajectory keeps its own point cloud (owned by the per-frame
+		// $effect) and gets a faint bounding-box frame; only a stale FD
+		// cloud is cleared here.
+		if (td_trajectory) {
+			addLineMesh(
+				gl_state,
+				Float32Array.from(bbox_edges(td_trajectory.bbox.min, td_trajectory.bbox.max)),
+				hex('#3a3a44'), -1,
+			);
+		} else if (!useField) {
 			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
@@ -810,10 +827,22 @@
 		const frame = td_frame;
 		const ch = td_channel;
 		const pos = td_positions;
+		const mode = scale_mode;
 		if (!gl_state || !traj || !pos) return;
 		const abc = td_abc_for_frame(traj, frame, ch);
-		setPointScaleMode(gl_state, 'lin');
-		setPointRange(gl_state, 0, ch === 'H' ? traj.field_max.H : traj.field_max.E);
+		const fmax = ch === 'H' ? traj.field_max.H : traj.field_max.E;
+		setPointScaleMode(gl_state, mode);
+		if (mode === 'log') {
+			// floor / span are (log10(min), decades) in log mode — a fixed
+			// decade window below the per-channel peak.
+			setPointRange(
+				gl_state,
+				Math.log10(Math.max(fmax, 1e-30)) - TD_LOG_DECADES,
+				TD_LOG_DECADES,
+			);
+		} else {
+			setPointRange(gl_state, 0, fmax);
+		}
 		setPointCloud(gl_state, pos, abc);
 		schedule_render();
 	});
@@ -827,7 +856,7 @@
 					max: td_channel === 'H'
 						? td_trajectory.field_max.H
 						: td_trajectory.field_max.E,
-					decades: 0,
+					decades: scale_mode === 'log' ? TD_LOG_DECADES : 0,
 				}
 			: null,
 	);
@@ -851,7 +880,7 @@
 		const fr = active_range;
 		if (!fr) return [] as { frac: number; label: string }[];
 		const out: { frac: number; label: string }[] = [];
-		if (scale_mode === 'log' && !in_td_mode) {
+		if (scale_mode === 'log') {
 			const log_max = Math.log10(fr.max);
 			const log_min = log_max - Math.max(fr.decades, 0.5);
 			const n_dec = Math.max(1, Math.round(fr.decades));
@@ -956,7 +985,7 @@
 				<div class="op-title">
 					{CHANNEL_META[in_td_mode ? td_channel : field_channel].sym} ·
 					{CHANNEL_META[in_td_mode ? td_channel : field_channel].unit}
-					<span class="cb-mode">({in_td_mode ? 'lin' : scale_mode})</span>
+					<span class="cb-mode">({scale_mode})</span>
 				</div>
 				<div class="cb-body">
 					<div class="cb-gradient">
@@ -1034,6 +1063,13 @@
 					{ch}
 				</button>
 			{/each}
+			<button
+				class="tb tb-label tb-scale"
+				onclick={() => (scale_mode = scale_mode === 'log' ? 'lin' : 'log')}
+			>
+				<span class="tip">{scale_mode === 'log' ? 'Switch to linear scale' : 'Switch to log scale'}</span>
+				{scale_mode}
+			</button>
 		{/if}
 	</div>
 

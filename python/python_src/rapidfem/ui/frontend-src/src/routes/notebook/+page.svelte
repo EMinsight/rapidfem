@@ -512,6 +512,8 @@
 		td_timeseries_payload = null;
 		td_frame = 0;
 		td_playing = true;
+		// Default to the 3D view; result events switch to plots / timeseries.
+		display = 'view3d';
 	}
 
 	/** A `td_trajectory` payload carries `$bin` field refs (points / frames)
@@ -530,9 +532,16 @@
 				log_lines = [...log_lines, `[trajectory] load failed: ${e}`];
 			}
 		}
+		// Surface the field cloud on load; the Geometry / Mesh toggles (now
+		// available for trajectories too) compose the cavity back in.
+		if (isBinRef(p.points) || isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
+			log_lines = [...log_lines, '! [trajectory] field buffer unresolved, cloud will be empty'];
+		}
 		td_trajectory_payload = payload;
 		td_frame = 0;
 		td_playing = true;
+		show_geometry = false;
+		show_wireframe = false;
 		display = 'view3d';
 	}
 
@@ -872,13 +881,19 @@
 				<div class="pane-inner">
 					<nav class="tabs">
 						<button class="tab-btn" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
-						<span class="nav-sep"></span>
-						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
+						{#if smats.length > 0 || eigenmode_mode}
+							<span class="nav-sep"></span>
+							<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>
+								{eigenmode_mode ? 'Eigenmodes' : 'S-Params'}
+							</button>
+						{/if}
 						{#if td_timeseries_payload}
 							<span class="nav-sep"></span>
-							<button class="tab-btn" class:active={display === 'timeseries'} onclick={() => (display = 'timeseries')}>Time Series</button>
+							<button class="tab-btn" class:active={display === 'timeseries'} onclick={() => (display = 'timeseries')}>
+								{td_timeseries_payload.domain === 'freq' ? 'Transfer Function' : 'Time Series'}
+							</button>
 						{/if}
-						{#if display === 'view3d' && !td_trajectory_payload}
+						{#if display === 'view3d'}
 							<span class="tab-spacer"></span>
 							<span class="nav-sep"></span>
 							<button class="tab-btn small has-tip" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)}>
