@@ -665,6 +665,11 @@ class ProblemTD:
         """State-vector length, ``6·Np·n_elem``."""
         return self._op.n_dof()
 
+    @property
+    def n_dofs(self):
+        """Alias of :attr:`n_dof`, matching ProblemFD's attribute name."""
+        return self.n_dof
+
     # -- low level: the ODE -------------------------------------------------
     def rhs(self, y):
         """The ODE right-hand side ``dy/dt = A·y``."""

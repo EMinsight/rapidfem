@@ -307,6 +307,11 @@ class ProblemFD:
         return self._native.n_dofs
 
     @property
+    def n_dof(self) -> int:
+        """Alias of :attr:`n_dofs`, matching ProblemTD's attribute name."""
+        return self.n_dofs
+
+    @property
     def n_tets(self) -> int:
         """tetrahedron count of the mesh used by the last-assembled solver"""
         if self._native is None:
