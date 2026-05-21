@@ -23,6 +23,7 @@ g = rf.Geometry(maxh=L / 3)
 cavity = g.box(L, L, L, material=rf.Dielectric(er=ER))
 rf.PEC(*cavity.faces.unassigned)        # all six walls are PEC
 g.mesh()
+rf.show(g)
 
 # %% Build the time-domain problem from the meshed geometry
 ptd = rf.ProblemTD(g, order=2, flux="upwind")
@@ -40,3 +41,6 @@ assert np.all(np.isfinite(traj)), "transient must stay finite"
 print(f"transient — {traj.shape[0]} snapshots, "
       f"amplitude {amp[0]:.3f} -> {amp[-1]:.3f} (upwind dissipation)")
 print("time-domain DGTD runs end-to-end on the geometry / material API")
+
+# %% Visualise — the impulse spreading and dissipating in the cavity
+rf.show(traj)

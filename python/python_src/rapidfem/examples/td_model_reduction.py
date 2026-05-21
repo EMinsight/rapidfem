@@ -53,3 +53,6 @@ t_full = time.perf_counter() - t0
 
 print(f"{n_rep} propagations — ROM {t_rom:.3f}s vs full {t_full:.3f}s "
       f"({t_full / max(t_rom, 1e-9):.0f}x speedup)")
+
+# %% Visualise — the full propagation the reduced model reproduces
+rf.show(ptd.transient(y0, dt=0.05, steps=70))

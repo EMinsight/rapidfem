@@ -22,13 +22,15 @@ print(f"DGTD cavity - {ptd.n_dof} state DOFs")
 
 # %% One broadband transient run -> the transfer function
 pulse = rf.GaussianPulse(t0=2.0, tau=0.5, f0=0.0)
-freqs, H = ptd.transfer_function(
+tf = ptd.transfer_function(
     source=([0.5, 0.5, 0.5], "E", "z"),
     probe=([0.3, 0.7, 0.4], "E", "z"),
     pulse=pulse,
     dt=0.04,
     steps=400,
 )
+rf.show(tf)                                  # |H(f)| / phase plot
+freqs, H = tf
 
 # %% Peaks of |H| are the cavity resonances
 mag = np.abs(H)

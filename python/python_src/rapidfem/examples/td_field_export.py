@@ -26,13 +26,15 @@ print(f"DGTD cavity — {ptd.n_dof} state DOFs")
 
 # %% Driven run — a soft Gaussian pulse injected at the cavity centre
 pulse = rf.GaussianPulse(t0=0.4, tau=0.1, f0=0.0)
-times, response = ptd.driven_transient(
+driven = ptd.driven_transient(
     source=([0.5, 0.5, 0.5], "E", "z"),         # where / what to inject
     waveform=pulse,                              # the excitation g(t)
     probes=[([0.25, 0.25, 0.5], "E", "z")],      # where to measure
     dt=0.01,
     steps=200,
 )
+rf.show(driven)                                  # the probe time signal
+times, response = driven
 print(f"probe — peak |E_z| = {np.abs(response[0]).max():.4f} "
       f"over {len(times)} samples")
 
@@ -40,6 +42,7 @@ print(f"probe — peak |E_z| = {np.abs(response[0]).max():.4f} "
 y0 = np.zeros(ptd.n_dof)
 y0[ptd.probe_dof([0.5, 0.5, 0.5], field="E", component="z")] = 1.0
 traj = ptd.transient(y0, dt=0.02, steps=120)
+rf.show(traj)                                    # the 3-D field animation
 print(f"transient — {traj.shape[0]} full-field snapshots")
 
 # %% Export the trajectory as a VTK animation — open the .pvd in ParaView

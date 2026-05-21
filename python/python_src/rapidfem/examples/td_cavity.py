@@ -34,3 +34,6 @@ print(f"transient run — {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
 
 # The exponential propagator is exact for the linear homogeneous system at
 # any step size — the step is set by output cadence, not a CFL limit.
+
+# %% Visualise — play the trajectory back as a 3-D field animation
+rf.show(traj)

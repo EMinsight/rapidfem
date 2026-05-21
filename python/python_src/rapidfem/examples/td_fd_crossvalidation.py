@@ -38,7 +38,7 @@ steps = 1400
 centre = (SIDE * 0.5, SIDE * 0.5, SIDE * 0.5)
 probe = (SIDE * 0.45, SIDE * 0.55, SIDE * 0.5)
 
-_, resp = ptd.driven_transient(
+td_run = ptd.driven_transient(
     source=(centre, "E", "z"),
     waveform=pulse,
     probes=[(probe, "E", "z")],
@@ -46,6 +46,8 @@ _, resp = ptd.driven_transient(
     steps=steps,
     krylov_dim=16,
 )
+rf.show(td_run)                              # the probe time signal
+resp = td_run.responses
 spec = np.abs(np.fft.rfft(resp[0]))
 freq = np.fft.rfftfreq(resp[0].size, dt)
 band = (freq > 0.3 * f_analytic) & (freq < 3.0 * f_analytic)

@@ -40,6 +40,7 @@ rf.PEC(
     air.faces.min(axis="y"), air.faces.max(axis="y"),
 )
 g.mesh()
+rf.show(g)
 
 # %% Frequency-domain reference
 prob_fd = rf.ProblemFD(g)
@@ -52,7 +53,9 @@ s_fd = result.sparams   # [n_freq, n_port, n_port]
 # characteristic ports' round-trip re-reflection (2 L ≈ 0.6 m, slower than
 # c in-guide) has not yet returned to contaminate the direct S-parameters.
 ptd = rf.ProblemTD(g, order=2, flux="central")
-_, s_td = ptd.sparams(freqs, dt=3e-12, steps=820)
+scattering = ptd.sparams(freqs, dt=3e-12, steps=820)
+rf.show(scattering)                          # the time-domain |S|-parameters
+_, s_td = scattering
 
 # %% Compare
 print(f"\n{'f [GHz]':>9} {'|S21| FD':>10} {'|S21| TD':>10} "
