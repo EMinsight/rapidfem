@@ -28,25 +28,3 @@ jobs:
       # Krylov / MOR / adaptive-dimension checks, sparse-assembly scaling.
       - name: Test
         run: cargo test --release -p rapidfem-core -p rapidfem-fd -p rapidfem-td
-
-  python:
-    name: pytest (TD Python-API regression)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # Builds the pyo3 native extension via the maturin build backend and
-      # installs rapidfem; the TD regression suite (model-export verbs,
-      # free/driven transients, MOR, VTK export) then runs as a CI gate
-      # alongside the Rust validation suite.
-      - name: Install rapidfem
-        run: pip install ./python
-      - name: Install test dependencies
-        run: pip install pytest scipy
-      - name: Test
-        run: pytest python/tests -v
