@@ -329,7 +329,10 @@ export function cameraEye(cam: Camera): [number, number, number] {
 // ─── Public API ─────────────────────────────────────────────────────
 
 export function initGL(canvas: HTMLCanvasElement): GLState | null {
-	const gl = canvas.getContext('webgl2', { antialias: true, alpha: true, preserveDrawingBuffer: true });
+	// No preserveDrawingBuffer: it forces an extra backbuffer copy every
+	// frame. save_png() renders and reads the buffer synchronously within
+	// one task, so the buffer is still intact when toBlob() snapshots it.
+	const gl = canvas.getContext('webgl2', { antialias: true, alpha: true });
 	if (!gl) return null;
 
 	const program = linkProgram(gl, VS, FS);
