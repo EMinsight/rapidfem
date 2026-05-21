@@ -6,7 +6,7 @@
  *
  * Usage:
  *   <script src="https://fem.rapidpassives.org/embed/fem-viewer.js"></script>
- *   <fem-viewer src="/demo/wr90.json" rotate cycle></fem-viewer>
+ *   <fem-viewer src="/demo/fd_wr90.json" rotate cycle></fem-viewer>
  *
  * Attributes:
  *   src             URL to a baked `.json` (the matching `.bin` is auto-loaded)

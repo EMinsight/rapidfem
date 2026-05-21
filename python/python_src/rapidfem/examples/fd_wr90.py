@@ -5,7 +5,7 @@ Notebook-style flow:
     Parameters  ->  Geometry + Materials  ->  Mesh  ->  Problem
 
 Each `# %%` block is a cell. Run them top-to-bottom with Shift+Enter, or hit
-Run-All. The script also runs end-to-end as plain `python wr90.py` — `# %%`
+Run-All. The script also runs end-to-end as plain `python fd_wr90.py` — `# %%`
 is just a comment.
 """
 

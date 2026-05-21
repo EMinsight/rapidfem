@@ -44,6 +44,30 @@ _BAKE_ENV = {
     "OPENBLAS_NUM_THREADS": "1",
 }
 
+# The curated web-demo set — only these examples are baked into the static
+# demo. Every other script under `examples/` stays a package example
+# (runnable, listed in the live `rapidfem serve` notebook) but is left out
+# of the web demo: numbers-only validation/benchmark scripts and near-
+# duplicate geometries do not earn a card on the landing page.
+DEMO_EXAMPLES = frozenset({
+    # frequency-domain
+    "fd_wr90",
+    "fd_coax_step",
+    "fd_microstrip_line",
+    "fd_iris_filter",
+    "fd_patch_antenna",
+    "fd_pyramidal_horn",
+    "fd_dielectric_resonator",
+    # RFIC layout import
+    "fd_rfic_spiral_from_json",
+    # time-domain
+    "td_cavity",
+    "td_dielectric_cavity",
+    "td_ring_resonator",
+    "td_waveguide_sparams",
+    "td_transfer_function",
+})
+
 # Windows console defaults to cp1252 — print() falls over on the unicode
 # box-drawing chars we use in summaries. Force UTF-8 on the std streams.
 try:
@@ -428,10 +452,16 @@ def bake_all(force: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     examples_dir = _examples_dir()
+    # Only the curated demo set is baked — see DEMO_EXAMPLES.
     py_files = sorted(p for p in examples_dir.glob("*.py")
-                      if not p.name.startswith("_"))
+                      if p.stem in DEMO_EXAMPLES)
     if not py_files:
-        raise FileNotFoundError(f"no .py examples under {examples_dir}")
+        raise FileNotFoundError(
+            f"no DEMO_EXAMPLES .py files under {examples_dir}")
+    missing = DEMO_EXAMPLES - {p.stem for p in py_files}
+    if missing:
+        print(f"warning: DEMO_EXAMPLES not found on disk: "
+              f"{', '.join(sorted(missing))}", file=sys.stderr)
 
     fingerprint = _source_fingerprint_mtime()
     expected_names = {p.stem for p in py_files}
