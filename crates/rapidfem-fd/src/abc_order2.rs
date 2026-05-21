@@ -7,12 +7,6 @@ use num_complex::Complex64 as C64;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 
-// Hardcoded order-4 Gauss quadrature (6 points) — exact copy from robin_abc_order2.py lines 182-185
-const DPTS_W: [f64; 6] = [0.22338159, 0.22338159, 0.22338159, 0.10995174, 0.10995174, 0.10995174];
-const DPTS_L1: [f64; 6] = [0.10810302, 0.44594849, 0.44594849, 0.81684757, 0.09157621, 0.09157621];
-const DPTS_L2: [f64; 6] = [0.44594849, 0.44594849, 0.10810302, 0.09157621, 0.09157621, 0.81684757];
-const DPTS_L3: [f64; 6] = [0.44594849, 0.10810302, 0.44594849, 0.09157621, 0.81684757, 0.09157621];
-
 const NQP: usize = 6;
 
 // Port of _gqi: weighted inner product
@@ -227,12 +221,27 @@ pub fn abc_order_2_terms(
 
     let distances = compute_distances_3(&xpts, &ypts, &[0.0; 3]);
 
+    // Order-4 triangle quadrature - the canonical rule from `quadrature`,
+    // not a hardcoded copy. Point order is irrelevant (the rule enters as a
+    // weighted sum), so weight i pairs with barycentric coords i.
+    let qpts = crate::quadrature::gaus_quad_tri(4);
+    let mut dpts_w = [0.0; NQP];
+    let mut dpts_l1 = [0.0; NQP];
+    let mut dpts_l2 = [0.0; NQP];
+    let mut dpts_l3 = [0.0; NQP];
+    for i in 0..NQP {
+        dpts_w[i] = qpts[i][0];
+        dpts_l1[i] = qpts[i][1];
+        dpts_l2[i] = qpts[i][2];
+        dpts_l3[i] = qpts[i][3];
+    }
+
     // Quadrature point coordinates
     let mut xs = [0.0; NQP];
     let mut ys = [0.0; NQP];
     for i in 0..NQP {
-        xs[i] = xpts[0]*DPTS_L1[i] + xpts[1]*DPTS_L2[i] + xpts[2]*DPTS_L3[i];
-        ys[i] = ypts[0]*DPTS_L1[i] + ypts[1]*DPTS_L2[i] + ypts[2]*DPTS_L3[i];
+        xs[i] = xpts[0]*dpts_l1[i] + xpts[1]*dpts_l2[i] + xpts[2]*dpts_l3[i];
+        ys[i] = ypts[0]*dpts_l1[i] + ypts[1]*dpts_l2[i] + ypts[2]*dpts_l3[i];
     }
 
     // Barycentric coefficients
@@ -292,31 +301,31 @@ pub fn abc_order_2_terms(
             let fe1d_2 = divergence_edge_1(&coeff_e2, &xs, &ys);
             let fe2d_2 = divergence_edge_2(&coeff_e2, &xs, &ys);
 
-            curl_mat[iv1][iv2]     = gqi(&fe1c_1, &fe1c_2, &DPTS_W);
-            curl_mat[iv1][iv2+4]   = gqi(&fe1c_1, &fe2c_2, &DPTS_W);
-            curl_mat[iv1+4][iv2]   = gqi(&fe2c_1, &fe1c_2, &DPTS_W);
-            curl_mat[iv1+4][iv2+4] = gqi(&fe2c_1, &fe2c_2, &DPTS_W);
+            curl_mat[iv1][iv2]     = gqi(&fe1c_1, &fe1c_2, &dpts_w);
+            curl_mat[iv1][iv2+4]   = gqi(&fe1c_1, &fe2c_2, &dpts_w);
+            curl_mat[iv1+4][iv2]   = gqi(&fe2c_1, &fe1c_2, &dpts_w);
+            curl_mat[iv1+4][iv2+4] = gqi(&fe2c_1, &fe2c_2, &dpts_w);
 
-            div_mat[iv1][iv2]     = gqi(&fe1d_1, &fe1d_2, &DPTS_W);
-            div_mat[iv1][iv2+4]   = gqi(&fe1d_1, &fe2d_2, &DPTS_W);
-            div_mat[iv1+4][iv2]   = gqi(&fe2d_1, &fe1d_2, &DPTS_W);
-            div_mat[iv1+4][iv2+4] = gqi(&fe2d_1, &fe2d_2, &DPTS_W);
+            div_mat[iv1][iv2]     = gqi(&fe1d_1, &fe1d_2, &dpts_w);
+            div_mat[iv1][iv2+4]   = gqi(&fe1d_1, &fe2d_2, &dpts_w);
+            div_mat[iv1+4][iv2]   = gqi(&fe2d_1, &fe1d_2, &dpts_w);
+            div_mat[iv1+4][iv2+4] = gqi(&fe2d_1, &fe2d_2, &dpts_w);
         }
 
         // Edge-face interactions
-        curl_mat[iv1][3]     = gqi(&fe1c_1, &ff1c, &DPTS_W);
-        curl_mat[iv1+4][3]   = gqi(&fe2c_1, &ff1c, &DPTS_W);
-        curl_mat[iv1][7]     = gqi(&fe1c_1, &ff2c, &DPTS_W);
-        curl_mat[iv1+4][7]   = gqi(&fe2c_1, &ff2c, &DPTS_W);
+        curl_mat[iv1][3]     = gqi(&fe1c_1, &ff1c, &dpts_w);
+        curl_mat[iv1+4][3]   = gqi(&fe2c_1, &ff1c, &dpts_w);
+        curl_mat[iv1][7]     = gqi(&fe1c_1, &ff2c, &dpts_w);
+        curl_mat[iv1+4][7]   = gqi(&fe2c_1, &ff2c, &dpts_w);
         curl_mat[3][iv1]     = curl_mat[iv1][3];
         curl_mat[3][iv1+4]   = curl_mat[iv1+4][3];
         curl_mat[7][iv1]     = curl_mat[iv1][7];
         curl_mat[7][iv1+4]   = curl_mat[iv1+4][7];
 
-        div_mat[iv1][3]     = gqi(&fe1d_1, &ff1d, &DPTS_W);
-        div_mat[iv1+4][3]   = gqi(&fe2d_1, &ff1d, &DPTS_W);
-        div_mat[iv1][7]     = gqi(&fe1d_1, &ff2d, &DPTS_W);
-        div_mat[iv1+4][7]   = gqi(&fe2d_1, &ff2d, &DPTS_W);
+        div_mat[iv1][3]     = gqi(&fe1d_1, &ff1d, &dpts_w);
+        div_mat[iv1+4][3]   = gqi(&fe2d_1, &ff1d, &dpts_w);
+        div_mat[iv1][7]     = gqi(&fe1d_1, &ff2d, &dpts_w);
+        div_mat[iv1+4][7]   = gqi(&fe2d_1, &ff2d, &dpts_w);
         div_mat[3][iv1]     = div_mat[iv1][3];
         div_mat[3][iv1+4]   = div_mat[iv1+4][3];
         div_mat[7][iv1]     = div_mat[iv1][7];
@@ -324,14 +333,14 @@ pub fn abc_order_2_terms(
     }
 
     // Face-face interactions
-    curl_mat[3][3] = gqi(&ff1c, &ff1c, &DPTS_W);
-    curl_mat[3][7] = gqi(&ff1c, &ff2c, &DPTS_W);
-    curl_mat[7][3] = gqi(&ff2c, &ff1c, &DPTS_W);
-    curl_mat[7][7] = gqi(&ff2c, &ff2c, &DPTS_W);
-    div_mat[3][3] = gqi(&ff1d, &ff1d, &DPTS_W);
-    div_mat[3][7] = gqi(&ff1d, &ff2d, &DPTS_W);
-    div_mat[7][3] = gqi(&ff2d, &ff1d, &DPTS_W);
-    div_mat[7][7] = gqi(&ff2d, &ff2d, &DPTS_W);
+    curl_mat[3][3] = gqi(&ff1c, &ff1c, &dpts_w);
+    curl_mat[3][7] = gqi(&ff1c, &ff2c, &dpts_w);
+    curl_mat[7][3] = gqi(&ff2c, &ff1c, &dpts_w);
+    curl_mat[7][7] = gqi(&ff2c, &ff2c, &dpts_w);
+    div_mat[3][3] = gqi(&ff1d, &ff1d, &dpts_w);
+    div_mat[3][7] = gqi(&ff1d, &ff2d, &dpts_w);
+    div_mat[7][3] = gqi(&ff2d, &ff1d, &dpts_w);
+    div_mat[7][7] = gqi(&ff2d, &ff2d, &dpts_w);
 
     // Mat = cf * Lengths * (CurlMatrix - DivMatrix) * |Area|
     let mut mat = [[zero; 8]; 8];
