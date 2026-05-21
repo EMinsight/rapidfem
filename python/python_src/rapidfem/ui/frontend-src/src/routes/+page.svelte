@@ -82,17 +82,6 @@
 			desc: 'Flared rectangular-waveguide horn antenna with a PML radiation box and far-field pattern',
 			fieldMode: 'log',
 		},
-		{
-			name: 'fd_dielectric_resonator',
-			label: 'Dielectric Resonator',
-			desc: 'High-εᵣ ceramic puck in a metal cavity — shift-invert eigenmodes of the bound resonance',
-		},
-		{
-			name: 'fd_rfic_spiral_from_json',
-			label: 'RFIC Spiral Inductor',
-			desc: 'Three-turn on-chip spiral inductor, geometry imported from a JSON layer stack',
-			fieldMode: 'log',
-		},
 	] as Array<{
 		name: string; label: string; desc: string;
 		fieldFreq?: number; fieldMode?: 'lin' | 'log';
@@ -140,7 +129,7 @@
 				<img src="{base}/favicon.svg" alt="" class="hero-icon" />
 				<h1>RapidFEM</h1>
 			</div>
-			<p>Electromagnetic FEM in Rust — a frequency-domain Nédélec edge-element backend and a time-domain DGTD backend, one geometry API. Complex-symmetric sparse solvers, an exponential time integrator, Python API, browser notebook UI.</p>
+			<p>Electromagnetic FEM in Rust — a frequency-domain Nédélec edge-element solver and a time-domain DGTD backend behind one geometry API. CFL-free exponential time stepping, a Python API, and a browser-based notebook.</p>
 		</div>
 		<div class="quickstart">
 			<div class="install-line">
@@ -286,6 +275,10 @@
 		gap: 64px;
 		padding: 48px 40px;
 		overflow-y: auto;
+		/* Shared content width — one row of the example grid: three 320px
+		   cards plus two 18px gaps. The card grid, the Installation block
+		   and the Quick Start snippet all align to it. */
+		--content-w: 996px;
 	}
 	.hero {
 		text-align: center;
@@ -314,7 +307,7 @@
 	.hero p {
 		font-size: var(--fs-sm);
 		color: var(--text-muted);
-		max-width: 480px;
+		max-width: 720px;
 		font-family: var(--font-mono);
 		line-height: 1.5;
 	}
@@ -413,7 +406,7 @@
 		gap: 18px;
 		flex-wrap: wrap;
 		justify-content: center;
-		max-width: 1100px;
+		max-width: var(--content-w);
 	}
 	.card {
 		width: 320px;
@@ -457,7 +450,7 @@
 		align-items: center;
 		gap: 14px;
 		width: 100%;
-		max-width: 880px;
+		max-width: var(--content-w);
 	}
 	.section-title {
 		font-family: var(--font-mono);
@@ -502,7 +495,7 @@
 	   .rfdocs supplies the docs design tokens; docs.css does the styling. */
 	.snippet-block {
 		width: 100%;
-		max-width: 760px;
+		max-width: var(--content-w);
 	}
 
 	.embed-hint {
