@@ -7,6 +7,7 @@
 //! fraction of the cost — the same machinery that powers the exponential
 //! propagator, here kept as a standalone object.
 
+use crate::constants::ARNOLDI_BREAKDOWN;
 use crate::propagator::expm;
 
 /// A reduced-order model: `A ≈ V·Â·Vᵀ` with `Â` small and dense.
@@ -46,7 +47,7 @@ impl ReducedModel {
                 }
             }
             let hn = norm2(&w);
-            if hn < 1e-12 {
+            if hn < ARNOLDI_BREAKDOWN {
                 dim = j + 1;
                 break;
             }
