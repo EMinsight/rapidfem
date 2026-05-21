@@ -24,7 +24,6 @@ mod stub {
         pub fn analyze_and_factorize(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64]) -> Result<(), String> { unreachable!() }
         pub fn factorize(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64]) -> Result<(), String> { unreachable!() }
         pub fn solve(&mut self, _n: i32, _ia: &[i32], _ja: &[i32], _a: &[C64], _b: &[C64]) -> Result<Vec<C64>, String> { unreachable!() }
-        pub fn analyze(&mut self, _n: i32, _ia: &[i32], _ja: &[i32]) -> Result<(), String> { unreachable!() }
     }
     pub fn build_upper_csr(
         _n: usize, _r: &[usize], _c: &[usize], _v: &[C64],
@@ -109,44 +108,7 @@ impl PardisoSolver {
         })
     }
 
-    /// Phase 11: Symbolic analysis (fill-reducing ordering, elimination tree).
-    /// Reusable across frequencies if sparsity pattern doesn't change.
-    pub fn analyze(&mut self, n: i32, ia: &[i32], ja: &[i32]) -> Result<(), String> {
-        let mut error = 0i32;
-        let maxfct = 1i32;
-        let mnum = 1i32;
-        let phase = 11i32;
-        let nrhs = 1i32;
-        let msglvl = 0i32;
-        let mut perm = vec![0i32; n as usize];
-
-        // Dummy values for analysis phase
-        let dummy_a: Vec<C64> = vec![C64::new(0.0, 0.0); 1];
-        let mut dummy_b: Vec<C64> = vec![C64::new(0.0, 0.0); n as usize];
-        let mut dummy_x: Vec<C64> = vec![C64::new(0.0, 0.0); n as usize];
-
-        unsafe {
-            (self.pardiso_fn)(
-                self.pt.as_mut_ptr(),
-                &maxfct, &mnum, &self.mtype, &phase, &n,
-                dummy_a.as_ptr() as *const c_void,
-                ia.as_ptr(), ja.as_ptr(),
-                perm.as_mut_ptr(), &nrhs,
-                self.iparm.as_mut_ptr(), &msglvl,
-                dummy_b.as_mut_ptr() as *mut c_void,
-                dummy_x.as_mut_ptr() as *mut c_void,
-                &mut error,
-            );
-        }
-
-        if error != 0 {
-            return Err(format!("PARDISO analyze (phase 11) error: {}", error));
-        }
-        self.analyzed = true;
-        Ok(())
-    }
-
-    /// Phase 22: Numerical factorization (reuses symbolic from analyze).
+    /// Phase 22: Numerical factorization (reuses the symbolic factorisation).
     pub fn factorize(&mut self, n: i32, ia: &[i32], ja: &[i32], a: &[C64]) -> Result<(), String> {
         let mut error = 0i32;
         let maxfct = 1i32;
