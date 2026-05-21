@@ -5,3 +5,10 @@ pub const Z0: f64 = 376.73031366857;                   // Free space impedance (
 pub const EPS0: f64 = 8.854187818814e-12;              // Permittivity of free space (F/m)
 pub const MU0: f64 = 1.0 / (C0 * C0 * EPS0);          // Permeability of free space (H/m)
 pub const PI: f64 = std::f64::consts::PI;
+
+// --- Numerical tolerances ---
+
+/// Below this modulus a 3x3 material-tensor determinant is treated as
+/// singular: `1/det` would otherwise produce NaN/inf that silently
+/// poisons the assembled system.
+pub const MATINV3_SINGULAR_TOL: f64 = 1e-30;

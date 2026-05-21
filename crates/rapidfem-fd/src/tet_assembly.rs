@@ -32,6 +32,14 @@ fn matinv3(m: &[[C64; 3]; 3]) -> [[C64; 3]; 3] {
     let det = m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
             - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
             + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0]);
+    // A material tensor is non-singular for valid input; a near-zero
+    // determinant means a degenerate tensor. Fail loudly rather than let
+    // 1/det produce NaN/inf that silently poisons the assembled system.
+    assert!(
+        det.norm() > crate::constants::MATINV3_SINGULAR_TOL,
+        "matinv3: singular 3x3 material tensor (|det| = {:.3e})",
+        det.norm()
+    );
     let inv_det = C64::new(1.0, 0.0) / det;
     [
         [(m[1][1]*m[2][2] - m[1][2]*m[2][1]) * inv_det,
@@ -440,4 +448,23 @@ pub fn assemble_global_matrices(
     });
 
     (rows, cols, data_e, data_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "singular")]
+    fn matinv3_rejects_a_singular_tensor() {
+        let zero = C64::new(0.0, 0.0);
+        let one = C64::new(1.0, 0.0);
+        // Two identical rows make the tensor rank-deficient (det = 0).
+        let m = [
+            [one, zero, zero],
+            [one, zero, zero],
+            [zero, zero, one],
+        ];
+        let _ = matinv3(&m);
+    }
 }
