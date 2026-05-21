@@ -33,6 +33,18 @@ _COMP = {"x": 0, "y": 1, "z": 2}
 # `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
 C_LIGHT = 299_792_458.0
 
+# S-parameter extraction tolerances. A rectangular-window DFT of the recorded
+# port signals stays leakage-free only once the transient has decayed; warn
+# when the tail still carries more than this fraction of the peak amplitude.
+_SPARAM_DECAY_FRAC = 0.08
+# |S| above 1 by more than this is non-physical for a passive structure and
+# flags an under-resolved or too-short transient window.
+_SPARAM_PASSIVITY_TOL = 0.02
+# Fraction of the driven-port peak a port signal must exceed to count as the
+# transmitted-pulse arrival; twice that arrival time is the round-trip travel
+# time after which the reflection (diagonal) DFT window must close.
+_SPARAM_ARRIVAL_FRAC = 0.05
+
 
 def _log(msg):
     """Progress logging for long TD runs — to stderr, like the FD solver."""
@@ -867,25 +879,74 @@ class ProblemTD:
                         f"sparams drive {j + 1}/{n_ports}: "
                         f"step {s + 1}/{steps} ({time.time() - t0:.1f}s)"
                     )
+            # Reflection (i == j) and transmission (i != j) terms need
+            # opposite DFT windows. Transmission must capture the whole
+            # slow, dispersive transmitted pulse, so it uses the full run.
+            # Reflection must be read off before the imperfectly absorbed
+            # port re-reflection makes its round trip back to the driven
+            # port, so its window closes at twice the first-arrival time
+            # at the nearest other port -- the round-trip travel time.
+            peak = float(np.abs(pe).max())
+            arrivals = []
             for i in range(n_ports):
-                pe_f = phase @ pe[i]
-                ph_f = phase @ ph[i]
+                if i == j or peak <= 0.0:
+                    continue
+                env = np.abs(pe[i])
+                hit = int(np.argmax(env > _SPARAM_ARRIVAL_FRAC * peak))
+                if env[hit] > _SPARAM_ARRIVAL_FRAC * peak:
+                    arrivals.append(hit)
+            refl_w = (
+                int(np.clip(2 * min(arrivals), steps // 4, steps))
+                if arrivals else steps
+            )
+            phase_r = (
+                phase
+                if refl_w >= steps
+                else np.exp(-2j * np.pi * np.outer(freqs, times[:refl_w]))
+                * dt
+            )
+            # Forward / backward modal split A,B = (P_e +- Z*P_h)/2 of the
+            # recorded total field.
+            for i in range(n_ports):
                 z = np.array(
                     [self._port_impedance(i, f) for f in freqs]
                 )
-                b_out[j, i] = 0.5 * (pe_f - z * ph_f)
                 if i == j:
+                    pe_f = phase_r @ pe[i, :refl_w]
+                    ph_f = phase_r @ ph[i, :refl_w]
                     a_inc[j] = 0.5 * (pe_f + z * ph_f)
+                    b_out[j, i] = 0.5 * (pe_f - z * ph_f)
+                else:
+                    pe_f = phase @ pe[i]
+                    ph_f = phase @ ph[i]
+                    b_out[j, i] = 0.5 * (pe_f - z * ph_f)
+            # Closing the loop: the transmission DFT stays leakage-free
+            # only once the transient has decayed by the window end.
+            tail = max(1, steps // 20)
+            resid = float(np.abs(pe[:, -tail:]).max())
+            if verbose and peak > 0.0 and resid > _SPARAM_DECAY_FRAC * peak:
+                _log(
+                    f"sparams drive {j + 1}: port signal still at "
+                    f"{resid / peak:.0%} of peak at the window end, "
+                    f"raise steps for a cleaner extraction"
+                )
 
         s_mat = np.zeros((freqs.size, n_ports, n_ports), dtype=complex)
         for j in range(n_ports):
             for i in range(n_ports):
                 s_mat[:, i, j] = b_out[j, i] / a_inc[j]
+        smax = float(np.abs(s_mat).max())
         if verbose:
             _log(
                 f"sparams complete - {n_ports}-port S-matrix at "
                 f"{freqs.size} frequencies"
             )
+            if smax > 1.0 + _SPARAM_PASSIVITY_TOL:
+                _log(
+                    f"sparams: |S| peaks at {smax:.3f} above unity, the "
+                    f"transient window is too short or the mesh too coarse "
+                    f"for a passive result"
+                )
         return TdScattering(freqs, s_mat)
 
     # -- turnkey: a transient run ------------------------------------------

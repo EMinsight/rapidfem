@@ -163,17 +163,25 @@ def test_sparams_verb_runs():
     )
     g.mesh()
 
+    from rapidfem.problem.td import _SPARAM_PASSIVITY_TOL
+
     ptd = rf.ProblemTD(g, order=2, flux="central")
     assert ptd._op.n_ports() == 2
 
     freqs = np.array([9e9, 11e9])
-    f, s = ptd.sparams(freqs, dt=5e-12, steps=200, verbose=False)
+    f, s = ptd.sparams(freqs, dt=5e-12, steps=400, verbose=False)
     assert s.shape == (2, 2, 2)
     assert np.all(np.isfinite(s))
+    # The split-window extraction must stay passive: a lossless matched
+    # guide cannot have |S| above unity. Guards against the truncated-DFT
+    # artefact that previously inflated |S21| past 0 dB.
+    assert np.abs(s).max() <= 1.0 + _SPARAM_PASSIVITY_TOL, (
+        f"non-physical |S| = {np.abs(s).max():.3f}"
+    )
     for k in range(len(f)):
-        # Transmission present, guide roughly matched.
-        assert abs(s[k, 1, 0]) > 0.5, f"no transmission at f[{k}]"
-        assert abs(s[k, 0, 0]) < 0.5, f"reflection too high at f[{k}]"
+        # Near-unity transmission, guide roughly matched.
+        assert abs(s[k, 1, 0]) > 0.9, f"transmission low at f[{k}]"
+        assert abs(s[k, 0, 0]) < 0.2, f"reflection too high at f[{k}]"
 
 
 def test_lumped_port_wires_through():
