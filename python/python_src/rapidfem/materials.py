@@ -11,11 +11,10 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from ._fmt import _f64
+
 
 # HELPERS ===============================================================================
-
-def _f64(x: float) -> str:
-    return f"{float(x):.10g}"
 
 
 # DISPERSIVE MODELS =====================================================================

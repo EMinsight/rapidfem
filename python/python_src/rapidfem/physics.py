@@ -12,12 +12,10 @@ from __future__ import annotations
 from typing import Sequence
 
 from .geometry import EntityCollection, GeoObject, _Entity
+from ._fmt import _f64
 
 
 # HELPERS ===============================================================================
-
-def _f64(x: float) -> str:
-    return f"{float(x):.10g}"
 
 
 def _normalize(targets, *, expected_dim: int, cls_name: str):

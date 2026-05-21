@@ -14,14 +14,12 @@ from typing import Iterable
 import numpy as np
 
 from .._native import Simulation as _NativeSimulation
+from .._fmt import _f64
 from ..geometry import Geometry
 from ..physics import PEC, PML
 
 
 # HELPERS ===============================================================================
-
-def _f64(x: float) -> str:
-    return f"{float(x):.10g}"
 
 
 # ADAPTIVE REFINEMENT ===================================================================
