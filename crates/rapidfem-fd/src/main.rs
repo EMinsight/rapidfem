@@ -177,10 +177,11 @@ fn write_group_delay(
             let mut prev = result.sparams[0][i][j].arg();
             phase[idx][0] = prev;
             for fi in 1..nf {
-                let mut cur = result.sparams[fi][i][j].arg();
-                let diff = cur - prev;
-                if diff > PI { cur -= 2.0 * PI; }
-                else if diff < -PI { cur += 2.0 * PI; }
+                let raw = result.sparams[fi][i][j].arg();
+                let diff = raw - prev;
+                // Unwrap across an arbitrary number of 2*pi jumps, not just
+                // a single one - a coarse sweep can wrap more than once.
+                let cur = raw - 2.0 * PI * (diff / (2.0 * PI)).round();
                 phase[idx][fi] = cur;
                 prev = cur;
             }
