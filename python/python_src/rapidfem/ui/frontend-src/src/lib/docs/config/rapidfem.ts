@@ -3,12 +3,12 @@
 
 export const site = {
 	name: 'RapidFEM',
-	tagline: 'Electromagnetic FEM solver — frequency and time domain',
+	tagline: 'Electromagnetic FEM solver: frequency and time domain',
 	description:
 		'An electromagnetic FEM solver written in Rust, distributed as a Python package. ' +
-		'A frequency-domain backend — second-kind Nédélec edge elements, complex-symmetric ' +
-		'sparse linear algebra — and a time-domain DGTD backend — a discontinuous-Galerkin ' +
-		'Maxwell operator advanced by an exponential integrator. Waveguide and lumped ports ' +
+		'A frequency-domain backend (second-kind Nédélec edge elements, complex-symmetric ' +
+		'sparse linear algebra) and a time-domain DGTD backend (a discontinuous-Galerkin ' +
+		'Maxwell operator advanced by an exponential integrator). Waveguide and lumped ports ' +
 		'for both.'
 };
 
@@ -28,7 +28,7 @@ export interface Feature {
 export const features: Feature[] = [
 	{
 		title: 'Nedelec-2 Elements',
-		description: '20 DOFs per tetrahedron — vector edge basis for the curl–curl form of Maxwell.'
+		description: '20 DOFs per tetrahedron, a vector edge basis for the curl-curl form of Maxwell.'
 	},
 	{
 		title: 'Excitations',
@@ -56,11 +56,11 @@ export const features: Feature[] = [
 	},
 	{
 		title: 'Time-Domain DGTD',
-		description: 'A nodal discontinuous-Galerkin Maxwell operator — broadband transients and modal-port S-parameters from a single run.'
+		description: 'A nodal discontinuous-Galerkin Maxwell operator: broadband transients and modal-port S-parameters from a single run.'
 	},
 	{
 		title: 'Exponential Integrator',
-		description: 'Matrix-free Krylov / ETD time stepping — exact for the linear system at any step size, no CFL stability limit.'
+		description: 'Matrix-free Krylov / ETD time stepping, exact for the linear system at any step size with no CFL stability limit.'
 	},
 	{
 		title: 'Model-Order Reduction',
@@ -79,8 +79,8 @@ export interface InstallOption {
 }
 
 export const installation: InstallOption[] = [
-	{ name: 'pip — solver', command: 'pip install rapidfem' },
-	{ name: 'pip — solver + local UI', command: 'pip install rapidfem[ui]' }
+	{ name: 'Solver', command: 'pip install rapidfem' },
+	{ name: 'Solver + local UI', command: 'pip install rapidfem[ui]' }
 ];
 
 export interface QuickStart {
@@ -119,7 +119,7 @@ print(result.frequencies.shape, result.sparams.shape)`
 	{
 		title: 'Time domain',
 		description:
-			'The same geometry compiles into a time-domain DGTD problem — a linear ODE dy/dt = A·y you can step, drive, or characterise by modal-port S-parameters.',
+			'The same geometry compiles into a DGTD time-domain problem. Seed a field, watch the full transient evolve in 3D, advanced by exact CFL-free exponential time stepping.',
 		code: `import numpy as np
 import rapidfem as rf
 
@@ -127,17 +127,19 @@ import rapidfem as rf
 g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
 air = g.box(22.86e-3, 10.16e-3, 30e-3, position=(-11.43e-3, -5.08e-3, 0),
             material=rf.Air())
-
-rf.RectWaveguidePort(air.faces.min(axis="z"))
-rf.RectWaveguidePort(air.faces.max(axis="z"))
-rf.PEC(*air.faces.unassigned)
+rf.PEC(*air.faces.unassigned)            # closed cavity, six PEC walls
 
 g.mesh()
 
-# A discontinuous-Galerkin time-domain problem — broadband in one run
+# The same geometry compiles into a discontinuous-Galerkin TD problem
 ptd = rf.ProblemTD(g, order=2, flux="upwind")
-freqs, S = ptd.sparams(np.linspace(8e9, 12e9, 21), dt=3e-12, steps=820)
-print(freqs.shape, S.shape)`
+
+# Seed a field pulse, then propagate it through the cavity in time
+y0 = np.zeros(ptd.n_dof)
+y0[ptd.probe_dof((0, 0, 15e-3), field="E", component="y")] = 1.0
+traj = ptd.transient(y0, dt=3e-12, steps=400)   # exact, CFL-free stepping
+
+rf.show(traj)                                   # 3D field animation in time`
 	}
 ];
 
@@ -149,15 +151,15 @@ export interface ApiModule {
 // Curated module order and descriptions for the API reference page.
 // Modules not listed here still render — sorted alphabetically after these.
 export const apiModules: ApiModule[] = [
-	{ name: 'rapidfem', description: 'Top-level package — Geometry, Problem, and re-exported helpers' },
+	{ name: 'rapidfem', description: 'Top-level package: Geometry, Problem, and re-exported helpers' },
 	{ name: 'rapidfem.geometry', description: 'Geometry construction, entities, face selection, meshing' },
-	{ name: 'rapidfem.materials', description: 'Material models — Air, Dielectric, lossy and dispersive permittivity' },
-	{ name: 'rapidfem.physics', description: 'Ports and boundary conditions — waveguide, lumped, PEC, ABC, PML' },
-	{ name: 'rapidfem.excitation', description: 'Time-domain excitation waveforms — Gaussian and modulated pulses' },
-	{ name: 'rapidfem.problem.fd', description: 'Frequency-domain solver — driven sweep, eigenmode, far-field' },
-	{ name: 'rapidfem.problem.td', description: 'Time-domain DGTD solver — exponential stepping, transients, modal-port S-parameters, model-order reduction' },
+	{ name: 'rapidfem.materials', description: 'Material models: Air, Dielectric, lossy and dispersive permittivity' },
+	{ name: 'rapidfem.physics', description: 'Ports and boundary conditions: waveguide, lumped, PEC, ABC, PML' },
+	{ name: 'rapidfem.excitation', description: 'Time-domain excitation waveforms: Gaussian and modulated pulses' },
+	{ name: 'rapidfem.problem.fd', description: 'Frequency-domain solver: driven sweep, eigenmode, far-field' },
+	{ name: 'rapidfem.problem.td', description: 'Time-domain DGTD solver: exponential stepping, transients, modal-port S-parameters, model-order reduction' },
 	{ name: 'rapidfem.io', description: 'Result containers, Touchstone, VTK, and far-field export' },
-	{ name: 'rapidfem.rfic', description: 'RFIC layout import — geometry from JSON layer stacks' }
+	{ name: 'rapidfem.rfic', description: 'RFIC layout import: geometry from JSON layer stacks' }
 ];
 
 // Sidebar navigation. API/Examples paths use the version when known.

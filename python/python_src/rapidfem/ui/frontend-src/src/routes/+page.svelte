@@ -106,8 +106,8 @@
 </script>
 
 <svelte:head>
-	<title>RapidFEM &mdash; electromagnetic Maxwell FEM in Rust</title>
-	<meta name="description" content="Open-source electromagnetic FEM solver — a frequency-domain Nédélec edge-element backend and a time-domain DGTD backend. Rust core, Python API, browser notebook UI." />
+	<title>RapidFEM: electromagnetic Maxwell FEM in Rust</title>
+	<meta name="description" content="Open-source electromagnetic FEM solver: a frequency-domain Nédélec edge-element backend and a time-domain DGTD backend. Rust core, Python API, browser notebook UI." />
 </svelte:head>
 
 {#if IS_STATIC_MODE}
@@ -129,7 +129,7 @@
 				<img src="{base}/favicon.svg" alt="" class="hero-icon" />
 				<h1>RapidFEM</h1>
 			</div>
-			<p>Electromagnetic FEM in Rust — a frequency-domain Nédélec edge-element solver and a time-domain DGTD backend behind one geometry API. CFL-free exponential time stepping, a Python API, and a browser-based notebook.</p>
+			<p>Electromagnetic FEM in Rust: a frequency-domain Nédélec edge-element solver and a time-domain DGTD backend behind one geometry API. CFL-free exponential time stepping, a Python API, and a browser-based notebook.</p>
 		</div>
 		<div class="quickstart">
 			<div class="install-line">
@@ -289,7 +289,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 16px;
-		margin-bottom: 10px;
+		margin-bottom: 24px;
 	}
 	.hero-icon {
 		height: 44px;
@@ -466,7 +466,9 @@
 		color: var(--text-muted);
 		line-height: 1.6;
 		text-align: center;
-		max-width: 620px;
+		max-width: 720px;
+		/* balance line fill so the wrap never leaves a lone word */
+		text-wrap: balance;
 	}
 	/* Frequency-domain / time-domain switch for the Quick Start snippet. */
 	.qs-tabs {

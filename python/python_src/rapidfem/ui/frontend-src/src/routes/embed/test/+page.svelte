@@ -25,7 +25,7 @@
 			desc: 'Continuous camera orbit at the default speed.',
 		},
 		{
-			title: 'Cycle &mdash; Geometry / Mesh / Field',
+			title: 'Cycle: Geometry / Mesh / Field',
 			src: 'fd_wr90',
 			attrs: 'rotate cycle',
 			desc: 'Animated walk through the three display modes, every ~2 seconds. Same trick the landing cards use.',
@@ -70,7 +70,7 @@
 </script>
 
 <svelte:head>
-	<title>Embed Test &mdash; RapidFEM</title>
+	<title>RapidFEM Embed Test</title>
 	<meta name="robots" content="noindex" />
 </svelte:head>
 

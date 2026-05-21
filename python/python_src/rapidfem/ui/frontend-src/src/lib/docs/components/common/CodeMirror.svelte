@@ -17,6 +17,17 @@
 		if (host) view = createViewer(host, code, { lineNumbers });
 	});
 
+	// Keep the editor document in sync when `code` changes — a single
+	// CodeBlock instance is reused across prop changes (e.g. the Quick
+	// Start FD/TD tab switch), so the view must be patched, not rebuilt.
+	$effect(() => {
+		if (view && code !== view.state.doc.toString()) {
+			view.dispatch({
+				changes: { from: 0, to: view.state.doc.length, insert: code }
+			});
+		}
+	});
+
 	onDestroy(() => view?.destroy());
 </script>
 
