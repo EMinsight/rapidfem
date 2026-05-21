@@ -17,6 +17,10 @@ pub const KRYLOV_TOL: f64 = 1e-10;
 /// invariant subspace exactly and the iteration stops.
 pub const ARNOLDI_BREAKDOWN: f64 = 1e-12;
 
+/// Working-vector slice length per rayon task in the parallel CGS2
+/// orthogonalisation — the granularity at which `w -= V·c` is fanned out.
+pub const ARNOLDI_CHUNK: usize = 8192;
+
 // ── Dense matrix exponential (scaling-and-squaring) ───────────────────────
 
 /// Scaling-and-squaring threshold: the matrix is halved until its

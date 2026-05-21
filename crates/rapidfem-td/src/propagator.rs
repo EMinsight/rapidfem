@@ -9,8 +9,10 @@
 //! [`KrylovWorkspace`] holds the Arnoldi basis and the dense buffers so a
 //! repeated time step allocates nothing.
 
+use rayon::prelude::*;
+
 use crate::constants::{
-    ARNOLDI_BREAKDOWN, EXPM_SCALE_THRESHOLD, EXPM_TAYLOR_TERMS,
+    ARNOLDI_BREAKDOWN, ARNOLDI_CHUNK, EXPM_SCALE_THRESHOLD, EXPM_TAYLOR_TERMS,
 };
 
 /// Dense matrix exponential of an `n×n` row-major matrix, via
@@ -49,16 +51,6 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
         result = matmul(&result, &result, n);
     }
     result
-}
-
-/// `y ← y − α·x`. Kept serial: at the Krylov vector lengths in play each
-/// axpy is too small to amortise a rayon fork/join, and the Arnoldi
-/// orthogonalisation issues hundreds of them per step.
-fn axpy_neg(y: &mut [f64], alpha: f64, x: &[f64]) {
-    debug_assert_eq!(y.len(), x.len());
-    for (yk, xk) in y.iter_mut().zip(x) {
-        *yk -= alpha * xk;
-    }
 }
 
 /// `out ← A·B` for `n×n` row-major matrices; `out` must not alias `a`/`b`.
@@ -167,6 +159,8 @@ pub struct KrylovWorkspace {
     basis: Vec<f64>,
     /// Arnoldi working vector / matvec output.
     w: Vec<f64>,
+    /// CGS2 projection coefficients — `Vᵀ·w` for one orthogonalisation pass.
+    proj: Vec<f64>,
     /// Upper Hessenberg `H`, `m×m` row-major.
     h: Vec<f64>,
     /// `t·H` and `exp(t·H)`, packed `dim×dim`.
@@ -190,6 +184,7 @@ impl KrylovWorkspace {
         KrylovWorkspace {
             basis: Vec::new(),
             w: Vec::new(),
+            proj: Vec::new(),
             h: Vec::new(),
             th: Vec::new(),
             exp_th: Vec::new(),
@@ -205,6 +200,9 @@ impl KrylovWorkspace {
         }
         if self.w.len() < n {
             self.w.resize(n, 0.0);
+        }
+        if self.proj.len() < m {
+            self.proj.resize(m, 0.0);
         }
         if self.h.len() < m * m {
             self.h.resize(m * m, 0.0);
@@ -249,20 +247,57 @@ impl KrylovWorkspace {
         }
         self.h[..max_dim * max_dim].fill(0.0);
 
-        // Arnoldi — modified Gram-Schmidt, kept serial (blocked CGS2 and
-        // per-vector parallel dot/axpy were measured slower here). After
-        // each new basis vector the relative a-posteriori estimate
-        // `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked against `tol`; the
-        // subspace stops growing once it converges. The dim×dim `exp(tH)`
-        // for the estimate is cheap — O(dim³) against the O(n) basis work.
+        // Arnoldi with classical Gram-Schmidt + one reorthogonalisation
+        // (CGS2). Unlike modified Gram-Schmidt's sequential dot/axpy chain
+        // the `cols` projections of each pass are independent, so the
+        // batched `Vᵀ·w` and `w -= V·c` fan out across the rayon pool — a
+        // large win once the mesh is past a few hundred elements (see the
+        // `ortho_bench` example). Two passes recover MGS-grade
+        // orthogonality. After each new basis vector the relative
+        // a-posteriori estimate `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked
+        // against `tol`; the subspace stops growing once it converges. The
+        // dim×dim `exp(tH)` for the estimate is cheap — O(dim³) against the
+        // O(cols·n) projection work.
         let mut dim = max_dim;
         for j in 0..max_dim {
             matvec(&self.basis[j * n..j * n + n], &mut self.w[..n]);
-            for i in 0..=j {
-                let bi = &self.basis[i * n..i * n + n];
-                let hij = dot(&self.w[..n], bi);
-                self.h[i * max_dim + j] = hij;
-                axpy_neg(&mut self.w[..n], hij, bi);
+            let cols = j + 1;
+            for _pass in 0..2 {
+                // proj[i] = ⟨basis[i], w⟩ — independent across i.
+                {
+                    let basis = &self.basis;
+                    let w = &self.w[..n];
+                    self.proj[..cols]
+                        .par_iter_mut()
+                        .enumerate()
+                        .for_each(|(i, p)| {
+                            let bi = &basis[i * n..i * n + n];
+                            *p = bi.iter().zip(w).map(|(a, x)| a * x).sum();
+                        });
+                }
+                // w -= Σ_i proj[i]·basis[i] — fanned out over w in chunks.
+                {
+                    let basis = &self.basis;
+                    let proj = &self.proj;
+                    self.w[..n]
+                        .par_chunks_mut(ARNOLDI_CHUNK)
+                        .enumerate()
+                        .for_each(|(ci, wc)| {
+                            let k0 = ci * ARNOLDI_CHUNK;
+                            let len = wc.len();
+                            for i in 0..cols {
+                                let coeff = proj[i];
+                                let bi = &basis[i * n + k0..i * n + k0 + len];
+                                for (wk, bk) in wc.iter_mut().zip(bi) {
+                                    *wk -= coeff * bk;
+                                }
+                            }
+                        });
+                }
+                // H column j accumulates both passes' coefficients.
+                for i in 0..cols {
+                    self.h[i * max_dim + j] += self.proj[i];
+                }
             }
             let hnext = norm2(&self.w[..n]);
             let d = j + 1;
