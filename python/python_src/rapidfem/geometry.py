@@ -666,6 +666,11 @@ class Geometry:
         # the tolerance lives well below any feature the FEM cares about.
         gmsh.option.setNumber("Geometry.Tolerance", 1e-9)
         gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-9)
+        # Single-threaded OCC boolean operators. The multi-threaded path
+        # intermittently deadlocks on geometrically dense models (the RFIC
+        # layouts with many fragmented conductors) — a known OpenCASCADE
+        # flakiness; the booleans are not the meshing bottleneck anyway.
+        gmsh.option.setNumber("Geometry.OCCParallel", 0)
         gmsh.model.add(name)
         self._objects: list[GeoObject] = []
         self._entities: list[_Entity] = []  # all named-or-trackable entities
