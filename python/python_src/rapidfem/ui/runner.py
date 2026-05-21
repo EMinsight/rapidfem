@@ -177,6 +177,11 @@ class Session:
             self.process.wait(timeout=5)
         except Exception:
             pass
+        # Join the reader threads so their pipe FDs are released before the
+        # Session is dropped; process.kill() closes the pipes, which unblocks
+        # the readline() calls they are parked on.
+        self._reader_thread.join(timeout=1.0)
+        self._stderr_thread.join(timeout=1.0)
 
     def interrupt(self) -> bool:
         """Raise `KeyboardInterrupt` inside the worker's running cell.
