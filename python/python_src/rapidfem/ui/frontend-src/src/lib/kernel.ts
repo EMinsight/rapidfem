@@ -12,15 +12,26 @@
  * frame-encoding bugs that bit on >64 KiB messages).
  */
 
-import { api_base, type GeometryPayload, type MeshPayload, type PythonError } from './api';
+import {
+	api_base, type GeometryPayload, type MeshPayload, type PythonError,
+	type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
+} from './api';
 
 export type StreamKind = 'stdout' | 'stderr';
+
+/** Display-event `kind`s the kernel forwards to `onDisplay`. */
+export type DisplayKind =
+	| 'geometry' | 'mesh' | 'result'
+	| 'td_result' | 'td_timeseries' | 'td_trajectory';
 
 export type KernelEvent =
 	| { type: 'stream'; stream: StreamKind; value: string }
 	| { type: 'display'; kind: 'geometry'; name: string; payload: GeometryPayload }
 	| { type: 'display'; kind: 'mesh'; name: string; payload: MeshPayload }
 	| { type: 'display'; kind: 'result'; name: string; payload: SolveResultPayload }
+	| { type: 'display'; kind: 'td_result'; name: string; payload: TdResultPayload }
+	| { type: 'display'; kind: 'td_timeseries'; name: string; payload: TdTimeSeriesPayload }
+	| { type: 'display'; kind: 'td_trajectory'; name: string; payload: TdTrajectoryPayload }
 	| { type: 'display'; kind: 'error'; name: string; error: PythonError }
 	| { type: 'error'; id?: string; error: string; traceback?: string }
 	| { type: 'done'; id: string; ok: boolean }
@@ -55,7 +66,7 @@ export interface ExecuteOptions {
 	reset?: boolean;
 	onStarted?: () => void;
 	onStream?: (stream: StreamKind, line: string) => void;
-	onDisplay?: (kind: 'geometry' | 'mesh' | 'result', payload: unknown, name: string) => void;
+	onDisplay?: (kind: DisplayKind, payload: unknown, name: string) => void;
 }
 
 export interface ExecuteResult {
@@ -233,7 +244,7 @@ interface BakedFieldsStub {
 }
 
 interface BakedDisplayEvent {
-	kind: 'geometry' | 'mesh' | 'result' | 'error';
+	kind: DisplayKind | 'error';
 	name: string;
 	payload?: Record<string, unknown>;
 	error?: PythonError;

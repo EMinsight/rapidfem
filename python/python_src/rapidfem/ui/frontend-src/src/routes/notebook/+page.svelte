@@ -4,12 +4,14 @@
 		readFile, writeFile, readExample,
 		meshPayloadToMeshData, sparamsToSMatrices, health,
 		type MeshPayload, type GeometryPayload, type SMatrix,
+		type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
 	} from '$lib/api';
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
+	import TimeSeriesPanel from '$lib/components/TimeSeriesPanel.svelte';
 	import Notebook from '$lib/components/Notebook.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
@@ -87,11 +89,31 @@
 	let last_mesh_stats = $state<{ n_tets: number; n_tris: number; mesh_time_s: number } | null>(null);
 	let last_solve_stats = $state<{ n_freq: number; n_dofs: number; solve_time_s: number } | null>(null);
 
-	let display = $state<'view3d' | 'plots'>('view3d');
+	let display = $state<'view3d' | 'plots' | 'timeseries'>('view3d');
 	let show_geometry = $state(true);
 	let show_wireframe = $state(false);
 	let show_field = $state(false);
 	let viewer: ReturnType<typeof MeshViewer> | undefined = $state();
+
+	// Time-domain display state. A `td_trajectory` drives the 3D field
+	// animation (frame index + play loop owned here, the channel switch
+	// lives in the viewer toolbar); a `td_timeseries` drives the TimeSeries
+	// panel. `td_result` reuses the S-parameter path (freqs / smats).
+	let td_trajectory_payload = $state<TdTrajectoryPayload | null>(null);
+	let td_timeseries_payload = $state<TdTimeSeriesPayload | null>(null);
+	let td_frame = $state(0);
+	let td_channel = $state<'E' | 'H'>('E');
+	let td_playing = $state(true);
+
+	// Animation play loop — advances the frame index at a fixed cadence
+	// while playing. Re-armed whenever the trajectory or play state changes.
+	$effect(() => {
+		if (!td_playing || !td_trajectory_payload) return;
+		const n = td_trajectory_payload.n_snapshots;
+		if (n <= 1) return;
+		const id = setInterval(() => { td_frame = (td_frame + 1) % n; }, 90);
+		return () => clearInterval(id);
+	});
 
 	function on_keydown(e: KeyboardEvent) {
 		// Save (Ctrl/Cmd+S) — handled before any focus-based gates so it works
@@ -447,6 +469,10 @@
 		last_mesh_stats = null;
 		last_geom_stats = null;
 		show_field = false;
+		td_trajectory_payload = null;
+		td_timeseries_payload = null;
+		td_frame = 0;
+		td_playing = true;
 	}
 
 	// Notebook → backend cell exec. Uses the single WS kernel channel —
@@ -507,6 +533,24 @@
 						n_dofs: res.n_dofs,
 						solve_time_s: res.solve_time_s,
 					};
+				} else if (kind === 'td_result') {
+					// Time-domain S-parameters reuse the S-parameter panel.
+					const res = payload as TdResultPayload;
+					freqs = res.frequencies;
+					smats = sparamsToSMatrices(res.sparams);
+					eigenmode_mode = false;
+					fields_raw = null;
+					fields_j_raw = null;
+					fields_h_raw = null;
+					display = 'plots';
+				} else if (kind === 'td_timeseries') {
+					td_timeseries_payload = payload as TdTimeSeriesPayload;
+					display = 'timeseries';
+				} else if (kind === 'td_trajectory') {
+					td_trajectory_payload = payload as TdTrajectoryPayload;
+					td_frame = 0;
+					td_playing = true;
+					display = 'view3d';
 				}
 			},
 		});
@@ -772,7 +816,11 @@
 						<button class="tab-btn" class:active={display === 'view3d'} onclick={() => (display = 'view3d')}>3D</button>
 						<span class="nav-sep"></span>
 						<button class="tab-btn" class:active={display === 'plots'} onclick={() => (display = 'plots')}>S-Params</button>
-						{#if display === 'view3d'}
+						{#if td_timeseries_payload}
+							<span class="nav-sep"></span>
+							<button class="tab-btn" class:active={display === 'timeseries'} onclick={() => (display = 'timeseries')}>Time Series</button>
+						{/if}
+						{#if display === 'view3d' && !td_trajectory_payload}
 							<span class="tab-spacer"></span>
 							<span class="nav-sep"></span>
 							<button class="tab-btn small has-tip" class:active={show_geometry} onclick={() => (show_geometry = !show_geometry)}>
@@ -805,7 +853,12 @@
 								{available_channels}
 								point_density={field_density}
 								bind:scale_mode={field_scale_mode}
+								td_trajectory={td_trajectory_payload}
+								{td_frame}
+								bind:td_channel
 							/>
+						{:else if display === 'timeseries'}
+							<TimeSeriesPanel payload={td_timeseries_payload} />
 						{:else if eigenmode_mode}
 							<div class="eigenmode-summary">
 								<h3>Eigenmodes</h3>
@@ -861,6 +914,31 @@
 									/>
 								</div>
 							{/if}
+						</div>
+					{/if}
+					{#if display === 'view3d' && td_trajectory_payload}
+						<div class="field-controls">
+							<button
+								class="td-play"
+								title={td_playing ? 'Pause' : 'Play'}
+								onclick={() => (td_playing = !td_playing)}
+							>{td_playing ? '⏸' : '▶'}</button>
+							<label class="field-ctrl">
+								<span class="lbl">Frame</span>
+								<input
+									class="slider"
+									type="range"
+									min="0"
+									max={td_trajectory_payload.n_snapshots - 1}
+									step="1"
+									bind:value={td_frame}
+									oninput={() => (td_playing = false)}
+								/>
+								<span class="val">
+									{td_frame + 1}/{td_trajectory_payload.n_snapshots}
+									· t={td_trajectory_payload.times[td_frame]?.toExponential(2) ?? '—'}
+								</span>
+							</label>
 						</div>
 					{/if}
 				</div>
@@ -1230,6 +1308,22 @@
 		gap: var(--space-md);
 		min-width: 0;
 	}
+	/* Play / pause toggle for the time-domain field animation. */
+	.td-play {
+		width: 26px;
+		height: 22px;
+		flex-shrink: 0;
+		border: 1px solid var(--border);
+		background: var(--bg-panel);
+		color: var(--accent);
+		font-size: 11px;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: background var(--transition), border-color var(--transition);
+	}
+	.td-play:hover { background: var(--bg-surface); border-color: var(--accent); }
 	.field-ctrl .slider {
 		flex: 1 1 100px;
 		min-width: 60px;
