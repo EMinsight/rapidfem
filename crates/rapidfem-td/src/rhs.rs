@@ -222,6 +222,11 @@ struct PortData {
     rect: Option<RectPort>,
     /// `(element, local_face)` of every boundary face on this port.
     faces: Vec<(usize, usize)>,
+    /// Precomputed `(e_profile, h_profile)` per (face, face-node m), indexed
+    /// `face_idx * n_face_nodes + m`. Depends only on geometry and the mode,
+    /// so the per-timestep projection need not recompute it. Empty for
+    /// absorbing-only ports (no mode).
+    profiles: Vec<([f64; 3], [f64; 3])>,
 }
 
 /// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
@@ -554,6 +559,7 @@ impl MaxwellOperator {
             .map(|spec| PortData {
                 rect: spec.rect.clone(),
                 faces: Vec::new(),
+                profiles: Vec::new(),
             })
             .collect();
         for e in 0..n_elem {
@@ -561,6 +567,24 @@ impl MaxwellOperator {
                 let pi = faces[e * 4 + f].port;
                 if pi != usize::MAX {
                     port_data[pi].faces.push((e, f));
+                }
+            }
+        }
+        // Precompute the modal field profiles per port-face node. They
+        // depend only on geometry and the mode, so port_source and the
+        // per-timestep port_modal_projections need not recompute them.
+        {
+            let nfp = re.n_face_nodes;
+            for pd in port_data.iter_mut() {
+                if let Some(rect) = &pd.rect {
+                    pd.profiles = Vec::with_capacity(pd.faces.len() * nfp);
+                    for &(e, f) in &pd.faces {
+                        for m in 0..nfp {
+                            let vi = re.face_nodes[f][m];
+                            let x = geom[e].map(re.nodes[vi]);
+                            pd.profiles.push((rect.e_profile(x), rect.h_profile(x)));
+                        }
+                    }
                 }
             }
         }
@@ -715,20 +739,16 @@ impl MaxwellOperator {
         let cols = 4 * nfp;
         let mut b = vec![0.0; self.n_dof()];
         let pd = &self.ports[port_idx];
-        let rect = match &pd.rect {
-            Some(r) => r,
-            None => return b, // absorbing-only port — nothing to inject
-        };
-        for &(e, f) in &pd.faces {
+        if pd.rect.is_none() {
+            return b; // absorbing-only port — nothing to inject
+        }
+        for (face_idx, &(e, f)) in pd.faces.iter().enumerate() {
             let fi = &self.faces[e * 4 + f];
             let n = fi.normal;
             let coef = 0.5 * fi.fscale;
             let (ie, im) = (self.inv_eps[e], self.inv_mu[e]);
             for m in 0..nfp {
-                let vi = self.re.face_nodes[f][m];
-                let x = self.geom[e].map(self.re.nodes[vi]);
-                let et = rect.e_profile(x);
-                let ht = rect.h_profile(x);
+                let (et, ht) = pd.profiles[face_idx * nfp + m];
                 // Incident-field flux: jumps [E] = −e_t, [H] = −h_t.
                 let nxe = cross3(n, et);
                 let nxh = cross3(n, ht);
@@ -775,21 +795,16 @@ impl MaxwellOperator {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let pd = &self.ports[port_idx];
-        let rect = pd
-            .rect
-            .as_ref()
-            .expect("port has no mode for extraction");
+        assert!(pd.rect.is_some(), "port has no mode for extraction");
         let (mut e_dot, mut e_norm) = (0.0, 0.0); // ∮E·e_t, ∮e_t·e_t
         let (mut h_dot, mut h_norm) = (0.0, 0.0);
-        for &(e, f) in &pd.faces {
+        for (face_idx, &(e, f)) in pd.faces.iter().enumerate() {
             let fi = &self.faces[e * 4 + f];
             let area = fi.fscale * self.geom[e].det.abs() / 2.0;
             let wgt = &self.re.face_node_weights[f];
             for m in 0..nfp {
                 let vi = self.re.face_nodes[f][m];
-                let x = self.geom[e].map(self.re.nodes[vi]);
-                let et = rect.e_profile(x);
-                let ht = rect.h_profile(x);
+                let (et, ht) = pd.profiles[face_idx * nfp + m];
                 let w = 2.0 * area * wgt[m];
                 let base = (e * np + vi) * 6;
                 let ef = [y[base], y[base + 1], y[base + 2]];
@@ -1218,9 +1233,11 @@ impl MaxwellOperator {
                                 }
                             }
                         }
-                        // The element's polarisation columns, if dispersive —
-                        // the E<->P coupling into this element's [E,H] rows.
-                        let slot = self.disp_slot[c];
+                        // The element's own polarisation columns, if it is
+                        // dispersive. apply_element reads only element e's own
+                        // P-block, so a neighbour's P-columns always probe to
+                        // zero - only c == e can contribute.
+                        let slot = if c == e { self.disp_slot[e] } else { usize::MAX };
                         if slot != usize::MAX {
                             for jl in 0..p_stride {
                                 let j = eh_len + slot * p_stride + jl;
