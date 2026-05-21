@@ -23,8 +23,10 @@ jobs:
       - name: Build
         run: cargo build --workspace --exclude rapidfem-python
 
-      # Element-level accuracy checks plus the full DGTD validation suite:
-      # cavity-eigenmode gate, energy conservation, ETD vs analytic ODE,
-      # Krylov / MOR / adaptive-dimension checks, sparse-assembly scaling.
+      # Element-level accuracy and math-kernel checks only (fast, no real
+      # geometry). The DGTD validation suite (rapidfem-td) runs full
+      # transient solves on meshes - far too slow for CI; run it locally
+      # with `cargo test -p rapidfem-td`. The Build step above still
+      # compile-checks rapidfem-td.
       - name: Test
-        run: cargo test --release -p rapidfem-core -p rapidfem-fd -p rapidfem-td
+        run: cargo test --release -p rapidfem-core -p rapidfem-fd
