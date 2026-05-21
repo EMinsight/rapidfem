@@ -35,18 +35,15 @@ import {
 import {
 	buildScene, clearFieldCloud, sampleFieldCloud, WIRE_TAG,
 } from '../lib/render/scene_builder';
-
-const FIELD_BIN_MAGIC = 0x52464d46; // "RFMF"
+import {
+	checkBinHeader, isBinRef, resolveFields, resolveGeoRefs, type BinRef,
+} from '../lib/binpack';
 
 // Cycle phases in display order; each holds for CYCLE_HOLD_S seconds.
 type Phase = 'geometry' | 'mesh' | 'field';
 const CYCLE_ORDER: Phase[] = ['geometry', 'mesh', 'field'];
 const CYCLE_HOLD_S = 4.8;
 
-interface BakedFieldsStub {
-	$bin: true; magic: number; version: number;
-	n_freq: number; n_port: number; stride: number; url: string;
-}
 interface MeshPayload {
 	bbox: { min: [number, number, number]; max: [number, number, number] };
 	nodes: number[];
@@ -61,7 +58,7 @@ interface ResultPayload {
 	frequencies: number[];
 	sparams: number[][][][];
 	n_freq: number;
-	fields?: BakedFieldsStub | (number[] | null)[][];
+	fields?: BinRef | (number[] | null)[][];
 }
 interface BakedExample {
 	cells: Array<{
@@ -89,31 +86,15 @@ function extractLatestResult(baked: BakedExample): ResultPayload | null {
 	return null;
 }
 
-async function hydrateFields(stub: BakedFieldsStub, baseUrl: string): Promise<(number[] | null)[][]> {
-	const url = new URL(stub.url, baseUrl).href;
+/** Fetch a `<name>.geo.bin` / `<name>.field.bin` sidecar next to the
+ *  example JSON; `null` when the example carries no such buffer. */
+async function fetchBinBuffer(jsonUrl: string, suffix: 'geo' | 'field'): Promise<ArrayBuffer | null> {
+	const url = jsonUrl.replace(/\.json$/, `.${suffix}.bin`);
 	const resp = await fetch(url);
-	if (!resp.ok) throw new Error(`bin fetch ${resp.status}`);
+	if (!resp.ok) return null;
 	const buf = await resp.arrayBuffer();
-	const dv = new DataView(buf);
-	if (dv.getUint32(0, true) !== FIELD_BIN_MAGIC) throw new Error('field bin: bad magic');
-	const n_freq = dv.getUint32(8, true);
-	const n_port = dv.getUint32(12, true);
-	const stride = dv.getUint32(16, true);
-	const mask_off = 20;
-	const mask = new Uint8Array(buf, mask_off, n_freq * n_port);
-	const floats_off = mask_off + ((mask.byteLength + 3) & ~3);
-	const all = new Float32Array(buf, floats_off);
-	const out: (number[] | null)[][] = [];
-	let cursor = 0;
-	for (let f = 0; f < n_freq; f++) {
-		const row: (number[] | null)[] = [];
-		for (let p = 0; p < n_port; p++) {
-			if (mask[f * n_port + p] === 0) row.push(null);
-			else { row.push(Array.from(all.subarray(cursor, cursor + stride))); cursor += stride; }
-		}
-		out.push(row);
-	}
-	return out;
+	checkBinHeader(buf, url);
+	return buf;
 }
 
 // (per-volume hull + edge extraction live in lib/render/mesh_scene.ts,
@@ -307,12 +288,31 @@ class FemViewerElement extends HTMLElement {
 			if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 			const baked: BakedExample = await resp.json();
 
+			// Resolve the geo buffer (mesh / geometry) for the whole bake.
+			const geoBuf = await fetchBinBuffer(url, 'geo');
+			if (geoBuf) {
+				for (const cell of baked.cells) {
+					for (const ev of cell.display_events) {
+						if (ev.payload) {
+							resolveGeoRefs(ev.payload as Record<string, unknown>, geoBuf);
+						}
+					}
+				}
+			}
+
 			this.mesh = extractLatestMesh(baked);
 			if (!this.mesh) throw new Error('no mesh payload in bake');
+
 			const result = extractLatestResult(baked);
-			if (result && result.fields && (result.fields as BakedFieldsStub).$bin) {
+			if (result && result.fields && isBinRef(result.fields)) {
 				if (this.loadingEl) this.loadingEl.textContent = 'Decoding field…';
-				this.fields = await hydrateFields(result.fields as BakedFieldsStub, url);
+				const fieldBuf = await fetchBinBuffer(url, 'field');
+				this.fields = fieldBuf
+					? resolveFields(fieldBuf, result.fields as BinRef)
+					: null;
+				this.hasField = !!this.fields?.some((row) => row.some((x) => x !== null));
+			} else if (result && Array.isArray(result.fields)) {
+				this.fields = result.fields as (number[] | null)[][];
 				this.hasField = this.fields.some((row) => row.some((x) => x !== null));
 			} else {
 				this.fields = null;
