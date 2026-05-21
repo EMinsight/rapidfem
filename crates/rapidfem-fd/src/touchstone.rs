@@ -29,11 +29,13 @@ pub fn write_touchstone(
         let freq_ghz = freq / 1e9;
         write!(file, "{:.6e}", freq_ghz)?;
 
-        // S-parameter ordering: row-major for S2P
-        // S2P format: freq S11_re S11_im S21_re S21_im S12_re S12_im S22_re S22_im
+        // S-parameter ordering. Touchstone .s2p uses column-major order
+        // (freq S11 S21 S12 S22); the SNP layout for N>2 is row-major.
         if n_ports <= 2 {
-            for i in 0..n_ports {
-                for j in 0..n_ports {
+            // .s2p column-major: outer loop over the input port (column),
+            // inner over the output port (row). .s1p is order-insensitive.
+            for j in 0..n_ports {
+                for i in 0..n_ports {
                     let s = s_params[fi][i][j];
                     write!(file, " {:.8e} {:.8e}", s.re, s.im)?;
                 }
@@ -61,4 +63,41 @@ pub fn write_touchstone(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s2p_writes_column_major_s21_before_s12() {
+        // Touchstone .s2p column order is S11 S21 S12 S22. Build a 2-port
+        // matrix with a distinct value per entry so a transposed write is
+        // detectable, then read the data line back.
+        let s = vec![vec![
+            vec![C64::new(11.0, 0.0), C64::new(12.0, 0.0)],
+            vec![C64::new(21.0, 0.0), C64::new(22.0, 0.0)],
+        ]];
+        let path = std::env::temp_dir()
+            .join(format!("rapidfem_ts_{}.s2p", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        write_touchstone(path_str, &[1e9], &s, 2, 50.0).unwrap();
+
+        let text = std::fs::read_to_string(path_str).unwrap();
+        let data_line = text
+            .lines()
+            .find(|l| !l.starts_with('!') && !l.starts_with('#'))
+            .unwrap();
+        let nums: Vec<f64> = data_line
+            .split_whitespace()
+            .map(|t| t.parse().unwrap())
+            .collect();
+        // freq, then (re,im) pairs for S11 S21 S12 S22.
+        assert_eq!(nums[1], 11.0, "S11");
+        assert_eq!(nums[3], 21.0, "S21 must precede S12 in .s2p");
+        assert_eq!(nums[5], 12.0, "S12");
+        assert_eq!(nums[7], 22.0, "S22");
+
+        let _ = std::fs::remove_file(path_str);
+    }
 }
