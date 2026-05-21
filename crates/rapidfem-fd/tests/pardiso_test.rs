@@ -1,5 +1,5 @@
 use num_complex::Complex64 as C64;
-use rapidfem::pardiso::{PardisoSolver, build_upper_csr};
+use rapidfem_fd::pardiso::{PardisoSolver, build_upper_csr};
 
 #[test]
 fn test_pardiso_2x2() {

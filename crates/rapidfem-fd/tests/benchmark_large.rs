@@ -1,12 +1,12 @@
 /// Large-scale benchmarks: multiple geometries and mesh sizes.
 use num_complex::Complex64 as C64;
-use rapidfem::mesh_io::load_mesh;
-use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, detect_rect_port, CoordinateSystem};
-use rapidfem::assembly::assemble_and_solve;
-use rapidfem::sparam::sparam_waveport;
-use rapidfem::interp::{self, TetGrid};
-use rapidfem::constants::*;
+use rapidfem_fd::mesh_io::load_mesh;
+use rapidfem_fd::basis::Nedelec2Basis;
+use rapidfem_fd::waveguide::{RectWaveguide, detect_rect_port, CoordinateSystem};
+use rapidfem_fd::assembly::assemble_and_solve;
+use rapidfem_fd::sparam::sparam_waveport;
+use rapidfem_fd::interp::{self, TetGrid};
+use rapidfem_fd::constants::*;
 
 fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
     let mesh = match load_mesh(mesh_path) {
@@ -38,7 +38,7 @@ fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
         polarization: 1.0, dims: (a, b), cs: cs2,
     };
 
-    let ports: Vec<&dyn rapidfem::port::Port> = vec![&port1, &port2];
+    let ports: Vec<&dyn rapidfem_fd::port::Port> = vec![&port1, &port2];
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let t0 = std::time::Instant::now();
@@ -57,8 +57,8 @@ fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
     };
     let p1v: Vec<[usize; 3]> = port1_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let p2v: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
-    let p1_ref: &dyn rapidfem::port::Port = &port1;
-    let p2_ref: &dyn rapidfem::port::Port = &port2;
+    let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
+    let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
     let s11 = sparam_waveport(&mesh.nodes, &p1v, p1_ref, k0, true, &fieldf, 4);
     let s21 = sparam_waveport(&mesh.nodes, &p2v, p2_ref, k0, false, &fieldf, 4);
     let total = t0.elapsed().as_secs_f64();

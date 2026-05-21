@@ -1,7 +1,7 @@
 /// Unit test for tet_assembly.rs against EMerge reference values.
 use num_complex::Complex64 as C64;
-use rapidfem::tet_assembly::ned2_tet_stiff_mass;
-use rapidfem::coefficients::VolumeCoeffCache;
+use rapidfem_fd::tet_assembly::ned2_tet_stiff_mass;
+use rapidfem_fd::coefficients::VolumeCoeffCache;
 
 #[test]
 fn test_ned2_tet_stiff_mass_vs_emerge() {

@@ -2,9 +2,9 @@
 /// Tests ned2_tri_stiff and ned2_tri_force with known inputs.
 
 use num_complex::Complex64 as C64;
-use rapidfem::tri_assembly::{ned2_tri_stiff, ned2_tri_force};
-use rapidfem::coefficients::AreaCoeffCache;
-use rapidfem::quadrature::gaus_quad_tri;
+use rapidfem_fd::tri_assembly::{ned2_tri_stiff, ned2_tri_force};
+use rapidfem_fd::coefficients::AreaCoeffCache;
+use rapidfem_fd::quadrature::gaus_quad_tri;
 
 /// Reference values from EMerge for vertices:
 /// v0 = (0, 0, 0), v1 = (0.02, 0, 0), v2 = (0, 0, 0.01)

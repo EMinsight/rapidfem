@@ -1,5 +1,5 @@
 use num_complex::Complex64 as C64;
-use rapidfem::abc_order2::abc_order_2_terms;
+use rapidfem_fd::abc_order2::abc_order_2_terms;
 
 #[test]
 fn test_abc_order_2_terms_vs_emerge() {

@@ -1,12 +1,12 @@
 /// Benchmark suite: RapidFEM performance across mesh sizes and geometries.
 use num_complex::Complex64 as C64;
-use rapidfem::mesh_io::load_mesh;
-use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, CoordinateSystem};
-use rapidfem::assembly::assemble_and_solve;
-use rapidfem::sparam::sparam_waveport;
-use rapidfem::interp;
-use rapidfem::constants::*;
+use rapidfem_fd::mesh_io::load_mesh;
+use rapidfem_fd::basis::Nedelec2Basis;
+use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
+use rapidfem_fd::assembly::assemble_and_solve;
+use rapidfem_fd::sparam::sparam_waveport;
+use rapidfem_fd::interp;
+use rapidfem_fd::constants::*;
 
 fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
     let mesh = load_mesh(mesh_path).expect("Load mesh");
@@ -31,7 +31,7 @@ fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
         polarization: 1.0, dims: (22.86e-3, 10.16e-3), cs: cs2,
     };
 
-    let ports: Vec<&dyn rapidfem::port::Port> = vec![&port1, &port2];
+    let ports: Vec<&dyn rapidfem_fd::port::Port> = vec![&port1, &port2];
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let t0 = std::time::Instant::now();
@@ -48,8 +48,8 @@ fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
     };
     let p1v: Vec<[usize; 3]> = port1_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let p2v: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
-    let p1_ref: &dyn rapidfem::port::Port = &port1;
-    let p2_ref: &dyn rapidfem::port::Port = &port2;
+    let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
+    let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
     let s11 = sparam_waveport(&mesh.nodes, &p1v, p1_ref, k0, true, &fieldf, 4);
     let s21 = sparam_waveport(&mesh.nodes, &p2v, p2_ref, k0, false, &fieldf, 4);
     let total = t0.elapsed().as_secs_f64();
@@ -60,7 +60,7 @@ fn run_waveguide_benchmark(mesh_path: &str, label: &str) {
         s11=s11.norm(), s21=s21.norm());
 }
 
-fn detect_cs(mesh: &rapidfem::mesh::Mesh, tri_ids: &[usize]) -> CoordinateSystem {
+fn detect_cs(mesh: &rapidfem_fd::mesh::Mesh, tri_ids: &[usize]) -> CoordinateSystem {
     // Compute center, normal, broad axis from port face
     let mut center = [0.0; 3];
     let mut count = 0.0;

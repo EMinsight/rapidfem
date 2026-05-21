@@ -1,6 +1,6 @@
 /// Unit tests for waveguide.rs against EMerge reference values.
-use rapidfem::waveguide::{RectWaveguide, CoordinateSystem};
-use rapidfem::constants::*;
+use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
+use rapidfem_fd::constants::*;
 
 fn make_test_port() -> RectWaveguide {
     // EMerge port 1 for Box(22.86mm, 30mm, 10.16mm) at origin, wg.front face

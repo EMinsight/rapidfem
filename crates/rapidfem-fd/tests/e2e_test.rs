@@ -2,15 +2,16 @@
 /// EMerge reference: S11=0.001496, S21=0.999824.
 
 use num_complex::Complex64 as C64;
-use rapidfem::mesh_io::load_mesh;
-use rapidfem::basis::Nedelec2Basis;
-use rapidfem::waveguide::{RectWaveguide, CoordinateSystem};
-use rapidfem::assembly::assemble_and_solve;
-use rapidfem::sparam::sparam_waveport;
-use rapidfem::interp;
-use rapidfem::constants::*;
+use rapidfem_fd::mesh_io::load_mesh;
+use rapidfem_fd::basis::Nedelec2Basis;
+use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
+use rapidfem_fd::assembly::assemble_and_solve;
+use rapidfem_fd::sparam::sparam_waveport;
+use rapidfem_fd::interp;
+use rapidfem_fd::constants::*;
 
 #[test]
+#[ignore = "needs tests/meshes/wr90_straight.msh fixture (not in repo)"]
 fn test_straight_waveguide_sparams() {
     let mesh = load_mesh("tests/meshes/wr90_straight.msh").expect("Load mesh");
     let basis = Nedelec2Basis::new(&mesh);
@@ -39,7 +40,7 @@ fn test_straight_waveguide_sparams() {
         polarization: 1.0, dims: (22.86e-3, 10.16e-3), cs: cs2,
     };
 
-    let ports: Vec<&dyn rapidfem::port::Port> = vec![&port1, &port2];
+    let ports: Vec<&dyn rapidfem_fd::port::Port> = vec![&port1, &port2];
     let port_tris: Vec<&[usize]> = vec![&port1_tris, &port2_tris];
 
     let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None)
@@ -59,7 +60,7 @@ fn test_straight_waveguide_sparams() {
     };
 
     // Test: check if find_containing_tet works for port face points
-    let qpts = rapidfem::quadrature::gaus_quad_tri(4);
+    let qpts = rapidfem_fd::quadrature::gaus_quad_tri(4);
     let test_tri = mesh.tris[port1_tris[0]];
     let v0 = mesh.nodes[test_tri[0]];
     let v1 = mesh.nodes[test_tri[1]];
@@ -83,7 +84,7 @@ fn test_straight_waveguide_sparams() {
         let tet = &mesh.tets[0];
         let tet_edges = &mesh.tet_to_edge[0];
         let global_edge_nodes: [[usize; 2]; 6] = std::array::from_fn(|i| mesh.edges[tet_edges[i]]);
-        let l_edge = rapidfem::basis::local_mapping(tet, &global_edge_nodes);
+        let l_edge = rapidfem_fd::basis::local_mapping(tet, &global_edge_nodes);
         eprintln!("  Tet 0: nodes={:?}", tet);
         eprintln!("  local_edge_map = {:?}", l_edge);
         eprintln!("  EMerge ref: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]]");
@@ -108,8 +109,8 @@ fn test_straight_waveguide_sparams() {
     let port1_tri_verts: Vec<[usize; 3]> = port1_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let port2_tri_verts: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
 
-    let p1_ref: &dyn rapidfem::port::Port = &port1;
-    let p2_ref: &dyn rapidfem::port::Port = &port2;
+    let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
+    let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
     let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, k0, true, &fieldf, 4);
     let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, k0, false, &fieldf, 4);
 
