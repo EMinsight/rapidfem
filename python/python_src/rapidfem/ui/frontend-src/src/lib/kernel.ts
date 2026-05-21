@@ -22,7 +22,7 @@ export type StreamKind = 'stdout' | 'stderr';
 /** Display-event `kind`s the kernel forwards to `onDisplay`. */
 export type DisplayKind =
 	| 'geometry' | 'mesh' | 'result'
-	| 'td_result' | 'td_timeseries' | 'td_trajectory';
+	| 'td_result' | 'td_timeseries' | 'td_transfer' | 'td_trajectory';
 
 export type KernelEvent =
 	| { type: 'stream'; stream: StreamKind; value: string }
@@ -31,6 +31,7 @@ export type KernelEvent =
 	| { type: 'display'; kind: 'result'; name: string; payload: SolveResultPayload }
 	| { type: 'display'; kind: 'td_result'; name: string; payload: TdResultPayload }
 	| { type: 'display'; kind: 'td_timeseries'; name: string; payload: TdTimeSeriesPayload }
+	| { type: 'display'; kind: 'td_transfer'; name: string; payload: TdTimeSeriesPayload }
 	| { type: 'display'; kind: 'td_trajectory'; name: string; payload: TdTrajectoryPayload }
 	| { type: 'display'; kind: 'error'; name: string; error: PythonError }
 	| { type: 'error'; id?: string; error: string; traceback?: string }
