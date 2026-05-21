@@ -128,7 +128,7 @@
 	let last_mesh_stats = $state<{ n_tets: number; n_tris: number; mesh_time_s: number } | null>(null);
 	let last_solve_stats = $state<{ n_freq: number; n_dofs: number; solve_time_s: number } | null>(null);
 
-	let display = $state<'view3d' | 'plots' | 'timeseries'>('view3d');
+	let display = $state<'view3d' | 'plots' | 'timeseries' | 'transfer'>('view3d');
 	let show_geometry = $state(true);
 	let show_wireframe = $state(false);
 	let show_field = $state(false);
@@ -140,6 +140,7 @@
 	// panel. `td_result` reuses the S-parameter path (freqs / smats).
 	let td_trajectory_payload = $state<TdTrajectoryPayload | null>(null);
 	let td_timeseries_payload = $state<TdTimeSeriesPayload | null>(null);
+	let td_transfer_payload = $state<TdTimeSeriesPayload | null>(null);
 	let td_frame = $state(0);
 	let td_channel = $state<'E' | 'H'>('E');
 	let td_playing = $state(true);
@@ -510,6 +511,7 @@
 		show_field = false;
 		td_trajectory_payload = null;
 		td_timeseries_payload = null;
+		td_transfer_payload = null;
 		td_frame = 0;
 		td_playing = true;
 		// Default to the 3D view; result events switch to plots / timeseries.
@@ -616,6 +618,9 @@
 				} else if (kind === 'td_timeseries') {
 					td_timeseries_payload = payload as TdTimeSeriesPayload;
 					display = 'timeseries';
+				} else if (kind === 'td_transfer') {
+					td_transfer_payload = payload as TdTimeSeriesPayload;
+					display = 'transfer';
 				} else if (kind === 'td_trajectory') {
 					void hydrate_trajectory(payload as TdTrajectoryPayload);
 				}
@@ -889,9 +894,11 @@
 						{/if}
 						{#if td_timeseries_payload}
 							<span class="nav-sep"></span>
-							<button class="tab-btn" class:active={display === 'timeseries'} onclick={() => (display = 'timeseries')}>
-								{td_timeseries_payload.domain === 'freq' ? 'Transfer Function' : 'Time Series'}
-							</button>
+							<button class="tab-btn" class:active={display === 'timeseries'} onclick={() => (display = 'timeseries')}>Time Series</button>
+						{/if}
+						{#if td_transfer_payload}
+							<span class="nav-sep"></span>
+							<button class="tab-btn" class:active={display === 'transfer'} onclick={() => (display = 'transfer')}>Transfer Function</button>
 						{/if}
 						{#if display === 'view3d'}
 							<span class="tab-spacer"></span>
@@ -932,6 +939,8 @@
 							/>
 						{:else if display === 'timeseries'}
 							<TimeSeriesPanel payload={td_timeseries_payload} />
+						{:else if display === 'transfer'}
+							<TimeSeriesPanel payload={td_transfer_payload} />
 						{:else if eigenmode_mode}
 							<div class="eigenmode-summary">
 								<h3>Eigenmodes</h3>

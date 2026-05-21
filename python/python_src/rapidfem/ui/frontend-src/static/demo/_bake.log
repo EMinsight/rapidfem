@@ -1,0 +1,202 @@
+bake_demo run at 2026-05-21 12:45:46
+
+======================================================================
+fd_coax_step  attempt 1  -> ok
+--- stderr ---
+baking fd_coax_step.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=44
+
+wrote fd_coax_step.json (19,002 B) + 2 bin file(s) totalling 3,193,032 B
+  JSON savings: 6,327,458 -> 19,002 B  (99.7% reduction)
+  combined on-disk: 3,212,034 B (50.8% of raw JSON)
+
+
+======================================================================
+fd_dielectric_resonator  attempt 1  -> ok
+--- stderr ---
+baking fd_dielectric_resonator.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Eigenmode                  status=ok     display=[mesh,result]  stream=18
+
+wrote fd_dielectric_resonator.json (12,030 B) + 2 bin file(s) totalling 769,492 B
+  JSON savings: 1,574,274 -> 12,030 B  (99.2% reduction)
+  combined on-disk: 781,522 B (49.6% of raw JSON)
+
+
+======================================================================
+fd_iris_filter  attempt 1  -> ok
+--- stderr ---
+baking fd_iris_filter.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=57
+
+wrote fd_iris_filter.json (31,756 B) + 2 bin file(s) totalling 7,980,440 B
+  JSON savings: 22,439,500 -> 31,756 B  (99.9% reduction)
+  combined on-disk: 8,012,196 B (35.7% of raw JSON)
+
+
+======================================================================
+fd_microstrip_line  attempt 1  -> ok
+--- stderr ---
+baking fd_microstrip_line.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=36
+
+wrote fd_microstrip_line.json (19,986 B) + 2 bin file(s) totalling 3,222,584 B
+  JSON savings: 12,790,579 -> 19,986 B  (99.8% reduction)
+  combined on-disk: 3,242,570 B (25.4% of raw JSON)
+
+
+======================================================================
+fd_patch_antenna  attempt 1  -> ok
+--- stderr ---
+baking fd_patch_antenna.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=37
+
+wrote fd_patch_antenna.json (27,500 B) + 2 bin file(s) totalling 5,897,344 B
+  JSON savings: 18,447,199 -> 27,500 B  (99.9% reduction)
+  combined on-disk: 5,924,844 B (32.1% of raw JSON)
+
+
+======================================================================
+fd_pyramidal_horn  attempt 1  -> ok
+--- stderr ---
+baking fd_pyramidal_horn.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=31
+
+wrote fd_pyramidal_horn.json (19,565 B) + 2 bin file(s) totalling 6,105,328 B
+  JSON savings: 18,667,808 -> 19,565 B  (99.9% reduction)
+  combined on-disk: 6,124,893 B (32.8% of raw JSON)
+
+
+======================================================================
+fd_rfic_spiral_from_json  attempt 1  -> ok
+--- stderr ---
+baking fd_rfic_spiral_from_json.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Load + build the geometry from JSON  status=ok     display=[geometry]  stream=7
+  [2] # %% Wire BCs: every conductor surface PEC, ports lumped, outer air ABC  status=ok     display=[â€”]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Sweep across the RF band   status=ok     display=[mesh,result]  stream=33
+  [5] # %% Series-L extraction (de-embedded from common-mode shunt)  status=ok     display=[â€”]  stream=22
+
+wrote fd_rfic_spiral_from_json.json (22,488 B) + 2 bin file(s) totalling 14,775,024 B
+  JSON savings: 34,778,589 -> 22,488 B  (99.9% reduction)
+  combined on-disk: 14,797,512 B (42.5% of raw JSON)
+
+
+======================================================================
+fd_wr90  attempt 1  -> ok
+--- stderr ---
+baking fd_wr90.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + Materials       status=ok     display=[geometry]  stream=0
+  [3] # %% Mesh                       status=ok     display=[mesh]  stream=0
+  [4] # %% Problem + Sweep            status=ok     display=[mesh,result]  stream=32
+
+wrote fd_wr90.json (14,522 B) + 2 bin file(s) totalling 1,832,016 B
+  JSON savings: 5,633,996 -> 14,522 B  (99.7% reduction)
+  combined on-disk: 1,846,538 B (32.8% of raw JSON)
+
+
+======================================================================
+td_cavity  attempt 1  -> ok
+--- stderr ---
+baking td_cavity.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Build the time-domain problem â€” a unit cubic PEC cavity  status=ok     display=[â€”]  stream=2
+  [3] # %% Low level: the ODE right-hand side and the verbatim operator  status=ok     display=[â€”]  stream=1
+  [4] # %% Turnkey: seed a field pulse and propagate it in time  status=ok     display=[â€”]  stream=12
+  [5] # %% Visualise: play the trajectory back as a 3D field animation  status=ok     display=[td_trajectory]  stream=0
+
+wrote td_cavity.json (6,738 B) + 1 bin file(s) totalling 1,800,008 B
+  JSON savings: 3,370,565 -> 6,738 B  (99.8% reduction)
+  combined on-disk: 1,806,746 B (53.6% of raw JSON)
+
+
+======================================================================
+td_dielectric_cavity  attempt 1  -> ok
+--- stderr ---
+baking td_dielectric_cavity.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry + material â€” a PEC box filled with a dielectric.  status=ok     display=[mesh]  stream=0
+  [3] # %% Build the time-domain problem from the meshed geometry  status=ok     display=[â€”]  stream=3
+  [4] # %% Propagate an impulse â€” the DG operator stays stable on the  status=ok     display=[â€”]  stream=13
+  [5] # %% Visualise â€” the impulse spreading and dissipating in the cavity  status=ok     display=[td_trajectory]  stream=0
+
+wrote td_dielectric_cavity.json (8,293 B) + 2 bin file(s) totalling 1,835,780 B
+  JSON savings: 3,091,686 -> 8,293 B  (99.7% reduction)
+  combined on-disk: 1,844,073 B (59.6% of raw JSON)
+
+
+======================================================================
+td_ring_resonator  attempt 1  -> ok
+--- stderr ---
+baking td_ring_resonator.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters                 status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry â€” a dielectric ring embedded in an air-filled PEC cavity  status=ok     display=[mesh]  stream=0
+  [3] # %% Build the time-domain problem on the curved unstructured mesh  status=ok     display=[â€”]  stream=3
+  [4] # %% Light up one point on the ring and let the field orbit it  status=ok     display=[â€”]  stream=12
+  [5] # %% Visualise â€” the field circulating in the dielectric ring  status=ok     display=[td_trajectory]  stream=0
+
+wrote td_ring_resonator.json (8,985 B) + 2 bin file(s) totalling 2,066,256 B
+  JSON savings: 3,516,024 -> 8,985 B  (99.7% reduction)
+  combined on-disk: 2,075,241 B (59.0% of raw JSON)
+
+
+======================================================================
+td_transfer_function  attempt 1  -> ok
+--- stderr ---
+baking td_transfer_function.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Build a unit cavity, normalised units (c = 1)  status=ok     display=[â€”]  stream=2
+  [2] # %% Drive a broadband pulse, record the probe signal in time  status=ok     display=[td_timeseries]  stream=11
+  [3] # %% The same run, deconvolved into the cavity transfer function H(f)  status=ok     display=[td_transfer]  stream=11
+  [4] # %% Peaks of |H| are the cavity resonances  status=ok     display=[â€”]  stream=2
+  [5] # %% Analytic unit-cube resonances  f = sqrt(m^2+n^2+p^2) / 2  status=ok     display=[â€”]  stream=3
+
+wrote td_transfer_function.json (48,595 B) + 0 bin file(s) totalling 0 B
+  JSON savings: 48,595 -> 48,595 B  (0.0% reduction)
+  combined on-disk: 48,595 B (100.0% of raw JSON)
+
+
+======================================================================
+td_waveguide_sparams  attempt 1  -> ok
+--- stderr ---
+baking td_waveguide_sparams.py...
+  [0] (implicit)                      status=ok     display=[â€”]  stream=0
+  [1] # %% Parameters â€” WR-90 (X-band), straight guide  status=ok     display=[â€”]  stream=0
+  [2] # %% Geometry â€” an air-filled guide, waveguide ports on both ends  status=ok     display=[mesh]  stream=0
+  [3] # %% Frequency-domain reference  status=ok     display=[â€”]  stream=17
+  [4] # %% Time-domain S-parameters   status=ok     display=[td_result]  stream=13
+  [5] # %% Compare                    status=ok     display=[â€”]  stream=13
+
+wrote td_waveguide_sparams.json (14,081 B) + 1 bin file(s) totalling 64,756 B
+  JSON savings: 122,629 -> 14,081 B  (88.5% reduction)
+  combined on-disk: 78,837 B (64.3% of raw JSON)
+

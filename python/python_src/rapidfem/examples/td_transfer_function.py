@@ -10,7 +10,7 @@ This is the scalar, on-the-fly-RFT observable; true modal-port
 S-parameters need waveguide-mode injection / extraction.
 """
 
-# %% Build a unit cavity — normalised units (c = 1)
+# %% Build a unit cavity, normalised units (c = 1)
 import numpy as np
 
 import rapidfem as rf
@@ -20,16 +20,22 @@ ptd = rf.ProblemTD.box(
 )
 print(f"DGTD cavity - {ptd.n_dof} state DOFs")
 
-# %% One broadband transient run -> the transfer function
+# %% Drive a broadband pulse, record the probe signal in time
 pulse = rf.GaussianPulse(t0=2.0, tau=0.5, f0=0.0)
-tf = ptd.transfer_function(
-    source=([0.5, 0.5, 0.5], "E", "z"),
-    probe=([0.3, 0.7, 0.4], "E", "z"),
-    pulse=pulse,
-    dt=0.04,
-    steps=400,
+source = ([0.5, 0.5, 0.5], "E", "z")
+probe = ([0.3, 0.7, 0.4], "E", "z")
+dt, steps = 0.025, 800
+
+response = ptd.driven_transient(
+    source=source, waveform=pulse, probes=[probe], dt=dt, steps=steps,
 )
-rf.show(tf)                                  # |H(f)| / phase plot
+rf.show(response)                            # the probe signal in time
+
+# %% The same run, deconvolved into the cavity transfer function H(f)
+tf = ptd.transfer_function(
+    source=source, probe=probe, pulse=pulse, dt=dt, steps=steps,
+)
+rf.show(tf)                                  # |H(f)| magnitude / phase
 freqs, H = tf
 
 # %% Peaks of |H| are the cavity resonances

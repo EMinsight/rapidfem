@@ -236,7 +236,7 @@ _TD_ENERGY_FLOOR = 0.7
 
 
 def _td_trajectory_payload(
-    traj, *, max_frames: int = 36, n_points: int = 6000,
+    traj, *, max_frames: int = 72, n_points: int = 6000,
 ) -> dict[str, Any]:
     """``TdTrajectory`` → a 3-D field-animation point cloud.
 
@@ -401,12 +401,15 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             # Single mode → wrap in a list so the downstream serialiser
             # always sees a uniform shape.
             last_modes = [item.obj]
-        elif item.kind in ("td_result", "td_timeseries", "td_trajectory"):
+        elif item.kind in ("td_result", "td_timeseries", "td_transfer",
+                            "td_trajectory"):
             # Time-domain results are self-contained — emit directly,
-            # no sim/result pairing needed.
+            # no sim/result pairing needed. A transfer function reuses the
+            # time-series payload builder (it sets domain="freq" itself).
             _td_builder = {
                 "td_result": _td_result_payload,
                 "td_timeseries": _td_timeseries_payload,
+                "td_transfer": _td_timeseries_payload,
                 "td_trajectory": _td_trajectory_payload,
             }[item.kind]
             try:

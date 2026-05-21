@@ -28,12 +28,16 @@ A = ptd.state_space()             # the explicit sparse operator A
 print(f"state-space A: {A.shape[0]}x{A.shape[1]}, {A.nnz} nonzeros "
       f"({100 * A.nnz / A.shape[0] ** 2:.1f}% dense)")
 
-# %% Turnkey: propagate the field with the exponential time integrator
-traj = ptd.transient(y0, dt=0.02, steps=50)
+# %% Turnkey: seed a field pulse and propagate it in time
+# A localised pulse spreading through the cavity reads far better than
+# random noise; the model-export verbs above accept any state vector.
+y_pulse = np.zeros(ptd.n_dof)
+y_pulse[ptd.probe_dof((0.5, 0.5, 0.5), field="E", component="z")] = 1.0
+traj = ptd.transient(y_pulse, dt=0.02, steps=120)
 print(f"transient run - {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
 
 # The exponential propagator is exact for the linear homogeneous system at
-# any step size — the step is set by output cadence, not a CFL limit.
+# any step size: the step is set by the output cadence, not a CFL limit.
 
-# %% Visualise — play the trajectory back as a 3-D field animation
+# %% Visualise: play the trajectory back as a 3D field animation
 rf.show(traj)

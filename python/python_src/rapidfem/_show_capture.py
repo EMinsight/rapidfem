@@ -17,7 +17,8 @@ class CapturedItem(NamedTuple):
     name: str
     obj: Any
     kind: str  # "geometry" | "builder" | "simulation" | "result"
-               # | "td_result" | "td_timeseries" | "td_trajectory" | "unknown"
+               # | "td_result" | "td_timeseries" | "td_transfer"
+               # | "td_trajectory" | "unknown"
 
 
 _state = threading.local()
@@ -69,8 +70,10 @@ def classify(obj: Any) -> str:
     if mod.startswith("rapidfem"):
         if cls == "TdScattering":
             return "td_result"
-        if cls in ("TdResponse", "TdTransfer"):
+        if cls == "TdResponse":
             return "td_timeseries"
+        if cls == "TdTransfer":
+            return "td_transfer"
         if cls == "TdTrajectory":
             return "td_trajectory"
     if cls == "Eigenmode":
