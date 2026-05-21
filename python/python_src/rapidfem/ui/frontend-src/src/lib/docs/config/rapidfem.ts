@@ -3,9 +3,13 @@
 
 export const site = {
 	name: 'RapidFEM',
-	tagline: 'Frequency-domain electromagnetic FEM solver',
+	tagline: 'Electromagnetic FEM solver — frequency and time domain',
 	description:
-		'A frequency-domain electromagnetic FEM solver written in Rust, distributed as a Python package. Second-kind Nedelec edge elements, complex-symmetric sparse linear algebra, waveguide and lumped ports.'
+		'An electromagnetic FEM solver written in Rust, distributed as a Python package. ' +
+		'A frequency-domain backend — second-kind Nédélec edge elements, complex-symmetric ' +
+		'sparse linear algebra — and a time-domain DGTD backend — a discontinuous-Galerkin ' +
+		'Maxwell operator advanced by an exponential integrator. Waveguide and lumped ports ' +
+		'for both.'
 };
 
 // External links. `demo` points at the existing static notebook demo that
@@ -51,6 +55,18 @@ export const features: Feature[] = [
 		description: 'Residual error estimator with Dörfler marking, exports a size field for gmsh re-meshing.'
 	},
 	{
+		title: 'Time-Domain DGTD',
+		description: 'A nodal discontinuous-Galerkin Maxwell operator — broadband transients and modal-port S-parameters from a single run.'
+	},
+	{
+		title: 'Exponential Integrator',
+		description: 'Matrix-free Krylov / ETD time stepping — exact for the linear system at any step size, no CFL stability limit.'
+	},
+	{
+		title: 'Model-Order Reduction',
+		description: 'Krylov projection compiles the DGTD operator into a compact reduced model for fast repeated propagation.'
+	},
+	{
 		title: 'Output Formats',
 		description: 'Touchstone (.sNp), VTK field export, and far-field NFFT radiation patterns.'
 	}
@@ -73,11 +89,15 @@ export interface QuickStart {
 	code: string;
 }
 
-export const quickstart: QuickStart = {
-	title: 'Python API',
-	description:
-		'Build geometry, attach materials and physics to entities, then run any number of analyses on the same Problem.',
-	code: `import numpy as np
+// Two entry points sharing one geometry / material / physics API: the
+// frequency-domain sweep and the time-domain DGTD backend. The landing
+// page presents them as switchable tabs.
+export const quickstart: QuickStart[] = [
+	{
+		title: 'Frequency domain',
+		description:
+			'Build geometry, attach materials and physics to entities, then run any number of analyses on the same Problem.',
+		code: `import numpy as np
 import rapidfem as rf
 
 # Build geometry; attach materials + physics directly to entities
@@ -92,10 +112,34 @@ rf.PEC(*air.faces.unassigned)
 g.mesh()
 
 # Define the problem once, run any number of analyses on it
-prob = rf.Problem(g)
+prob = rf.ProblemFD(g)
 result = prob.sweep(np.linspace(8e9, 12e9, 21))
 print(result.frequencies.shape, result.sparams.shape)`
-};
+	},
+	{
+		title: 'Time domain',
+		description:
+			'The same geometry compiles into a time-domain DGTD problem — a linear ODE dy/dt = A·y you can step, drive, or characterise by modal-port S-parameters.',
+		code: `import numpy as np
+import rapidfem as rf
+
+# The same geometry / material / physics API as the FD backend
+g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+air = g.box(22.86e-3, 10.16e-3, 30e-3, position=(-11.43e-3, -5.08e-3, 0),
+            material=rf.Air())
+
+rf.RectWaveguidePort(air.faces.min(axis="z"))
+rf.RectWaveguidePort(air.faces.max(axis="z"))
+rf.PEC(*air.faces.unassigned)
+
+g.mesh()
+
+# A discontinuous-Galerkin time-domain problem — broadband in one run
+ptd = rf.ProblemTD(g, order=2, flux="upwind")
+freqs, S = ptd.sparams(np.linspace(8e9, 12e9, 21), dt=3e-12, steps=820)
+print(freqs.shape, S.shape)`
+	}
+];
 
 export interface ApiModule {
 	name: string;

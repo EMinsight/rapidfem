@@ -7,6 +7,9 @@
 	import CodeBlock from '$lib/docs/components/common/CodeBlock.svelte';
 	import Icon from '$lib/docs/components/common/Icon.svelte';
 
+	// Quick-Start tab — index into the `quickstart` array (FD / TD).
+	let qs_tab = $state(0);
+
 	let copied_cmd = $state<string | null>(null);
 	let cmd_timer: ReturnType<typeof setTimeout> | null = null;
 	function copyCmd(cmd: string) {
@@ -97,8 +100,8 @@
 </script>
 
 <svelte:head>
-	<title>RapidFEM &mdash; frequency-domain Maxwell FEM in Rust</title>
-	<meta name="description" content="Open-source frequency-domain electromagnetic FEM solver. Nedelec-2 edge elements, complex-symmetric sparse linear algebra, Python API, browser notebook UI." />
+	<title>RapidFEM &mdash; electromagnetic Maxwell FEM in Rust</title>
+	<meta name="description" content="Open-source electromagnetic FEM solver — a frequency-domain Nédélec edge-element backend and a time-domain DGTD backend. Rust core, Python API, browser notebook UI." />
 </svelte:head>
 
 {#if IS_STATIC_MODE}
@@ -120,7 +123,7 @@
 				<img src="{base}/favicon.svg" alt="" class="hero-icon" />
 				<h1>RapidFEM</h1>
 			</div>
-			<p>Frequency-domain electromagnetic FEM in Rust. Nédélec-2 edge elements, complex-symmetric sparse solvers, Python API, browser notebook UI.</p>
+			<p>Electromagnetic FEM in Rust — a frequency-domain Nédélec edge-element backend and a time-domain DGTD backend, one geometry API. Complex-symmetric sparse solvers, an exponential time integrator, Python API, browser notebook UI.</p>
 		</div>
 		<div class="quickstart">
 			<div class="install-line">
@@ -167,9 +170,16 @@
 
 		<section class="info-section">
 			<h2 class="section-title">Quick Start</h2>
-			<p class="section-desc">{quickstart.description}</p>
+			<div class="qs-tabs">
+				{#each quickstart as qs, i}
+					<button class="qs-tab" class:active={qs_tab === i} onclick={() => (qs_tab = i)}>
+						{qs.title}
+					</button>
+				{/each}
+			</div>
+			<p class="section-desc">{quickstart[qs_tab].description}</p>
 			<div class="rfdocs snippet-block">
-				<CodeBlock code={quickstart.code} title={quickstart.title} lang="python" />
+				<CodeBlock code={quickstart[qs_tab].code} title={quickstart[qs_tab].title} lang="python" />
 			</div>
 		</section>
 
@@ -447,6 +457,29 @@
 		line-height: 1.6;
 		text-align: center;
 		max-width: 620px;
+	}
+	/* Frequency-domain / time-domain switch for the Quick Start snippet. */
+	.qs-tabs {
+		display: flex;
+		gap: 4px;
+	}
+	.qs-tab {
+		font-family: var(--font-mono);
+		font-size: var(--fs-xs, 11px);
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		padding: 5px 12px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: background var(--transition), border-color var(--transition), color var(--transition);
+	}
+	.qs-tab:hover { color: var(--text); border-color: var(--accent); }
+	.qs-tab.active {
+		color: var(--accent);
+		border-color: var(--accent);
+		background: var(--accent-dim);
 	}
 	/* Wrapper for the ported docs snippets (install cards + CodeBlock).
 	   .rfdocs supplies the docs design tokens; docs.css does the styling. */
