@@ -916,7 +916,7 @@ class ProblemTD:
             source=source, waveform=pulse, probes=[probe],
             dt=dt, steps=steps, krylov_dim=krylov_dim, verbose=verbose,
         )
-        g = np.array([float(pulse(t)) for t in times])
+        g = np.asarray(pulse(times), dtype=float)
         spec_g = np.fft.rfft(g)
         spec_r = np.fft.rfft(resp[0])
         freqs = np.fft.rfftfreq(times.size, dt)
@@ -1003,7 +1003,7 @@ class ProblemTD:
             fw = float(np.ptp(freqs)) or 0.5 * fc
             tau = 1.0 / (np.pi * max(fw, 0.25 * fc))
             pulse = GaussianPulse(t0=4.0 * tau, tau=tau, f0=fc)
-        g = np.array([float(pulse(t)) for t in times])
+        g = np.asarray(pulse(times), dtype=float)
         # DFT kernel — rows index frequency, columns index time sample.
         phase = np.exp(-2j * np.pi * np.outer(freqs, times)) * dt
 
