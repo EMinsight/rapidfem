@@ -93,7 +93,7 @@
 	const embed_test_url = `${base}/embed/test`;
 
 	const install_cmd = 'pip install rapidfem';
-	let copied = false;
+	let copied = $state(false);
 	let copy_timer: ReturnType<typeof setTimeout> | null = null;
 	function copyInstall() {
 		try {
@@ -266,7 +266,6 @@
 		transition: color var(--transition);
 	}
 	header .tab:hover { color: var(--text-muted); }
-	header .tab.active { color: var(--accent); }
 	.landing {
 		flex: 1;
 		display: flex;
@@ -382,25 +381,6 @@
 		transition: transform var(--transition);
 	}
 	.cta:hover .cta-arrow { transform: translateX(2px); }
-	.quickstart-note {
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		color: var(--text-dim);
-		text-align: center;
-		max-width: 560px;
-		line-height: 1.6;
-		margin-top: -12px;
-	}
-	.quickstart-note a {
-		color: var(--text-muted);
-		text-decoration: none;
-		border-bottom: 1px solid var(--border);
-		transition: color var(--transition), border-color var(--transition);
-	}
-	.quickstart-note a:hover {
-		color: var(--accent);
-		border-bottom-color: var(--accent);
-	}
 	.cards {
 		display: flex;
 		gap: 18px;

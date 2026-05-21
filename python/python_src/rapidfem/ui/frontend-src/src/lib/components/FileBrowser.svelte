@@ -254,11 +254,13 @@
 	<div class="list">
 		{#if !IS_STATIC_MODE}
 		<!-- ── Workdir section ────────────────────────────────────────────── -->
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div
 			class="section"
 			class:open={open_sections.has('workdir')}
+			role="button"
+			tabindex="0"
 			onclick={() => toggle_section('workdir')}
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle_section('workdir'); } }}
 			title={workdir}
 		>
 			<span class="chevron" class:open={open_sections.has('workdir')}>
@@ -273,11 +275,13 @@
 		{#if open_sections.has('workdir')}
 			{#each rows as row (row.path)}
 				{#if row.kind === 'dir'}
-					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 					<div
 						class="item-row dir"
 						style="--depth: {row.depth}"
+						role="button"
+						tabindex="0"
 						onclick={() => toggle_folder(row.path)}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle_folder(row.path); } }}
 					>
 						<span class="chevron" class:open={row.open}>
 							<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -292,11 +296,12 @@
 						<span class="name">{row.name}</span>
 					</div>
 				{:else}
-					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 					<div
 						class="item-row file"
 						class:active={row.path === active_path}
 						style="--depth: {row.depth}"
+						role="button"
+						tabindex="-1"
 						ondblclick={(e) => on_rename(e, row.path)}
 					>
 						<button
@@ -326,11 +331,13 @@
 		<!-- ── Examples section ───────────────────────────────────────────── -->
 		{#if examples.length}
 			{#if !IS_STATIC_MODE}<div class="section-sep"></div>{/if}
-			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<div
 				class="section"
 				class:open={open_sections.has('examples')}
+				role="button"
+				tabindex="0"
 				onclick={() => toggle_section('examples')}
+				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle_section('examples'); } }}
 			>
 				<span class="chevron" class:open={open_sections.has('examples')}>
 					<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

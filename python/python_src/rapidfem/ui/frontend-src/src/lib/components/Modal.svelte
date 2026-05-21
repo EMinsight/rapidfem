@@ -22,7 +22,10 @@
 
 	function cancel() {
 		if (!req) return;
-		req.resolve(req.kind === 'prompt' ? null : false);
+		// Narrow on `kind` so `resolve` resolves to the variant's own
+		// signature (the union's resolve would demand a `never` argument).
+		if (req.kind === 'prompt') req.resolve(null);
+		else req.resolve(false);
 		modal.set(null);
 	}
 
@@ -71,8 +74,9 @@
 </script>
 
 {#if req}
-	<div class="backdrop" onclick={cancel} onkeydown={null}>
-		<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"
+	<div class="backdrop" role="button" tabindex="-1" aria-label="Close dialog"
+		 onclick={cancel} onkeydown={null}>
+		<div class="modal" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="modal-title"
 			 onclick={(e) => e.stopPropagation()} onkeydown={null}>
 			<h2 id="modal-title">{req.title}</h2>
 

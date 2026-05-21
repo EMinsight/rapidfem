@@ -286,6 +286,11 @@ class StaticKernelClient {
 	 *  no buffer of that kind. */
 	private blobs = new Map<string, Promise<ArrayBuffer | null>>();
 
+	/** No worker process in static demo mode - nothing to interrupt. */
+	async interrupt(_file: string): Promise<boolean> {
+		return false;
+	}
+
 	private load_manifest(): Promise<Manifest> {
 		if (!this.manifest_promise) {
 			this.manifest_promise = fetch(`${DEMO_BASE}manifest.json`)

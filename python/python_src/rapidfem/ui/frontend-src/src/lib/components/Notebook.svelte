@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Cell from './Cell.svelte';
+	import CellView from './Cell.svelte';
 
 	let {
 		source = $bindable<string>(''),
@@ -33,7 +33,7 @@
 	let cells = $state<Cell[]>([]);
 	let next_id = 1;
 	let focused_id = $state<number | null>(null);
-	let cell_refs: Map<number, ReturnType<typeof Cell>> = new Map();
+	let cell_refs: Map<number, ReturnType<typeof CellView>> = new Map();
 
 	function parse(text: string): Cell[] {
 		// Split keeping the marker lines. A marker line is one that, after
@@ -189,7 +189,7 @@
 
 <div class="notebook">
 	{#each cells as cell, i (cell.id)}
-		<Cell
+		<CellView
 			index={i}
 			bind:source={cell.text}
 			status={cell.status}

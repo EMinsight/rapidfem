@@ -22,7 +22,7 @@
 
 	let {
 		mesh = null as MeshData | null,
-		wireframe = null as { entities: Array<{ name: string; color: [number, number, number]; lines: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null,
+		wireframe = null as { entities: Array<{ name: string; color: [number, number, number]; lines?: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null,
 		show_geometry = true,
 		show_wireframe = false,
 		show_field = false,
@@ -41,7 +41,7 @@
 		td_channel = $bindable('E' as 'E' | 'H')
 	}: {
 		mesh?: MeshData | null;
-		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
+		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines?: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
 		show_geometry?: boolean;
 		show_wireframe?: boolean;
 		show_field?: boolean;

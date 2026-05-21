@@ -712,6 +712,7 @@
 			const tag = i + 1;
 			phys_names.set(tag, ent.name);
 			phys_dim.set(tag, ent.dim);
+			if (!ent.positions) return;  // wireframe-only entity, no triangles
 			const n_tri = ent.positions.length / 9;
 			for (let t = 0; t < n_tri; t++) {
 				for (let v = 0; v < 3; v++) {
@@ -844,10 +845,12 @@
 						class:collapsed={output_collapsed}
 						style:height={output_collapsed ? '24px' : `${output_h}px`}
 					>
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 						<div
 							class="output-head"
+							role="button"
+							tabindex="0"
 							onclick={output_collapsed ? () => { output_collapsed = false; output_h = Math.max(output_h, 140); output_track = output_h; save_layout(); } : undefined}
+							onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && output_collapsed) { e.preventDefault(); output_collapsed = false; output_h = Math.max(output_h, 140); output_track = output_h; save_layout(); } }}
 						>
 							<span class="output-title">Output</span>
 							{#if log_lines.length}
@@ -980,9 +983,10 @@
 								<input class="slider" type="range" min="0" max={freqs.length - 1} step="1" bind:value={field_freq_idx} />
 								<span class="val">
 									{#if eigenmode_mode}
+										{@const q = mode_q_factors[field_freq_idx]}
 										{field_freq_idx + 1}: {(freqs[field_freq_idx] / 1e9).toFixed(4)} GHz
-										{#if mode_q_factors[field_freq_idx] != null && isFinite(mode_q_factors[field_freq_idx])}
-											· Q={mode_q_factors[field_freq_idx].toFixed(1)}
+										{#if q != null && isFinite(q)}
+											· Q={q.toFixed(1)}
 										{/if}
 									{:else}
 										{(freqs[field_freq_idx] / 1e9).toFixed(2)} GHz
@@ -1247,17 +1251,6 @@
 		height: 36px;
 		flex-shrink: 0;
 	}
-	.toolbar .hint {
-		color: var(--text-dim);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-	}
-	.toolbar .spacer { flex: 1; }
-	.toolbar .stat {
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-	}
 	.toolbar button.primary {
 		height: 24px;
 		padding: 0 var(--space-lg);
@@ -1275,12 +1268,6 @@
 		background: var(--bg-panel);
 		color: var(--text);
 		border-color: var(--accent);
-	}
-	.toolbar .sep {
-		width: 1px;
-		height: 16px;
-		background: var(--border);
-		align-self: center;
 	}
 	.toolbar button.primary:disabled {
 		background: var(--bg-panel);
@@ -1356,35 +1343,6 @@
 
 	.tab-spacer { flex: 1; }
 
-	.layer-toggles {
-		display: flex;
-		align-items: center;
-		gap: 0;
-		padding-right: var(--space-md);
-		border-left: 1px solid var(--border);
-		margin-left: 0;
-	}
-	.layer-toggle {
-		background: transparent;
-		color: var(--text-dim);
-		border: 0;
-		border-right: 1px solid var(--border-subtle);
-		padding: 0 var(--space-md);
-		height: 22px;
-		margin: 7px 0 7px var(--space-md);
-		cursor: pointer;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		font-weight: 500;
-		letter-spacing: 0.5px;
-		text-transform: uppercase;
-		transition: color var(--transition);
-	}
-	.layer-toggle:last-child { border-right: 0; }
-	.layer-toggle:hover { color: var(--text-muted); }
-	.layer-toggle.active { color: var(--accent); }
-	.layer-toggle:disabled { color: var(--text-dim); cursor: default; opacity: 0.5; }
-
 	.field-controls {
 		display: flex;
 		flex-wrap: wrap;
@@ -1433,38 +1391,6 @@
 		color: var(--accent);
 		min-width: 80px;
 	}
-	.field-ctrl select {
-		width: auto;
-		height: 22px;
-		padding: 0 var(--space-md);
-	}
-
-	.seg {
-		display: inline-flex;
-		border: 1px solid var(--input-border);
-		height: 22px;
-	}
-	.seg button {
-		background: var(--input-bg);
-		color: var(--text-muted);
-		border: 0;
-		border-right: 1px solid var(--input-border);
-		padding: 0 var(--space-md);
-		font-size: var(--fs-xs);
-		font-family: var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		font-weight: 600;
-		cursor: pointer;
-		transition: color var(--transition), background var(--transition);
-	}
-	.seg button:last-child { border-right: 0; }
-	.seg button:hover { color: var(--text); }
-	.seg button.active {
-		color: var(--accent);
-		background: var(--accent-dim);
-	}
-
 	/* Range slider — flat, themed, no native rounded thumb. */
 	.slider {
 		-webkit-appearance: none;

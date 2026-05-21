@@ -259,12 +259,15 @@
 		{/if}
 	</div>
 	{#if kind === 'markdown' && !edit_mode}
-		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-		<div class="md-rendered" ondblclick={() => { edit_mode = true; onFocus?.(); }} onclick={onFocus} title="Double-click to edit">
+		<div class="md-rendered" role="button" tabindex="0" title="Double-click to edit"
+			 ondblclick={() => { edit_mode = true; onFocus?.(); }}
+			 onclick={onFocus}
+			 onkeydown={(e) => { if (e.key === 'Enter') { edit_mode = true; onFocus?.(); } }}>
 			{@html rendered_md}
 		</div>
 	{:else}
-		<div class="cell-body" bind:this={host} onfocus={onFocus} onclick={onFocus}></div>
+		<div class="cell-body" bind:this={host} role="button" tabindex="-1"
+			 onfocus={onFocus} onclick={onFocus} onkeydown={null}></div>
 	{/if}
 </div>
 
