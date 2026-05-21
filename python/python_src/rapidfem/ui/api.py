@@ -4,7 +4,11 @@ Registered onto the Flask app by ``rapidfem.ui.server.create_app``.
 """
 from __future__ import annotations
 
+import os
+import sys
+import threading
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +21,122 @@ def _format_exception(exc: BaseException) -> dict[str, str]:
         "message": str(exc),
         "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     }
+
+
+_WIN = sys.platform == "win32"
+if _WIN:
+    import ctypes
+    import msvcrt
+    _STD_OUTPUT_HANDLE = -11
+    _STD_ERROR_HANDLE = -12
+    _GetStdHandle = ctypes.windll.kernel32.GetStdHandle
+    _GetStdHandle.restype = ctypes.c_void_p
+    _SetStdHandle = ctypes.windll.kernel32.SetStdHandle
+    _SetStdHandle.argtypes = [ctypes.c_int, ctypes.c_void_p]
+
+
+@contextmanager
+def _capture_streams(on_line, stage: str = "cell"):
+    """OS-level fd capture so Rust eprintln! and gmsh output reach the UI.
+
+    ``on_line(kind, text)`` is called per line as soon as the pipe delivers
+    it. ``stage`` is accepted for call-site clarity. Used by the notebook
+    worker and the demo baker to fold native stdout/stderr into a cell run.
+    """
+    sys.stdout.flush(); sys.stderr.flush()
+    out_r, out_w = os.pipe()
+    err_r, err_w = os.pipe()
+    saved_out = os.dup(1)
+    saved_err = os.dup(2)
+    os.dup2(out_w, 1)
+    os.dup2(err_w, 2)
+
+    saved_win_out = saved_win_err = None
+    if _WIN:
+        saved_win_out = _GetStdHandle(_STD_OUTPUT_HANDLE)
+        saved_win_err = _GetStdHandle(_STD_ERROR_HANDLE)
+        _SetStdHandle(_STD_OUTPUT_HANDLE, msvcrt.get_osfhandle(1))
+        _SetStdHandle(_STD_ERROR_HANDLE, msvcrt.get_osfhandle(2))
+
+    os.close(out_w)
+    os.close(err_w)
+
+    lines_out: list[str] = []
+    lines_err: list[str] = []
+
+    def reader(fd: int, kind: str, accum: list[str]) -> None:
+        buf = b""
+        try:
+            while True:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    raw, _, buf = buf.partition(b"\n")
+                    s = raw.rstrip(b"\r").decode("utf-8", errors="replace")
+                    if not s:
+                        continue
+                    accum.append(s)
+                    try:
+                        on_line(kind, s)
+                    except Exception:
+                        pass
+            if buf:
+                tail = buf.decode("utf-8", errors="replace").rstrip()
+                if tail:
+                    accum.append(tail)
+                    try:
+                        on_line(kind, tail)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    t_out = threading.Thread(target=reader, args=(out_r, "stdout", lines_out), daemon=True)
+    t_err = threading.Thread(target=reader, args=(err_r, "stderr", lines_err), daemon=True)
+    t_out.start()
+    t_err.start()
+    # sys.stdout/stderr in Python wrap the C fd via a TextIOWrapper with a
+    # locale-derived encoding (cp1252 on Windows). User code printing a non-
+    # ASCII char (e.g. subscript) would crash on encode. Force UTF-8 for the
+    # duration of the cell so prints with Unicode work.
+    prior_out_enc = getattr(sys.stdout, "encoding", None)
+    prior_err_enc = getattr(sys.stderr, "encoding", None)
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", write_through=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", write_through=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    try:
+        yield lines_out, lines_err
+    finally:
+        sys.stdout.flush(); sys.stderr.flush()
+        try:
+            if prior_out_enc:
+                sys.stdout.reconfigure(encoding=prior_out_enc)  # type: ignore[attr-defined]
+            if prior_err_enc:
+                sys.stderr.reconfigure(encoding=prior_err_enc)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        os.dup2(saved_out, 1)
+        os.dup2(saved_err, 2)
+        if _WIN and saved_win_out is not None and saved_win_err is not None:
+            _SetStdHandle(_STD_OUTPUT_HANDLE, saved_win_out)
+            _SetStdHandle(_STD_ERROR_HANDLE, saved_win_err)
+        os.close(saved_out)
+        os.close(saved_err)
+        t_out.join(timeout=1.0)
+        t_err.join(timeout=1.0)
 
 
 def _td_result_payload(obj) -> dict[str, Any]:
