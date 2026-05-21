@@ -238,7 +238,7 @@ export class KernelClient {
 // so consumers (Cell, Notebook, +page.svelte) don't have to branch.
 
 import { IS_STATIC_MODE, DEMO_BASE } from './static_mode';
-import { checkBinHeader, resolveGeoRefs } from './binpack';
+import { checkBinHeader, resolveGeoRefs, resolveFieldRefs } from './binpack';
 
 interface BakedDisplayEvent {
 	kind: DisplayKind | 'error';
@@ -379,6 +379,8 @@ class StaticKernelClient {
 			// `fieldBuffer()`, so an example browsed for geometry + S-params
 			// never fetches its field data at all.
 			const geo = await this.load_blob(example.name, 'geo');
+			let field: ArrayBuffer | null = null;
+			let field_loaded = false;
 			for (const ev of cell.display_events) {
 				if (ev.kind === 'error') {
 					if (ev.error) opts.onStream?.('stderr', `${ev.error.type}: ${ev.error.message}`);
@@ -390,6 +392,22 @@ class StaticKernelClient {
 						resolveGeoRefs(payload, geo);
 					} catch (err) {
 						opts.onStream?.('stderr', `[static-demo] geometry load failed: ${err}`);
+					}
+				}
+				// A trajectory's point cloud IS the displayed content, so its
+				// field-buffer refs are resolved eagerly here, the same way
+				// geo refs are. FD field channels stay lazy (fieldBuffer()).
+				if (ev.kind === 'td_trajectory') {
+					if (!field_loaded) {
+						field = await this.load_blob(example.name, 'field');
+						field_loaded = true;
+					}
+					if (field) {
+						try {
+							resolveFieldRefs(payload, field);
+						} catch (err) {
+							opts.onStream?.('stderr', `[static-demo] trajectory load failed: ${err}`);
+						}
 					}
 				}
 				opts.onDisplay?.(ev.kind, payload, ev.name);

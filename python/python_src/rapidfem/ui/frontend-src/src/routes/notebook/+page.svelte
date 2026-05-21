@@ -526,22 +526,32 @@
 		if (isBinRef(p.points) || isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
 			try {
 				const buf = await get_kernel().fieldBuffer(active_path ?? '<unnamed>');
+				log_lines = [...log_lines,
+					` [trajectory] fieldBuffer(${active_path ?? '?'}) = `
+					+ (buf ? `${buf.byteLength} bytes` : 'null')];
 				if (buf) {
 					const { resolveFieldRefs } = await import('$lib/binpack');
 					resolveFieldRefs(p, buf);
 				}
 			} catch (e) {
-				log_lines = [...log_lines, `[trajectory] load failed: ${e}`];
+				log_lines = [...log_lines, `! [trajectory] load failed: ${e}`];
 			}
 		}
+		const pts_len = (p.points as { length?: number } | undefined)?.length;
+		const frm_len = Array.isArray(p.frames_e)
+			? (p.frames_e as unknown[]).length : -1;
+		log_lines = [...log_lines,
+			` [trajectory] points=${pts_len ?? 'unresolved'} `
+			+ `frames=${frm_len < 0 ? 'unresolved' : frm_len}`];
 		// Surface the field cloud on load; the Geometry / Mesh toggles (now
 		// available for trajectories too) compose the cavity back in.
-		if (isBinRef(p.points) || isBinRef(p.frames_e) || isBinRef(p.frames_h)) {
-			log_lines = [...log_lines, '! [trajectory] field buffer unresolved, cloud will be empty'];
-		}
 		td_trajectory_payload = payload;
 		td_frame = 0;
 		td_playing = true;
+		// The trajectory IS a field animation: surface it via the Field
+		// toggle (the frame slider rides along), geometry off so the cloud
+		// is unobstructed.
+		show_field = true;
 		show_geometry = false;
 		show_wireframe = false;
 		display = 'view3d';
@@ -913,7 +923,7 @@
 								<span class="tip left">Toggle tet wireframe<kbd>M</kbd></span>
 							</button>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small has-tip" class:active={show_field} disabled={!last_solve_stats} onclick={() => (show_field = !show_field)}>
+							<button class="tab-btn small has-tip" class:active={show_field} disabled={!last_solve_stats && !td_trajectory_payload} onclick={() => (show_field = !show_field)}>
 								Field
 								<span class="tip left">Toggle field cloud<kbd>E</kbd></span>
 							</button>
@@ -998,7 +1008,7 @@
 							{/if}
 						</div>
 					{/if}
-					{#if display === 'view3d' && td_trajectory_payload}
+					{#if display === 'view3d' && show_field && td_trajectory_payload}
 						<div class="field-controls">
 							<button
 								class="td-play"

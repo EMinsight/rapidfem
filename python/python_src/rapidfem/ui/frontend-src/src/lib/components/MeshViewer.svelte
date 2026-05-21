@@ -808,13 +808,22 @@
 	// same way as the frequency-domain field viz) plus a per-frame |E|/|H|
 	// magnitude. The notebook page owns the time slider / play loop and
 	// feeds the frame index through `td_frame`; this just renders it.
-	const in_td_mode = $derived(td_trajectory != null);
+	// A trajectory is "in TD field mode" only while the Field toggle is on —
+	// the cloud, its colourbar and its channel toolbar all ride that switch.
+	const in_td_mode = $derived(td_trajectory != null && show_field);
 	let td_positions: Float32Array | null = $state(null);
 
 	$effect(() => {
 		const traj = td_trajectory;
-		if (gl_state && !traj) setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
-		if (!traj) { td_positions = null; return; }
+		const want = show_field;
+		// No trajectory, or the Field toggle is off: drop the cloud.
+		if (gl_state && (!traj || !want)) setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
+		if (!traj || !want) {
+			td_positions = null;
+			if (traj) needs_rebuild = true;
+			schedule_render();
+			return;
+		}
 		td_positions = Float32Array.from(traj.points);
 		needs_rebuild = true;
 		if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
