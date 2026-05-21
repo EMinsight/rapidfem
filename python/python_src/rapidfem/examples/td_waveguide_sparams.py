@@ -67,8 +67,8 @@ for k, f in enumerate(freqs):
 d11 = np.abs(np.abs(s_td[:, 0, 0]) - np.abs(s_fd[:, 0, 0]))
 d21 = np.abs(np.abs(s_td[:, 1, 0]) - np.abs(s_fd[:, 1, 0]))
 core = freqs >= 9.0e9   # away from the dispersive near-cutoff band edge
-print(f"\n|S11| TD vs FD  — max deviation {d11.max():.3f}")
-print(f"|S21| TD vs FD  — max deviation {d21.max():.3f}  "
+print(f"\n|S11| TD vs FD  - max deviation {d11.max():.3f}")
+print(f"|S21| TD vs FD  - max deviation {d21.max():.3f}  "
       f"(9-12 GHz core band {d21[core].max():.3f})")
 print("Both backends see a near-matched guide: |S11| near 0, |S21| near "
       "1. The residual |S21| spread is largest at the band edges (the "

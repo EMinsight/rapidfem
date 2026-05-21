@@ -22,7 +22,7 @@ ptd = rf.ProblemTD.box(
     order=2,
     flux="upwind",
 )
-print(f"DGTD cavity — {ptd.n_dof} state DOFs")
+print(f"DGTD cavity - {ptd.n_dof} state DOFs")
 
 # %% Driven run — a soft Gaussian pulse injected at the cavity centre
 pulse = rf.GaussianPulse(t0=0.4, tau=0.1, f0=0.0)
@@ -35,7 +35,7 @@ driven = ptd.driven_transient(
 )
 rf.show(driven)                                  # the probe time signal
 times, response = driven
-print(f"probe — peak |E_z| = {np.abs(response[0]).max():.4f} "
+print(f"probe - peak |E_z| = {np.abs(response[0]).max():.4f} "
       f"over {len(times)} samples")
 
 # %% Free transient — propagate an initial field and capture every snapshot
@@ -43,7 +43,7 @@ y0 = np.zeros(ptd.n_dof)
 y0[ptd.probe_dof([0.5, 0.5, 0.5], field="E", component="z")] = 1.0
 traj = ptd.transient(y0, dt=0.02, steps=120)
 rf.show(traj)                                    # the 3-D field animation
-print(f"transient — {traj.shape[0]} full-field snapshots")
+print(f"transient - {traj.shape[0]} full-field snapshots")
 
 # %% Export the trajectory as a VTK animation — open the .pvd in ParaView
 out_dir = os.path.join(tempfile.gettempdir(), "rapidfem_td_field")
@@ -52,4 +52,4 @@ pvd = ptd.export_vtk(
     os.path.join(out_dir, "cavity"),
     times=np.arange(traj.shape[0]) * 0.02,
 )
-print(f"VTK animation written — open in ParaView:\n  {pvd}")
+print(f"VTK animation written - open in ParaView:\n  {pvd}")

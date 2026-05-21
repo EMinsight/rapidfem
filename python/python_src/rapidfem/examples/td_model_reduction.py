@@ -21,7 +21,7 @@ ptd = rf.ProblemTD.box(
     order=2,                # DG polynomial order
     flux="upwind",
 )
-print(f"DGTD cavity — {ptd.n_dof} state DOFs")
+print(f"DGTD cavity - {ptd.n_dof} state DOFs")
 
 # %% An initial field state to propagate
 rng = np.random.default_rng(0)
@@ -29,7 +29,7 @@ y0 = rng.standard_normal(ptd.n_dof)
 
 # %% Reduce — project the operator onto a Krylov subspace seeded by y0
 rom = ptd.reduce(y0, dim=60)
-print(f"reduced model — order r={rom.r}, from n={rom.n} "
+print(f"reduced model - order r={rom.r}, from n={rom.n} "
       f"({rom.n / rom.r:.0f}x smaller)")
 
 # %% The reduced model reproduces the full exponential propagation
@@ -51,7 +51,7 @@ for _ in range(n_rep):
     ptd.step(y0, 0.3)
 t_full = time.perf_counter() - t0
 
-print(f"{n_rep} propagations — ROM {t_rom:.3f}s vs full {t_full:.3f}s "
+print(f"{n_rep} propagations - ROM {t_rom:.3f}s vs full {t_full:.3f}s "
       f"({t_full / max(t_rom, 1e-9):.0f}x speedup)")
 
 # %% Visualise — the full propagation the reduced model reproduces

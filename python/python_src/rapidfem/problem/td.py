@@ -505,7 +505,7 @@ class ProblemTD:
         self.flux = flux
         self.c = float(c)
         _log(
-            f"operator built — {self.n_dof} DOFs, order {order}, "
+            f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
             f"{len(tag_ports)} ports"
         )
@@ -537,7 +537,7 @@ class ProblemTD:
         obj.size = tuple(size)
         obj.cells = tuple(cells)
         _log(
-            f"operator built (box) — {obj.n_dof} DOFs, order {order}, "
+            f"operator built (box) - {obj.n_dof} DOFs, order {order}, "
             f"flux={flux}"
         )
         return obj
@@ -645,9 +645,9 @@ class ProblemTD:
             )
         if not np.any(s):
             raise ValueError("reduce: start vector must be nonzero")
-        _log(f"reduce — {dim}-step Arnoldi on {n} DOFs")
+        _log(f"reduce - {dim}-step Arnoldi on {n} DOFs")
         rom = TdReducedModel(self._op.reduced_model(s, int(dim)), self.c)
-        _log(f"reduce complete — reduced order r={rom.r}")
+        _log(f"reduce complete - reduced order r={rom.r}")
         return rom
 
     # -- ports: soft sources & field probes --------------------------------
@@ -713,7 +713,7 @@ class ProblemTD:
                 )
         if verbose:
             _log(
-                f"driven_transient complete — {steps} steps "
+                f"driven_transient complete - {steps} steps "
                 f"in {time.time() - t0:.1f}s"
             )
         return TdResponse(
@@ -883,7 +883,7 @@ class ProblemTD:
                 s_mat[:, i, j] = b_out[j, i] / a_inc[j]
         if verbose:
             _log(
-                f"sparams complete — {n_ports}-port S-matrix at "
+                f"sparams complete - {n_ports}-port S-matrix at "
                 f"{freqs.size} frequencies"
             )
         return TdScattering(freqs, s_mat)
@@ -917,7 +917,7 @@ class ProblemTD:
                     f"({el:.1f}s elapsed, ETA {eta:.0f}s)"
                 )
         if verbose:
-            _log(f"transient complete — {steps} steps in {time.time() - t0:.1f}s")
+            _log(f"transient complete - {steps} steps in {time.time() - t0:.1f}s")
         return TdTrajectory(traj, problem=self, dt=dt)
 
     # -- field export ------------------------------------------------------
@@ -1000,5 +1000,5 @@ class ProblemTD:
 
         pvd = f"{base}.pvd"
         _write_pvd(pvd, entries)
-        _log(f"export_vtk — {n_snap} snapshot(s) -> {pvd}")
+        _log(f"export_vtk - {n_snap} snapshot(s) -> {pvd}")
         return pvd

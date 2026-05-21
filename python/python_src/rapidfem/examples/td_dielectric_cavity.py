@@ -27,7 +27,7 @@ rf.show(g)
 
 # %% Build the time-domain problem from the meshed geometry
 ptd = rf.ProblemTD(g, order=2, flux="upwind")
-print(f"ProblemTD from a meshed geometry — {ptd.n_dof // 60} tets, "
+print(f"ProblemTD from a meshed geometry - {ptd.n_dof // 60} tets, "
       f"{ptd.n_dof} state DOFs, dielectric er = {ER}")
 
 # %% Propagate an impulse — the DG operator stays stable on the
@@ -38,7 +38,7 @@ traj = ptd.transient(y0, dt=5e-12, steps=80)
 
 amp = np.linalg.norm(traj, axis=1)
 assert np.all(np.isfinite(traj)), "transient must stay finite"
-print(f"transient — {traj.shape[0]} snapshots, "
+print(f"transient - {traj.shape[0]} snapshots, "
       f"amplitude {amp[0]:.3f} -> {amp[-1]:.3f} (upwind dissipation)")
 print("time-domain DGTD runs end-to-end on the geometry / material API")
 

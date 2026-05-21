@@ -17,7 +17,7 @@ ptd = rf.ProblemTD.box(
     order=2,                # DG polynomial order
     flux="upwind",          # damps the discontinuous spurious modes
 )
-print(f"DGTD cavity — {ptd.n_dof} state DOFs")
+print(f"DGTD cavity - {ptd.n_dof} state DOFs")
 
 # %% Low level: the ODE right-hand side and the verbatim operator
 rng = np.random.default_rng(0)
@@ -30,7 +30,7 @@ print(f"state-space A: {A.shape[0]}x{A.shape[1]}, {A.nnz} nonzeros "
 
 # %% Turnkey: propagate the field with the exponential time integrator
 traj = ptd.transient(y0, dt=0.02, steps=50)
-print(f"transient run — {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
+print(f"transient run - {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
 
 # The exponential propagator is exact for the linear homogeneous system at
 # any step size — the step is set by output cadence, not a CFL limit.
