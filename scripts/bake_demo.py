@@ -18,10 +18,18 @@ Reused machinery (single source of truth for runtime behaviour):
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+# Each example is baked in its own subprocess (see `_bake_subprocess`) so a
+# hang — most often gmsh's OpenCASCADE boolean kernel deadlocking on a dense
+# geometry — takes down only its own attempt, not the whole bake.
+BAKE_TIMEOUT_S = 420   # kill + retry an example that runs longer than this
+BAKE_ATTEMPTS = 3      # attempts per example before it is skipped
 
 # Windows console defaults to cp1252 — print() falls over on the unicode
 # box-drawing chars we use in summaries. Force UTF-8 on the std streams.
@@ -327,6 +335,62 @@ def _is_fresh(json_path: Path, src_path: Path, fingerprint_mtime: float) -> bool
     return out_mtime > src_path.stat().st_mtime and out_mtime > fingerprint_mtime
 
 
+def _bake_subprocess(name: str, log: Path) -> float | None:
+    """Bake one example in a fresh ``--bake-one`` subprocess, with a timeout
+    and up to :data:`BAKE_ATTEMPTS` retries. Returns the wall-clock seconds
+    of the successful attempt, or ``None`` if every attempt failed.
+
+    Isolating each example means a hang — typically gmsh's OpenCASCADE
+    boolean kernel deadlocking on a dense geometry — only takes down its
+    own attempt: the subprocess is killed and retried, and the bake moves
+    on. Every attempt's full output is appended to `log` for later
+    diagnosis; a one-line verdict goes to the console.
+    """
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--bake-one", name]
+    for attempt in range(1, BAKE_ATTEMPTS + 1):
+        t0 = time.perf_counter()
+        outcome: str
+        detail = ""
+        try:
+            proc = subprocess.run(
+                cmd, timeout=BAKE_TIMEOUT_S, capture_output=True, text=True,
+            )
+            dt = time.perf_counter() - t0
+            if proc.returncode == 0:
+                print(f"   baked {name} in {dt:.1f}s (attempt {attempt})",
+                      file=sys.stderr)
+                _append_log(log, name, attempt, "ok", proc.stdout, proc.stderr)
+                return dt
+            outcome = f"exit {proc.returncode} after {dt:.1f}s"
+            detail = (proc.stderr or "")
+            _append_log(log, name, attempt, outcome, proc.stdout, proc.stderr)
+        except subprocess.TimeoutExpired as e:
+            dt = time.perf_counter() - t0
+            outcome = f"TIMED OUT after {BAKE_TIMEOUT_S}s — killed"
+            detail = (e.stderr or b"").decode("utf-8", "replace") \
+                if isinstance(e.stderr, bytes) else (e.stderr or "")
+            _append_log(log, name, attempt, outcome, "", detail)
+        print(f"   attempt {attempt}/{BAKE_ATTEMPTS} for {name}: {outcome}",
+              file=sys.stderr)
+        for line in detail.strip().splitlines()[-6:]:
+            print(f"     | {line}", file=sys.stderr)
+    return None
+
+
+def _append_log(log: Path, name: str, attempt: int, outcome: str,
+                out: str, err: str) -> None:
+    """Append one bake attempt's full output to the diagnostics log."""
+    try:
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n{'='*70}\n{name}  attempt {attempt}  -> {outcome}\n")
+            if out.strip():
+                fh.write(f"--- stdout ---\n{out}\n")
+            if err.strip():
+                fh.write(f"--- stderr ---\n{err}\n")
+    except OSError:
+        pass
+
+
 def bake_all(force: bool = False) -> dict:
     """Bake every example under ``rapidfem/examples/`` into ``static/demo/``.
 
@@ -378,9 +442,17 @@ def bake_all(force: bool = False) -> dict:
             except OSError:
                 pass
 
+    # Per-attempt diagnostics for every subprocess bake — start fresh.
+    bake_log = out_dir / "_bake.log"
+    bake_log.write_text(
+        f"bake_demo run at {time.strftime('%Y-%m-%d %H:%M:%S')}\n",
+        encoding="utf-8",
+    )
+
     entries: list[dict] = []
     baked = 0
     reused = 0
+    skipped: list[str] = []
     for path in py_files:
         json_path = out_dir / f"{path.stem}.json"
         fresh = (not force) and _is_fresh(json_path, path, fingerprint)
@@ -397,17 +469,24 @@ def bake_all(force: bool = False) -> dict:
                   f" + {bin_bytes:,} B bin)", file=sys.stderr)
             reused += 1
         else:
-            t0 = time.perf_counter()
             print(f"\n── baking {path.name}", file=sys.stderr)
-            record = bake_example(path)
-            bin_files = _extract_payloads_to_bin(record, out_dir)
-            json_path.write_text(json.dumps(record), encoding="utf-8")
-            dt = time.perf_counter() - t0
+            # Each example runs in its own subprocess: a gmsh hang takes
+            # down only its own attempt, not the whole bake.
+            dt_val = _bake_subprocess(path.stem, bake_log)
+            if dt_val is None:
+                print(f"!! SKIPPED {path.name} — failed all "
+                      f"{BAKE_ATTEMPTS} attempts (see {bake_log.name})",
+                      file=sys.stderr)
+                skipped.append(path.name)
+                continue
+            dt = dt_val
+            record = json.loads(json_path.read_text(encoding="utf-8"))
+            bin_files = sorted(out_dir.glob(f"{path.stem}.*.bin"))
             json_bytes = json_path.stat().st_size
             bin_bytes = sum(p.stat().st_size for p in bin_files)
             print(
                 f"   {json_bytes:>9,} B json  +  {bin_bytes:>9,} B bin"
-                f"   ({len(bin_files)} bin)   [{dt:.1f}s]",
+                f"   ({len(bin_files)} bin)",
                 file=sys.stderr,
             )
             baked += 1
@@ -448,11 +527,15 @@ def bake_all(force: bool = False) -> dict:
     total_bin = sum(e["bin_bytes"] for e in entries)
     print(
         f"\nwrote manifest.json with {len(entries)} example(s)"
-        f" ({baked} baked, {reused} reused);"
+        f" ({baked} baked, {reused} reused, {len(skipped)} skipped);"
         f" total {total_json:,} B json + {total_bin:,} B bin"
         f" = {total_json + total_bin:,} B",
         file=sys.stderr,
     )
+    if skipped:
+        print(f"!! {len(skipped)} example(s) skipped after {BAKE_ATTEMPTS} "
+              f"attempts each: {', '.join(skipped)}", file=sys.stderr)
+        print(f"   per-attempt diagnostics: {bake_log}", file=sys.stderr)
     return manifest
 
 
