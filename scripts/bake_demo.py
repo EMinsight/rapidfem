@@ -17,6 +17,7 @@ Reused machinery (single source of truth for runtime behaviour):
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -28,8 +29,20 @@ from typing import Iterable
 # Each example is baked in its own subprocess (see `_bake_subprocess`) so a
 # hang — most often gmsh's OpenCASCADE boolean kernel deadlocking on a dense
 # geometry — takes down only its own attempt, not the whole bake.
-BAKE_TIMEOUT_S = 420   # kill + retry an example that runs longer than this
+BAKE_TIMEOUT_S = 600   # kill + retry an example that runs longer than this
 BAKE_ATTEMPTS = 3      # attempts per example before it is skipped
+
+# Bake subprocesses run OpenMP / MKL single-threaded. A threading deadlock
+# needs at least two threads — pinning OpenMP and MKL to one thread removes
+# the gmsh-OCC boolean-kernel deadlock at the source. rayon (the time-domain
+# stepper) keeps its pool: the TD examples do not hang and stay fast.
+_BAKE_ENV = {
+    **os.environ,
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "MKL_THREADING_LAYER": "SEQUENTIAL",
+    "OPENBLAS_NUM_THREADS": "1",
+}
 
 # Windows console defaults to cp1252 — print() falls over on the unicode
 # box-drawing chars we use in summaries. Force UTF-8 on the std streams.
@@ -354,6 +367,7 @@ def _bake_subprocess(name: str, log: Path) -> float | None:
         try:
             proc = subprocess.run(
                 cmd, timeout=BAKE_TIMEOUT_S, capture_output=True, text=True,
+                env=_BAKE_ENV,
             )
             dt = time.perf_counter() - t0
             if proc.returncode == 0:
