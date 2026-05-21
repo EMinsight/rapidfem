@@ -38,7 +38,6 @@ shifts COGs, so names cannot survive.
 
 from __future__ import annotations
 
-import io
 import math
 import os
 import tempfile
