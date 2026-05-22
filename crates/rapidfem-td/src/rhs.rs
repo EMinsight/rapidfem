@@ -8,6 +8,7 @@
 //! Per-element fields are stored node-major: `field[node*3 + component]`,
 //! with components ordered `x, y, z`.
 
+use crate::constants::Field;
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
@@ -26,8 +27,8 @@ use std::sync::Mutex;
 pub fn element_curl(
     re: &ReferenceElement,
     gf: &GeometricFactors,
-    field: &[f64],
-) -> Vec<f64> {
+    field: &[Field],
+) -> Vec<Field> {
     let n = re.n_nodes;
     let mut out = vec![0.0; 3 * n];
     let mut rd = vec![0.0; 3 * n];
@@ -44,10 +45,10 @@ pub fn element_curl(
 fn element_curl_into(
     re: &ReferenceElement,
     gf: &GeometricFactors,
-    field: &[f64],
-    out: &mut [f64],
-    rd: &mut [f64],
-    pd: &mut [f64],
+    field: &[Field],
+    out: &mut [Field],
+    rd: &mut [Field],
+    pd: &mut [Field],
 ) {
     let n = re.n_nodes;
     debug_assert_eq!(field.len(), 3 * n);
@@ -90,11 +91,11 @@ fn element_curl_into(
 }
 
 #[inline]
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+fn dot3(a: [Field; 3], b: [Field; 3]) -> Field {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 #[inline]
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+fn cross3(a: [Field; 3], b: [Field; 3]) -> [Field; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -105,9 +106,9 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// Per (element, local face) flux data.
 struct FaceInfo {
     /// Outward unit normal.
-    normal: [f64; 3],
+    normal: [Field; 3],
     /// Surface scaling `2·area_phys / |det J|` (the lift assumes a 1/2 reference face).
-    fscale: f64,
+    fscale: Field,
     /// Neighbour element, or `usize::MAX` on a domain-boundary face.
     neighbor: usize,
     /// Neighbour local face.
@@ -146,7 +147,7 @@ impl PortSpec {
         mesh: &Mesh,
         face_tag: i32,
         mode: (usize, usize),
-        direction: Option<[f64; 3]>,
+        direction: Option<[Field; 3]>,
     ) -> Option<PortSpec> {
         let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
         if tris.is_empty() {
@@ -161,7 +162,7 @@ impl PortSpec {
                 }
             }
         }
-        let coords: Vec<[f64; 3]> =
+        let coords: Vec<[Field; 3]> =
             node_ids.iter().map(|&nd| mesh.nodes[nd]).collect();
 
         // Geometric normal of a representative port triangle, oriented to
@@ -226,7 +227,7 @@ struct PortData {
     /// `face_idx * n_face_nodes + m`. Depends only on geometry and the mode,
     /// so the per-timestep projection need not recompute it. Empty for
     /// absorbing-only ports (no mode).
-    profiles: Vec<([f64; 3], [f64; 3])>,
+    profiles: Vec<([Field; 3], [Field; 3])>,
 }
 
 /// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
@@ -234,15 +235,15 @@ struct PortData {
 /// performs no per-element heap allocation.
 struct Scratch {
     /// Element E / H fields, deinterleaved (`3·Np` each).
-    ee: Vec<f64>,
-    hh: Vec<f64>,
+    ee: Vec<Field>,
+    hh: Vec<Field>,
     /// Curl results dE / dH (`3·Np` each).
-    de: Vec<f64>,
-    dh: Vec<f64>,
+    de: Vec<Field>,
+    dh: Vec<Field>,
     /// `element_curl_into` scratch — reference (`3·Np`) and physical (`9·Np`)
     /// derivatives.
-    rd: Vec<f64>,
-    pd: Vec<f64>,
+    rd: Vec<Field>,
+    pd: Vec<Field>,
 }
 
 impl Scratch {
@@ -290,17 +291,17 @@ impl Drop for ScratchGuard<'_> {
 /// allocates nothing beyond the geometric growth of the output accumulators.
 struct SparseFragment {
     /// Global probe vector — one DOF set to 1 at a time.
-    probe: Vec<f64>,
+    probe: Vec<Field>,
     /// Element output block (`stride`).
-    out: Vec<f64>,
+    out: Vec<Field>,
     /// Operator scratch.
     scratch: Scratch,
     /// `(local_row, global_col, value)` triples for one element — cleared
     /// and refilled per element; pre-sized to the worst-case stencil count.
-    entries: Vec<(usize, usize, f64)>,
+    entries: Vec<(usize, usize, Field)>,
     /// Accumulated CSR fragment for this job, in element order.
     col_idx: Vec<usize>,
-    values: Vec<f64>,
+    values: Vec<Field>,
     row_len: Vec<usize>,
 }
 
@@ -327,15 +328,15 @@ impl SparseFragment {
 #[derive(Clone, Copy, Debug)]
 pub struct ElemMaterial {
     /// Diagonal relative permittivity `(ε_x, ε_y, ε_z)`.
-    pub eps: [f64; 3],
+    pub eps: [Field; 3],
     /// Diagonal relative permeability `(μ_x, μ_y, μ_z)`.
-    pub mu: [f64; 3],
+    pub mu: [Field; 3],
     /// Electric conductivity `σ` (Ohmic loss).
-    pub sigma: f64,
+    pub sigma: Field,
     /// Magnetic conductivity `σ*` — the magnetic-loss term. Setting
     /// `σ*/μ = σ/ε` gives an impedance-matched absorbing layer (no reflection
     /// at normal incidence).
-    pub sigma_m: f64,
+    pub sigma_m: Field,
 }
 
 impl ElemMaterial {
@@ -348,13 +349,13 @@ impl ElemMaterial {
     };
 
     /// An isotropic, lossless material from scalar `ε_r`, `μ_r`, `σ`.
-    pub fn isotropic(eps: f64, mu: f64, sigma: f64) -> Self {
+    pub fn isotropic(eps: Field, mu: Field, sigma: Field) -> Self {
         ElemMaterial { eps: [eps; 3], mu: [mu; 3], sigma, sigma_m: 0.0 }
     }
 
     /// An impedance-matched absorbing material: `σ*/μ = σ/ε = nu`, so the
     /// wave is absorbed with no reflection at the layer interface.
-    pub fn matched_absorber(eps: f64, mu: f64, nu: f64) -> Self {
+    pub fn matched_absorber(eps: Field, mu: Field, nu: Field) -> Self {
         ElemMaterial {
             eps: [eps; 3],
             mu: [mu; 3],
@@ -377,11 +378,11 @@ struct DispersiveElem {
     /// Mesh element index this Debye data is attached to.
     elem: usize,
     /// Relaxation coefficient `a = -1/τ` of `Ṗ = a·P + g·E`.
-    a: f64,
+    a: Field,
     /// Source gain `g = (ε_s − ε_∞)/τ` of `Ṗ = a·P + g·E`.
-    g: f64,
+    g: Field,
     /// `1/ε_∞` — the augmented Ampere-law scaling on this element's E nodes.
-    inv_eps_inf: f64,
+    inv_eps_inf: Field,
 }
 
 /// Semi-discrete DG operator for the Maxwell curl equations on a tetrahedral
@@ -404,12 +405,12 @@ pub struct MaxwellOperator {
     /// 4 faces per element, flattened: `faces[e*4 + f]`.
     faces: Vec<FaceInfo>,
     /// Upwind blend: 0 = central, 1 = full upwind.
-    flux_alpha: f64,
+    flux_alpha: Field,
     /// Per-element diagonal `1/ε`, `1/μ`, `σ/ε` (electric), `σ*/μ` (magnetic).
-    inv_eps: Vec<[f64; 3]>,
-    inv_mu: Vec<[f64; 3]>,
-    sigma_eps: Vec<[f64; 3]>,
-    sigma_mu: Vec<[f64; 3]>,
+    inv_eps: Vec<[Field; 3]>,
+    inv_mu: Vec<[Field; 3]>,
+    sigma_eps: Vec<[Field; 3]>,
+    sigma_mu: Vec<[Field; 3]>,
     /// Reusable per-thread scratch buffers — keeps `apply` allocation-free
     /// after the first call (see [`Scratch`]).
     scratch_pool: Mutex<Vec<Scratch>>,
@@ -426,7 +427,7 @@ pub struct MaxwellOperator {
 
 impl MaxwellOperator {
     /// Build a vacuum operator (`ε = μ = 1`, `σ = 0`).
-    pub fn new(mesh: &Mesh, order: usize, flux_alpha: f64) -> Self {
+    pub fn new(mesh: &Mesh, order: usize, flux_alpha: Field) -> Self {
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         Self::new_with_materials(mesh, order, flux_alpha, &vacuum)
     }
@@ -436,7 +437,7 @@ impl MaxwellOperator {
     pub fn new_with_materials(
         mesh: &Mesh,
         order: usize,
-        flux_alpha: f64,
+        flux_alpha: Field,
         materials: &[ElemMaterial],
     ) -> Self {
         Self::new_with_materials_ports(mesh, order, flux_alpha, materials, &[])
@@ -448,7 +449,7 @@ impl MaxwellOperator {
     pub fn new_with_materials_ports(
         mesh: &Mesh,
         order: usize,
-        flux_alpha: f64,
+        flux_alpha: Field,
         materials: &[ElemMaterial],
         ports: &[PortSpec],
     ) -> Self {
@@ -470,7 +471,7 @@ impl MaxwellOperator {
     pub fn new_with_materials_ports_dispersive(
         mesh: &Mesh,
         order: usize,
-        flux_alpha: f64,
+        flux_alpha: Field,
         materials: &[ElemMaterial],
         ports: &[PortSpec],
         dispersive: &[(usize, DebyeMaterial)],
@@ -480,7 +481,7 @@ impl MaxwellOperator {
         let topo = FaceTopology::build(mesh);
         let n_elem = mesh.n_tets();
 
-        let face_coords = |e: usize, f: usize| -> Vec<[f64; 3]> {
+        let face_coords = |e: usize, f: usize| -> Vec<[Field; 3]> {
             re.face_nodes[f]
                 .iter()
                 .map(|&vi| geom[e].map(re.nodes[vi]))
@@ -508,7 +509,7 @@ impl MaxwellOperator {
                         face_coords(df.neighbor, df.neighbor_local_face);
                     here.iter()
                         .map(|p| {
-                            let (mut best, mut bm) = (f64::MAX, 0);
+                            let (mut best, mut bm) = (Field::MAX, 0);
                             for (m2, q) in there.iter().enumerate() {
                                 let d = (p[0] - q[0]).powi(2)
                                     + (p[1] - q[1]).powi(2)
@@ -534,16 +535,16 @@ impl MaxwellOperator {
             }
         }
         assert_eq!(materials.len(), n_elem, "one material per element");
-        let recip = |v: [f64; 3]| [1.0 / v[0], 1.0 / v[1], 1.0 / v[2]];
-        let inv_eps: Vec<[f64; 3]> =
+        let recip = |v: [Field; 3]| [1.0 / v[0], 1.0 / v[1], 1.0 / v[2]];
+        let inv_eps: Vec<[Field; 3]> =
             materials.iter().map(|m| recip(m.eps)).collect();
-        let inv_mu: Vec<[f64; 3]> =
+        let inv_mu: Vec<[Field; 3]> =
             materials.iter().map(|m| recip(m.mu)).collect();
-        let sigma_eps: Vec<[f64; 3]> = materials
+        let sigma_eps: Vec<[Field; 3]> = materials
             .iter()
             .map(|m| [m.sigma / m.eps[0], m.sigma / m.eps[1], m.sigma / m.eps[2]])
             .collect();
-        let sigma_mu: Vec<[f64; 3]> = materials
+        let sigma_mu: Vec<[Field; 3]> = materials
             .iter()
             .map(|m| {
                 [
@@ -652,12 +653,12 @@ impl MaxwellOperator {
     /// `field`: 0 = E, 1 = H. `comp`: 0 = x, 1 = y, 2 = z.
     pub fn nearest_node_dof(
         &self,
-        point: [f64; 3],
+        point: [Field; 3],
         field: usize,
         comp: usize,
     ) -> usize {
         let np = self.re.n_nodes;
-        let (mut best_d, mut best) = (f64::MAX, 0);
+        let (mut best_d, mut best) = (Field::MAX, 0);
         for e in 0..self.n_elem {
             for node in 0..np {
                 let p = self.geom[e].map(self.re.nodes[node]);
@@ -675,7 +676,7 @@ impl MaxwellOperator {
 
     /// Physical coordinates of every DG node — `n_elem·Np` points in state
     /// order, `point[e*Np + node]`. The hook for a field export.
-    pub fn node_coords(&self) -> Vec<[f64; 3]> {
+    pub fn node_coords(&self) -> Vec<[Field; 3]> {
         let np = self.re.n_nodes;
         let mut pts = Vec::with_capacity(self.n_elem * np);
         for e in 0..self.n_elem {
@@ -716,7 +717,7 @@ impl MaxwellOperator {
 
     /// Cutoff angular frequency of port `port_idx`'s waveguide mode, in the
     /// operator's normalised units (`0` if the port carries no mode).
-    pub fn port_cutoff(&self, port_idx: usize) -> f64 {
+    pub fn port_cutoff(&self, port_idx: usize) -> Field {
         self.ports[port_idx]
             .rect
             .as_ref()
@@ -733,7 +734,7 @@ impl MaxwellOperator {
     /// `(n̂×h_t − n̂×(n̂×e_t))` (electric) and `(−n̂×e_t − n̂×(n̂×h_t))`
     /// (magnetic) over the port faces, with the per-element material
     /// scaling applied.
-    pub fn port_source(&self, port_idx: usize) -> Vec<f64> {
+    pub fn port_source(&self, port_idx: usize) -> Vec<Field> {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let cols = 4 * nfp;
@@ -789,9 +790,9 @@ impl MaxwellOperator {
     /// `(P_e, P_h)` time series through a transform first.
     pub fn port_modal_projections(
         &self,
-        y: &[f64],
+        y: &[Field],
         port_idx: usize,
-    ) -> (f64, f64) {
+    ) -> (Field, Field) {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let pd = &self.ports[port_idx];
@@ -822,7 +823,7 @@ impl MaxwellOperator {
 
     /// Evaluate `dy/dt = A·y`, allocating the result. See [`apply_into`](Self::apply_into)
     /// for the allocation-free form.
-    pub fn apply(&self, y: &[f64]) -> Vec<f64> {
+    pub fn apply(&self, y: &[Field]) -> Vec<Field> {
         let mut dy = vec![0.0; self.n_dof()];
         self.apply_into(y, &mut dy);
         dy
@@ -838,7 +839,7 @@ impl MaxwellOperator {
     /// updated after the `[E,H]` block: `Ṗ = a·P + g·E` is a per-node local
     /// ODE (no spatial derivative), and the `[E,H]` block already picked up
     /// the `−Ṗ/ε_∞` polarisation current on every dispersive element.
-    pub fn apply_into(&self, y: &[f64], dy: &mut [f64]) {
+    pub fn apply_into(&self, y: &[Field], dy: &mut [Field]) {
         debug_assert_eq!(dy.len(), self.n_dof());
         let np = self.re.n_nodes;
         let stride = np * 6;
@@ -892,8 +893,8 @@ impl MaxwellOperator {
     fn apply_element(
         &self,
         e: usize,
-        y: &[f64],
-        out: &mut [f64],
+        y: &[Field],
+        out: &mut [Field],
         s: &mut Scratch,
     ) {
         let np = self.re.n_nodes;
@@ -1025,7 +1026,7 @@ impl MaxwellOperator {
 
     /// Assemble the operator as a dense `N×N` row-major matrix by applying it
     /// to each unit vector. For validation on small meshes.
-    pub fn assemble_dense(&self) -> Vec<f64> {
+    pub fn assemble_dense(&self) -> Vec<Field> {
         let n = self.n_dof();
         let mut a = vec![0.0; n * n];
         let mut ej = vec![0.0; n];
@@ -1057,7 +1058,7 @@ impl MaxwellOperator {
     /// runs in parallel, like [`apply_into`](Self::apply_into).
     ///
     /// [`assemble_energy_mass`]: Self::assemble_energy_mass
-    pub fn field_energy(&self, y: &[f64]) -> f64 {
+    pub fn field_energy(&self, y: &[Field]) -> Field {
         let np = self.re.n_nodes;
         let stride = np * 6;
         debug_assert!(
@@ -1090,7 +1091,7 @@ impl MaxwellOperator {
                 }
                 acc
             })
-            .sum::<f64>();
+            .sum::<Field>();
         0.5 * half
     }
 
@@ -1098,7 +1099,7 @@ impl MaxwellOperator {
     /// energy `yᵀM̃y = ∫(ε|E|² + μ|H|²)`: per element a copy of
     /// `|det J_e|·M_ref`, scaled by `ε` on the E components and `μ` on the H
     /// components.
-    pub fn assemble_energy_mass(&self) -> Vec<f64> {
+    pub fn assemble_energy_mass(&self) -> Vec<Field> {
         let np = self.re.n_nodes;
         let n = self.n_dof();
         let mut m = vec![0.0; n * n];
@@ -1131,7 +1132,7 @@ pub struct CsrMatrix {
     /// Column index of each stored entry.
     pub col_idx: Vec<usize>,
     /// Stored values.
-    pub values: Vec<f64>,
+    pub values: Vec<Field>,
 }
 
 impl CsrMatrix {
@@ -1141,7 +1142,7 @@ impl CsrMatrix {
     }
 
     /// Sparse matrix-vector product `A·x`.
-    pub fn matvec(&self, x: &[f64]) -> Vec<f64> {
+    pub fn matvec(&self, x: &[Field]) -> Vec<Field> {
         let mut y = vec![0.0; self.n];
         for i in 0..self.n {
             let mut acc = 0.0;

@@ -12,16 +12,17 @@
 use rayon::prelude::*;
 
 use crate::constants::{
-    ARNOLDI_BREAKDOWN, ARNOLDI_CHUNK, EXPM_SCALE_THRESHOLD, EXPM_TAYLOR_TERMS,
+    ARNOLDI_BREAKDOWN, ARNOLDI_CHUNK, Accum, EXPM_SCALE_THRESHOLD,
+    EXPM_TAYLOR_TERMS,
 };
 
 /// Dense matrix exponential of an `n×n` row-major matrix, via
 /// scaling-and-squaring with a Taylor core.
-pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
+pub fn expm(a: &[Accum], n: usize) -> Vec<Accum> {
     // Infinity norm.
     let mut norm = 0.0_f64;
     for i in 0..n {
-        let row: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
+        let row: Accum = (0..n).map(|j| a[i * n + j].abs()).sum();
         norm = norm.max(row);
     }
     // Scale so the ∞-norm is within EXPM_SCALE_THRESHOLD.
@@ -31,14 +32,14 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
         0
     };
     let scale = 2.0_f64.powi(s as i32);
-    let b: Vec<f64> = a.iter().map(|x| x / scale).collect();
+    let b: Vec<Accum> = a.iter().map(|x| x / scale).collect();
 
     // exp(B) = Σ Bᵏ/k!  (≈18 terms suffice for ‖B‖ ≤ 1/2).
     let mut result = identity(n);
     let mut term = identity(n);
     for k in 1..=EXPM_TAYLOR_TERMS {
         term = matmul(&term, &b, n);
-        let inv = 1.0 / k as f64;
+        let inv = 1.0 / k as Accum;
         for x in term.iter_mut() {
             *x *= inv;
         }
@@ -54,7 +55,7 @@ pub fn expm(a: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// `out ← A·B` for `n×n` row-major matrices; `out` must not alias `a`/`b`.
-fn matmul_into(a: &[f64], b: &[f64], n: usize, out: &mut [f64]) {
+fn matmul_into(a: &[Accum], b: &[Accum], n: usize, out: &mut [Accum]) {
     out[..n * n].fill(0.0);
     for i in 0..n {
         for k in 0..n {
@@ -73,11 +74,11 @@ fn matmul_into(a: &[f64], b: &[f64], n: usize, out: &mut [f64]) {
 /// demand and reused.
 struct ExpmScratch {
     cap: usize,
-    b: Vec<f64>,
-    result: Vec<f64>,
-    term: Vec<f64>,
-    term2: Vec<f64>,
-    tmp: Vec<f64>,
+    b: Vec<Accum>,
+    result: Vec<Accum>,
+    term: Vec<Accum>,
+    term2: Vec<Accum>,
+    tmp: Vec<Accum>,
 }
 
 impl ExpmScratch {
@@ -105,13 +106,13 @@ impl ExpmScratch {
 
 /// `exp(A)` of an `n×n` row-major matrix into `out`, reusing `s` — the
 /// allocation-free counterpart of [`expm`].
-fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
+fn expm_into(a: &[Accum], n: usize, out: &mut [Accum], s: &mut ExpmScratch) {
     let nn = n * n;
     s.ensure(nn);
 
     let mut norm = 0.0_f64;
     for i in 0..n {
-        let row: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
+        let row: Accum = (0..n).map(|j| a[i * n + j].abs()).sum();
         norm = norm.max(row);
     }
     let sq: u32 = if norm > EXPM_SCALE_THRESHOLD {
@@ -134,7 +135,7 @@ fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
     // exp(B) = Σ Bᵏ/k!  (≈18 terms suffice for ‖B‖ ≤ 1/2).
     for k in 1..=EXPM_TAYLOR_TERMS {
         matmul_into(&s.term[..nn], &s.b[..nn], n, &mut s.term2);
-        let inv = 1.0 / k as f64;
+        let inv = 1.0 / k as Accum;
         for x in s.term2[..nn].iter_mut() {
             *x *= inv;
         }
@@ -156,20 +157,20 @@ fn expm_into(a: &[f64], n: usize, out: &mut [f64], s: &mut ExpmScratch) {
 /// [`expmv_into`](Self::expmv_into) allocates nothing once warmed.
 pub struct KrylovWorkspace {
     /// Arnoldi basis, flat — vector `j` occupies `basis[j*n .. (j+1)*n]`.
-    basis: Vec<f64>,
+    basis: Vec<Accum>,
     /// Arnoldi working vector / matvec output.
-    w: Vec<f64>,
+    w: Vec<Accum>,
     /// CGS2 projection coefficients — `Vᵀ·w` for one orthogonalisation pass.
-    proj: Vec<f64>,
+    proj: Vec<Accum>,
     /// Upper Hessenberg `H`, `m×m` row-major.
-    h: Vec<f64>,
+    h: Vec<Accum>,
     /// `t·H` and `exp(t·H)`, packed `dim×dim`.
-    th: Vec<f64>,
-    exp_th: Vec<f64>,
+    th: Vec<Accum>,
+    exp_th: Vec<Accum>,
     expm_scratch: ExpmScratch,
     /// Augmented state / result buffers for [`etd_step_into`](Self::etd_step_into).
-    aug_in: Vec<f64>,
-    aug_out: Vec<f64>,
+    aug_in: Vec<Accum>,
+    aug_out: Vec<Accum>,
 }
 
 impl Default for KrylovWorkspace {
@@ -224,14 +225,14 @@ impl KrylovWorkspace {
     pub fn expmv_into<F>(
         &mut self,
         matvec: F,
-        v: &[f64],
-        t: f64,
+        v: &[Accum],
+        t: Accum,
         max_dim: usize,
-        tol: f64,
-        out: &mut [f64],
+        tol: Accum,
+        out: &mut [Accum],
     ) -> usize
     where
-        F: Fn(&[f64], &mut [f64]),
+        F: Fn(&[Accum], &mut [Accum]),
     {
         let n = v.len();
         self.ensure(n, max_dim);
@@ -366,14 +367,14 @@ impl KrylovWorkspace {
     pub fn etd_step_into<F>(
         &mut self,
         matvec: F,
-        y: &[f64],
-        b: &[f64],
-        h: f64,
+        y: &[Accum],
+        b: &[Accum],
+        h: Accum,
         max_dim: usize,
-        tol: f64,
-        out: &mut [f64],
+        tol: Accum,
+        out: &mut [Accum],
     ) where
-        F: Fn(&[f64], &mut [f64]),
+        F: Fn(&[Accum], &mut [Accum]),
     {
         let n = y.len();
         // Borrow the augmented buffers out so `expmv_into` can take `&mut self`.
@@ -385,7 +386,7 @@ impl KrylovWorkspace {
         z[n] = 1.0;
 
         // Augmented operator: [[A, b], [0, 0]] applied to [x; ξ].
-        let aug = |zz: &[f64], o: &mut [f64]| {
+        let aug = |zz: &[Accum], o: &mut [Accum]| {
             matvec(&zz[..n], &mut o[..n]);
             let xi = zz[n];
             for k in 0..n {
@@ -407,9 +408,9 @@ impl KrylovWorkspace {
 /// on a lucky breakdown. Allocating wrapper around
 /// [`KrylovWorkspace::expmv_into`] — reuse a [`KrylovWorkspace`] directly to
 /// step without allocating.
-pub fn expmv<F>(matvec: F, v: &[f64], t: f64, m: usize) -> Vec<f64>
+pub fn expmv<F>(matvec: F, v: &[Accum], t: Accum, m: usize) -> Vec<Accum>
 where
-    F: Fn(&[f64]) -> Vec<f64>,
+    F: Fn(&[Accum]) -> Vec<Accum>,
 {
     let mut ws = KrylovWorkspace::new();
     let mut out = vec![0.0; v.len()];
@@ -427,15 +428,15 @@ where
 /// `exp(h·[[A, b],[0, 0]])·[y; 1] = [exp(hA)y + h·φ₁(hA)b ; 1]`, so the
 /// Krylov `expmv` handles the φ-function with no extra machinery — the
 /// homogeneous part is exact at any `h`.
-pub fn etd_step<F>(matvec: F, y: &[f64], b: &[f64], h: f64, m: usize) -> Vec<f64>
+pub fn etd_step<F>(matvec: F, y: &[Accum], b: &[Accum], h: Accum, m: usize) -> Vec<Accum>
 where
-    F: Fn(&[f64]) -> Vec<f64>,
+    F: Fn(&[Accum]) -> Vec<Accum>,
 {
     let n = y.len();
     let mut z = Vec::with_capacity(n + 1);
     z.extend_from_slice(y);
     z.push(1.0);
-    let aug = |zz: &[f64]| -> Vec<f64> {
+    let aug = |zz: &[Accum]| -> Vec<Accum> {
         let xi = zz[n];
         let mut out = matvec(&zz[..n]);
         for (o, bk) in out.iter_mut().zip(b) {
@@ -457,24 +458,24 @@ where
 /// extra machinery. Exact when `b` is linear; second-order otherwise.
 pub fn etd_step2<F>(
     matvec: F,
-    y: &[f64],
-    b0: &[f64],
-    b1: &[f64],
-    h: f64,
+    y: &[Accum],
+    b0: &[Accum],
+    b1: &[Accum],
+    h: Accum,
     m: usize,
-) -> Vec<f64>
+) -> Vec<Accum>
 where
-    F: Fn(&[f64]) -> Vec<f64>,
+    F: Fn(&[Accum]) -> Vec<Accum>,
 {
     let n = y.len();
-    let d: Vec<f64> =
+    let d: Vec<Accum> =
         b0.iter().zip(b1).map(|(a, b)| (b - a) / h).collect();
     // Augmented state [y; p; q] with p(0)=0, q(0)=1 ⇒ q≡1, p≡t.
     let mut z = Vec::with_capacity(n + 2);
     z.extend_from_slice(y);
     z.push(0.0);
     z.push(1.0);
-    let aug = |zz: &[f64]| -> Vec<f64> {
+    let aug = |zz: &[Accum]| -> Vec<Accum> {
         let (p, q) = (zz[n], zz[n + 1]);
         let mut out = matvec(&zz[..n]);
         for k in 0..n {
@@ -496,13 +497,13 @@ where
 /// or at `max_dim`). Returns the result and the dimension actually used.
 pub fn expmv_adaptive<F>(
     matvec: F,
-    v: &[f64],
-    t: f64,
-    tol: f64,
+    v: &[Accum],
+    t: Accum,
+    tol: Accum,
     max_dim: usize,
-) -> (Vec<f64>, usize)
+) -> (Vec<Accum>, usize)
 where
-    F: Fn(&[f64]) -> Vec<f64>,
+    F: Fn(&[Accum]) -> Vec<Accum>,
 {
     let n = v.len();
     let beta = norm2(v);
@@ -510,7 +511,7 @@ where
         return (vec![0.0; n], 0);
     }
     let md = max_dim.max(1);
-    let mut basis: Vec<Vec<f64>> =
+    let mut basis: Vec<Vec<Accum>> =
         vec![v.iter().map(|x| x / beta).collect()];
     let mut h = vec![0.0; md * md];
 
@@ -553,7 +554,7 @@ where
     unreachable!("loop returns at m == md")
 }
 
-fn identity(n: usize) -> Vec<f64> {
+fn identity(n: usize) -> Vec<Accum> {
     let mut m = vec![0.0; n * n];
     for i in 0..n {
         m[i * n + i] = 1.0;
@@ -561,7 +562,7 @@ fn identity(n: usize) -> Vec<f64> {
     m
 }
 
-fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+fn matmul(a: &[Accum], b: &[Accum], n: usize) -> Vec<Accum> {
     let mut c = vec![0.0; n * n];
     for i in 0..n {
         for k in 0..n {
@@ -577,11 +578,11 @@ fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     c
 }
 
-fn dot(a: &[f64], b: &[f64]) -> f64 {
+fn dot(a: &[Accum], b: &[Accum]) -> Accum {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-fn norm2(a: &[f64]) -> f64 {
+fn norm2(a: &[Accum]) -> Accum {
     dot(a, a).sqrt()
 }
 
