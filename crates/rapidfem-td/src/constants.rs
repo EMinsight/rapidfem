@@ -80,6 +80,31 @@ pub const ARNOLDI_MIN_CHUNK: usize = 256;
 /// deriving the chunk from `n` and the thread count fixes that.
 pub const ARNOLDI_TASKS_PER_THREAD: usize = 4;
 
+// Block-Krylov MIMO macromodel build.
+
+/// Deflation tolerance for the block-Arnoldi macromodel build
+/// ([`crate::macromodel::MacroModel::build`]). After CGS2-orthogonalising
+/// the next candidate column against the existing basis, any column
+/// whose remaining norm falls below this threshold is treated as a
+/// deflation: the column is dropped from the active block (its
+/// direction is already in the subspace) and the build proceeds with
+/// one column fewer. Distinct from [`KRYLOV_TOL`] (the propagator
+/// a-posteriori estimate) and [`ARNOLDI_BREAKDOWN`] (the single-vector
+/// exponential-propagator breakdown), because the block-Krylov
+/// deflation is a different event, measured on the raw residual norm
+/// of a candidate block column rather than the matvec a-posteriori
+/// estimate.
+pub const MACROMODEL_DEFLATION_TOL: Accum = 1e-10;
+
+/// Default block-Krylov order `r` for the macromodel build when the
+/// caller does not pick one explicitly. Tens to a few hundred is the
+/// regime the impulse-Krylov macromodel lives in (see
+/// `docs/td-macromodel-plan.md`); 80 is a reasonable midpoint that
+/// covers a handful of resonances on a matched two-port test case.
+/// Separate from [`KRYLOV_CHUNK`] (the per-sub-step exponential cap),
+/// since the macromodel build is one-shot and not sub-stepped.
+pub const MACROMODEL_DEFAULT_R: usize = 80;
+
 // ── Dense matrix exponential (scaling-and-squaring) ───────────────────────
 
 /// Scaling-and-squaring threshold: the matrix is halved until its

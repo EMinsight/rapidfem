@@ -1224,6 +1224,25 @@ impl MaxwellOperator {
             .map_or(0.0, |m| m.cutoff())
     }
 
+    /// `true` if port `port_idx` carries a waveguide mode (rectangular,
+    /// coaxial or Floquet). A port with no mode is a pure characteristic
+    /// absorbing boundary, not an input / output channel; the macromodel
+    /// build skips those.
+    pub fn port_has_mode(&self, port_idx: usize) -> bool {
+        self.ports[port_idx].mode.is_some()
+    }
+
+    /// Modal wave impedance `Z(omega)` of port `port_idx` at angular
+    /// frequency `omega`, in the operator's normalised units. Returns
+    /// `0` for an absorbing-only port (no mode). The forward / backward
+    /// split `A, B = (P_e +/- Z * P_h) / 2` uses this per frequency.
+    pub fn port_impedance(&self, port_idx: usize, omega: Field) -> Field {
+        self.ports[port_idx]
+            .mode
+            .as_ref()
+            .map_or(0.0, |m| m.te_impedance(omega))
+    }
+
     /// Spatial source vector `b_spatial` for driving port `port_idx` with a
     /// unit-amplitude waveform: the system `dy/dt = A·y + b_spatial·g(t)`
     /// then carries the port's incident mode modulated by `g(t)`.
