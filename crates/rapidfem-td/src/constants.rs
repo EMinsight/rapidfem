@@ -31,6 +31,20 @@ pub type Field = f64;
 /// against `Accum` documents that boundary rather than enabling a change.
 pub type Accum = f64;
 
+/// Acceptable relative L2 error of the `Field`-precision (f32 / GPU) path
+/// against the f64 reference. Every GPU validation gate checks against
+/// this one value, so tuning the mixed-precision accuracy budget is a
+/// one-line edit here.
+///
+/// Fixed from the `precision` example (the `examples/precision.rs` probe,
+/// run once as an f64 reference and once as an f32 comparator): a single
+/// f32 matvec drifts ~8e-6 from f64 (the DG flux jump `E_minus - E_plus`
+/// amplifies f32 epsilon), and a 500-step f32 transient ~9e-5. `1e-3`
+/// clears that with about a decade of headroom for GPU rounding-order
+/// differences and longer runs, while staying far below any real-bug
+/// signature (a wrong kernel diverges or gives O(1) error).
+pub const GPU_REL_TOL: f64 = 1e-3;
+
 // ── Krylov / ETD exponential propagator ───────────────────────────────────
 
 /// Relative a-posteriori error tolerance for the Krylov exponential

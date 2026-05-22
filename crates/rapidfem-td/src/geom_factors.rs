@@ -7,27 +7,28 @@
 //! derivatives into physical ones:
 //! `∂u/∂x_i = Σ_k (J⁻¹)[k,i] · ∂u/∂ξ_k`.
 
+use crate::constants::Field;
 use rapidfem_core::mesh::Mesh;
 
 /// Per-element geometric factors of the reference→physical affine map.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometricFactors {
     /// `v0` — image of the reference origin.
-    pub origin: [f64; 3],
+    pub origin: [Field; 3],
     /// Jacobian `J[i][k] = ∂x_i/∂ξ_k`; column `k` is `v_{k+1} - v0`.
-    pub jacobian: [[f64; 3]; 3],
+    pub jacobian: [[Field; 3]; 3],
     /// Inverse Jacobian `J⁻¹` — the metric terms `∂ξ_k/∂x_i`.
-    pub jacobian_inv: [[f64; 3]; 3],
+    pub jacobian_inv: [[Field; 3]; 3],
     /// Signed determinant of `J`.
-    pub det: f64,
+    pub det: Field,
     /// Element volume, `|det J| / 6`.
-    pub volume: f64,
+    pub volume: Field,
 }
 
 impl GeometricFactors {
     /// Build the geometric factors for a tet given its four vertices.
-    pub fn for_tet(v: &[[f64; 3]; 4]) -> Self {
-        let col = |a: [f64; 3]| [a[0] - v[0][0], a[1] - v[0][1], a[2] - v[0][2]];
+    pub fn for_tet(v: &[[Field; 3]; 4]) -> Self {
+        let col = |a: [Field; 3]| [a[0] - v[0][0], a[1] - v[0][1], a[2] - v[0][2]];
         let (c0, c1, c2) = (col(v[1]), col(v[2]), col(v[3]));
         // J[i][k] — row i, column k.
         let jacobian = [
@@ -46,7 +47,7 @@ impl GeometricFactors {
     }
 
     /// Map a reference point `(r,s,t)` to physical coordinates.
-    pub fn map(&self, xi: [f64; 3]) -> [f64; 3] {
+    pub fn map(&self, xi: [Field; 3]) -> [Field; 3] {
         let mut x = self.origin;
         for i in 0..3 {
             for k in 0..3 {
@@ -58,7 +59,7 @@ impl GeometricFactors {
 
     /// Coefficients combining the reference derivatives `(Dr, Ds, Dt)` into the
     /// physical derivative `∂/∂x_axis`: `D_{x_axis} = Σ_k coeff[k] · D_ref[k]`.
-    pub fn phys_deriv_coeffs(&self, axis: usize) -> [f64; 3] {
+    pub fn phys_deriv_coeffs(&self, axis: usize) -> [Field; 3] {
         [
             self.jacobian_inv[0][axis],
             self.jacobian_inv[1][axis],
@@ -72,19 +73,20 @@ pub fn all_geometric_factors(mesh: &Mesh) -> Vec<GeometricFactors> {
     mesh.tets
         .iter()
         .map(|tet| {
-            let v = [
+            let v: [[Field; 3]; 4] = [
                 mesh.nodes[tet[0]],
                 mesh.nodes[tet[1]],
                 mesh.nodes[tet[2]],
                 mesh.nodes[tet[3]],
-            ];
+            ]
+            .map(|p| p.map(|x| x as Field));
             GeometricFactors::for_tet(&v)
         })
         .collect()
 }
 
 /// Closed-form inverse and determinant of a 3×3 matrix.
-fn inv3(m: [[f64; 3]; 3]) -> ([[f64; 3]; 3], f64) {
+fn inv3(m: [[Field; 3]; 3]) -> ([[Field; 3]; 3], Field) {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);

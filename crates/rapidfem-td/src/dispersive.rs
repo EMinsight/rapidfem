@@ -18,22 +18,24 @@
 //! just extra per-node state. (Drude / Lorentz media are analogous, with a
 //! second-order auxiliary equation.)
 
+use crate::constants::Field;
+
 /// A Debye dispersive material — the relaxation parameters mirror the
 /// frequency-domain `rapidfem.Debye`.
 #[derive(Clone, Copy, Debug)]
 pub struct DebyeMaterial {
     /// High-frequency permittivity `ε_∞`.
-    pub eps_inf: f64,
+    pub eps_inf: Field,
     /// Static (zero-frequency) permittivity `ε_s`.
-    pub eps_static: f64,
+    pub eps_static: Field,
     /// Relaxation time `τ`.
-    pub tau: f64,
+    pub tau: Field,
 }
 
 impl DebyeMaterial {
     /// Analytic complex relative permittivity at angular frequency `ω`,
     /// returned as `(real, imag)`.
-    pub fn permittivity(&self, omega: f64) -> (f64, f64) {
+    pub fn permittivity(&self, omega: Field) -> (Field, Field) {
         let d = self.eps_static - self.eps_inf;
         let denom = 1.0 + (omega * self.tau).powi(2);
         (self.eps_inf + d / denom, -d * omega * self.tau / denom)
@@ -41,7 +43,7 @@ impl DebyeMaterial {
 
     /// The relaxation ODE in the form `Ṗ = a·P + b(t)`: returns the constant
     /// `a = -1/τ` and the source gain `g` such that `b(t) = g·E(t)`.
-    pub fn relaxation_coeffs(&self) -> (f64, f64) {
+    pub fn relaxation_coeffs(&self) -> (Field, Field) {
         (-1.0 / self.tau, (self.eps_static - self.eps_inf) / self.tau)
     }
 }

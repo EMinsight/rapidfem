@@ -162,14 +162,20 @@ impl PortSpec {
                 }
             }
         }
-        let coords: Vec<[Field; 3]> =
-            node_ids.iter().map(|&nd| mesh.nodes[nd]).collect();
+        let coords: Vec<[Field; 3]> = node_ids
+            .iter()
+            .map(|&nd| mesh.nodes[nd].map(|x| x as Field))
+            .collect();
 
         // Geometric normal of a representative port triangle, oriented to
         // point into the domain (toward the adjacent tet's centroid).
         let t0 = tris[0];
         let [v0, v1, v2] = mesh.tris[t0];
-        let (p0, p1, p2) = (mesh.nodes[v0], mesh.nodes[v1], mesh.nodes[v2]);
+        let (p0, p1, p2) = (
+            mesh.nodes[v0].map(|x| x as Field),
+            mesh.nodes[v1].map(|x| x as Field),
+            mesh.nodes[v2].map(|x| x as Field),
+        );
         let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
         let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
         let mut nrm = cross3(e1, e2);
@@ -185,7 +191,7 @@ impl PortSpec {
         let mut centroid = [0.0; 3];
         for &nd in &mesh.tets[tet] {
             for k in 0..3 {
-                centroid[k] += mesh.nodes[nd][k] / 4.0;
+                centroid[k] += mesh.nodes[nd][k] as Field / 4.0;
             }
         }
         let inward = [
@@ -500,7 +506,7 @@ impl MaxwellOperator {
         for e in 0..n_elem {
             for f in 0..4 {
                 let df = topo.face(e, f);
-                let fscale = 2.0 * df.area / geom[e].det.abs();
+                let fscale = 2.0 * df.area as Field / geom[e].det.abs();
                 let perm = if df.neighbor == usize::MAX {
                     Vec::new()
                 } else {
@@ -525,7 +531,7 @@ impl MaxwellOperator {
                         .collect()
                 };
                 faces.push(FaceInfo {
-                    normal: df.normal,
+                    normal: df.normal.map(|x| x as Field),
                     fscale,
                     neighbor: df.neighbor,
                     neighbor_local_face: df.neighbor_local_face,

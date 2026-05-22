@@ -14,6 +14,8 @@
 //! Equispaced nodes keep this first version simple; for `p ≳ 5` the
 //! Vandermonde conditioning degrades and Warp&Blend nodes become worthwhile.
 
+use crate::constants::Field;
+
 /// Reference DG element of polynomial order `p` on the unit tetrahedron.
 ///
 /// All matrices are `n_nodes × n_nodes`, stored row-major.
@@ -23,17 +25,17 @@ pub struct ReferenceElement {
     /// Node count, `Np = (p+1)(p+2)(p+3)/6`.
     pub n_nodes: usize,
     /// Node coordinates on the reference tet, `(r, s, t)`.
-    pub nodes: Vec<[f64; 3]>,
+    pub nodes: Vec<[Field; 3]>,
     /// Mass matrix, `M[i,j] = ∫ φ_i φ_j dV`.
-    pub mass: Vec<f64>,
+    pub mass: Vec<Field>,
     /// Inverse mass matrix.
-    pub mass_inv: Vec<f64>,
+    pub mass_inv: Vec<Field>,
     /// `∂/∂r` differentiation matrix: `(∂u/∂r)(node_i) = Σ_j diff_r[i,j] u_j`.
-    pub diff_r: Vec<f64>,
+    pub diff_r: Vec<Field>,
     /// `∂/∂s` differentiation matrix.
-    pub diff_s: Vec<f64>,
+    pub diff_s: Vec<Field>,
     /// `∂/∂t` differentiation matrix.
-    pub diff_t: Vec<f64>,
+    pub diff_t: Vec<Field>,
     /// Face-node count per face, `Nfp = (p+1)(p+2)/2`.
     pub n_face_nodes: usize,
     /// Volume-node indices on each of the 4 local faces, aligned with
@@ -44,12 +46,12 @@ pub struct ReferenceElement {
     /// parametrised as the unit right triangle (reference area 1/2), so the
     /// per-face physical scaling `Fscale = area_phys / (1/2)` is applied later
     /// by the RHS operator.
-    pub lift: Vec<f64>,
+    pub lift: Vec<Field>,
     /// Per-face nodal surface-integration weights — `face_node_weights[f][m]`
     /// is `∮ φ_m dA` over the reference face (the unit right triangle), so
     /// they sum to `1/2`. A physical surface integral is
     /// `Σ_m 2·area_phys·weight[m]·F_m`.
-    pub face_node_weights: [Vec<f64>; 4],
+    pub face_node_weights: [Vec<Field>; 4],
 }
 
 impl ReferenceElement {
@@ -131,47 +133,47 @@ fn monomials(p: usize) -> Vec<[usize; 3]> {
 }
 
 /// Equispaced nodes `(i,j,k)/p` with `i+j+k ≤ p` on the reference tet.
-fn equispaced_nodes(p: usize) -> Vec<[f64; 3]> {
+fn equispaced_nodes(p: usize) -> Vec<[Field; 3]> {
     let mut v = Vec::new();
-    let pp = p as f64;
+    let pp = p as Field;
     for i in 0..=p {
         for j in 0..=(p - i) {
             for k in 0..=(p - i - j) {
-                v.push([i as f64 / pp, j as f64 / pp, k as f64 / pp]);
+                v.push([i as Field / pp, j as Field / pp, k as Field / pp]);
             }
         }
     }
     v
 }
 
-/// `n!` as an `f64`.
-fn factorial(n: usize) -> f64 {
-    (1..=n).map(|k| k as f64).product()
+/// `n!` as an `Field`.
+fn factorial(n: usize) -> Field {
+    (1..=n).map(|k| k as Field).product()
 }
 
 /// Exact integral of `rᵃ sᵇ tᶜ` over the unit reference tetrahedron.
-fn mono_integral(a: usize, b: usize, c: usize) -> f64 {
+fn mono_integral(a: usize, b: usize, c: usize) -> Field {
     factorial(a) * factorial(b) * factorial(c) / factorial(a + b + c + 3)
 }
 
 /// Evaluate monomial `rᵃ sᵇ tᶜ` at a point.
-fn eval_mono(m: [usize; 3], x: [f64; 3]) -> f64 {
+fn eval_mono(m: [usize; 3], x: [Field; 3]) -> Field {
     x[0].powi(m[0] as i32) * x[1].powi(m[1] as i32) * x[2].powi(m[2] as i32)
 }
 
 /// Evaluate `∂/∂x_axis` of monomial `m` at a point (`axis` 0=r, 1=s, 2=t).
-fn eval_mono_d(m: [usize; 3], x: [f64; 3], axis: usize) -> f64 {
+fn eval_mono_d(m: [usize; 3], x: [Field; 3], axis: usize) -> Field {
     let e = m[axis];
     if e == 0 {
         return 0.0;
     }
     let mut d = m;
     d[axis] -= 1;
-    e as f64 * eval_mono(d, x)
+    e as Field * eval_mono(d, x)
 }
 
 /// Invert an `n×n` row-major matrix via Gauss-Jordan with partial pivoting.
-fn invert(src: &[f64], n: usize) -> Vec<f64> {
+fn invert(src: &[Field], n: usize) -> Vec<Field> {
     let mut a = src.to_vec();
     let mut inv = vec![0.0; n * n];
     for i in 0..n {
@@ -217,7 +219,7 @@ fn invert(src: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// `A · B` for `n×n` row-major matrices.
-fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+fn matmul(a: &[Field], b: &[Field], n: usize) -> Vec<Field> {
     let mut c = vec![0.0; n * n];
     for i in 0..n {
         for k in 0..n {
@@ -234,7 +236,7 @@ fn matmul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// `Aᵀ · G · A` for `n×n` row-major matrices.
-fn triple_product(a: &[f64], g: &[f64], a2: &[f64], n: usize) -> Vec<f64> {
+fn triple_product(a: &[Field], g: &[Field], a2: &[Field], n: usize) -> Vec<Field> {
     // (Aᵀ G) then · A
     let mut at_g = vec![0.0; n * n];
     for i in 0..n {
@@ -263,12 +265,12 @@ fn equispaced_ijk(p: usize) -> Vec<[usize; 3]> {
 }
 
 /// Exact integral of `u^a v^b` over the unit right triangle.
-fn tri_integral(a: usize, b: usize) -> f64 {
+fn tri_integral(a: usize, b: usize) -> Field {
     factorial(a) * factorial(b) / factorial(a + b + 2)
 }
 
 /// `A·B` for general row-major matrices (`ar×ac` times `ac×bc`).
-fn mat_mul(a: &[f64], ar: usize, ac: usize, b: &[f64], bc: usize) -> Vec<f64> {
+fn mat_mul(a: &[Field], ar: usize, ac: usize, b: &[Field], bc: usize) -> Vec<Field> {
     let mut c = vec![0.0; ar * bc];
     for i in 0..ar {
         for k in 0..ac {
@@ -287,9 +289,9 @@ fn mat_mul(a: &[f64], ar: usize, ac: usize, b: &[f64], bc: usize) -> Vec<f64> {
 /// Build the per-face node sets and the lift matrix.
 fn build_lift(
     p: usize,
-    mass_inv: &[f64],
+    mass_inv: &[Field],
     n: usize,
-) -> (usize, [Vec<usize>; 4], Vec<f64>, [Vec<f64>; 4]) {
+) -> (usize, [Vec<usize>; 4], Vec<Field>, [Vec<Field>; 4]) {
     let ijk = equispaced_ijk(p);
     // Face membership, aligned with TET_FACE_LOCAL.
     let on_face = |f: usize, c: [usize; 3]| match f {
@@ -337,16 +339,16 @@ fn build_lift(
     // onto the rows of face f's volume nodes.
     let cols = 4 * nfp;
     let mut emat = vec![0.0; n * cols];
-    let mut face_node_weights: [Vec<f64>; 4] =
+    let mut face_node_weights: [Vec<Field>; 4] =
         [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-    let pf = p as f64;
+    let pf = p as Field;
     for f in 0..4 {
         // 2D node coordinates for this face.
-        let c2: Vec<[f64; 2]> = face_nodes[f]
+        let c2: Vec<[Field; 2]> = face_nodes[f]
             .iter()
             .map(|&vi| {
                 let c = coord2d(f, ijk[vi]);
-                [c[0] as f64 / pf, c[1] as f64 / pf]
+                [c[0] as Field / pf, c[1] as Field / pf]
             })
             .collect();
         // 2D Vandermonde and its inverse.

@@ -6,6 +6,7 @@
 //! CFS-PML (reflectionless at *all* incidence angles, via auxiliary
 //! differential equations) is a further extension.
 
+use crate::constants::Field;
 use crate::rhs::ElemMaterial;
 use rapidfem_core::mesh::Mesh;
 
@@ -14,15 +15,16 @@ use rapidfem_core::mesh::Mesh;
 pub fn absorbing_layer_low(
     mesh: &Mesh,
     axis: usize,
-    inner: f64,
-    thickness: f64,
-    nu_max: f64,
+    inner: Field,
+    thickness: Field,
+    nu_max: Field,
 ) -> Vec<ElemMaterial> {
     mesh.tets
         .iter()
         .map(|tet| {
-            let centroid: f64 =
-                tet.iter().map(|&n| mesh.nodes[n][axis]).sum::<f64>() / 4.0;
+            let centroid: Field =
+                tet.iter().map(|&n| mesh.nodes[n][axis] as Field).sum::<Field>()
+                    / 4.0;
             let depth = (inner + thickness) - centroid;
             if depth <= 0.0 {
                 ElemMaterial::VACUUM
@@ -40,15 +42,16 @@ pub fn absorbing_layer_low(
 pub fn absorbing_layer(
     mesh: &Mesh,
     axis: usize,
-    outer: f64,
-    thickness: f64,
-    nu_max: f64,
+    outer: Field,
+    thickness: Field,
+    nu_max: Field,
 ) -> Vec<ElemMaterial> {
     mesh.tets
         .iter()
         .map(|tet| {
-            let centroid: f64 =
-                tet.iter().map(|&n| mesh.nodes[n][axis]).sum::<f64>() / 4.0;
+            let centroid: Field =
+                tet.iter().map(|&n| mesh.nodes[n][axis] as Field).sum::<Field>()
+                    / 4.0;
             let depth = centroid - (outer - thickness);
             if depth <= 0.0 {
                 ElemMaterial::VACUUM

@@ -8,15 +8,17 @@
 //! needed here. Everything is in the solver's normalised units
 //! (`c = ε₀ = μ₀ = 1`).
 
-use std::f64::consts::PI;
+use crate::constants::Field;
+/// Pi in the operator's working precision (`Field`).
+const PI: Field = std::f64::consts::PI as Field;
 
 #[inline]
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+fn dot(a: [Field; 3], b: [Field; 3]) -> Field {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 #[inline]
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+fn cross(a: [Field; 3], b: [Field; 3]) -> [Field; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -32,24 +34,24 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 #[derive(Clone, Debug)]
 pub struct RectPort {
     /// A corner of the port rectangle (global coords) — the `(u,v)=(0,0)` point.
-    pub origin: [f64; 3],
+    pub origin: [Field; 3],
     /// Unit vector along the width `a` (global).
-    pub u_hat: [f64; 3],
+    pub u_hat: [Field; 3],
     /// Unit vector along the height `b` (global).
-    pub v_hat: [f64; 3],
+    pub v_hat: [Field; 3],
     /// Inward unit normal — points into the domain (global).
-    pub w_hat: [f64; 3],
+    pub w_hat: [Field; 3],
     /// Cross-section width.
-    pub a: f64,
+    pub a: Field,
     /// Cross-section height.
-    pub b: f64,
+    pub b: Field,
     /// `TE` mode indices `(m, n)`.
     pub mode: (usize, usize),
 }
 
 impl RectPort {
     /// Local `(u, v)` coordinates of a global point on the port plane.
-    fn local(&self, x: [f64; 3]) -> (f64, f64) {
+    fn local(&self, x: [Field; 3]) -> (Field, Field) {
         let d = [
             x[0] - self.origin[0],
             x[1] - self.origin[1],
@@ -66,17 +68,17 @@ impl RectPort {
     /// `E_v ∝ −(m/a)·sin(mπu/a)·cos(nπv/b)`. The sentinel mode `(0, 0)` is
     /// a **lumped / TEM port** — a uniform transverse field along `v_hat`,
     /// with zero cutoff and a flat (non-dispersive) `Z = 1` impedance.
-    pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
+    pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
         if self.mode == (0, 0) {
             return self.v_hat;
         }
         let (u, v) = self.local(x);
-        let (m, n) = (self.mode.0 as f64, self.mode.1 as f64);
+        let (m, n) = (self.mode.0 as Field, self.mode.1 as Field);
         let mu = m * PI / self.a;
         let nv = n * PI / self.b;
         let eu = (n / self.b) * (mu * u).cos() * (nv * v).sin();
         let ev = -(m / self.a) * (mu * u).sin() * (nv * v).cos();
-        let scale = (m / self.a).max(n / self.b).max(f64::MIN_POSITIVE);
+        let scale = (m / self.a).max(n / self.b).max(Field::MIN_POSITIVE);
         let (eu, ev) = (eu / scale, ev / scale);
         [
             eu * self.u_hat[0] + ev * self.v_hat[0],
@@ -88,14 +90,14 @@ impl RectPort {
     /// Transverse magnetic-field profile for a mode propagating along the
     /// inward normal — `h_t = ŵ × e_t` (free-space impedance in the
     /// solver's normalised units). Global coordinates.
-    pub fn h_profile(&self, x: [f64; 3]) -> [f64; 3] {
+    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
         cross(self.w_hat, self.e_profile(x))
     }
 
     /// Cutoff angular frequency `ω_c = π·√((m/a)² + (n/b)²)` (`c = 1`).
     /// Content below `ω_c` is evanescent and does not propagate.
-    pub fn cutoff(&self) -> f64 {
-        let (m, n) = (self.mode.0 as f64, self.mode.1 as f64);
+    pub fn cutoff(&self) -> Field {
+        let (m, n) = (self.mode.0 as Field, self.mode.1 as Field);
         PI * ((m / self.a).powi(2) + (n / self.b).powi(2)).sqrt()
     }
 
@@ -113,10 +115,10 @@ impl RectPort {
     /// right-handed). `None` keeps the auto-fit. A direction parallel to
     /// the normal has no in-plane part and is ignored.
     pub fn from_face(
-        nodes: &[[f64; 3]],
-        inward_normal: [f64; 3],
+        nodes: &[[Field; 3]],
+        inward_normal: [Field; 3],
         mode: (usize, usize),
-        field_axis: Option<[f64; 3]>,
+        field_axis: Option<[Field; 3]>,
     ) -> RectPort {
         // The inward normal is ±eₖ — the constant (out-of-plane) axis.
         let k = (0..3)
@@ -129,9 +131,9 @@ impl RectPort {
             .unwrap();
         let s = if inward_normal[k] >= 0.0 { 1.0 } else { -1.0 };
         let others: Vec<usize> = (0..3).filter(|&x| x != k).collect();
-        let extent = |ax: usize| -> (f64, f64) {
-            let lo = nodes.iter().map(|p| p[ax]).fold(f64::MAX, f64::min);
-            let hi = nodes.iter().map(|p| p[ax]).fold(f64::MIN, f64::max);
+        let extent = |ax: usize| -> (Field, Field) {
+            let lo = nodes.iter().map(|p| p[ax]).fold(Field::MAX, Field::min);
+            let hi = nodes.iter().map(|p| p[ax]).fold(Field::MIN, Field::max);
             (lo, hi - lo)
         };
         let (lo0, ext0) = extent(others[0]);
@@ -181,7 +183,7 @@ impl RectPort {
     /// forward/backward modal split uses it, and because it is
     /// frequency-dependent the split must be done per frequency. Valid
     /// for `omega > cutoff`.
-    pub fn te_impedance(&self, omega: f64) -> f64 {
+    pub fn te_impedance(&self, omega: Field) -> Field {
         let r = self.cutoff() / omega;
         1.0 / (1.0 - r * r).sqrt()
     }
