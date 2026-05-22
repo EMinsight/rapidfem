@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 rapidfem-core = { path = "../crates/rapidfem-core" }
 rapidfem-fd = { path = "../crates/rapidfem-fd" }
-rapidfem-td = { path = "../crates/rapidfem-td" }
+rapidfem-td = { path = "../crates/rapidfem-td", features = ["gpu"] }
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 numpy = "0.22"
 num-complex = "0.4.6"

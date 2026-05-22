@@ -387,6 +387,36 @@ struct PyTdOperator {
     /// Reused LSERK4 workspace — keeps the explicit `step_explicit` stepper
     /// allocation-free across a transient loop.
     lserk: rapidfem_td::explicit::LserkWorkspace,
+    /// Lazily-built OpenCL GPU backend; `None` until first requested, and
+    /// stays `None` if no GPU / OpenCL runtime is present.
+    gpu: Option<GpuBackend>,
+}
+
+/// The GPU device context and the operator resident on it.
+struct GpuBackend {
+    ctx: rapidfem_td::gpu::GpuContext,
+    op: rapidfem_td::gpu::GpuOperator,
+}
+
+impl PyTdOperator {
+    /// Lazily build the GPU backend. Errors if there is no GPU / OpenCL
+    /// runtime, or if the operator has dispersive materials (the GPU path
+    /// covers the `[E,H]` block only).
+    fn ensure_gpu(&mut self) -> Result<(), String> {
+        if self.gpu.is_some() {
+            return Ok(());
+        }
+        if self.op.n_dispersive() != 0 {
+            return Err(
+                "GPU path does not support dispersive materials"
+                    .to_string(),
+            );
+        }
+        let ctx = rapidfem_td::gpu::GpuContext::new()?;
+        let op = rapidfem_td::gpu::GpuOperator::new(&ctx, &self.op)?;
+        self.gpu = Some(GpuBackend { ctx, op });
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -414,6 +444,7 @@ impl PyTdOperator {
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
             lserk: rapidfem_td::explicit::LserkWorkspace::new(),
+            gpu: None,
         }
     }
 
@@ -554,6 +585,7 @@ impl PyTdOperator {
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
             lserk: rapidfem_td::explicit::LserkWorkspace::new(),
+            gpu: None,
         })
     }
 
@@ -737,6 +769,44 @@ impl PyTdOperator {
     /// Number of waveguide ports on the operator.
     fn n_ports(&self) -> usize {
         self.op.n_ports()
+    }
+
+    /// Whether an OpenCL GPU backend is available — built lazily on the
+    /// first call. `False` if there is no GPU / OpenCL runtime, or the
+    /// operator is dispersive.
+    fn gpu_available(&mut self) -> bool {
+        self.ensure_gpu().is_ok()
+    }
+
+    /// Name of the GPU device, or an error if no GPU backend is available.
+    fn gpu_device(&mut self) -> PyResult<String> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        Ok(self.gpu.as_ref().unwrap().ctx.device_name.clone())
+    }
+
+    /// Explicit LSERK4 transient on the GPU. Returns the flattened field
+    /// trajectory `[(steps+1) * n_dof]` (row 0 is `y0`); the caller
+    /// reshapes to `[steps+1, n_dof]`. The state steps device-resident,
+    /// one snapshot is downloaded per step. Zero-copy numpy in.
+    fn gpu_transient<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let traj = backend
+            .op
+            .transient_traj(&backend.ctx, &y0_32, h as f32, steps)
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok(traj64.into_pyarray_bound(py))
     }
 
     /// Cutoff angular frequency of port `port_idx`'s mode (operator units).

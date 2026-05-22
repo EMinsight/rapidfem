@@ -1235,7 +1235,7 @@ class ProblemTD:
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0=None, *, dt, steps, source=None, waveform=None,
                   krylov_dim=40, method="exponential", warmup=0,
-                  verbose=True):
+                  device="cpu", verbose=True):
         """Propagate the field for ``steps`` steps of size ``dt``.
 
         With ``y0`` only this is the free (homogeneous) evolution of an
@@ -1269,6 +1269,10 @@ class ProblemTD:
             handing off to ``method``. With ``method="explicit"`` this
             covers the opening transient with the exact integrator, then
             continues on the cheaper explicit stepper.
+        device : {"cpu", "gpu"}
+            ``"gpu"`` runs the explicit LSERK4 transient on an OpenCL GPU,
+            the state device-resident. Falls back to the CPU path for a
+            driven run or when no GPU is present.
 
         Returns
         -------
@@ -1281,9 +1285,35 @@ class ProblemTD:
         """
         if method not in ("exponential", "explicit"):
             raise ValueError("method must be 'exponential' or 'explicit'")
+        if device not in ("cpu", "gpu"):
+            raise ValueError("device must be 'cpu' or 'gpu'")
         n = self.n_dof
         y = np.zeros(n) if y0 is None else _arr(y0)
         driven = source is not None and waveform is not None
+
+        # GPU path: the explicit LSERK4 transient, state device-resident.
+        # Falls back to the CPU path for a driven run or with no GPU.
+        if device == "gpu":
+            if driven:
+                _log("transient: GPU path has no driven source, using CPU")
+            elif not self._op.gpu_available():
+                _log("transient: no OpenCL GPU available, using CPU")
+            else:
+                if verbose:
+                    _log(
+                        f"transient: GPU explicit LSERK4 "
+                        f"({self._op.gpu_device()})"
+                    )
+                t0 = time.time()
+                flat = self._op.gpu_transient(
+                    _arr(y), float(self.c * dt), int(steps)
+                )
+                traj = np.asarray(flat).reshape(steps + 1, n)
+                if verbose:
+                    _log(f"transient complete - {steps} GPU steps "
+                         f"in {time.time() - t0:.2f}s")
+                return TdTrajectory(traj, problem=self, dt=dt)
+
         sdof = None
         if driven:
             sp, sf, sc = source
