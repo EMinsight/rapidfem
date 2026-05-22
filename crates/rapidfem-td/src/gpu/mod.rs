@@ -17,7 +17,10 @@ use opencl3::device::{CL_DEVICE_TYPE_GPU, Device, get_all_devices};
 use opencl3::kernel::{ExecuteKernel, Kernel};
 use opencl3::memory::{Buffer, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE};
 use opencl3::program::Program;
-use opencl3::types::{CL_BLOCKING, cl_float};
+use opencl3::types::{CL_BLOCKING, cl_float, cl_int};
+
+mod operator;
+pub use operator::GpuOperator;
 
 /// A GPU device with its OpenCL context and command queue.
 ///
@@ -80,6 +83,30 @@ impl GpuContext {
             )
         }
         .map_err(|e| format!("buffer write failed: {e}"))?;
+        Ok(buf)
+    }
+
+    /// Upload a host slice into a fresh read-only device buffer of ints.
+    pub fn upload_i32(&self, data: &[i32]) -> Result<Buffer<cl_int>, String> {
+        let mut buf = unsafe {
+            Buffer::<cl_int>::create(
+                &self.context,
+                CL_MEM_READ_ONLY,
+                data.len(),
+                ptr::null_mut(),
+            )
+        }
+        .map_err(|e| format!("int buffer creation failed: {e}"))?;
+        unsafe {
+            self.queue.enqueue_write_buffer(
+                &mut buf,
+                CL_BLOCKING,
+                0,
+                data,
+                &[],
+            )
+        }
+        .map_err(|e| format!("int buffer write failed: {e}"))?;
         Ok(buf)
     }
 

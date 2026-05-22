@@ -104,20 +104,20 @@ fn cross3(a: [Field; 3], b: [Field; 3]) -> [Field; 3] {
 }
 
 /// Per (element, local face) flux data.
-struct FaceInfo {
+pub(crate) struct FaceInfo {
     /// Outward unit normal.
-    normal: [Field; 3],
+    pub(crate) normal: [Field; 3],
     /// Surface scaling `2·area_phys / |det J|` (the lift assumes a 1/2 reference face).
-    fscale: Field,
+    pub(crate) fscale: Field,
     /// Neighbour element, or `usize::MAX` on a domain-boundary face.
-    neighbor: usize,
+    pub(crate) neighbor: usize,
     /// Neighbour local face.
-    neighbor_local_face: usize,
+    pub(crate) neighbor_local_face: usize,
     /// `perm[m]` = neighbour face-node local index matching this face's node `m`.
-    perm: Vec<usize>,
+    pub(crate) perm: Vec<usize>,
     /// Port index if this boundary face belongs to a port, else `usize::MAX`.
     /// A non-port boundary face (`neighbor == usize::MAX`) is a PEC wall.
-    port: usize,
+    pub(crate) port: usize,
 }
 
 /// A port — a set of mesh boundary faces carrying a waveguide mode.
@@ -405,18 +405,18 @@ struct DispersiveElem {
 /// energy-conserving) and upwind (`alpha = 1`, dissipates the discontinuous
 /// spurious modes).
 pub struct MaxwellOperator {
-    re: ReferenceElement,
-    n_elem: usize,
-    geom: Vec<GeometricFactors>,
+    pub(crate) re: ReferenceElement,
+    pub(crate) n_elem: usize,
+    pub(crate) geom: Vec<GeometricFactors>,
     /// 4 faces per element, flattened: `faces[e*4 + f]`.
-    faces: Vec<FaceInfo>,
+    pub(crate) faces: Vec<FaceInfo>,
     /// Upwind blend: 0 = central, 1 = full upwind.
-    flux_alpha: Field,
+    pub(crate) flux_alpha: Field,
     /// Per-element diagonal `1/ε`, `1/μ`, `σ/ε` (electric), `σ*/μ` (magnetic).
-    inv_eps: Vec<[Field; 3]>,
-    inv_mu: Vec<[Field; 3]>,
-    sigma_eps: Vec<[Field; 3]>,
-    sigma_mu: Vec<[Field; 3]>,
+    pub(crate) inv_eps: Vec<[Field; 3]>,
+    pub(crate) inv_mu: Vec<[Field; 3]>,
+    pub(crate) sigma_eps: Vec<[Field; 3]>,
+    pub(crate) sigma_mu: Vec<[Field; 3]>,
     /// Reusable per-thread scratch buffers — keeps `apply` allocation-free
     /// after the first call (see [`Scratch`]).
     scratch_pool: Mutex<Vec<Scratch>>,
