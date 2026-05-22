@@ -23,10 +23,10 @@ ER = 10.0                # high-εᵣ ceramic ring
 BOX = 38.0 * mm          # cubic air-cavity edge
 
 # %% Geometry — a dielectric ring embedded in an air-filled PEC cavity
-g = rf.Geometry(maxh=5.0 * mm)
+g = rf.Geometry(maxh=3.5 * mm)       # finer mesh, affordable on the GPU
 air = g.box(BOX, BOX, BOX, position=(-BOX / 2, -BOX / 2, -BOX / 2),
             material=rf.Air())
-ring = g.torus(R_MAJ, R_MIN, material=rf.Dielectric(er=ER), maxh=2.4 * mm)
+ring = g.torus(R_MAJ, R_MIN, material=rf.Dielectric(er=ER), maxh=1.7 * mm)
 g.fragment(air, ring)              # embed the ring in the air volume
 
 # Only the 6 axis-aligned cavity walls are PEC — selecting min/max per axis
@@ -45,7 +45,7 @@ print(f"DGTD ring resonator - {ptd.n_dof // 60} tets, "
 # %% Light up one point on the ring and let the field orbit it
 y0 = np.zeros(ptd.n_dof)
 y0[ptd.probe_dof((R_MAJ, 0.0, 0.0), field="E", component="z")] = 1.0
-traj = ptd.transient(y0, dt=4e-12, steps=180)
+traj = ptd.transient(y0, dt=4e-12, steps=180, device="gpu")
 
 amp = np.linalg.norm(traj, axis=1)
 assert np.all(np.isfinite(traj)), "transient must stay finite"

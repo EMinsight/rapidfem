@@ -17,7 +17,7 @@ L = 50.0 * mm          # cubic cavity edge
 ER = 4.0               # dielectric fill
 
 # %% Geometry + material: a PEC box filled with a dielectric.
-g = rf.Geometry(maxh=L / 8)
+g = rf.Geometry(maxh=L / 11)        # finer mesh, affordable on the GPU
 cavity = g.box(L, L, L, material=rf.Dielectric(er=ER))
 rf.PEC(*cavity.faces.unassigned)        # all six walls are PEC
 g.mesh()
@@ -32,7 +32,7 @@ print(f"ProblemTD from a meshed geometry - {ptd.n_dof // 60} tets, "
 #    unstructured mesh, and the upwind flux dissipates the field energy.
 y0 = np.zeros(ptd.n_dof)
 y0[ptd.probe_dof([0.5 * L, 0.5 * L, 0.5 * L], field="E", component="z")] = 1.0
-traj = ptd.transient(y0, dt=5e-12, steps=140)
+traj = ptd.transient(y0, dt=5e-12, steps=140, device="gpu")
 
 amp = np.linalg.norm(traj, axis=1)
 assert np.all(np.isfinite(traj)), "transient must stay finite"

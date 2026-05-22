@@ -32,6 +32,7 @@ driven = ptd.driven_transient(
     probes=[([0.25, 0.25, 0.5], "E", "z")],      # where to measure
     dt=0.01,
     steps=200,
+    device="gpu",
 )
 rf.show(driven)                                  # the probe time signal
 times, response = driven
@@ -41,7 +42,7 @@ print(f"probe - peak |E_z| = {np.abs(response[0]).max():.4f} "
 # %% Free transient — propagate an initial field and capture every snapshot
 y0 = np.zeros(ptd.n_dof)
 y0[ptd.probe_dof([0.5, 0.5, 0.5], field="E", component="z")] = 1.0
-traj = ptd.transient(y0, dt=0.02, steps=120)
+traj = ptd.transient(y0, dt=0.02, steps=120, device="gpu")
 rf.show(traj)                                    # the 3-D field animation
 print(f"transient - {traj.shape[0]} full-field snapshots")
 

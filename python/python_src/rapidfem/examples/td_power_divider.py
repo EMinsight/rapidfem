@@ -27,7 +27,7 @@ PML_T = 20.0 * mm        # matched-absorber slab thickness
 # The T is tiled by non-overlapping, face-adjacent boxes (left arm, centre
 # junction, right arm, stem); g.fragment stitches them and the PML slabs
 # into one conformal mesh.
-g = rf.Geometry(maxh=W / 3.5)
+g = rf.Geometry(maxh=W / 5)              # finer mesh, affordable on the GPU
 air = rf.Air()
 left = g.box(L_ARM, W, W, position=(-W / 2 - L_ARM, -W / 2, -W / 2),
              material=air)
@@ -60,7 +60,7 @@ print(f"DGTD power divider - {ptd.n_dof // 60} tets, "
 pulse = rf.GaussianPulse(t0=100e-12, tau=26e-12, f0=14e9)
 traj = ptd.transient(
     source=((0.0, y_in + 8 * mm, 0.0), "E", "z"),
-    waveform=pulse, dt=3e-12, steps=260,
+    waveform=pulse, dt=3e-12, steps=260, device="gpu",
 )
 
 amp = np.linalg.norm(traj, axis=1)

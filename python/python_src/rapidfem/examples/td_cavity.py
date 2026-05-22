@@ -37,7 +37,7 @@ print(f"state-space A: {A.shape[0]}x{A.shape[1]}, {A.nnz} nonzeros "
 # random noise; the model-export verbs above accept any state vector.
 y_pulse = np.zeros(ptd.n_dof)
 y_pulse[ptd.probe_dof((0.5 * L, 0.5 * L, 0.5 * L), field="E", component="z")] = 1.0
-traj = ptd.transient(y_pulse, dt=4e-12, steps=160)
+traj = ptd.transient(y_pulse, dt=4e-12, steps=160, device="gpu")
 print(f"transient run - {traj.shape[0]} snapshots of {traj.shape[1]} DOFs")
 
 # The exponential propagator is exact for the linear homogeneous system at

@@ -35,12 +35,14 @@ dt, steps = 8e-12, 1000
 
 response = ptd.driven_transient(
     source=source, waveform=pulse, probes=[probe], dt=dt, steps=steps,
+    device="gpu",
 )
 rf.show(response)                            # the probe signal in time
 
 # %% The same run, deconvolved into the cavity transfer function H(f)
 tf = ptd.transfer_function(
     source=source, probe=probe, pulse=pulse, dt=dt, steps=steps,
+    device="gpu",
 )
 rf.show(tf)                                  # |H(f)| magnitude / phase
 freqs, H = tf

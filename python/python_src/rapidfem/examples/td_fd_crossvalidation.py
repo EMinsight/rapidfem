@@ -45,6 +45,7 @@ td_run = ptd.driven_transient(
     dt=dt,
     steps=steps,
     krylov_dim=16,
+    device="gpu",
 )
 rf.show(td_run)                              # the probe time signal
 resp = td_run.responses
