@@ -108,11 +108,17 @@ Everything below is ahead.
 | 3.1 | SPRIM-style structure-preserving projection — E and H sub-vectors projected independently so the [E, H] block structure (and the lossless skew-symmetry) carries through. | A bounded-real / positive-real eigenvalue check on the reduced model passes for matched-line and resonant-cavity cases. |
 | 3.2 | Passivity-enforcement perturbation for the lossy case (if needed by 3.1). | The model stays passive when small losses are introduced; accuracy degradation under perturbation is bounded. |
 
-### M4 — Multi-point / rational Krylov for broadband
+### M4 — Broadband accuracy refinement
+
+Several matvec-only paths give broadband accuracy without ever needing
+shift-invert. Try them in order of cost; only fall back to shift-invert
+if none of them suffices.
 
 | WP | Deliverable | Gate |
 |----|-------------|------|
-| 4.1 | Multi-point block-Arnoldi at a small set of expansion frequencies, union of the shifted-Krylov spaces. Shift-invert `(sI - A)⁻¹` via an iterative solver — ties into `iterative-solver-research.md` (the HX / auxiliary-space preconditioner is exactly the FD-style solve needed here). | A broadband case (octave or more) reaches the M1 accuracy with substantially smaller `r`. |
+| 4.1 | **Just push `r` in impulse-Krylov.** On the GPU a single matvec is sub-ms and the O(r²·n) orthogonalisation at r ≈ 300-500 still fits the millisecond budget. For Maxwell systems with well-separated resonances, the impulse-Krylov projection captures the dominant in-band modes directly (Lanczos-style). | An octave-wide band hits M1 accuracy at `r ≤ 500`, build still under the GPU budget. |
+| 4.2 | **Eigenvalue / Chebyshev-polynomial filtering.** Either extract the in-band eigenpairs of `A` (Lanczos) and use them as the reduced basis, or precondition the Krylov build with a Chebyshev polynomial filter focused on the band. Both are pure matvecs — no inversion. | Same accuracy gate as 4.1 at smaller `r`. |
+| 4.3 | **Multi-point shift-invert, only if 4.1 / 4.2 are not enough.** Block-Arnoldi at a few expansion frequencies, with `(sI - A)⁻¹` applied via **matrix-free GMRES on `(sI - A)`** — still matvec-only, no assembled matrix needed. The HX / auxiliary-space ideas from `iterative-solver-research.md` are inspiration for preconditioning, but the codebase is independent — that research targets the assembled FD Nédélec matrix, not our matrix-free TD operator. | The shift-invert path reaches the same accuracy at substantially smaller `r` than 4.1, justifying its added complexity. |
 
 ### M5 — Python API and an RFIC-style example
 
@@ -166,10 +172,11 @@ M6 ─▶ M7                         (pMOR — optimisation, on the proven flow)
 - **Block-basis memory at large `r × N × n_dof`** is the next memory
   cliff. The sub-stepping pattern that worked for `expmv` lifts: cap the
   effective Krylov dimension per build phase and accumulate.
-- **Shift-invert solves in M4** depend on an iterative-solver path that
-  is itself a separate research project (`iterative-solver-research.md`).
-  Until it exists, M4 either reuses faer-LU at modest sizes or stays
-  impulse-only with larger `r`.
+- **Broadband accuracy at very wide bands** may push impulse-Krylov to
+  uncomfortable `r`. The matvec-only fallbacks (eigenvalue / Chebyshev
+  filtering) usually suffice; shift-invert is a last resort and even
+  then runs matrix-free via GMRES — no dependence on the assembled-FD
+  iterative-solver project.
 
 ## Out of scope
 
