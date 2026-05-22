@@ -62,6 +62,7 @@ pub struct GpuOperator {
     p: Buffer<cl_float>,
     _lserk_program: Program,
     lserk_kernel: Kernel,
+    source_kernel: Kernel,
 }
 
 /// `f64` slice to an `f32` vector.
@@ -170,6 +171,8 @@ impl GpuOperator {
         let lserk_program = gpu.build_program(LSERK_SRC)?;
         let lserk_kernel = Kernel::create(&lserk_program, "lserk_stage")
             .map_err(|e| format!("lserk kernel create failed: {e}"))?;
+        let source_kernel = Kernel::create(&lserk_program, "add_source")
+            .map_err(|e| format!("source kernel create failed: {e}"))?;
 
         let y = gpu.alloc(n_dof)?;
         let dy = gpu.alloc(n_dof)?;
@@ -202,6 +205,7 @@ impl GpuOperator {
             p,
             _lserk_program: lserk_program,
             lserk_kernel,
+            source_kernel,
         })
     }
 
@@ -291,6 +295,25 @@ impl GpuOperator {
         gpu.download(&self.dy, self.n_dof)
     }
 
+    /// Enqueue the soft-source add: `dy[source_dof] += val`.
+    fn enqueue_add_source(
+        &self,
+        gpu: &GpuContext,
+        dof: cl_int,
+        val: f32,
+    ) -> Result<(), String> {
+        unsafe {
+            ExecuteKernel::new(&self.source_kernel)
+                .set_arg(&self.dy)
+                .set_arg(&dof)
+                .set_arg(&val)
+                .set_global_work_size(1)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("source kernel launch failed: {e}"))?;
+        Ok(())
+    }
+
     /// Propagate `y0` for `steps` LSERK4 steps of size `dt`, fully on the
     /// device: the state stays resident, only `y0` (up) and the final
     /// state (down) cross the bus.
@@ -330,6 +353,51 @@ impl GpuOperator {
         gpu.queue()
             .finish()
             .map_err(|e| format!("transient sync failed: {e}"))?;
+        gpu.download(&self.y, self.n_dof)
+    }
+
+    /// Driven transient: `dy/dt = A.y + b`, with `b` a single-DOF soft
+    /// source held constant across each step (the zeroth-order hold the
+    /// CPU `step_driven` uses). `source_values[k]` is the source amplitude
+    /// for step `k`, and its length sets the step count.
+    pub fn transient_driven(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        source_dof: usize,
+        source_values: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        assert!(source_dof < self.n_dof, "source_dof out of range");
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        let zeros = vec![0.0_f32; self.n_dof];
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.p, CL_BLOCKING, 0, &zeros, &[])
+        }
+        .map_err(|e| format!("register init failed: {e}"))?;
+
+        let dof = source_dof as cl_int;
+        for &g in source_values {
+            for stage in 0..LSERK4_STAGES {
+                self.enqueue_apply(gpu)?;
+                self.enqueue_add_source(gpu, dof, g)?;
+                self.enqueue_lserk(
+                    gpu,
+                    LSERK4_A[stage] as f32,
+                    LSERK4_B[stage] as f32,
+                    dt,
+                )?;
+            }
+        }
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("driven transient sync failed: {e}"))?;
         gpu.download(&self.y, self.n_dof)
     }
 }
@@ -456,6 +524,71 @@ mod tests {
         assert!(
             rel < GPU_REL_TOL,
             "GPU transient rel.err {rel:.3e} exceeds GPU_REL_TOL",
+        );
+    }
+
+    #[test]
+    fn gpu_driven_transient_matches_cpu() {
+        // P2.3 gate: the GPU driven transient (soft source) matches the
+        // CPU driven LSERK4 within GPU_REL_TOL.
+        use crate::explicit::LserkWorkspace;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+
+        let mut v: Vec<Field> =
+            (0..n).map(|i| (0.1 + i as Field * 0.007).sin()).collect();
+        let mut rho = 1.0;
+        for _ in 0..30 {
+            let av = op.apply(&v);
+            rho = av.iter().map(|x| x * x).sum::<Field>().sqrt();
+            let inv = 1.0 / rho;
+            for (vi, &a) in v.iter_mut().zip(&av) {
+                *vi = a * inv;
+            }
+        }
+        let dt = 1.0 / rho;
+        let steps = 150;
+        let sdof = n / 3;
+        let src: Vec<Field> =
+            (0..steps).map(|k| (0.3 * k as Field).sin()).collect();
+
+        // CPU reference — driven from rest.
+        let mut y_cpu = vec![0.0; n];
+        let mut ws = LserkWorkspace::new();
+        for &g in &src {
+            ws.step_driven_into(
+                |x, ax| op.apply_into(x, ax),
+                &mut y_cpu,
+                dt,
+                sdof,
+                g,
+            );
+        }
+
+        // GPU.
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0 = vec![0.0_f32; n];
+        let src32: Vec<f32> = src.iter().map(|&v| v as f32).collect();
+        let y_gpu = gop
+            .transient_driven(&gpu, &y0, dt as f32, sdof, &src32)
+            .expect("driven transient");
+
+        let rel = rel_l2(&y_gpu, &y_cpu);
+        eprintln!(
+            "GPU driven transient vs CPU [{steps} steps]: rel L2 = {rel:.3e}"
+        );
+        assert!(
+            rel < GPU_REL_TOL,
+            "GPU driven transient rel.err {rel:.3e} exceeds GPU_REL_TOL",
         );
     }
 }

@@ -18,3 +18,10 @@ kernel void lserk_stage(global float* p,
     p[i] = pi;
     y[i] = y[i] + b * pi;
 }
+
+// Add a held soft-source value to one DOF of the matvec result `k`. The
+// driven system is dy/dt = A.y + b, with b a single-DOF rank-1 source.
+kernel void add_source(global float* k, const int dof, const float val) {
+    if (get_global_id(0) == 0)
+        k[dof] += val;
+}
