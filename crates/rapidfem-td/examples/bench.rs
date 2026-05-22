@@ -2,7 +2,10 @@
 //!
 //! Reports the three quantities the roadmap calls for: matrix-free `apply`
 //! throughput, exponential-propagation cost per step, and how both scale
-//! with mesh size. Run in release for meaningful numbers:
+//! with mesh size. The propagation section additionally splits a step into
+//! its matvec and Krylov-orthogonalisation shares — the breakdown that
+//! decides where a tune (or an accelerator) pays off. Run in release for
+//! meaningful numbers:
 //!
 //! ```text
 //! cargo run --release -p rapidfem-td --example bench
@@ -37,7 +40,7 @@ fn main() {
         "{:>7} {:>10} {:>13} {:>12} {:>14} {:>9}",
         "cells", "n_dof", "apply [ms]", "Mdof/s", "assemble [ms]", "nnz/row"
     );
-    for &c in &[2usize, 3, 4, 5, 6] {
+    for &c in &[2usize, 3, 4, 5, 6, 8] {
         let mesh = structured_box(c, c, c, 1.0, 1.0, 1.0);
         let op = MaxwellOperator::new(&mesh, order, 1.0);
         let n = op.n_dof();
@@ -66,13 +69,30 @@ fn main() {
         );
     }
 
-    // --- propagation cost: one exponential step --------------------------
+    // --- propagation cost: one exponential step, matvec vs orthogonalise --
+    // A Krylov step of dimension `m` performs exactly `m` matvecs; whatever
+    // the step costs beyond `m · apply` is the CGS2 orthogonalisation. The
+    // two scale differently — matvec linearly in `m`, orthogonalisation
+    // quadratically — so the split, not the total, is what a tune targets.
     let mesh = structured_box(4, 4, 4, 1.0, 1.0, 1.0);
     let op = MaxwellOperator::new(&mesh, order, 1.0);
     let n = op.n_dof();
     let y: Vec<f64> = (0..n).map(|i| (i as f64 * 0.07).cos()).collect();
 
+    let mut scratch = vec![0.0; n];
+    op.apply_into(&y, &mut scratch); // warm
+    let t_apply = time_median(200, || op.apply_into(&y, &mut scratch));
+
     println!("\nexponential propagation  (n_dof = {n}, reused workspace):");
+    println!(
+        "  apply: {:.3} ms     {:>4} {:>11} {:>11} {:>11} {:>7}",
+        t_apply * 1e3,
+        "dim",
+        "step [ms]",
+        "matvec [ms]",
+        "ortho [ms]",
+        "ortho%",
+    );
     for &m in &[12usize, 24, 40] {
         let mut ws = KrylovWorkspace::new();
         let mut out = vec![0.0; n];
@@ -80,6 +100,16 @@ fn main() {
         let t = time_median(20, || {
             ws.expmv_into(|x, ax| op.apply_into(x, ax), &y, 0.02, m, 0.0, &mut out);
         });
-        println!("  krylov_dim {m:>3}:  {:>7.2} ms/step", t * 1e3);
+        let matvec = t_apply * m as f64;
+        let ortho = (t - matvec).max(0.0);
+        println!(
+            "  {:>16} {:>4} {:>11.2} {:>11.2} {:>11.2} {:>6.0}%",
+            "",
+            m,
+            t * 1e3,
+            matvec * 1e3,
+            ortho * 1e3,
+            100.0 * ortho / t,
+        );
     }
 }
