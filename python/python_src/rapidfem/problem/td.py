@@ -762,6 +762,16 @@ class ProblemTD:
             return self._op.step(_arr(y), h_solver, int(krylov_dim))
         return self._op.step(_arr(y), h_solver, int(krylov_dim), float(tol))
 
+    def step_explicit(self, y, h):
+        """Advance the state by ``h`` with the explicit LSERK4 integrator
+        (five matvecs, no Krylov subspace).
+
+        Cheaper per step than :meth:`step`, but only conditionally stable:
+        an ``h`` past the operator's CFL limit diverges. Prefer :meth:`step`
+        (the exponential propagator) when the mesh is stiff or the step is
+        set by the output cadence rather than by stability."""
+        return self._op.step_explicit(_arr(y), float(self.c * h))
+
     def stepper(self, dt, *, krylov_dim=40):
         """A reusable one-step propagator bound to a fixed ``dt``.
 

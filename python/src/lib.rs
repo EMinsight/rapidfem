@@ -384,6 +384,9 @@ struct PyTdOperator {
     krylov: rapidfem_td::propagator::KrylovWorkspace,
     /// Reused soft-source vector for `step_driven` — one DOF set per call.
     driven_b: Vec<f64>,
+    /// Reused LSERK4 workspace — keeps the explicit `step_explicit` stepper
+    /// allocation-free across a transient loop.
+    lserk: rapidfem_td::explicit::LserkWorkspace,
 }
 
 #[pymethods]
@@ -410,6 +413,7 @@ impl PyTdOperator {
             op,
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
+            lserk: rapidfem_td::explicit::LserkWorkspace::new(),
         }
     }
 
@@ -549,6 +553,7 @@ impl PyTdOperator {
             op,
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
+            lserk: rapidfem_td::explicit::LserkWorkspace::new(),
         })
     }
 
@@ -624,6 +629,26 @@ impl PyTdOperator {
             tol,
             &mut out,
         );
+        Ok(out.into_pyarray_bound(py))
+    }
+
+    /// Advance the state by `h` with the explicit LSERK4 integrator: five
+    /// matvecs and two state registers, no Krylov subspace. Far cheaper per
+    /// step than [`step`](Self::step), but only *conditionally* stable —
+    /// an `h` past the operator's CFL limit diverges. Zero-copy numpy in
+    /// and out; the LSERK4 workspace is reused across a transient loop.
+    fn step_explicit<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        h: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let mut out = y.to_vec();
+        let op = &self.op;
+        self.lserk.step_into(|x, ax| op.apply_into(x, ax), &mut out, h);
         Ok(out.into_pyarray_bound(py))
     }
 
