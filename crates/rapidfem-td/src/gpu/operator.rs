@@ -16,7 +16,7 @@ use opencl3::types::{CL_BLOCKING, cl_double, cl_float, cl_int};
 
 use super::GpuContext;
 use crate::constants::{
-    Field, LSERK4_A, LSERK4_B, LSERK4_STAGES,
+    Field, KRYLOV_CHUNK, LSERK4_A, LSERK4_B, LSERK4_STAGES,
 };
 use crate::propagator::expm;
 use crate::rhs::MaxwellOperator;
@@ -838,11 +838,41 @@ impl GpuOperator {
     /// Matrix-free `exp(t*A)*v` via an `m`-step Krylov projection — the GPU
     /// counterpart of [`crate::propagator::expmv`].
     ///
-    /// The Arnoldi basis is device-resident in f64 and the CGS2
+    /// For `m` above [`KRYLOV_CHUNK`] the propagation is **sub-stepped**:
+    /// `exp(t*A) = exp((t/k)*A)^k` is exact, so `k` sub-steps each with a
+    /// small Krylov space give the same result as one large space, but the
+    /// device-resident Arnoldi basis is capped at `~KRYLOV_CHUNK * n_dof`
+    /// rather than `~m * n_dof`. Sub-steps round-trip the state through the
+    /// host; that transfer is small next to the Arnoldi itself.
+    pub fn expmv(
+        &mut self,
+        gpu: &GpuContext,
+        v: &[f64],
+        t: f64,
+        m: usize,
+    ) -> Result<Vec<f64>, String> {
+        assert_eq!(v.len(), self.n_dof, "state length mismatch");
+        assert!(m >= 1, "Krylov dimension must be >= 1");
+        let k = m.div_ceil(KRYLOV_CHUNK).max(1);
+        let chunk = m.div_ceil(k);
+        if k == 1 {
+            return self.expmv_chunk(gpu, v, t, chunk);
+        }
+        // Sub-step: each piece covers t/k with a `chunk`-dimensional space.
+        let tau = t / k as f64;
+        let mut state = v.to_vec();
+        for _ in 0..k {
+            state = self.expmv_chunk(gpu, &state, tau, chunk)?;
+        }
+        Ok(state)
+    }
+
+    /// One Krylov sub-step: `exp(t*A)*v` from a single `m`-dimensional
+    /// Arnoldi space. The basis is device-resident in f64 and the CGS2
     /// orthogonalisation runs in f64; the matvec drops through the f32
     /// `apply` kernel. The dense `exp(t*H)` of the small Hessenberg is done
-    /// on the host. Fixed dimension `m`.
-    pub fn expmv(
+    /// on the host.
+    fn expmv_chunk(
         &mut self,
         gpu: &GpuContext,
         v: &[f64],

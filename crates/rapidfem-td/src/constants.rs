@@ -58,6 +58,15 @@ pub const KRYLOV_TOL: Accum = 1e-10;
 /// invariant subspace exactly and the iteration stops.
 pub const ARNOLDI_BREAKDOWN: Accum = 1e-12;
 
+/// Per-sub-step Krylov dimension cap for the GPU exponential propagator.
+/// `exp(t*A)*v` for a requested dimension above this is computed by
+/// sub-stepping (`exp(t*A) = exp((t/k)*A)^k`, exact), each sub-step a
+/// small Krylov space. The device-resident Arnoldi basis is then capped
+/// at `~KRYLOV_CHUNK * n_dof` instead of `~m * n_dof`, the dominant GPU
+/// memory cost of the propagator, and the O(m^2) orthogonalisation work
+/// drops with it.
+pub const KRYLOV_CHUNK: usize = 12;
+
 /// Minimum working-vector slice length per rayon task in the parallel CGS2
 /// orthogonalisation. The chunk is sized from `n` so every core gets work
 /// (see [`ARNOLDI_TASKS_PER_THREAD`]); this floor keeps a task above the
