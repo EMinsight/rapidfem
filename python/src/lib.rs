@@ -819,6 +819,47 @@ impl PyTdOperator {
         Ok(traj64.into_pyarray_bound(py))
     }
 
+    /// Driven explicit LSERK4 transient on the GPU. `source_values` holds
+    /// one soft-source amplitude per substep (`steps * substeps` entries).
+    /// Returns the flattened trajectory `[(steps+1) * n_dof]`; the caller
+    /// reshapes. Zero-copy numpy in.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_transient_driven<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+        substeps: usize,
+        source_dof: usize,
+        source_values: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source_values
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let src_32: Vec<f32> = src.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let traj = backend
+            .op
+            .transient_driven_traj(
+                &backend.ctx,
+                &y0_32,
+                h as f32,
+                steps,
+                substeps,
+                source_dof,
+                &src_32,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok(traj64.into_pyarray_bound(py))
+    }
+
     /// Cutoff angular frequency of port `port_idx`'s mode (operator units).
     fn port_cutoff(&self, port_idx: usize) -> f64 {
         self.op.port_cutoff(port_idx)

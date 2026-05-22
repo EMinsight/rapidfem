@@ -527,6 +527,68 @@ impl GpuOperator {
         gpu.download(&self.y, self.n_dof)
     }
 
+    /// Driven transient returning the full trajectory, flat
+    /// `[(steps+1) * n_dof]` with row 0 the initial state. `dt` is the
+    /// output cadence; the integrator takes `substeps` LSERK4 steps of
+    /// `dt/substeps` between snapshots. `source_values` holds one source
+    /// amplitude per substep (length `steps * substeps`), so the caller
+    /// re-samples the waveform per substep.
+    pub fn transient_driven_traj(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        substeps: usize,
+        source_dof: usize,
+        source_values: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        assert!(source_dof < self.n_dof, "source_dof out of range");
+        let substeps = substeps.max(1);
+        assert_eq!(
+            source_values.len(),
+            steps * substeps,
+            "source values must have steps*substeps entries",
+        );
+        let n = self.n_dof;
+        let h = dt / substeps as f32;
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        let zeros = vec![0.0_f32; n];
+        unsafe {
+            gpu.queue().enqueue_write_buffer(
+                &mut self.p, CL_BLOCKING, 0, &zeros, &[],
+            )
+        }
+        .map_err(|e| format!("register init failed: {e}"))?;
+
+        let dof = source_dof as cl_int;
+        let mut traj = Vec::with_capacity((steps + 1) * n);
+        traj.extend_from_slice(y0);
+        for k in 0..steps {
+            for j in 0..substeps {
+                let g = source_values[k * substeps + j];
+                for stage in 0..LSERK4_STAGES {
+                    self.enqueue_apply(gpu)?;
+                    self.enqueue_add_source(gpu, dof, g)?;
+                    self.enqueue_lserk(
+                        gpu,
+                        LSERK4_A[stage] as f32,
+                        LSERK4_B[stage] as f32,
+                        h,
+                    )?;
+                }
+            }
+            let row = gpu.download(&self.y, n)?;
+            traj.extend_from_slice(&row);
+        }
+        Ok(traj)
+    }
+
     /// Ensure the f64 Krylov buffers are allocated for dimension `m`.
     fn ensure_krylov(
         &mut self,

@@ -943,7 +943,7 @@ class ProblemTD:
 
     def driven_transient(
         self, *, source, waveform, probes, dt, steps, krylov_dim=40,
-        verbose=True,
+        device="cpu", verbose=True,
     ):
         """Drive a soft point source and record field probes.
 
@@ -973,6 +973,33 @@ class ProblemTD:
             self.probe_dof(p, field=f, component=c) for (p, f, c) in probes
         ]
         n = self.n_dof
+
+        # GPU path: the explicit LSERK4 driven transient device-resident,
+        # probes extracted from the trajectory. Falls back to the CPU
+        # exponential path when no GPU is present.
+        if device == "gpu" and self._op.gpu_available():
+            cfl = self.cfl_dt()
+            nsub = max(1, int(np.ceil(abs(dt) / cfl)))
+            h_sub = dt / nsub
+            src = np.array(
+                [float(waveform(i * h_sub)) for i in range(steps * nsub)],
+                dtype=np.float64,
+            )
+            if verbose:
+                _log(f"driven_transient: GPU LSERK4 "
+                     f"({self._op.gpu_device()}, {nsub} substeps/step)")
+            flat = self._op.gpu_transient_driven(
+                np.zeros(n), float(self.c * dt), int(steps), nsub,
+                int(sdof), src,
+            )
+            traj = np.asarray(flat).reshape(steps + 1, n)
+            resp = np.array([traj[:, d] for d in pdofs])
+            return TdResponse(
+                np.arange(steps + 1) * dt, resp,
+                source_label=_point_label(source),
+                probe_labels=[_point_label(p) for p in probes],
+            )
+
         y = np.zeros(n)
         times = np.arange(steps + 1) * dt
         resp = np.zeros((len(pdofs), steps + 1))
@@ -1007,7 +1034,7 @@ class ProblemTD:
 
     def transfer_function(
         self, *, source, probe, pulse, dt, steps, krylov_dim=40,
-        verbose=True,
+        device="cpu", verbose=True,
     ):
         """Field-to-field frequency response by on-the-fly RFT.
 
@@ -1048,7 +1075,8 @@ class ProblemTD:
         """
         times, resp = self.driven_transient(
             source=source, waveform=pulse, probes=[probe],
-            dt=dt, steps=steps, krylov_dim=krylov_dim, verbose=verbose,
+            dt=dt, steps=steps, krylov_dim=krylov_dim, device=device,
+            verbose=verbose,
         )
         g = np.asarray(pulse(times), dtype=float)
         spec_g = np.fft.rfft(g)
@@ -1292,36 +1320,51 @@ class ProblemTD:
         driven = source is not None and waveform is not None
 
         # GPU path: the explicit LSERK4 transient, state device-resident.
-        # Falls back to the CPU path for a driven run or with no GPU.
+        # Falls back to the CPU path only when no GPU is present.
+        sdof = None
+        if driven:
+            sp, sf, sc = source
+            sdof = self.probe_dof(sp, field=sf, component=sc)
         if device == "gpu":
-            if driven:
-                _log("transient: GPU path has no driven source, using CPU")
-            elif not self._op.gpu_available():
+            if not self._op.gpu_available():
                 _log("transient: no OpenCL GPU available, using CPU")
             else:
                 # Substep so each LSERK4 substep stays within the CFL
                 # limit, exactly as the CPU explicit path does.
                 cfl = self.cfl_dt()
                 nsub = max(1, int(np.ceil(abs(dt) / cfl)))
-                if verbose:
-                    _log(
-                        f"transient: GPU explicit LSERK4 "
-                        f"({self._op.gpu_device()}, {nsub} substeps/step)"
-                    )
+                h_sub = dt / nsub
                 t0 = time.time()
-                flat = self._op.gpu_transient(
-                    _arr(y), float(self.c * dt), int(steps), nsub
-                )
+                if driven:
+                    # One source amplitude per substep, re-sampled like the
+                    # CPU explicit driven path.
+                    src = np.array(
+                        [float(waveform(i * h_sub))
+                         for i in range(steps * nsub)],
+                        dtype=np.float64,
+                    )
+                    if verbose:
+                        _log(f"transient: GPU driven LSERK4 "
+                             f"({self._op.gpu_device()}, "
+                             f"{nsub} substeps/step)")
+                    flat = self._op.gpu_transient_driven(
+                        _arr(y), float(self.c * dt), int(steps), nsub,
+                        int(sdof), src,
+                    )
+                else:
+                    if verbose:
+                        _log(f"transient: GPU explicit LSERK4 "
+                             f"({self._op.gpu_device()}, "
+                             f"{nsub} substeps/step)")
+                    flat = self._op.gpu_transient(
+                        _arr(y), float(self.c * dt), int(steps), nsub
+                    )
                 traj = np.asarray(flat).reshape(steps + 1, n)
                 if verbose:
                     _log(f"transient complete - {steps} GPU steps "
                          f"in {time.time() - t0:.2f}s")
                 return TdTrajectory(traj, problem=self, dt=dt)
 
-        sdof = None
-        if driven:
-            sp, sf, sc = source
-            sdof = self.probe_dof(sp, field=sf, component=sc)
         warmup = min(max(int(warmup), 0), steps)
         # The explicit integrator is CFL-bound; resolve the limit once so
         # the post-warmup phase can substep within it.
