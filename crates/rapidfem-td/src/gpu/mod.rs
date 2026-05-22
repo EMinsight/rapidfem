@@ -17,7 +17,7 @@ use opencl3::device::{CL_DEVICE_TYPE_GPU, Device, get_all_devices};
 use opencl3::kernel::{ExecuteKernel, Kernel};
 use opencl3::memory::{Buffer, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE};
 use opencl3::program::Program;
-use opencl3::types::{CL_BLOCKING, cl_float, cl_int};
+use opencl3::types::{CL_BLOCKING, cl_double, cl_float, cl_int};
 
 mod operator;
 pub use operator::GpuOperator;
@@ -143,9 +143,76 @@ impl GpuContext {
         Ok(out)
     }
 
+    /// Upload an `f64` host slice into a fresh read-only device buffer.
+    pub fn upload_f64(
+        &self,
+        data: &[f64],
+    ) -> Result<Buffer<cl_double>, String> {
+        let mut buf = unsafe {
+            Buffer::<cl_double>::create(
+                &self.context,
+                CL_MEM_READ_ONLY,
+                data.len(),
+                ptr::null_mut(),
+            )
+        }
+        .map_err(|e| format!("f64 buffer creation failed: {e}"))?;
+        unsafe {
+            self.queue
+                .enqueue_write_buffer(&mut buf, CL_BLOCKING, 0, data, &[])
+        }
+        .map_err(|e| format!("f64 buffer write failed: {e}"))?;
+        Ok(buf)
+    }
+
+    /// Allocate a read-write `f64` device buffer of `len` elements.
+    pub fn alloc_f64(
+        &self,
+        len: usize,
+    ) -> Result<Buffer<cl_double>, String> {
+        unsafe {
+            Buffer::<cl_double>::create(
+                &self.context,
+                CL_MEM_READ_WRITE,
+                len,
+                ptr::null_mut(),
+            )
+        }
+        .map_err(|e| format!("f64 buffer allocation failed: {e}"))
+    }
+
+    /// Download `len` `f64` elements from a device buffer.
+    pub fn download_f64(
+        &self,
+        buf: &Buffer<cl_double>,
+        len: usize,
+    ) -> Result<Vec<f64>, String> {
+        let mut out = vec![0.0_f64; len];
+        unsafe {
+            self.queue
+                .enqueue_read_buffer(buf, CL_BLOCKING, 0, &mut out, &[])
+        }
+        .map_err(|e| format!("f64 buffer read failed: {e}"))?;
+        Ok(out)
+    }
+
     /// The command queue, for kernel enqueue in later phases.
     pub fn queue(&self) -> &CommandQueue {
         &self.queue
+    }
+
+    /// Write an `f64` host slice into an existing device buffer.
+    pub fn write_f64(
+        &self,
+        buf: &mut Buffer<cl_double>,
+        data: &[f64],
+    ) -> Result<(), String> {
+        unsafe {
+            self.queue
+                .enqueue_write_buffer(buf, CL_BLOCKING, 0, data, &[])
+        }
+        .map_err(|e| format!("f64 buffer write failed: {e}"))?;
+        Ok(())
     }
 }
 
