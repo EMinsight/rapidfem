@@ -179,3 +179,34 @@ Deliberately out of scope: local time stepping (a separate effort), the
 frequency-domain backend, and P4 (lower priority). The explicit path
 (P1, P2, P5) is the core deliverable; P3 is the harder, separately
 decided extension.
+
+## Optimisation backlog
+
+A post-P6 GPU-performance audit profiled the hot `apply` kernel. The
+benchmark campaign reached 16-26x over the CPU for the LSERK4 and driven
+transients and 9-10x for the exponential propagator (`gpu_bench`,
+`td_benchmark`).
+
+Two contained optimisations were applied and committed: the shared
+reference matrices moved to `constant` memory, and `element_curl` was
+looped node-outer to cut the per-work-item private memory from ~240 to
+~18 floats. Neither showed a gain measurable against the benchmark's
+run-to-run noise (CPU side roughly +-18%, GPU +-13%). That is itself the
+finding: `apply` responds neither to less matrix traffic nor to less
+private memory, so register spilling is not the dominant cost.
+
+Open items, for a future pass:
+
+- **A low-noise benchmark harness** (many runs, the minimum rather than
+  the median, warm-up, core pinning). A sub-2x kernel optimisation
+  cannot be confirmed against the current noise; this is the
+  prerequisite for the rest.
+- **Struct-of-arrays field layout.** `y` / `dy` are AoS
+  (`[e][node][field]`), so adjacent work-items (elements) access memory
+  a stride apart, uncoalesced. An `[e][field][node]` layout paired with
+  a work-group-per-element kernel would coalesce the global access. The
+  likely remaining lever.
+- **Work-group per element.** One work-group per element, work-items
+  mapped to nodes, the element field staged in local memory. Targets
+  register spilling, which the `element_curl` result suggests is the
+  lower-priority of the two.
