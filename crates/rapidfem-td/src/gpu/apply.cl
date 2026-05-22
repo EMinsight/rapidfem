@@ -14,9 +14,9 @@ inline float3 cross3(float3 a, float3 b) {
 // Physical curl of a node-major 3-vector field (`3*NP`) into `out` (`3*NP`).
 // `rd[k*NP+i]` is the reference derivative; `pd[(phys*3+comp)*NP+i]` the
 // physical derivative.
-void element_curl(global const float* dr,
-                  global const float* ds,
-                  global const float* dt,
+void element_curl(constant const float* dr,
+                  constant const float* ds,
+                  constant const float* dt,
                   global const float* jinv_e,
                   __private const float* field,
                   __private float* out) {
@@ -24,7 +24,7 @@ void element_curl(global const float* dr,
     float pd[9 * NP];
     for (int comp = 0; comp < 3; comp++) {
         for (int k = 0; k < 3; k++) {
-            global const float* d = (k == 0) ? dr : ((k == 1) ? ds : dt);
+            constant const float* d = (k == 0) ? dr : ((k == 1) ? ds : dt);
             for (int i = 0; i < NP; i++) {
                 float acc = 0.0f;
                 for (int j = 0; j < NP; j++)
@@ -55,11 +55,11 @@ void element_curl(global const float* dr,
 
 kernel void apply(global const float* y,
                   global float* dy,
-                  global const float* diff_r,
-                  global const float* diff_s,
-                  global const float* diff_t,
-                  global const float* lift,
-                  global const int* face_nodes,
+                  constant const float* diff_r,
+                  constant const float* diff_s,
+                  constant const float* diff_t,
+                  constant const float* lift,
+                  constant const int* face_nodes,
                   global const float* jinv,
                   global const float* inv_eps,
                   global const float* inv_mu,
