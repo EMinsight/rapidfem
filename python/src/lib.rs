@@ -704,6 +704,36 @@ impl PyTdOperator {
         Ok(out.into_pyarray_bound(py))
     }
 
+    /// One driven step with the explicit LSERK4 integrator — `dy/dt = A·y +
+    /// b` with `b` a single-DOF soft source held constant across the step.
+    /// The explicit counterpart of [`step_driven`](Self::step_driven);
+    /// cheap per step but CFL-bound. Zero-copy numpy in and out.
+    fn step_driven_explicit<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        source_dof: usize,
+        source_value: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if source_dof >= y.len() {
+            return Err(PyRuntimeError::new_err("source_dof out of range"));
+        }
+        let mut out = y.to_vec();
+        let op = &self.op;
+        self.lserk.step_driven_into(
+            |x, ax| op.apply_into(x, ax),
+            &mut out,
+            h,
+            source_dof,
+            source_value,
+        );
+        Ok(out.into_pyarray_bound(py))
+    }
+
     /// Number of waveguide ports on the operator.
     fn n_ports(&self) -> usize {
         self.op.n_ports()

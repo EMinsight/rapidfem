@@ -88,6 +88,46 @@ impl LserkWorkspace {
                 });
         }
     }
+
+    /// One LSERK4 step of the driven system `dy/dt = A·y + b`, with the
+    /// soft point source `b = e_{source_dof}·source_value` held constant
+    /// across the step. Advances `y` in place by `dt`.
+    ///
+    /// The zeroth-order source hold mirrors the exponential `step_driven`
+    /// (see [`crate::propagator`]), so the two integrators drive a
+    /// transient identically bar their own truncation error. Allocation-
+    /// free once warmed; conditionally stable, like [`step_into`](Self::step_into).
+    pub fn step_driven_into<F>(
+        &mut self,
+        matvec: F,
+        y: &mut [Field],
+        dt: Field,
+        source_dof: usize,
+        source_value: Field,
+    ) where
+        F: Fn(&[Field], &mut [Field]),
+    {
+        let n = y.len();
+        self.ensure(n);
+        self.p[..n].fill(0.0);
+
+        for stage in 0..LSERK4_STAGES {
+            matvec(y, &mut self.k[..n]);
+            // dy/dt = A·y + b: the held source enters every stage's RHS.
+            if source_dof < n {
+                self.k[source_dof] += source_value;
+            }
+            let (a, b) = (LSERK4_A[stage], LSERK4_B[stage]);
+            self.p[..n]
+                .par_iter_mut()
+                .zip(y[..n].par_iter_mut())
+                .zip(&self.k[..n])
+                .for_each(|((pi, yi), ki)| {
+                    *pi = a * *pi + dt * *ki;
+                    *yi += b * *pi;
+                });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +253,50 @@ mod tests {
         assert!(
             !unstable.is_finite() || unstable > 1e6,
             "above CFL stayed bounded: {unstable}",
+        );
+    }
+
+    #[test]
+    fn lserk4_driven_matches_etd_below_cfl() {
+        // The driven explicit step against the exponential ETD step: for a
+        // step well inside the CFL limit, one driven LSERK4 step agrees
+        // with `etd_step` (dy/dt = A·y + b, b held constant) to the
+        // scheme's O(dt^5) truncation error.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use crate::rhs::MaxwellOperator;
+
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y0: Vec<Field> =
+            (0..n).map(|i| (0.2 + i as Field * 0.019).sin()).collect();
+
+        let sdof = n / 3;          // an arbitrary interior source DOF
+        let src = 0.7;
+        let dt = 1e-3;             // deep inside the CFL limit
+
+        let mut y_rk = y0.clone();
+        let mut ws = LserkWorkspace::new();
+        ws.step_driven_into(
+            |x, ax| op.apply_into(x, ax), &mut y_rk, dt, sdof, src,
+        );
+
+        let mut b = vec![0.0; n];
+        b[sdof] = src;
+        let y_etd = etd_step(|x| op.apply(x), &y0, &b, dt, 40);
+
+        let err: f64 = y_rk
+            .iter()
+            .zip(&y_etd)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = y_etd.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(
+            err < 1e-9 * scale,
+            "driven LSERK4 vs ETD step: rel.err {}",
+            err / scale,
         );
     }
 }

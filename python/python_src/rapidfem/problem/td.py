@@ -861,6 +861,25 @@ class ProblemTD:
             y = self.step_explicit(y, h)
         return y
 
+    def _advance_driven(self, y, t_n, dt, method, sdof, waveform,
+                        krylov_dim, cfl_dt):
+        """Advance ``y`` by one output step ``dt`` of the driven system
+        with the chosen integrator. The explicit integrator substeps
+        within the CFL limit and re-samples the waveform each substep; the
+        exponential integrator holds the source constant across the step,
+        as :meth:`step_driven` does."""
+        if method == "exponential":
+            g = float(waveform(t_n))
+            return self._op.step_driven(_arr(y), sdof, g,
+                                        float(self.c * dt), krylov_dim)
+        nsub = max(1, int(np.ceil(abs(dt) / cfl_dt)))
+        h = dt / nsub
+        h_op = float(self.c * h)
+        for j in range(nsub):
+            g = float(waveform(t_n + j * h))
+            y = self._op.step_driven_explicit(_arr(y), h_op, sdof, g)
+        return y
+
     def stepper(self, dt, *, krylov_dim=40, method="exponential"):
         """A reusable one-step propagator bound to a fixed ``dt``.
 
@@ -1242,8 +1261,9 @@ class ProblemTD:
         method : {"exponential", "explicit"}
             Time integrator. ``"exponential"`` is exact at any ``dt``;
             ``"explicit"`` is the cheaper LSERK4 stepper, substepped to
-            respect its CFL limit (see :meth:`cfl_dt`). The explicit
-            integrator does not yet drive soft sources.
+            respect its CFL limit (see :meth:`cfl_dt`). Both drive a soft
+            source; the explicit integrator re-samples the waveform each
+            substep.
         warmup : int
             Output steps to run with the exponential integrator before
             handing off to ``method``. With ``method="explicit"`` this
@@ -1264,20 +1284,15 @@ class ProblemTD:
         n = self.n_dof
         y = np.zeros(n) if y0 is None else _arr(y0)
         driven = source is not None and waveform is not None
-        if driven and method == "explicit":
-            raise NotImplementedError(
-                "the explicit integrator does not yet drive soft sources; "
-                "use method='exponential' for a driven transient")
         sdof = None
         if driven:
             sp, sf, sc = source
             sdof = self.probe_dof(sp, field=sf, component=sc)
-        h_op = float(self.c * dt)
         warmup = min(max(int(warmup), 0), steps)
         # The explicit integrator is CFL-bound; resolve the limit once so
         # the post-warmup phase can substep within it.
         cfl = self.cfl_dt() if method == "explicit" else None
-        if verbose and method == "explicit" and not driven:
+        if verbose and method == "explicit":
             nsub = max(1, int(np.ceil(abs(dt) / cfl)))
             _log(f"transient: {warmup} exponential warmup step(s), then "
                  f"explicit LSERK4 ({nsub} substeps/step)")
@@ -1287,11 +1302,11 @@ class ProblemTD:
         every = max(1, steps // 10)
         label = "driven transient" if driven else "transient"
         for k in range(steps):
+            phase = "exponential" if k < warmup else method
             if driven:
-                g = float(waveform(k * dt))
-                y = self._op.step_driven(_arr(y), sdof, g, h_op, krylov_dim)
+                y = self._advance_driven(y, k * dt, dt, phase, sdof,
+                                         waveform, krylov_dim, cfl)
             else:
-                phase = "exponential" if k < warmup else method
                 y = self._advance(y, dt, phase, krylov_dim, cfl)
             traj[k + 1] = y
             if verbose and (k + 1) % every == 0:
