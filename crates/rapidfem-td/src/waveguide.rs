@@ -1,14 +1,15 @@
-//! Analytic rectangular-waveguide port modes.
+//! Analytic waveguide port modes.
 //!
 //! A rectangular waveguide of width `a` and height `b` supports `TE_mn`
 //! modes with closed-form transverse field profiles. For a time-domain
 //! port these profiles shape the incident excitation and the modal
 //! extraction; the guide dispersion itself emerges from the PEC walls
 //! during propagation, so only the transverse profile and the cutoff are
-//! needed here. Everything is in the solver's normalised units
-//! (`c = ε₀ = μ₀ = 1`).
+//! needed here. A coaxial line carries the dispersionless TEM mode — a
+//! radial `E_ρ ∝ 1/ρ` field between the two conductors. Everything is in
+//! the solver's normalised units (`c = ε₀ = μ₀ = 1`).
 
-use crate::constants::Field;
+use crate::constants::{COAX_RADIUS_FLOOR, Field};
 /// Pi in the operator's working precision (`Field`).
 const PI: Field = std::f64::consts::PI as Field;
 
@@ -189,6 +190,185 @@ impl RectPort {
     }
 }
 
+/// A coaxial-line port carrying the transverse-electromagnetic (TEM) mode.
+///
+/// Between an inner conductor of radius `r_i` and an outer conductor of
+/// radius `r_o` a coaxial line supports a dispersionless TEM mode: a purely
+/// radial transverse electric field `E ∝ ρ̂/ρ` and an azimuthal magnetic
+/// field `H = ŵ × E`. The mode has no cutoff and travels at exactly `c`,
+/// so its modal impedance is flat — exactly the role the `(0, 0)` sentinel
+/// of [`RectPort`] plays for a lumped port.
+///
+/// The port plane is described by its `w_hat` inward normal (pointing into
+/// the simulation domain) and the coax `center` lying on it; `ρ` is the
+/// in-plane distance from that center.
+#[derive(Clone, Debug)]
+pub struct CoaxPort {
+    /// Coax-axis center on the port plane (global coords).
+    pub center: [Field; 3],
+    /// Inward unit normal — points into the domain (global). Also the
+    /// coax propagation axis.
+    pub w_hat: [Field; 3],
+    /// Inner-conductor radius.
+    pub r_inner: Field,
+    /// Outer-conductor radius.
+    pub r_outer: Field,
+}
+
+impl CoaxPort {
+    /// In-plane radial vector `x − center` with its `w_hat` component
+    /// removed — the part of the displacement that lies in the port plane.
+    fn in_plane(&self, x: [Field; 3]) -> [Field; 3] {
+        let d = [
+            x[0] - self.center[0],
+            x[1] - self.center[1],
+            x[2] - self.center[2],
+        ];
+        let dn = dot(d, self.w_hat);
+        [
+            d[0] - dn * self.w_hat[0],
+            d[1] - dn * self.w_hat[1],
+            d[2] - dn * self.w_hat[2],
+        ]
+    }
+
+    /// Transverse electric-field profile of the TEM mode at a global point
+    /// on the port face, in global coordinates.
+    ///
+    /// The coax TEM field is `E_ρ ∝ 1/ρ`; this returns `ρ̂·(r_i/ρ)`, so the
+    /// dominant value is unit magnitude at the inner radius — the same
+    /// order-unity normalisation [`RectPort::e_profile`] uses. On the
+    /// degenerate axis (`ρ → 0`, off the meshed annulus) the field is zero.
+    pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        let rho_vec = self.in_plane(x);
+        let rho = dot(rho_vec, rho_vec).sqrt();
+        if rho < COAX_RADIUS_FLOOR {
+            return [0.0; 3];
+        }
+        // ρ̂·(r_i/ρ): unit magnitude at ρ = r_inner, the 1/ρ TEM decay
+        // outward, expressed as the in-plane vector scaled by r_i/ρ².
+        let scale = self.r_inner / (rho * rho);
+        [rho_vec[0] * scale, rho_vec[1] * scale, rho_vec[2] * scale]
+    }
+
+    /// Transverse magnetic-field profile for the TEM mode propagating along
+    /// the inward normal — `h_t = ŵ × e_t`. Global coordinates.
+    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        cross(self.w_hat, self.e_profile(x))
+    }
+
+    /// Cutoff angular frequency — always `0` for a TEM mode, which
+    /// propagates at every frequency down to DC.
+    pub fn cutoff(&self) -> Field {
+        0.0
+    }
+
+    /// Modal wave impedance — flat `Z = 1` in the solver's normalised
+    /// units. The TEM mode is non-dispersive, so the forward/backward modal
+    /// split needs no per-frequency rescaling, exactly like the `(0, 0)`
+    /// lumped sentinel of [`RectPort`].
+    pub fn te_impedance(&self, _omega: Field) -> Field {
+        1.0
+    }
+
+    /// Fit a `CoaxPort` to a coaxial annular port face from its mesh node
+    /// coordinates and the inward normal (pointing into the domain).
+    ///
+    /// The coax center is the centroid of the face nodes projected onto the
+    /// port plane, unless `center_override` supplies an explicit axis point.
+    /// The inner radius is the smallest in-plane node distance to that
+    /// center, the outer radius the largest — the annulus the mesh spans.
+    pub fn from_face(
+        nodes: &[[Field; 3]],
+        inward_normal: [Field; 3],
+        center_override: Option<[Field; 3]>,
+    ) -> CoaxPort {
+        let nl = dot(inward_normal, inward_normal).sqrt();
+        let w_hat = [
+            inward_normal[0] / nl,
+            inward_normal[1] / nl,
+            inward_normal[2] / nl,
+        ];
+        // Center: an explicit axis point, or the centroid of the face nodes.
+        let raw_center = center_override.unwrap_or_else(|| {
+            let mut c = [0.0; 3];
+            for p in nodes {
+                for k in 0..3 {
+                    c[k] += p[k];
+                }
+            }
+            let inv = 1.0 / nodes.len() as Field;
+            [c[0] * inv, c[1] * inv, c[2] * inv]
+        });
+        let mut port = CoaxPort {
+            center: raw_center,
+            w_hat,
+            r_inner: 0.0,
+            r_outer: 0.0,
+        };
+        // Inner / outer radii — the extreme in-plane node distances.
+        let (mut lo, mut hi) = (Field::MAX, 0.0_f64);
+        for &p in nodes {
+            let rv = port.in_plane(p);
+            let r = dot(rv, rv).sqrt();
+            lo = lo.min(r);
+            hi = hi.max(r);
+        }
+        port.r_inner = lo;
+        port.r_outer = hi;
+        port
+    }
+}
+
+/// A port's waveguide mode — the mode-specific data the port machinery
+/// consumes, dispatched by variant.
+///
+/// The port flux, the injection source and the modal extraction are all
+/// mode-agnostic: they touch a mode only through `e_profile`, `h_profile`,
+/// `cutoff` and `te_impedance`. This enum is the single point where a
+/// rectangular `TE_mn` mode and a coaxial TEM mode differ.
+#[derive(Clone, Debug)]
+pub enum PortMode {
+    /// A rectangular-waveguide `TE_mn` mode (or the `(0,0)` lumped sentinel).
+    Rect(RectPort),
+    /// A coaxial-line TEM mode.
+    Coax(CoaxPort),
+}
+
+impl PortMode {
+    /// Transverse electric-field profile at a global point on the port face.
+    pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        match self {
+            PortMode::Rect(p) => p.e_profile(x),
+            PortMode::Coax(p) => p.e_profile(x),
+        }
+    }
+
+    /// Transverse magnetic-field profile at a global point on the port face.
+    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        match self {
+            PortMode::Rect(p) => p.h_profile(x),
+            PortMode::Coax(p) => p.h_profile(x),
+        }
+    }
+
+    /// Cutoff angular frequency of the mode (`0` for a TEM mode).
+    pub fn cutoff(&self) -> Field {
+        match self {
+            PortMode::Rect(p) => p.cutoff(),
+            PortMode::Coax(p) => p.cutoff(),
+        }
+    }
+
+    /// Modal wave impedance at angular frequency `omega`.
+    pub fn te_impedance(&self, omega: Field) -> Field {
+        match self {
+            PortMode::Rect(p) => p.te_impedance(omega),
+            PortMode::Coax(p) => p.te_impedance(omega),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +527,124 @@ mod tests {
         let p11 = z_port(0.5, 0.25, (1, 1));
         let want = PI * ((1.0 / 0.5_f64).powi(2) + (1.0 / 0.25_f64).powi(2)).sqrt();
         assert!((p11.cutoff() - want).abs() < 1e-12);
+    }
+
+    /// A coax port on the z = 0 plane, centred on the origin, inward +z.
+    fn z_coax(r_inner: f64, r_outer: f64) -> CoaxPort {
+        CoaxPort {
+            center: [0.0, 0.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            r_inner,
+            r_outer,
+        }
+    }
+
+    #[test]
+    fn coax_profile_is_radial_and_decays_as_one_over_rho() {
+        // The TEM coax field is purely radial and falls off as 1/ρ, with
+        // unit magnitude at the inner radius.
+        let p = z_coax(0.2, 0.6);
+        // At the inner radius, along +x: |E| = 1, purely radial (along x̂).
+        let e = p.e_profile([0.2, 0.0, 0.0]);
+        assert!((e[0] - 1.0).abs() < 1e-12, "inner |E| = {}", e[0]);
+        assert!(e[1].abs() < 1e-12 && e[2].abs() < 1e-12, "E not radial");
+        // At the outer radius: |E| = r_inner/r_outer.
+        let eo = p.e_profile([0.0, 0.6, 0.0]);
+        let mag = (eo[0] * eo[0] + eo[1] * eo[1] + eo[2] * eo[2]).sqrt();
+        assert!((mag - 0.2 / 0.6).abs() < 1e-12, "outer |E| = {mag}");
+        assert!(eo[2].abs() < 1e-12, "E has an out-of-plane part");
+        // Radial direction everywhere: E ∥ (x − center) in the plane.
+        let ed = p.e_profile([0.3, 0.4, 0.0]); // ρ = 0.5
+        let rho = 0.5_f64;
+        let mag_d = (ed[0] * ed[0] + ed[1] * ed[1]).sqrt();
+        assert!((mag_d - 0.2 / rho).abs() < 1e-12, "1/ρ decay broken");
+        // ρ̂ = (0.6, 0.8); E must be parallel to it.
+        let cross_z = ed[0] * 0.8 - ed[1] * 0.6;
+        assert!(cross_z.abs() < 1e-12, "E not along ρ̂");
+        // On the (un-meshed) axis the profile is zero, not divergent.
+        let e_axis = p.e_profile([0.0, 0.0, 0.0]);
+        assert!(e_axis.iter().all(|c| c.abs() < 1e-12), "axis E ≠ 0");
+    }
+
+    #[test]
+    fn coax_h_profile_is_an_inward_propagating_partner() {
+        // h_t = ŵ × e_t — E, H and the propagation direction are mutually
+        // orthogonal and E × H points inward (ŵ), like a forward wave.
+        let p = z_coax(0.2, 0.6);
+        let x = [0.3, 0.4, 0.0];
+        let e = p.e_profile(x);
+        let h = p.h_profile(x);
+        assert!(dot(e, h).abs() < 1e-12, "E·H = {}", dot(e, h));
+        let poynting = cross(e, h);
+        assert!(
+            dot(poynting, p.w_hat) > 0.0,
+            "E×H must point inward, got {poynting:?}",
+        );
+        // |h| = |e| for a transverse profile crossed with the unit normal.
+        let (ne, nh) = (dot(e, e).sqrt(), dot(h, h).sqrt());
+        assert!((ne - nh).abs() < 1e-12, "|E| {ne} vs |H| {nh}");
+        // The TEM mode is azimuthal in H: H ⟂ the radial direction.
+        let rho_hat = [0.6, 0.8, 0.0];
+        assert!(dot(h, rho_hat).abs() < 1e-12, "H not azimuthal");
+    }
+
+    #[test]
+    fn coax_port_has_zero_cutoff_and_flat_impedance() {
+        // The TEM mode propagates at every frequency: no cutoff, and a flat
+        // (non-dispersive) Z = 1 in the solver's normalised units.
+        let p = z_coax(0.2, 0.6);
+        assert!(p.cutoff().abs() < 1e-12, "TEM mode has a cutoff");
+        for &omega in &[0.1, 1.0, 7.0] {
+            assert!((p.te_impedance(omega) - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn coax_from_face_fits_the_annulus() {
+        // Nodes sampled on two concentric rings around (0,0) on the z = 3
+        // plane: from_face must recover the center, radii and inward normal.
+        let (ri, ro) = (0.25, 0.75);
+        let mut nodes = Vec::new();
+        for k in 0..8 {
+            let ang = k as f64 * std::f64::consts::FRAC_PI_4;
+            nodes.push([ri * ang.cos(), ri * ang.sin(), 3.0]);
+            nodes.push([ro * ang.cos(), ro * ang.sin(), 3.0]);
+        }
+        let p = CoaxPort::from_face(&nodes, [0.0, 0.0, -1.0], None);
+        assert!((p.r_inner - ri).abs() < 1e-12, "r_inner = {}", p.r_inner);
+        assert!((p.r_outer - ro).abs() < 1e-12, "r_outer = {}", p.r_outer);
+        assert!((p.w_hat[2] + 1.0).abs() < 1e-12, "inward normal");
+        // The centroid of a symmetric ring set is the axis origin (the
+        // z = 3 ring sits at z = 3, the in-plane centroid is the origin).
+        assert!(p.center[0].abs() < 1e-12, "center off-axis: {:?}", p.center);
+        assert!(p.center[1].abs() < 1e-12, "center off-axis: {:?}", p.center);
+        assert!((p.center[2] - 3.0).abs() < 1e-12, "center off-plane");
+        // An explicit center override is honoured.
+        let q = CoaxPort::from_face(
+            &nodes,
+            [0.0, 0.0, -1.0],
+            Some([0.0, 0.0, 3.0]),
+        );
+        assert!((q.center[2] - 3.0).abs() < 1e-12, "override ignored");
+    }
+
+    #[test]
+    fn port_mode_dispatches_to_the_variant() {
+        // PortMode forwards every query to the wrapped mode unchanged.
+        let rect = z_port(0.5, 0.25, (1, 0));
+        let mr = PortMode::Rect(rect.clone());
+        let x = [0.25, 0.1, 0.0];
+        assert_eq!(mr.e_profile(x), rect.e_profile(x));
+        assert_eq!(mr.h_profile(x), rect.h_profile(x));
+        assert_eq!(mr.cutoff(), rect.cutoff());
+        assert_eq!(mr.te_impedance(3.0 * PI), rect.te_impedance(3.0 * PI));
+
+        let coax = z_coax(0.2, 0.6);
+        let mc = PortMode::Coax(coax.clone());
+        let xc = [0.3, 0.4, 0.0];
+        assert_eq!(mc.e_profile(xc), coax.e_profile(xc));
+        assert_eq!(mc.h_profile(xc), coax.h_profile(xc));
+        assert_eq!(mc.cutoff(), coax.cutoff());
+        assert_eq!(mc.te_impedance(1.0), 1.0);
     }
 }

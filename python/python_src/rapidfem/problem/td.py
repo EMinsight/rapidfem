@@ -161,35 +161,48 @@ def _collect_dispersive(geometry):
 
 
 def _collect_ports(geometry):
-    """Walk the geometry's port physics — :class:`RectWaveguidePort` and
-    :class:`LumpedPort`.
+    """Walk the geometry's port physics — :class:`RectWaveguidePort`,
+    :class:`LumpedPort` and :class:`CoaxPort`.
 
-    Returns ``[(face_tag, mode_m, mode_n, direction)]`` for the native TD
-    operator; the list order (geometry declaration order) fixes the port
-    index used by :meth:`ProblemTD.sparams`. A lumped port maps to the
-    ``(0, 0)`` sentinel mode — the operator's uniform-profile / TEM port
-    (zero cutoff, flat impedance) — and forwards its voltage-integration
-    ``direction`` as the port's transverse field axis. A waveguide port
-    has ``direction`` ``None`` — its frame is auto-fit from the face.
+    Returns ``(rect_ports, coax_ports)``: ``rect_ports`` is
+    ``[(face_tag, mode_m, mode_n, direction)]`` for the native TD
+    operator's rectangular / lumped ports; ``coax_ports`` is
+    ``[(face_tag, center)]`` for its coaxial TEM ports. Operator port
+    indices follow the geometry declaration order, with all rectangular /
+    lumped ports first and coax ports appended after — matching the
+    native ``TdOperator.from_mesh_bytes`` layout.
+
+    A lumped port maps to the ``(0, 0)`` sentinel mode — the operator's
+    uniform-profile / TEM port (zero cutoff, flat impedance) — and forwards
+    its voltage-integration ``direction`` as the port's transverse field
+    axis. A waveguide port has ``direction`` ``None`` — its frame is
+    auto-fit from the face. A coax port carries the analytic TEM ``E_ρ ∝
+    ρ̂/ρ`` annular mode and forwards its optional axis ``origin`` to the
+    native ``center`` override.
     """
-    from ..physics import LumpedPort, RectWaveguidePort
+    from ..physics import CoaxPort, LumpedPort, RectWaveguidePort
 
-    out = []
+    rect_out = []
+    coax_out = []
     for phys in getattr(geometry, "_physics", []):
-        if isinstance(phys, RectWaveguidePort):
-            mode = (int(phys.mode[0]), int(phys.mode[1]))
-            direction = None
-        elif isinstance(phys, LumpedPort):
-            mode = (0, 0)
-            d = phys.direction
-            direction = (float(d[0]), float(d[1]), float(d[2]))
-        else:
-            continue
         tag = geometry._physics_tags.get(id(phys))
         if tag is None:
             continue
-        out.append((int(tag), mode[0], mode[1], direction))
-    return out
+        if isinstance(phys, RectWaveguidePort):
+            mode = (int(phys.mode[0]), int(phys.mode[1]))
+            rect_out.append((int(tag), mode[0], mode[1], None))
+        elif isinstance(phys, LumpedPort):
+            d = phys.direction
+            direction = (float(d[0]), float(d[1]), float(d[2]))
+            rect_out.append((int(tag), 0, 0, direction))
+        elif isinstance(phys, CoaxPort):
+            center = (
+                None
+                if phys.origin is None
+                else (float(phys.origin[0]), float(phys.origin[1]), float(phys.origin[2]))
+            )
+            coax_out.append((int(tag), center))
+    return rect_out, coax_out
 
 
 def _collect_absorbers(geometry):
@@ -622,7 +635,7 @@ class ProblemTD:
         self.c = float(c)
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
-        tag_ports = _collect_ports(geometry)
+        tag_ports, coax_ports = _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
         # The TD operator runs in normalised units (c = 1, time measured in
         # the mesh's length units), so a Debye relaxation time given in
@@ -636,6 +649,7 @@ class ProblemTD:
             bytes(mesh_bytes), order, _FLUX[flux],
             tag_materials or None, tag_ports or None,
             tag_absorbers or None, tag_dispersive or None,
+            coax_ports or None,
         )
         self._geometry = geometry
         self.order = order
@@ -643,7 +657,8 @@ class ProblemTD:
         _log(
             f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
-            f"{len(tag_ports)} ports, "
+            f"{len(tag_ports) + len(coax_ports)} ports "
+            f"({len(tag_ports)} rect/lumped, {len(coax_ports)} coax), "
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
             f"{len(tag_dispersive)} Debye dispersive regions"
         )

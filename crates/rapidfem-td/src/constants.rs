@@ -120,6 +120,17 @@ pub const LSERK4_B: [Field; 5] = [
 /// LSERK4 stage count — five stages reaching fourth order.
 pub const LSERK4_STAGES: usize = 5;
 
+// ── Waveguide ports ───────────────────────────────────────────────────────
+
+/// In-plane radius below which a coaxial-port TEM profile is taken as zero.
+///
+/// The coax TEM field is `E_ρ ∝ 1/ρ` and diverges on the coax axis. A
+/// meshed annulus never places a quadrature node on the axis, but a guard
+/// keeps `e_profile` finite for any query point: a radius this small is
+/// effectively on the (un-meshed) axis, off the physical port aperture, so
+/// the profile is reported as zero rather than blowing up.
+pub const COAX_RADIUS_FLOOR: Field = 1e-12;
+
 // ── Matrix-free operator (apply) ──────────────────────────────────────────
 
 /// Target rayon tasks per worker thread for the matrix-free `apply`'s

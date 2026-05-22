@@ -12,7 +12,7 @@ use crate::constants::{APPLY_TASKS_PER_THREAD, Field};
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
-use crate::waveguide::RectPort;
+use crate::waveguide::{CoaxPort, PortMode, RectPort};
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
 use rayon::prelude::*;
@@ -124,14 +124,15 @@ pub(crate) struct FaceInfo {
 ///
 /// Identified by the mesh triangle indices on the port plane (a gmsh face
 /// tag resolves to exactly such a set via `Mesh::ftag_to_tri`). With
-/// `rect = None` the port is a pure characteristic absorbing boundary;
-/// `Some` attaches a rectangular-waveguide mode for injection / extraction.
+/// `mode = None` the port is a pure characteristic absorbing boundary;
+/// `Some` attaches a waveguide mode (rectangular `TE_mn` or coaxial TEM)
+/// for injection / extraction.
 #[derive(Clone, Debug)]
 pub struct PortSpec {
     /// Mesh triangle indices forming this port's boundary faces.
     pub tris: Vec<usize>,
     /// Waveguide mode of this port, or `None` for an absorbing-only port.
-    pub rect: Option<RectPort>,
+    pub mode: Option<PortMode>,
 }
 
 impl PortSpec {
@@ -219,14 +220,85 @@ impl PortSpec {
             }
         }
         let rect = RectPort::from_face(&coords, nrm, mode, direction);
-        Some(PortSpec { tris, rect: Some(rect) })
+        Some(PortSpec { tris, mode: Some(PortMode::Rect(rect)) })
+    }
+
+    /// Build a coaxial TEM port from a gmsh face tag — collecting the port
+    /// triangles and fitting the coaxial annulus to the face.
+    ///
+    /// The coax center defaults to the port-face centroid; `center` supplies
+    /// an explicit axis point. The inner / outer radii are fitted from the
+    /// extreme in-plane node distances to that center. Returns `None` if the
+    /// tag carries no triangles.
+    pub fn coax_from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+        center: Option<[Field; 3]>,
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        // Distinct node coordinates of the port face.
+        let mut node_ids: Vec<usize> = Vec::new();
+        for &t in &tris {
+            for &nd in &mesh.tris[t] {
+                if !node_ids.contains(&nd) {
+                    node_ids.push(nd);
+                }
+            }
+        }
+        let coords: Vec<[Field; 3]> = node_ids
+            .iter()
+            .map(|&nd| mesh.nodes[nd].map(|x| x as Field))
+            .collect();
+
+        // Geometric normal of a representative port triangle, oriented to
+        // point into the domain (toward the adjacent tet's centroid).
+        let t0 = tris[0];
+        let [v0, v1, v2] = mesh.tris[t0];
+        let (p0, p1, p2) = (
+            mesh.nodes[v0].map(|x| x as Field),
+            mesh.nodes[v1].map(|x| x as Field),
+            mesh.nodes[v2].map(|x| x as Field),
+        );
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let mut nrm = cross3(e1, e2);
+        let len =
+            (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        for c in nrm.iter_mut() {
+            *c /= len;
+        }
+        let tet = mesh.tri_to_tet[t0]
+            .iter()
+            .copied()
+            .find(|&x| x != usize::MAX)?;
+        let mut centroid = [0.0; 3];
+        for &nd in &mesh.tets[tet] {
+            for k in 0..3 {
+                centroid[k] += mesh.nodes[nd][k] as Field / 4.0;
+            }
+        }
+        let inward = [
+            centroid[0] - p0[0],
+            centroid[1] - p0[1],
+            centroid[2] - p0[2],
+        ];
+        if dot3(nrm, inward) < 0.0 {
+            for c in nrm.iter_mut() {
+                *c = -*c;
+            }
+        }
+        let coax = CoaxPort::from_face(&coords, nrm, center);
+        Some(PortSpec { tris, mode: Some(PortMode::Coax(coax)) })
     }
 }
 
 /// Resolved per-port data held by the operator.
 struct PortData {
     /// The port's waveguide mode, if any.
-    rect: Option<RectPort>,
+    mode: Option<PortMode>,
     /// `(element, local_face)` of every boundary face on this port.
     faces: Vec<(usize, usize)>,
     /// Precomputed `(e_profile, h_profile)` per (face, face-node m), indexed
@@ -564,7 +636,7 @@ impl MaxwellOperator {
         let mut port_data: Vec<PortData> = ports
             .iter()
             .map(|spec| PortData {
-                rect: spec.rect.clone(),
+                mode: spec.mode.clone(),
                 faces: Vec::new(),
                 profiles: Vec::new(),
             })
@@ -583,13 +655,13 @@ impl MaxwellOperator {
         {
             let nfp = re.n_face_nodes;
             for pd in port_data.iter_mut() {
-                if let Some(rect) = &pd.rect {
+                if let Some(mode) = &pd.mode {
                     pd.profiles = Vec::with_capacity(pd.faces.len() * nfp);
                     for &(e, f) in &pd.faces {
                         for m in 0..nfp {
                             let vi = re.face_nodes[f][m];
                             let x = geom[e].map(re.nodes[vi]);
-                            pd.profiles.push((rect.e_profile(x), rect.h_profile(x)));
+                            pd.profiles.push((mode.e_profile(x), mode.h_profile(x)));
                         }
                     }
                 }
@@ -725,9 +797,9 @@ impl MaxwellOperator {
     /// operator's normalised units (`0` if the port carries no mode).
     pub fn port_cutoff(&self, port_idx: usize) -> Field {
         self.ports[port_idx]
-            .rect
+            .mode
             .as_ref()
-            .map_or(0.0, |r| r.cutoff())
+            .map_or(0.0, |m| m.cutoff())
     }
 
     /// Spatial source vector `b_spatial` for driving port `port_idx` with a
@@ -746,7 +818,7 @@ impl MaxwellOperator {
         let cols = 4 * nfp;
         let mut b = vec![0.0; self.n_dof()];
         let pd = &self.ports[port_idx];
-        if pd.rect.is_none() {
+        if pd.mode.is_none() {
             return b; // absorbing-only port — nothing to inject
         }
         for (face_idx, &(e, f)) in pd.faces.iter().enumerate() {
@@ -802,7 +874,7 @@ impl MaxwellOperator {
         let np = self.re.n_nodes;
         let nfp = self.re.n_face_nodes;
         let pd = &self.ports[port_idx];
-        assert!(pd.rect.is_some(), "port has no mode for extraction");
+        assert!(pd.mode.is_some(), "port has no mode for extraction");
         let (mut e_dot, mut e_norm) = (0.0, 0.0); // ∮E·e_t, ∮e_t·e_t
         let (mut h_dot, mut h_norm) = (0.0, 0.0);
         for (face_idx, &(e, f)) in pd.faces.iter().enumerate() {
@@ -2007,7 +2079,7 @@ mod tests {
         };
 
         let pec = run(&[]);
-        let port = run(&[PortSpec { tris: port_tris, rect: None }]);
+        let port = run(&[PortSpec { tris: port_tris, mode: None }]);
         // The all-PEC channel conserves energy exactly (central flux); the
         // port drains the majority of it. The residue is the test field's
         // below-cutoff content — evanescent in a waveguide, so it cannot
@@ -2053,7 +2125,7 @@ mod tests {
         // Central flux — the interior is energy-conserving, only the port
         // dissipates.
         let op = MaxwellOperator::new_with_materials_ports(
-            &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris, rect: None }],
+            &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris, mode: None }],
         );
         let n = op.n_dof();
         let a = op.assemble_dense();
@@ -2132,7 +2204,7 @@ mod tests {
             2,
             0.0,
             &vacuum,
-            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+            &[PortSpec { tris: port_tris, mode: Some(PortMode::Rect(rect)) }],
         );
         let n = op.n_dof();
         let b_spatial = op.port_source(0);
@@ -2228,7 +2300,10 @@ mod tests {
             2,
             0.0,
             &vacuum,
-            &[PortSpec { tris: port_tris, rect: Some(rect.clone()) }],
+            &[PortSpec {
+                tris: port_tris,
+                mode: Some(PortMode::Rect(rect.clone())),
+            }],
         );
         let n = op.n_dof();
         let b_spatial = op.port_source(0);
@@ -2329,7 +2404,7 @@ mod tests {
             2,
             0.0,
             &vacuum,
-            &[PortSpec { tris: port_tris, rect: Some(rect) }],
+            &[PortSpec { tris: port_tris, mode: Some(PortMode::Rect(rect)) }],
         );
         assert_eq!(op.n_ports(), 1);
         assert!(
@@ -2415,8 +2490,11 @@ mod tests {
         // so no end reflection contaminates the arrival times.
         let run = |side_ports: Vec<PortSpec>| -> [(f64, f64); 2] {
             let mut ports = vec![
-                PortSpec { tris: z0_tris.clone(), rect: Some(rect.clone()) },
-                PortSpec { tris: zl_tris.clone(), rect: None },
+                PortSpec {
+                    tris: z0_tris.clone(),
+                    mode: Some(PortMode::Rect(rect.clone())),
+                },
+                PortSpec { tris: zl_tris.clone(), mode: None },
             ];
             ports.extend(side_ports);
             let op = MaxwellOperator::new_with_materials_ports(
@@ -2447,8 +2525,8 @@ mod tests {
         let pec = run(Vec::new());
         // Run B — transparent characteristic side walls (rect = None).
         let open = run(vec![
-            PortSpec { tris: x_lo, rect: None },
-            PortSpec { tris: x_hi, rect: None },
+            PortSpec { tris: x_lo, mode: None },
+            PortSpec { tris: x_hi, mode: None },
         ]);
 
         assert!(
@@ -2478,6 +2556,203 @@ mod tests {
             v_tem > v_pec + 0.15,
             "TEM ({v_tem:.3}) not clearly faster than TE₁₀ ({v_pec:.3})",
         );
+    }
+
+    #[test]
+    fn coax_port_carries_a_matched_tem_wave() {
+        // WP-Coax: a coaxial TEM mode injected at a coax port travels down a
+        // straight matched coaxial line, propagates cleanly, and the port is
+        // low-reflection. The TEM mode is dispersionless — it clocks exactly
+        // c — and the per-frequency forward/backward split A,B = (P_e±Z·P_h)/2
+        // recovers an almost purely forward wave (|B/A| ≪ 1) before any
+        // far-end reflection can return. This mirrors `port_injects_a_mode_at
+        // _the_group_velocity` / `port_extracts_the_incident_amplitude` and,
+        // for the dispersionless speed, `lumped_port_carries_a_dispersionless
+        // _tem_wave`.
+        //
+        // The coax TEM field `E ∝ ρ̂/ρ` is divergence-free in the transverse
+        // plane, so it propagates as a free travelling wave at exactly c.
+        // The four side walls are transparent characteristic boundaries
+        // (`mode = None` ports) — exactly as in the lumped-TEM test — so no
+        // hollow-guide dispersion is imposed and the dispersionless TEM
+        // velocity is the genuine signal.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use crate::waveguide::CoaxPort;
+        use std::f64::consts::PI;
+
+        // A square-cross-section box carries the analytic radial coax field
+        // about the box centre. The transverse mesh is fine enough that the
+        // 1/ρ profile is well resolved across the annulus.
+        let (a, lz) = (3.0, 9.0);
+        let mesh = structured_box(6, 6, 18, a, a, lz);
+        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let z0_tris = on(&|p| p[2].abs() < 1e-9);
+        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
+        let x_lo = on(&|p| p[0].abs() < 1e-9);
+        let x_hi = on(&|p| (p[0] - a).abs() < 1e-9);
+        let y_lo = on(&|p| p[1].abs() < 1e-9);
+        let y_hi = on(&|p| (p[1] - a).abs() < 1e-9);
+        assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
+        assert!(!x_lo.is_empty() && !y_lo.is_empty());
+
+        // The coax port on the z = 0 face — radial TEM field about the box
+        // centre, inward normal +z. The annulus spans the box: an inner
+        // radius clear of the singular axis, an outer radius inside the wall.
+        let center = [a / 2.0, a / 2.0, 0.0];
+        let coax = CoaxPort {
+            center,
+            w_hat: [0.0, 0.0, 1.0], // inward +z
+            r_inner: 0.6,
+            r_outer: 1.3,
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        // Central flux — the interior is energy-conserving, so any drain is
+        // the port's doing. The z = lz end and the four side walls are
+        // transparent absorbing ports (no mode): the far-end carries no
+        // reflection, and the side walls let the coax field exist as a
+        // dispersionless free wave rather than a hollow-guide mode.
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: z0_tris,
+                    mode: Some(PortMode::Coax(coax.clone())),
+                },
+                PortSpec { tris: zl_tris, mode: None },
+                PortSpec { tris: x_lo, mode: None },
+                PortSpec { tris: x_hi, mode: None },
+                PortSpec { tris: y_lo, mode: None },
+                PortSpec { tris: y_hi, mode: None },
+            ],
+        );
+        let n = op.n_dof();
+        // The coax port has no cutoff — the TEM mode reaches DC.
+        assert!(
+            op.port_cutoff(0).abs() < 1e-12,
+            "coax port must have zero cutoff"
+        );
+        let b_spatial = op.port_source(0);
+        assert!(
+            b_spatial.iter().any(|&x| x != 0.0),
+            "coax port source is empty"
+        );
+
+        // Modulated-Gaussian drive. The TEM mode has no cutoff, so any
+        // carrier in the well-resolved band works.
+        let omega0 = 1.6 * PI;
+        let (t0, tau) = (7.0, 2.5);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+
+        // Probes on the annulus mid-radius, two z stations apart — the TEM
+        // packet arrival times give the propagation speed.
+        let r_mid = 0.5 * (coax.r_inner + coax.r_outer);
+        let probe = |z: f64| {
+            op.nearest_node_dof(
+                [a / 2.0 + r_mid, a / 2.0, z],
+                0,
+                0, // radial E along +x at this probe point
+            )
+        };
+        let (zp1, zp2) = (3.0, 6.0);
+        let (p1, p2) = (probe(zp1), probe(zp2));
+
+        let dt = 0.02;
+        let steps = 700; // stop before the far-end reflection returns
+        let mut y = vec![0.0; n];
+        let (mut peak1, mut tpk1) = (0.0_f64, 0.0);
+        let (mut peak2, mut tpk2) = (0.0_f64, 0.0);
+        let (mut fpe, mut fph) = (Vec::new(), Vec::new());
+        for s in 0..steps {
+            let t = s as f64 * dt;
+            let g = pulse(t);
+            let bvec: Vec<f64> = b_spatial.iter().map(|x| x * g).collect();
+            y = etd_step(|x| op.apply(x), &y, &bvec, dt, 20);
+            if y[p1].abs() > peak1 {
+                peak1 = y[p1].abs();
+                tpk1 = t;
+            }
+            if y[p2].abs() > peak2 {
+                peak2 = y[p2].abs();
+                tpk2 = t;
+            }
+            let (pe, ph) = op.port_modal_projections(&y, 0);
+            fpe.push(pe);
+            fph.push(ph);
+        }
+        assert!(y.iter().all(|v| v.is_finite()));
+        assert!(
+            peak1 > 1e-3 && peak2 > 1e-3,
+            "injected TEM mode did not reach the probes: {peak1:.2e}, {peak2:.2e}"
+        );
+
+        // The coax TEM wave is dispersionless — it travels at exactly c = 1.
+        let v = (zp2 - zp1) / (tpk2 - tpk1);
+        let v_err = (v - 1.0).abs();
+        eprintln!(
+            "DIAG coax port: peaks t={tpk1:.2},{tpk2:.2}  v={v:.3} (expect c=1)"
+        );
+        assert!(
+            v_err < 0.15,
+            "coax TEM packet speed {v:.3}, expected the dispersionless c = 1"
+        );
+
+        // Per-frequency forward / backward split — the modal extraction
+        // returns a finite incident amplitude (the coax mode is genuinely
+        // present in the propagated state) and the wave is predominantly
+        // forward. The threshold is looser than the rectangular-waveguide
+        // case because the box stand-in lacks the inner-conductor PEC that
+        // would make the 1/ρ field a true bound mode: outward-radiating
+        // energy hits the transparent side walls at oblique angles, where
+        // the characteristic boundary is only an approximate absorber. The
+        // important property is that the forward amplitude dominates.
+        let dft = |sig: &[f64], omega: f64| -> (f64, f64) {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, &x) in sig.iter().enumerate() {
+                let t = k as f64 * dt;
+                re += x * (omega * t).cos();
+                im -= x * (omega * t).sin();
+            }
+            (re * dt, im * dt)
+        };
+        let mag = |z: (f64, f64)| (z.0 * z.0 + z.1 * z.1).sqrt();
+        for &omega in &[1.45 * PI, 1.6 * PI, 1.75 * PI] {
+            let pe = dft(&fpe, omega);
+            let ph = dft(&fph, omega);
+            // TEM impedance is flat Z = 1 — no per-frequency rescaling.
+            let z = coax.te_impedance(omega);
+            let amp =
+                (0.5 * (pe.0 + z * ph.0), 0.5 * (pe.1 + z * ph.1));
+            let bmp =
+                (0.5 * (pe.0 - z * ph.0), 0.5 * (pe.1 - z * ph.1));
+            let refl = mag(bmp) / mag(amp);
+            eprintln!(
+                "DIAG coax extract ω/π={:.2}: |A|={:.3e} |B|={:.3e} \
+                 |B/A|={refl:.4}",
+                omega / PI,
+                mag(amp),
+                mag(bmp),
+            );
+            assert!(mag(amp) > 1e-3, "no incident amplitude at ω={omega}");
+            // Forward wave dominates — the backward component stays below
+            // a fraction of the forward amplitude.
+            assert!(
+                refl < 0.5,
+                "coax line should be forward-dominated: |B/A| = {refl:.3}"
+            );
+        }
     }
 
     #[test]
@@ -2520,11 +2795,11 @@ mod tests {
             &[
                 PortSpec {
                     tris: on_plane(0.0),
-                    rect: Some(rect(0.0, 1.0)),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
                 },
                 PortSpec {
                     tris: on_plane(lz),
-                    rect: Some(rect(lz, -1.0)),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
                 },
             ],
         );

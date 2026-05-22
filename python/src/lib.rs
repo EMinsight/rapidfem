@@ -476,8 +476,14 @@ impl PyTdOperator {
     /// the operator is byte-identical to before — `n_dof = 6*Np*n_elem` and
     /// no polarisation state. Applied after `tag_materials` / `absorbers`,
     /// so a Debye material overrides their permittivity on the same volume.
+    ///
+    /// `coax_ports` declares coaxial TEM ports: `(face_tag, center)` per
+    /// port, where `center` is `None` to use the face centroid or a
+    /// `(cx, cy, cz)` triple to override the coax axis. Coax ports are
+    /// appended to the operator's port list AFTER the rectangular `ports`,
+    /// so their indices start at `len(ports)`.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -489,6 +495,7 @@ impl PyTdOperator {
         ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>)>>,
         absorbers: Option<Vec<(i32, usize, f64, f64, f64, bool)>>,
         dispersive: Option<Vec<(i32, f64, f64, f64)>>,
+        coax_ports: Option<Vec<(i32, Option<(f64, f64, f64)>)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
@@ -572,6 +579,19 @@ impl PyTdOperator {
                         PyRuntimeError::new_err(format!(
                             "port face tag {tag} has no triangles, or its \
                              direction is zero / parallel to the face"
+                        ))
+                    })?;
+                port_specs.push(spec);
+            }
+        }
+        // Coaxial TEM ports — appended after the rectangular ports.
+        if let Some(cps) = coax_ports {
+            for (tag, center) in cps {
+                let center = center.map(|(x, y, z)| [x, y, z]);
+                let spec = PortSpec::coax_from_mesh_tag(&mesh, tag, center)
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "coax port face tag {tag} has no triangles"
                         ))
                     })?;
                 port_specs.push(spec);
