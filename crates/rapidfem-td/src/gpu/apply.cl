@@ -12,44 +12,49 @@ inline float3 cross3(float3 a, float3 b) {
 }
 
 // Physical curl of a node-major 3-vector field (`3*NP`) into `out` (`3*NP`).
-// `rd[k*NP+i]` is the reference derivative; `pd[(phys*3+comp)*NP+i]` the
-// physical derivative.
+//
+// Looped output-node-outer: the reference and physical derivatives of one
+// node are tiny 9-float scratch, never the `3*NP` / `9*NP` arrays the
+// component-outer form needed. That keeps the work-item's private memory
+// off the register-spill cliff. `jinv_e[k*3+p] = jacobian_inv[k][p]`.
 void element_curl(constant const float* dr,
                   constant const float* ds,
                   constant const float* dt,
                   global const float* jinv_e,
                   __private const float* field,
                   __private float* out) {
-    float rd[3 * NP];
-    float pd[9 * NP];
-    for (int comp = 0; comp < 3; comp++) {
-        for (int k = 0; k < 3; k++) {
-            constant const float* d = (k == 0) ? dr : ((k == 1) ? ds : dt);
-            for (int i = 0; i < NP; i++) {
-                float acc = 0.0f;
-                for (int j = 0; j < NP; j++)
-                    acc += d[i * NP + j] * field[j * 3 + comp];
-                rd[k * NP + i] = acc;
-            }
-        }
-        for (int phys = 0; phys < 3; phys++) {
-            float j0 = jinv_e[0 * 3 + phys];
-            float j1 = jinv_e[1 * 3 + phys];
-            float j2 = jinv_e[2 * 3 + phys];
-            int b = (phys * 3 + comp) * NP;
-            for (int i = 0; i < NP; i++)
-                pd[b + i] =
-                    j0 * rd[i] + j1 * rd[NP + i] + j2 * rd[2 * NP + i];
-        }
-    }
-    // curl_x = d(Fz)/dy - d(Fy)/dz, and cyclic.
     for (int i = 0; i < NP; i++) {
-        out[i * 3 + 0] =
-            pd[(1 * 3 + 2) * NP + i] - pd[(2 * 3 + 1) * NP + i];
-        out[i * 3 + 1] =
-            pd[(2 * 3 + 0) * NP + i] - pd[(0 * 3 + 2) * NP + i];
-        out[i * 3 + 2] =
-            pd[(0 * 3 + 1) * NP + i] - pd[(1 * 3 + 0) * NP + i];
+        // Reference derivatives at node i: rd[k*3 + comp].
+        float rd[9];
+        for (int k = 0; k < 3; k++) {
+            constant const float* d =
+                (k == 0) ? dr : ((k == 1) ? ds : dt);
+            float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f;
+            for (int j = 0; j < NP; j++) {
+                float dij = d[i * NP + j];
+                a0 += dij * field[j * 3 + 0];
+                a1 += dij * field[j * 3 + 1];
+                a2 += dij * field[j * 3 + 2];
+            }
+            rd[k * 3 + 0] = a0;
+            rd[k * 3 + 1] = a1;
+            rd[k * 3 + 2] = a2;
+        }
+        // Physical derivatives at node i: pd[phys*3 + comp].
+        float pd[9];
+        for (int p = 0; p < 3; p++) {
+            float j0 = jinv_e[0 * 3 + p];
+            float j1 = jinv_e[1 * 3 + p];
+            float j2 = jinv_e[2 * 3 + p];
+            for (int c = 0; c < 3; c++)
+                pd[p * 3 + c] =
+                    j0 * rd[0 * 3 + c] + j1 * rd[1 * 3 + c]
+                    + j2 * rd[2 * 3 + c];
+        }
+        // curl_x = d(Fz)/dy - d(Fy)/dz, and cyclic.
+        out[i * 3 + 0] = pd[1 * 3 + 2] - pd[2 * 3 + 1];
+        out[i * 3 + 1] = pd[2 * 3 + 0] - pd[0 * 3 + 2];
+        out[i * 3 + 2] = pd[0 * 3 + 1] - pd[1 * 3 + 0];
     }
 }
 
