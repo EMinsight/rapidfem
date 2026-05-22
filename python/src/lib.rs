@@ -596,13 +596,20 @@ impl PyTdOperator {
     /// Advance the state by `h` with the matrix-free exponential propagator.
     /// Zero-copy numpy in and out; the Krylov workspace is reused, so a
     /// transient loop allocates only the returned array per step.
-    #[pyo3(signature = (y, h, krylov_dim = 40))]
+    ///
+    /// `tol` is the Krylov a-posteriori error tolerance: the subspace stops
+    /// growing once the step's error estimate drops below it, so an easy
+    /// step costs far fewer than `krylov_dim` matvecs. `tol = 0` disables
+    /// the estimate and always runs the full `krylov_dim` — the
+    /// fixed-dimension worst case.
+    #[pyo3(signature = (y, h, krylov_dim = 40, tol = KRYLOV_TOL))]
     fn step<'py>(
         &mut self,
         py: Python<'py>,
         y: PyReadonlyArray1<'py, f64>,
         h: f64,
         krylov_dim: usize,
+        tol: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let y = y
             .as_slice()
@@ -614,7 +621,7 @@ impl PyTdOperator {
             y,
             h,
             krylov_dim,
-            KRYLOV_TOL,
+            tol,
             &mut out,
         );
         Ok(out.into_pyarray_bound(py))

@@ -748,11 +748,19 @@ class ProblemTD:
         return np.array(sorted(out))
 
     # -- mid level: stepping ------------------------------------------------
-    def step(self, y, h, krylov_dim=40):
+    def step(self, y, h, krylov_dim=40, tol=None):
         """Advance the state by ``h`` (in the same time units as ``c``) with
         the matrix-free exponential propagator — exact for the linear
-        homogeneous system at any ``h``."""
-        return self._op.step(_arr(y), float(self.c * h), int(krylov_dim))
+        homogeneous system at any ``h``.
+
+        ``tol`` is the Krylov a-posteriori error tolerance; ``None`` keeps
+        the solver default. A converged step uses far fewer than
+        ``krylov_dim`` matvecs; ``tol=0`` forces the full ``krylov_dim``
+        (the fixed-dimension worst case)."""
+        h_solver = float(self.c * h)
+        if tol is None:
+            return self._op.step(_arr(y), h_solver, int(krylov_dim))
+        return self._op.step(_arr(y), h_solver, int(krylov_dim), float(tol))
 
     def stepper(self, dt, *, krylov_dim=40):
         """A reusable one-step propagator bound to a fixed ``dt``.
