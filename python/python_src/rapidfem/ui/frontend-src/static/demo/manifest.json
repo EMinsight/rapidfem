@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779374951,
+  "baked_at": 1779462497,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -52,7 +52,7 @@
       ],
       "json_bytes": 19002,
       "bin_bytes": 3193032,
-      "bake_seconds": 6.69
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_dielectric_resonator",
@@ -104,7 +104,7 @@
       ],
       "json_bytes": 12028,
       "bin_bytes": 769492,
-      "bake_seconds": 6.54
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_iris_filter",
@@ -156,7 +156,7 @@
       ],
       "json_bytes": 31755,
       "bin_bytes": 7980440,
-      "bake_seconds": 19.83
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_microstrip_line",
@@ -208,7 +208,7 @@
       ],
       "json_bytes": 19977,
       "bin_bytes": 3222584,
-      "bake_seconds": 8.16
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_patch_antenna",
@@ -260,7 +260,7 @@
       ],
       "json_bytes": 27502,
       "bin_bytes": 5897344,
-      "bake_seconds": 84.48
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_pyramidal_horn",
@@ -312,7 +312,7 @@
       ],
       "json_bytes": 19565,
       "bin_bytes": 6105328,
-      "bake_seconds": 176.99
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_rfic_spiral_from_json",
@@ -370,7 +370,7 @@
       ],
       "json_bytes": 22482,
       "bin_bytes": 14775024,
-      "bake_seconds": 135.17
+      "bake_seconds": 0.0
     },
     {
       "name": "fd_wr90",
@@ -422,7 +422,7 @@
       ],
       "json_bytes": 14523,
       "bin_bytes": 1832016,
-      "bake_seconds": 5.35
+      "bake_seconds": 0.0
     },
     {
       "name": "td_power_divider",
@@ -464,7 +464,7 @@
           "marker": "# %% Drive a pulse in the stem and watch it split at the junction",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 12
+          "stream_lines": 3
         },
         {
           "marker": "# %% Visualise: the pulse dividing into the two PML-terminated arms",
@@ -475,9 +475,9 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 10871,
-      "bin_bytes": 567072,
-      "bake_seconds": 16.67
+      "json_bytes": 10162,
+      "bin_bytes": 1195124,
+      "bake_seconds": 0.0
     },
     {
       "name": "td_ring_resonator",
@@ -519,7 +519,7 @@
           "marker": "# %% Light up one point on the ring and let the field orbit it",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 12
+          "stream_lines": 3
         },
         {
           "marker": "# %% Visualise \u2014 the field circulating in the dielectric ring",
@@ -530,9 +530,9 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 9085,
-      "bin_bytes": 1024520,
-      "bake_seconds": 69.08
+      "json_bytes": 8435,
+      "bin_bytes": 1518776,
+      "bake_seconds": 0.0
     },
     {
       "name": "td_transfer_function",
@@ -563,7 +563,7 @@
           "kinds": [
             "td_timeseries"
           ],
-          "stream_lines": 11
+          "stream_lines": 1
         },
         {
           "marker": "# %% The same run, deconvolved into the cavity transfer function H(f)",
@@ -571,7 +571,7 @@
           "kinds": [
             "td_transfer"
           ],
-          "stream_lines": 11
+          "stream_lines": 1
         },
         {
           "marker": "# %% Peaks of |H| are the cavity resonances",
@@ -586,9 +586,9 @@
           "stream_lines": 3
         }
       ],
-      "json_bytes": 68222,
+      "json_bytes": 66402,
       "bin_bytes": 51508,
-      "bake_seconds": 83.53
+      "bake_seconds": 0.0
     },
     {
       "name": "td_waveguide_sparams",
@@ -642,7 +642,7 @@
       ],
       "json_bytes": 14115,
       "bin_bytes": 64756,
-      "bake_seconds": 110.69
+      "bake_seconds": 0.0
     }
   ]
 }
