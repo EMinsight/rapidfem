@@ -488,13 +488,194 @@ impl GpuOperator {
         Ok(())
     }
 
+    /// Run an `m`-step Arnoldi process from `basis[0]` (which must already
+    /// be unit-norm in slot 0). Fills the flat basis buffer and returns the
+    /// `m*m` Hessenberg `H` (host, row-major) and the dimension reached.
+    /// The matvec drops through the f32 `apply` kernel; `w` / `proj` /
+    /// `partials` are f64 scratch buffers.
+    fn arnoldi(
+        &self,
+        gpu: &GpuContext,
+        basis: &Buffer<cl_double>,
+        w: &Buffer<cl_double>,
+        proj: &Buffer<cl_double>,
+        partials: &Buffer<cl_double>,
+        n_groups: usize,
+        m: usize,
+    ) -> Result<(Vec<f64>, usize), String> {
+        let n = self.n_dof;
+        let n_i = n as cl_int;
+        let elem_global = n.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let norm_global =
+            n.div_ceil(NORM_WORK_GROUP) * NORM_WORK_GROUP;
+        let mut h = vec![0.0_f64; m * m];
+        let mut dim = m;
+
+        for j in 0..m {
+            // matvec w = A*basis[j]: cast basis[j] down, apply, cast up.
+            let off = (j * n) as cl_int;
+            unsafe {
+                ExecuteKernel::new(&self.k_cast_d2f)
+                    .set_arg(basis)
+                    .set_arg(&off)
+                    .set_arg(&self.y)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("cast_d2f launch failed: {e}"))?;
+            self.enqueue_apply(gpu)?;
+            unsafe {
+                ExecuteKernel::new(&self.k_cast_f2d)
+                    .set_arg(&self.dy)
+                    .set_arg(w)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("cast_f2d launch failed: {e}"))?;
+
+            // CGS2: two orthogonalisation passes against basis[0..cols].
+            let cols = j + 1;
+            let cols_i = cols as cl_int;
+            let proj_global =
+                cols.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+            for _pass in 0..2 {
+                unsafe {
+                    ExecuteKernel::new(&self.k_dot_rows)
+                        .set_arg(basis)
+                        .set_arg(w)
+                        .set_arg(proj)
+                        .set_arg(&n_i)
+                        .set_arg(&cols_i)
+                        .set_global_work_size(proj_global)
+                        .set_local_work_size(DOF_WORK_GROUP)
+                        .enqueue_nd_range(gpu.queue())
+                }
+                .map_err(|e| format!("dot_rows launch failed: {e}"))?;
+                let proj_host = gpu.download_f64(proj, cols)?;
+                unsafe {
+                    ExecuteKernel::new(&self.k_axpy_basis)
+                        .set_arg(w)
+                        .set_arg(basis)
+                        .set_arg(proj)
+                        .set_arg(&n_i)
+                        .set_arg(&cols_i)
+                        .set_global_work_size(elem_global)
+                        .set_local_work_size(DOF_WORK_GROUP)
+                        .enqueue_nd_range(gpu.queue())
+                }
+                .map_err(|e| format!("axpy_basis launch failed: {e}"))?;
+                for i in 0..cols {
+                    h[i * m + j] += proj_host[i];
+                }
+            }
+
+            // hnext = ||w||, via a per-work-group partial reduction.
+            unsafe {
+                ExecuteKernel::new(&self.k_norm2)
+                    .set_arg(w)
+                    .set_arg(partials)
+                    .set_arg(&n_i)
+                    .set_arg_local_buffer(NORM_WORK_GROUP * 8)
+                    .set_global_work_size(norm_global)
+                    .set_local_work_size(NORM_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("partial_norm2 launch failed: {e}"))?;
+            let partial_sums = gpu.download_f64(partials, n_groups)?;
+            let hnext = partial_sums.iter().sum::<f64>().sqrt();
+
+            let d = j + 1;
+            if hnext < ARNOLDI_BREAKDOWN || d == m {
+                dim = d;
+                break;
+            }
+            h[(j + 1) * m + j] = hnext;
+            // basis[j+1] = w / hnext.
+            let dst_off = ((j + 1) * n) as cl_int;
+            let inv = 1.0 / hnext;
+            unsafe {
+                ExecuteKernel::new(&self.k_scale)
+                    .set_arg(w)
+                    .set_arg(basis)
+                    .set_arg(&dst_off)
+                    .set_arg(&inv)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("scale_into launch failed: {e}"))?;
+        }
+        Ok((h, dim))
+    }
+
+    /// Krylov linear combination `out = sum_i coef[i] * basis[i]`.
+    fn lincomb(
+        &self,
+        gpu: &GpuContext,
+        basis: &Buffer<cl_double>,
+        coef: &[f64],
+        out: &Buffer<cl_double>,
+    ) -> Result<(), String> {
+        let n_i = self.n_dof as cl_int;
+        let dim_i = coef.len() as cl_int;
+        let elem_global =
+            self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let coef_buf = gpu.upload_f64(coef)?;
+        unsafe {
+            ExecuteKernel::new(&self.k_lincomb)
+                .set_arg(basis)
+                .set_arg(&coef_buf)
+                .set_arg(out)
+                .set_arg(&n_i)
+                .set_arg(&dim_i)
+                .set_global_work_size(elem_global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("lincomb launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Project a device vector onto the basis: `basis^T · vec`, returning
+    /// the `dim` coefficients to the host.
+    fn project(
+        &self,
+        gpu: &GpuContext,
+        basis: &Buffer<cl_double>,
+        vec: &Buffer<cl_double>,
+        proj: &Buffer<cl_double>,
+        dim: usize,
+    ) -> Result<Vec<f64>, String> {
+        let n_i = self.n_dof as cl_int;
+        let dim_i = dim as cl_int;
+        let global = dim.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        unsafe {
+            ExecuteKernel::new(&self.k_dot_rows)
+                .set_arg(basis)
+                .set_arg(vec)
+                .set_arg(proj)
+                .set_arg(&n_i)
+                .set_arg(&dim_i)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("dot_rows launch failed: {e}"))?;
+        gpu.download_f64(proj, dim)
+    }
+
     /// Matrix-free `exp(t*A)*v` via an `m`-step Krylov projection — the GPU
     /// counterpart of [`crate::propagator::expmv`].
     ///
     /// The Arnoldi basis is device-resident in f64 and the CGS2
-    /// orthogonalisation runs in f64; the matvec itself drops through the
-    /// f32 `apply` kernel (cast down, cast back up). The dense `exp(t*H)`
-    /// of the small Hessenberg is done on the host. Fixed dimension `m`.
+    /// orthogonalisation runs in f64; the matvec drops through the f32
+    /// `apply` kernel. The dense `exp(t*H)` of the small Hessenberg is done
+    /// on the host. Fixed dimension `m`.
     pub fn expmv(
         &mut self,
         gpu: &GpuContext,
@@ -515,117 +696,12 @@ impl GpuOperator {
         // basis[0] = v / beta.
         let b0: Vec<f64> = v.iter().map(|x| x / beta).collect();
         gpu.write_f64(&mut kry.basis, &b0)?;
+        let (h, dim) = self.arnoldi(
+            gpu, &kry.basis, &kry.w, &kry.proj, &kry.partials,
+            kry.n_groups, m,
+        )?;
 
-        let n_i = n as cl_int;
-        let elem_global = n.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
-        let norm_global =
-            n.div_ceil(NORM_WORK_GROUP) * NORM_WORK_GROUP;
-        let mut h = vec![0.0_f64; m * m];
-        let mut dim = m;
-
-        for j in 0..m {
-            // matvec w = A*basis[j]: cast basis[j] down, apply, cast up.
-            let off = (j * n) as cl_int;
-            unsafe {
-                ExecuteKernel::new(&self.k_cast_d2f)
-                    .set_arg(&kry.basis)
-                    .set_arg(&off)
-                    .set_arg(&self.y)
-                    .set_arg(&n_i)
-                    .set_global_work_size(elem_global)
-                    .set_local_work_size(DOF_WORK_GROUP)
-                    .enqueue_nd_range(gpu.queue())
-            }
-            .map_err(|e| format!("cast_d2f launch failed: {e}"))?;
-            self.enqueue_apply(gpu)?;
-            unsafe {
-                ExecuteKernel::new(&self.k_cast_f2d)
-                    .set_arg(&self.dy)
-                    .set_arg(&kry.w)
-                    .set_arg(&n_i)
-                    .set_global_work_size(elem_global)
-                    .set_local_work_size(DOF_WORK_GROUP)
-                    .enqueue_nd_range(gpu.queue())
-            }
-            .map_err(|e| format!("cast_f2d launch failed: {e}"))?;
-
-            // CGS2: two orthogonalisation passes against basis[0..cols].
-            let cols = j + 1;
-            let cols_i = cols as cl_int;
-            let proj_global =
-                cols.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
-            for _pass in 0..2 {
-                unsafe {
-                    ExecuteKernel::new(&self.k_dot_rows)
-                        .set_arg(&kry.basis)
-                        .set_arg(&kry.w)
-                        .set_arg(&kry.proj)
-                        .set_arg(&n_i)
-                        .set_arg(&cols_i)
-                        .set_global_work_size(proj_global)
-                        .set_local_work_size(DOF_WORK_GROUP)
-                        .enqueue_nd_range(gpu.queue())
-                }
-                .map_err(|e| format!("dot_rows launch failed: {e}"))?;
-                let proj_host = gpu.download_f64(&kry.proj, cols)?;
-                unsafe {
-                    ExecuteKernel::new(&self.k_axpy_basis)
-                        .set_arg(&kry.w)
-                        .set_arg(&kry.basis)
-                        .set_arg(&kry.proj)
-                        .set_arg(&n_i)
-                        .set_arg(&cols_i)
-                        .set_global_work_size(elem_global)
-                        .set_local_work_size(DOF_WORK_GROUP)
-                        .enqueue_nd_range(gpu.queue())
-                }
-                .map_err(|e| format!("axpy_basis launch failed: {e}"))?;
-                for i in 0..cols {
-                    h[i * m + j] += proj_host[i];
-                }
-            }
-
-            // hnext = ||w||, via a per-work-group partial reduction.
-            unsafe {
-                ExecuteKernel::new(&self.k_norm2)
-                    .set_arg(&kry.w)
-                    .set_arg(&kry.partials)
-                    .set_arg(&n_i)
-                    .set_arg_local_buffer(NORM_WORK_GROUP * 8)
-                    .set_global_work_size(norm_global)
-                    .set_local_work_size(NORM_WORK_GROUP)
-                    .enqueue_nd_range(gpu.queue())
-            }
-            .map_err(|e| format!("partial_norm2 launch failed: {e}"))?;
-            let partials =
-                gpu.download_f64(&kry.partials, kry.n_groups)?;
-            let hnext = partials.iter().sum::<f64>().sqrt();
-
-            let d = j + 1;
-            if hnext < ARNOLDI_BREAKDOWN || d == m {
-                dim = d;
-                break;
-            }
-            h[(j + 1) * m + j] = hnext;
-            // basis[j+1] = w / hnext.
-            let dst_off = ((j + 1) * n) as cl_int;
-            let inv = 1.0 / hnext;
-            unsafe {
-                ExecuteKernel::new(&self.k_scale)
-                    .set_arg(&kry.w)
-                    .set_arg(&kry.basis)
-                    .set_arg(&dst_off)
-                    .set_arg(&inv)
-                    .set_arg(&n_i)
-                    .set_global_work_size(elem_global)
-                    .set_local_work_size(DOF_WORK_GROUP)
-                    .enqueue_nd_range(gpu.queue())
-            }
-            .map_err(|e| format!("scale_into launch failed: {e}"))?;
-        }
-
-        // Dense exp(t*H) on the host, then the Krylov linear combination
-        // out = beta * sum_i basis[i] * exp(t*H)[i,0].
+        // Dense exp(t*H) on the host; out = beta * sum_i basis[i] * exp[i,0].
         let mut th = vec![0.0_f64; dim * dim];
         for a in 0..dim {
             for b in 0..dim {
@@ -635,20 +711,7 @@ impl GpuOperator {
         let exp_th = expm(&th, dim);
         let coef: Vec<f64> =
             (0..dim).map(|i| beta * exp_th[i * dim]).collect();
-        let coef_buf = gpu.upload_f64(&coef)?;
-        let dim_i = dim as cl_int;
-        unsafe {
-            ExecuteKernel::new(&self.k_lincomb)
-                .set_arg(&kry.basis)
-                .set_arg(&coef_buf)
-                .set_arg(&kry.out)
-                .set_arg(&n_i)
-                .set_arg(&dim_i)
-                .set_global_work_size(elem_global)
-                .set_local_work_size(DOF_WORK_GROUP)
-                .enqueue_nd_range(gpu.queue())
-        }
-        .map_err(|e| format!("lincomb launch failed: {e}"))?;
+        self.lincomb(gpu, &kry.basis, &coef, &kry.out)?;
         gpu.queue()
             .finish()
             .map_err(|e| format!("expmv sync failed: {e}"))?;
@@ -679,6 +742,101 @@ impl GpuOperator {
         // Remainder: device-resident explicit LSERK4.
         let y32: Vec<f32> = y.iter().map(|&v| v as f32).collect();
         self.transient(gpu, &y32, dt, steps - warmup)
+    }
+
+    /// Build a Krylov model-order-reduced model around `start` — an
+    /// `r`-step Arnoldi projection. The GPU counterpart of
+    /// [`crate::mor::ReducedModel`]; the reduced model propagates states
+    /// inside that subspace cheaply.
+    pub fn reduce(
+        &mut self,
+        gpu: &GpuContext,
+        start: &[f64],
+        r: usize,
+    ) -> Result<GpuReducedModel, String> {
+        let n = self.n_dof;
+        assert_eq!(start.len(), n, "state length mismatch");
+        assert!(r >= 1, "reduced dimension must be >= 1");
+        let beta: f64 = start.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(beta > 0.0, "start vector must be nonzero");
+
+        let mut basis = gpu.alloc_f64((r + 1) * n)?;
+        let proj = gpu.alloc_f64(r + 1)?;
+        let out = gpu.alloc_f64(n)?;
+        let w = gpu.alloc_f64(n)?;
+        let n_groups = n.div_ceil(NORM_WORK_GROUP);
+        let partials = gpu.alloc_f64(n_groups)?;
+
+        let b0: Vec<f64> = start.iter().map(|x| x / beta).collect();
+        gpu.write_f64(&mut basis, &b0)?;
+        let (h, dim) =
+            self.arnoldi(gpu, &basis, &w, &proj, &partials, n_groups, r)?;
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("reduce sync failed: {e}"))?;
+
+        // a_hat = H[0..dim, 0..dim].
+        let mut a_hat = vec![0.0_f64; dim * dim];
+        for i in 0..dim {
+            for j in 0..dim {
+                a_hat[i * dim + j] = h[i * r + j];
+            }
+        }
+        Ok(GpuReducedModel { n, dim, a_hat, basis, proj, out })
+    }
+}
+
+/// A Krylov model-order-reduced model on the GPU. The Arnoldi basis stays
+/// device-resident; [`propagate`](Self::propagate) projects a state into
+/// the subspace, applies the dense reduced exponential on the host, and
+/// lifts the result back.
+pub struct GpuReducedModel {
+    n: usize,
+    dim: usize,
+    /// Reduced operator `A_hat = H[0..dim, 0..dim]`, row-major (host).
+    a_hat: Vec<f64>,
+    basis: Buffer<cl_double>,
+    proj: Buffer<cl_double>,
+    out: Buffer<cl_double>,
+}
+
+impl GpuReducedModel {
+    /// Reduced dimension.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Propagate `y0` by `t` through the reduced model:
+    /// `lift(exp(t*A_hat) * project(y0))`. Takes the operator `op` for its
+    /// projection and linear-combination kernels.
+    pub fn propagate(
+        &self,
+        gpu: &GpuContext,
+        op: &GpuOperator,
+        y0: &[f64],
+        t: f64,
+    ) -> Result<Vec<f64>, String> {
+        assert_eq!(y0.len(), self.n, "state length mismatch");
+        // y_hat = basis^T · y0.
+        let y0_buf = gpu.upload_f64(y0)?;
+        let y_hat =
+            op.project(gpu, &self.basis, &y0_buf, &self.proj, self.dim)?;
+        // y_hat_t = exp(t*A_hat) · y_hat — dense, on the host.
+        let th: Vec<f64> = self.a_hat.iter().map(|x| x * t).collect();
+        let exp_th = expm(&th, self.dim);
+        let coef: Vec<f64> = (0..self.dim)
+            .map(|i| {
+                (0..self.dim)
+                    .map(|j| exp_th[i * self.dim + j] * y_hat[j])
+                    .sum()
+            })
+            .collect();
+        // out = basis · coef.
+        op.lincomb(gpu, &self.basis, &coef, &self.out)?;
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("reduced propagate sync failed: {e}"))?;
+        gpu.download_f64(&self.out, self.n)
     }
 }
 
@@ -974,6 +1132,55 @@ mod tests {
         assert!(
             rel < GPU_REL_TOL,
             "GPU hybrid rel.err {rel:.3e} exceeds GPU_REL_TOL",
+        );
+    }
+
+    #[test]
+    fn gpu_reduced_model_matches_cpu() {
+        // P4 gate: the GPU Krylov reduced model matches the CPU
+        // ReducedModel within GPU_REL_TOL.
+        use crate::mor::ReducedModel;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let start: Vec<Field> =
+            (0..n).map(|i| (0.5 + i as Field * 0.021).sin()).collect();
+        let r = 40;
+        let t = 0.03;
+
+        let cpu_rom = ReducedModel::build(|x| op.apply(x), &start, r);
+        let cpu_out = cpu_rom.propagate(&start, t);
+
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let gmodel = gop.reduce(&gpu, &start, r).expect("reduce");
+        let gpu_out = gmodel
+            .propagate(&gpu, &gop, &start, t)
+            .expect("reduced propagate");
+
+        let err: f64 = cpu_out
+            .iter()
+            .zip(&gpu_out)
+            .map(|(&c, &g)| (c - g).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 =
+            cpu_out.iter().map(|&c| c * c).sum::<f64>().sqrt();
+        let rel = err / scale;
+        eprintln!(
+            "GPU reduced model vs CPU [r={}]: rel L2 = {rel:.3e}",
+            gmodel.dim()
+        );
+        assert!(
+            rel < GPU_REL_TOL,
+            "GPU reduced model rel.err {rel:.3e} exceeds GPU_REL_TOL",
         );
     }
 }

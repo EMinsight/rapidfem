@@ -20,7 +20,7 @@ use opencl3::program::Program;
 use opencl3::types::{CL_BLOCKING, cl_double, cl_float, cl_int};
 
 mod operator;
-pub use operator::GpuOperator;
+pub use operator::{GpuOperator, GpuReducedModel};
 
 /// A GPU device with its OpenCL context and command queue.
 ///
