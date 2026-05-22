@@ -16,7 +16,7 @@ use opencl3::types::{CL_BLOCKING, cl_double, cl_float, cl_int};
 
 use super::GpuContext;
 use crate::constants::{
-    ARNOLDI_BREAKDOWN, Field, LSERK4_A, LSERK4_B, LSERK4_STAGES,
+    Field, LSERK4_A, LSERK4_B, LSERK4_STAGES,
 };
 use crate::propagator::expm;
 use crate::rhs::MaxwellOperator;
@@ -80,7 +80,9 @@ pub struct GpuOperator {
     k_dot_rows: Kernel,
     k_axpy_basis: Kernel,
     k_norm2: Kernel,
-    k_scale: Kernel,
+    k_store_h_col: Kernel,
+    k_finish_norm: Kernel,
+    k_scale_recip: Kernel,
     k_lincomb: Kernel,
     /// Lazily-allocated f64 Krylov buffers, sized on the first `expmv`.
     krylov: Option<Krylov>,
@@ -102,6 +104,11 @@ struct Krylov {
     out: Buffer<cl_double>,
     /// Per-work-group partial sums for the norm reduction.
     partials: Buffer<cl_double>,
+    /// Hessenberg `H`, device-resident `cap_dim*cap_dim`, so the Arnoldi
+    /// loop never round-trips it to the host.
+    h: Buffer<cl_double>,
+    /// One-element scalar holding the current Arnoldi `hnext = ||w||`.
+    hnext: Buffer<cl_double>,
     /// Number of work-groups in the norm reduction.
     n_groups: usize,
 }
@@ -225,7 +232,9 @@ impl GpuOperator {
         let k_dot_rows = kern("dot_rows")?;
         let k_axpy_basis = kern("axpy_basis")?;
         let k_norm2 = kern("partial_norm2")?;
-        let k_scale = kern("scale_into")?;
+        let k_store_h_col = kern("store_h_col")?;
+        let k_finish_norm = kern("finish_norm")?;
+        let k_scale_recip = kern("scale_recip")?;
         let k_lincomb = kern("lincomb")?;
 
         let y = gpu.alloc(n_dof)?;
@@ -266,7 +275,9 @@ impl GpuOperator {
             k_dot_rows,
             k_axpy_basis,
             k_norm2,
-            k_scale,
+            k_store_h_col,
+            k_finish_norm,
+            k_scale_recip,
             k_lincomb,
             krylov: None,
         })
@@ -526,17 +537,21 @@ impl GpuOperator {
                 proj: gpu.alloc_f64(m + 1)?,
                 out: gpu.alloc_f64(n)?,
                 partials: gpu.alloc_f64(n_groups)?,
+                h: gpu.alloc_f64(m * m)?,
+                hnext: gpu.alloc_f64(1)?,
                 n_groups,
             });
         }
         Ok(())
     }
 
-    /// Run an `m`-step Arnoldi process from `basis[0]` (which must already
-    /// be unit-norm in slot 0). Fills the flat basis buffer and returns the
-    /// `m*m` Hessenberg `H` (host, row-major) and the dimension reached.
-    /// The matvec drops through the f32 `apply` kernel; `w` / `proj` /
-    /// `partials` are f64 scratch buffers.
+    /// Run an `m`-step Arnoldi process from `basis[0]` (unit-norm in slot
+    /// 0). `h_dev` must be a zeroed `m*m` device buffer. The loop runs
+    /// entirely device-side — projections accumulate straight into the
+    /// device Hessenberg, the norm is finished on the device — so the
+    /// Hessenberg is the *only* thing the host reads back, once, at the
+    /// end. Fixed dimension `m` (no breakdown check).
+    #[allow(clippy::too_many_arguments)]
     fn arnoldi(
         &self,
         gpu: &GpuContext,
@@ -544,16 +559,18 @@ impl GpuOperator {
         w: &Buffer<cl_double>,
         proj: &Buffer<cl_double>,
         partials: &Buffer<cl_double>,
+        h_dev: &Buffer<cl_double>,
+        hnext_buf: &Buffer<cl_double>,
         n_groups: usize,
         m: usize,
     ) -> Result<(Vec<f64>, usize), String> {
         let n = self.n_dof;
         let n_i = n as cl_int;
+        let m_i = m as cl_int;
+        let ng_i = n_groups as cl_int;
         let elem_global = n.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
         let norm_global =
             n.div_ceil(NORM_WORK_GROUP) * NORM_WORK_GROUP;
-        let mut h = vec![0.0_f64; m * m];
-        let mut dim = m;
 
         for j in 0..m {
             // matvec w = A*basis[j]: cast basis[j] down, apply, cast up.
@@ -581,9 +598,11 @@ impl GpuOperator {
             }
             .map_err(|e| format!("cast_f2d launch failed: {e}"))?;
 
-            // CGS2: two orthogonalisation passes against basis[0..cols].
+            // CGS2: two passes; each pass's projections accumulate into
+            // column j of the device Hessenberg.
             let cols = j + 1;
             let cols_i = cols as cl_int;
+            let col_i = j as cl_int;
             let proj_global =
                 cols.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
             for _pass in 0..2 {
@@ -594,12 +613,24 @@ impl GpuOperator {
                         .set_arg(proj)
                         .set_arg(&n_i)
                         .set_arg(&cols_i)
-                        .set_global_work_size(proj_global)
+                        .set_arg_local_buffer(DOF_WORK_GROUP * 8)
+                        .set_global_work_size(cols * DOF_WORK_GROUP)
                         .set_local_work_size(DOF_WORK_GROUP)
                         .enqueue_nd_range(gpu.queue())
                 }
                 .map_err(|e| format!("dot_rows launch failed: {e}"))?;
-                let proj_host = gpu.download_f64(proj, cols)?;
+                unsafe {
+                    ExecuteKernel::new(&self.k_store_h_col)
+                        .set_arg(h_dev)
+                        .set_arg(proj)
+                        .set_arg(&col_i)
+                        .set_arg(&m_i)
+                        .set_arg(&cols_i)
+                        .set_global_work_size(proj_global)
+                        .set_local_work_size(DOF_WORK_GROUP)
+                        .enqueue_nd_range(gpu.queue())
+                }
+                .map_err(|e| format!("store_h_col launch failed: {e}"))?;
                 unsafe {
                     ExecuteKernel::new(&self.k_axpy_basis)
                         .set_arg(w)
@@ -612,12 +643,15 @@ impl GpuOperator {
                         .enqueue_nd_range(gpu.queue())
                 }
                 .map_err(|e| format!("axpy_basis launch failed: {e}"))?;
-                for i in 0..cols {
-                    h[i * m + j] += proj_host[i];
-                }
             }
 
-            // hnext = ||w||, via a per-work-group partial reduction.
+            // The last basis vector needs no successor.
+            if j + 1 == m {
+                break;
+            }
+
+            // hnext = ||w||, finished device-side into `hnext_buf` and the
+            // subdiagonal H[(j+1), j]; then basis[j+1] = w / hnext.
             unsafe {
                 ExecuteKernel::new(&self.k_norm2)
                     .set_arg(w)
@@ -629,32 +663,35 @@ impl GpuOperator {
                     .enqueue_nd_range(gpu.queue())
             }
             .map_err(|e| format!("partial_norm2 launch failed: {e}"))?;
-            let partial_sums = gpu.download_f64(partials, n_groups)?;
-            let hnext = partial_sums.iter().sum::<f64>().sqrt();
-
-            let d = j + 1;
-            if hnext < ARNOLDI_BREAKDOWN || d == m {
-                dim = d;
-                break;
-            }
-            h[(j + 1) * m + j] = hnext;
-            // basis[j+1] = w / hnext.
-            let dst_off = ((j + 1) * n) as cl_int;
-            let inv = 1.0 / hnext;
             unsafe {
-                ExecuteKernel::new(&self.k_scale)
+                ExecuteKernel::new(&self.k_finish_norm)
+                    .set_arg(partials)
+                    .set_arg(&ng_i)
+                    .set_arg(hnext_buf)
+                    .set_arg(h_dev)
+                    .set_arg(&col_i)
+                    .set_arg(&m_i)
+                    .set_global_work_size(1)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("finish_norm launch failed: {e}"))?;
+            let dst_off = ((j + 1) * n) as cl_int;
+            unsafe {
+                ExecuteKernel::new(&self.k_scale_recip)
                     .set_arg(w)
                     .set_arg(basis)
                     .set_arg(&dst_off)
-                    .set_arg(&inv)
+                    .set_arg(hnext_buf)
                     .set_arg(&n_i)
                     .set_global_work_size(elem_global)
                     .set_local_work_size(DOF_WORK_GROUP)
                     .enqueue_nd_range(gpu.queue())
             }
-            .map_err(|e| format!("scale_into launch failed: {e}"))?;
+            .map_err(|e| format!("scale_recip launch failed: {e}"))?;
         }
-        Ok((h, dim))
+        // The Hessenberg is the only host round-trip — downloaded once.
+        let h = gpu.download_f64(h_dev, m * m)?;
+        Ok((h, m))
     }
 
     /// Krylov linear combination `out = sum_i coef[i] * basis[i]`.
@@ -697,7 +734,6 @@ impl GpuOperator {
     ) -> Result<Vec<f64>, String> {
         let n_i = self.n_dof as cl_int;
         let dim_i = dim as cl_int;
-        let global = dim.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
         unsafe {
             ExecuteKernel::new(&self.k_dot_rows)
                 .set_arg(basis)
@@ -705,7 +741,8 @@ impl GpuOperator {
                 .set_arg(proj)
                 .set_arg(&n_i)
                 .set_arg(&dim_i)
-                .set_global_work_size(global)
+                .set_arg_local_buffer(DOF_WORK_GROUP * 8)
+                .set_global_work_size(dim * DOF_WORK_GROUP)
                 .set_local_work_size(DOF_WORK_GROUP)
                 .enqueue_nd_range(gpu.queue())
         }
@@ -737,12 +774,13 @@ impl GpuOperator {
         self.ensure_krylov(gpu, m)?;
         let mut kry = self.krylov.take().expect("krylov allocated");
 
-        // basis[0] = v / beta.
+        // basis[0] = v / beta; zero the device Hessenberg.
         let b0: Vec<f64> = v.iter().map(|x| x / beta).collect();
         gpu.write_f64(&mut kry.basis, &b0)?;
+        gpu.write_f64(&mut kry.h, &vec![0.0_f64; m * m])?;
         let (h, dim) = self.arnoldi(
-            gpu, &kry.basis, &kry.w, &kry.proj, &kry.partials,
-            kry.n_groups, m,
+            gpu, &kry.basis, &kry.w, &kry.proj, &kry.partials, &kry.h,
+            &kry.hnext, kry.n_groups, m,
         )?;
 
         // Dense exp(t*H) on the host; out = beta * sum_i basis[i] * exp[i,0].
@@ -810,11 +848,15 @@ impl GpuOperator {
         let w = gpu.alloc_f64(n)?;
         let n_groups = n.div_ceil(NORM_WORK_GROUP);
         let partials = gpu.alloc_f64(n_groups)?;
+        let mut h_dev = gpu.alloc_f64(r * r)?;
+        let hnext = gpu.alloc_f64(1)?;
 
         let b0: Vec<f64> = start.iter().map(|x| x / beta).collect();
         gpu.write_f64(&mut basis, &b0)?;
-        let (h, dim) =
-            self.arnoldi(gpu, &basis, &w, &proj, &partials, n_groups, r)?;
+        gpu.write_f64(&mut h_dev, &vec![0.0_f64; r * r])?;
+        let (h, dim) = self.arnoldi(
+            gpu, &basis, &w, &proj, &partials, &h_dev, &hnext, n_groups, r,
+        )?;
         gpu.queue()
             .finish()
             .map_err(|e| format!("reduce sync failed: {e}"))?;

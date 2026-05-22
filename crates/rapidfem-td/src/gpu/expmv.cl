@@ -27,20 +27,34 @@ kernel void cast_f2d(global const float* src,
         dst[i] = (double)src[i];
 }
 
-// proj[i] = <basis[i], w>, one work-item per basis row.
+// proj[i] = <basis[i], w> — one work-group per basis row, the dot reduced
+// over `n` in local memory. A work-item-per-row design left the device
+// almost idle (only `cols` threads); this fans each dot across a whole
+// work-group, so `cols` work-groups keep the GPU busy.
 kernel void dot_rows(global const double* basis,
                      global const double* w,
                      global double* proj,
                      const int n,
-                     const int cols) {
-    const int i = get_global_id(0);
-    if (i >= cols)
+                     const int cols,
+                     local double* scratch) {
+    const int row = get_group_id(0);
+    if (row >= cols)
         return;
-    global const double* bi = basis + (size_t)i * n;
+    const int lid = get_local_id(0);
+    const int ls = get_local_size(0);
+    global const double* bi = basis + (size_t)row * n;
     double acc = 0.0;
-    for (int k = 0; k < n; k++)
+    for (int k = lid; k < n; k += ls)
         acc += bi[k] * w[k];
-    proj[i] = acc;
+    scratch[lid] = acc;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int s = ls / 2; s > 0; s >>= 1) {
+        if (lid < s)
+            scratch[lid] += scratch[lid + s];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0)
+        proj[row] = scratch[0];
 }
 
 // w -= sum_i proj[i] * basis[i], one work-item per DOF.
@@ -77,16 +91,48 @@ kernel void partial_norm2(global const double* w,
         partials[get_group_id(0)] = scratch[0];
 }
 
-// dst[dst_off + i] = src[i] * c — writes the scaled vector into a slot of
-// the flat basis buffer.
-kernel void scale_into(global const double* src,
-                       global double* dst,
-                       const int dst_off,
-                       const double c,
-                       const int n) {
+// Accumulate proj[0..cols] into column `col` of the m-by-m Hessenberg H.
+// CGS2 runs two passes, so this is a `+=`; H is zeroed once before the
+// Arnoldi loop.
+kernel void store_h_col(global double* h,
+                        global const double* proj,
+                        const int col,
+                        const int m,
+                        const int cols) {
+    const int i = get_global_id(0);
+    if (i < cols)
+        h[i * m + col] += proj[i];
+}
+
+// Finish the norm reduction device-side: hnext = sqrt(sum partials).
+// Writes hnext to `hnext_buf[0]` and the subdiagonal `H[(j+1), j]`, so the
+// Arnoldi loop never has to round-trip the norm through the host.
+kernel void finish_norm(global const double* partials,
+                        const int n_groups,
+                        global double* hnext_buf,
+                        global double* h,
+                        const int j,
+                        const int m) {
+    if (get_global_id(0) != 0)
+        return;
+    double s = 0.0;
+    for (int g = 0; g < n_groups; g++)
+        s += partials[g];
+    const double hnext = sqrt(s);
+    hnext_buf[0] = hnext;
+    h[(j + 1) * m + j] = hnext;
+}
+
+// basis[dst_off + i] = w[i] / hnext, with hnext read from a device scalar
+// — `basis[j+1] = w / ||w||` without a host round-trip.
+kernel void scale_recip(global const double* w,
+                        global double* basis,
+                        const int dst_off,
+                        global const double* hnext_buf,
+                        const int n) {
     const int i = get_global_id(0);
     if (i < n)
-        dst[dst_off + i] = src[i] * c;
+        basis[dst_off + i] = w[i] / hnext_buf[0];
 }
 
 // out = sum_i coef[i] * basis[i], one work-item per DOF — the final
