@@ -96,3 +96,13 @@ pub const LSERK4_B: [Field; 5] = [
 
 /// LSERK4 stage count — five stages reaching fourth order.
 pub const LSERK4_STAGES: usize = 5;
+
+// ── Matrix-free operator (apply) ──────────────────────────────────────────
+
+/// Target rayon tasks per worker thread for the matrix-free `apply`'s
+/// element loop. Elements are dealt out in this many contiguous runs per
+/// thread: enough to let the work-stealing scheduler balance an uneven
+/// mesh, few enough that neighbouring threads do not false-share the `dy`
+/// cache lines at the run boundaries. A per-element chunk regressed past
+/// roughly six cores; a contiguous run per task restores the scaling.
+pub const APPLY_TASKS_PER_THREAD: usize = 4;

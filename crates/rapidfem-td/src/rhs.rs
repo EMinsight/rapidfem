@@ -8,7 +8,7 @@
 //! Per-element fields are stored node-major: `field[node*3 + component]`,
 //! with components ordered `x, y, z`.
 
-use crate::constants::Field;
+use crate::constants::{APPLY_TASKS_PER_THREAD, Field};
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
@@ -848,12 +848,30 @@ impl MaxwellOperator {
         // The [E,H] block — per-element curl + flux + materials, plus the
         // dispersive polarisation current on Debye elements (reads P from
         // y's appended block).
-        dy_eh.par_chunks_mut(stride).enumerate().for_each_init(
-            || self.checkout_scratch(np),
-            |guard, (e, out)| {
-                self.apply_element(e, y, out, &mut guard.scratch)
-            },
-        );
+        //
+        // Elements are handed out in coarse contiguous runs, a few per
+        // worker thread. A per-element chunk (`stride` = 60 f64) is 7.5
+        // cache lines, so neighbouring elements share a `dy` line;
+        // fine-grained work-stealing then false-shared that line across
+        // every thread and `apply` stopped scaling past ~6 cores. A
+        // contiguous run per task confines sharing to the run boundaries.
+        let chunk = (self.n_elem
+            / (APPLY_TASKS_PER_THREAD * rayon::current_num_threads()))
+        .max(1);
+        dy_eh
+            .par_chunks_mut(chunk * stride)
+            .enumerate()
+            .for_each_init(
+                || self.checkout_scratch(np),
+                |guard, (ci, run)| {
+                    let e0 = ci * chunk;
+                    for (le, out) in run.chunks_mut(stride).enumerate() {
+                        self.apply_element(
+                            e0 + le, y, out, &mut guard.scratch,
+                        );
+                    }
+                },
+            );
         // The appended polarisation block — one local relaxation ODE per
         // Debye element: dP = a*P + g*E. No spatial coupling, so a flat
         // parallel chunk over P-block slots.
