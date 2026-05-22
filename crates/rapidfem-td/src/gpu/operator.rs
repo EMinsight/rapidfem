@@ -15,14 +15,20 @@ use opencl3::program::Program;
 use opencl3::types::{CL_BLOCKING, cl_float, cl_int};
 
 use super::GpuContext;
-use crate::constants::Field;
+use crate::constants::{Field, LSERK4_A, LSERK4_B, LSERK4_STAGES};
 use crate::rhs::MaxwellOperator;
 
-/// Kernel source, with `NP` / `NFP` / `COLS` prepended at build time.
+/// Apply-kernel source, with `NP` / `NFP` / `COLS` prepended at build time.
 const APPLY_SRC: &str = include_str!("apply.cl");
+
+/// LSERK4 stage-update kernel source.
+const LSERK_SRC: &str = include_str!("lserk.cl");
 
 /// Work-group size for the element loop.
 const WORK_GROUP: usize = 64;
+
+/// Work-group size for the flat per-DOF LSERK4 stage loop.
+const DOF_WORK_GROUP: usize = 256;
 
 /// The DG Maxwell operator resident on the GPU.
 pub struct GpuOperator {
@@ -52,6 +58,10 @@ pub struct GpuOperator {
     // State buffers, reused across calls.
     y: Buffer<cl_float>,
     dy: Buffer<cl_float>,
+    /// LSERK4 residual register, device-resident across a transient.
+    p: Buffer<cl_float>,
+    _lserk_program: Program,
+    lserk_kernel: Kernel,
 }
 
 /// `f64` slice to an `f32` vector.
@@ -157,8 +167,13 @@ impl GpuOperator {
         let kernel = Kernel::create(&program, "apply")
             .map_err(|e| format!("kernel create failed: {e}"))?;
 
+        let lserk_program = gpu.build_program(LSERK_SRC)?;
+        let lserk_kernel = Kernel::create(&lserk_program, "lserk_stage")
+            .map_err(|e| format!("lserk kernel create failed: {e}"))?;
+
         let y = gpu.alloc(n_dof)?;
         let dy = gpu.alloc(n_dof)?;
+        let p = gpu.alloc(n_dof)?;
 
         Ok(GpuOperator {
             n_elem,
@@ -184,6 +199,9 @@ impl GpuOperator {
             face_perm,
             y,
             dy,
+            p,
+            _lserk_program: lserk_program,
+            lserk_kernel,
         })
     }
 
@@ -192,28 +210,12 @@ impl GpuOperator {
         self.n_dof
     }
 
-    /// Evaluate `dy/dt = A.y` on the device: upload `y_host`, run the
-    /// `apply` kernel, download the result.
-    pub fn apply(
-        &mut self,
-        gpu: &GpuContext,
-        y_host: &[f32],
-    ) -> Result<Vec<f32>, String> {
-        assert_eq!(y_host.len(), self.n_dof, "state length mismatch");
-        unsafe {
-            gpu.queue().enqueue_write_buffer(
-                &mut self.y,
-                CL_BLOCKING,
-                0,
-                y_host,
-                &[],
-            )
-        }
-        .map_err(|e| format!("state upload failed: {e}"))?;
-
+    /// Enqueue the `apply` kernel: `dy = A.y` on the resident state. No
+    /// host transfer; the in-order queue serialises it with later work.
+    fn enqueue_apply(&self, gpu: &GpuContext) -> Result<(), String> {
         let global = self.n_elem.div_ceil(WORK_GROUP) * WORK_GROUP;
         let n_elem = self.n_elem as cl_int;
-        let event = unsafe {
+        unsafe {
             ExecuteKernel::new(&self.kernel)
                 .set_arg(&self.y)
                 .set_arg(&self.dy)
@@ -240,11 +242,95 @@ impl GpuOperator {
                 .enqueue_nd_range(gpu.queue())
         }
         .map_err(|e| format!("apply kernel launch failed: {e}"))?;
-        event
-            .wait()
-            .map_err(|e| format!("apply kernel wait failed: {e}"))?;
+        Ok(())
+    }
 
+    /// Enqueue one LSERK4 stage: `p = a*p + dt*k; y += b*p`, with `k` the
+    /// `dy` written by the preceding [`enqueue_apply`](Self::enqueue_apply).
+    fn enqueue_lserk(
+        &self,
+        gpu: &GpuContext,
+        a: f32,
+        b: f32,
+        dt: f32,
+    ) -> Result<(), String> {
+        let global = self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.lserk_kernel)
+                .set_arg(&self.p)
+                .set_arg(&self.dy)
+                .set_arg(&self.y)
+                .set_arg(&a)
+                .set_arg(&b)
+                .set_arg(&dt)
+                .set_arg(&n)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("lserk kernel launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Evaluate `dy/dt = A.y`: upload `y_host`, run the apply kernel,
+    /// download the result. The single-shot form, for validation.
+    pub fn apply(
+        &mut self,
+        gpu: &GpuContext,
+        y_host: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y_host.len(), self.n_dof, "state length mismatch");
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y_host, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        self.enqueue_apply(gpu)?;
+        // The blocking download serialises behind the kernel.
         gpu.download(&self.dy, self.n_dof)
+    }
+
+    /// Propagate `y0` for `steps` LSERK4 steps of size `dt`, fully on the
+    /// device: the state stays resident, only `y0` (up) and the final
+    /// state (down) cross the bus.
+    pub fn transient(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        // Zero the residual register once; stage 0 (a = 0) keeps it reset
+        // every step thereafter.
+        let zeros = vec![0.0_f32; self.n_dof];
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.p, CL_BLOCKING, 0, &zeros, &[])
+        }
+        .map_err(|e| format!("register init failed: {e}"))?;
+
+        for _ in 0..steps {
+            for stage in 0..LSERK4_STAGES {
+                self.enqueue_apply(gpu)?;
+                self.enqueue_lserk(
+                    gpu,
+                    LSERK4_A[stage] as f32,
+                    LSERK4_B[stage] as f32,
+                    dt,
+                )?;
+            }
+        }
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("transient sync failed: {e}"))?;
+        gpu.download(&self.y, self.n_dof)
     }
 }
 
@@ -313,5 +399,63 @@ mod tests {
                 "GPU apply [{label}] rel.err {rel:.3e} exceeds GPU_REL_TOL",
             );
         }
+    }
+
+    #[test]
+    fn gpu_transient_matches_cpu() {
+        // P2 gate: the device-resident GPU LSERK4 transient matches the
+        // CPU LSERK4 transient within GPU_REL_TOL.
+        use crate::explicit::LserkWorkspace;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y0: Vec<Field> =
+            (0..n).map(|i| (0.2 + i as Field * 0.011).sin()).collect();
+
+        // Spectral radius by power iteration, for a sub-CFL step.
+        let mut v = y0.clone();
+        let mut rho = 1.0;
+        for _ in 0..30 {
+            let av = op.apply(&v);
+            rho = av.iter().map(|x| x * x).sum::<Field>().sqrt();
+            let inv = 1.0 / rho;
+            for (vi, &a) in v.iter_mut().zip(&av) {
+                *vi = a * inv;
+            }
+        }
+        let dt = 1.0 / rho;
+        let steps = 200;
+
+        // CPU reference.
+        let mut y_cpu = y0.clone();
+        let mut ws = LserkWorkspace::new();
+        for _ in 0..steps {
+            ws.step_into(|x, ax| op.apply_into(x, ax), &mut y_cpu, dt);
+        }
+
+        // GPU, device-resident.
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let y_gpu = gop
+            .transient(&gpu, &y0_32, dt as f32, steps)
+            .expect("transient");
+
+        let rel = rel_l2(&y_gpu, &y_cpu);
+        eprintln!(
+            "GPU transient vs CPU [{steps} steps]: rel L2 = {rel:.3e} \
+             (GPU_REL_TOL {GPU_REL_TOL:.1e})"
+        );
+        assert!(
+            rel < GPU_REL_TOL,
+            "GPU transient rel.err {rel:.3e} exceeds GPU_REL_TOL",
+        );
     }
 }
