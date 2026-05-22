@@ -12,6 +12,31 @@ The path is **optional and feature-gated**: with no GPU or no OpenCL
 runtime the existing CPU path runs unchanged, and the wheel stays
 installable for everyone.
 
+## Status: all phases complete
+
+P0 through P6 are implemented and validated on `feature/td-gpu`. Every
+phase passed its gate against the CPU f64 reference, within `GPU_REL_TOL`
+(`1e-3`):
+
+- **P0.1** OpenCL host layer (`opencl3`), vector-add on the device.
+- **P0.2** the `Field` precision seam completed across the operator;
+  the `precision` probe fixed `GPU_REL_TOL`.
+- **P1** GPU `apply` (the DG Maxwell matvec): matches CPU within `1e-7`.
+- **P2** GPU LSERK4 transient (homogeneous, driven, exponential-warmup
+  hybrid): within `1e-6`; ~16x faster than the 24-thread CPU at 622k DOF.
+- **P3** GPU exponential propagator (f64 Arnoldi + CGS2, f32 matvec):
+  matches CPU within `1e-7`.
+- **P4** GPU Krylov model-order reduction: matches CPU within `1e-7`.
+- **P5** Python API: `ProblemTD.transient(device="gpu")`, with a CPU
+  fallback when no GPU is present.
+- **P6** feature-gated build, CI compile-check of the `gpu` feature, a
+  panic-safe GPU probe for machines with no OpenCL ICD loader.
+
+The post-P2 decision gate (whether the GPU exponential propagator was
+worth building): P3 was built in full per the project goal. The explicit
+GPU path stays the recommended workhorse; the GPU exponential propagator
+serves stiff meshes where the explicit CFL limit bites.
+
 ## Where this fits
 
 Follow-up to `td-backend-plan.md` and `td-production-plan.md`. Those
