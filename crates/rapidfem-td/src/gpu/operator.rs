@@ -30,8 +30,11 @@ const LSERK_SRC: &str = include_str!("lserk.cl");
 /// Krylov exponential-propagator kernel source.
 const EXPMV_SRC: &str = include_str!("expmv.cl");
 
-/// Work-group size for the element loop.
-const WORK_GROUP: usize = 64;
+/// Target work-group size for the `apply` kernel. A work-group processes
+/// one block of `EPG = APPLY_TARGET_WG / NP` elements, its work-items the
+/// `NP` DG nodes of each — so the group holds `EPG * NP` work-items, close
+/// to this target.
+const APPLY_TARGET_WG: usize = 128;
 
 /// Work-group size for the flat per-DOF LSERK4 stage loop.
 const DOF_WORK_GROUP: usize = 256;
@@ -45,6 +48,10 @@ pub struct GpuOperator {
     n_elem: usize,
     /// State-vector length, `6*Np*n_elem` (non-dispersive).
     n_dof: usize,
+    /// Elements per `apply` work-group.
+    apply_epg: usize,
+    /// `apply` work-group size, `apply_epg * Np`.
+    apply_wg: usize,
     flux_alpha: f32,
     _program: Program,
     kernel: Kernel,
@@ -207,10 +214,14 @@ impl GpuOperator {
         let face_port = gpu.upload_i32(&port)?;
         let face_perm = gpu.upload_i32(&perm)?;
 
-        // Build the kernel with the element dimensions baked in.
+        // Build the kernel with the element dimensions baked in. EPG (the
+        // elements per work-group) is chosen so the group sits near the
+        // target work-group size.
+        let epg = (APPLY_TARGET_WG / np).max(1);
+        let apply_wg = epg * np;
         let src = format!(
             "#define NP {np}\n#define NFP {nfp}\n#define COLS {cols}\n\
-             {APPLY_SRC}"
+             #define EPG {epg}\n{APPLY_SRC}"
         );
         let program = gpu.build_program(&src)?;
         let kernel = Kernel::create(&program, "apply")
@@ -244,6 +255,8 @@ impl GpuOperator {
         Ok(GpuOperator {
             n_elem,
             n_dof,
+            apply_epg: epg,
+            apply_wg,
             flux_alpha: op.flux_alpha as f32,
             _program: program,
             kernel,
@@ -291,7 +304,9 @@ impl GpuOperator {
     /// Enqueue the `apply` kernel: `dy = A.y` on the resident state. No
     /// host transfer; the in-order queue serialises it with later work.
     fn enqueue_apply(&self, gpu: &GpuContext) -> Result<(), String> {
-        let global = self.n_elem.div_ceil(WORK_GROUP) * WORK_GROUP;
+        // One work-group per EPG-element block; `apply_wg` work-items each.
+        let n_groups = self.n_elem.div_ceil(self.apply_epg);
+        let global = n_groups * self.apply_wg;
         let n_elem = self.n_elem as cl_int;
         unsafe {
             ExecuteKernel::new(&self.kernel)
@@ -316,7 +331,7 @@ impl GpuOperator {
                 .set_arg(&self.flux_alpha)
                 .set_arg(&n_elem)
                 .set_global_work_size(global)
-                .set_local_work_size(WORK_GROUP)
+                .set_local_work_size(self.apply_wg)
                 .enqueue_nd_range(gpu.queue())
         }
         .map_err(|e| format!("apply kernel launch failed: {e}"))?;

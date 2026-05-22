@@ -1,61 +1,17 @@
-// DG Maxwell RHS operator — dy/dt = A.y. One work-item per element.
+// DG Maxwell RHS operator — dy/dt = A.y. One work-group per element block.
 //
-// NP, NFP, COLS are #define'd by the host before this source is built, so
-// the private scratch arrays are exactly sized. All field state and
-// operator data are f32 (the mixed-precision GPU path); this kernel is a
-// faithful port of the CPU `apply_element`.
+// NP, NFP, COLS, EPG are #define'd by the host before this source is built.
+// A work-group processes EPG elements; its work-items are NP-per-element DG
+// nodes, so the group has EPG*NP work-items. The element's field state and
+// the curl/flux accumulators live in __local memory, shared by the EPG*NP
+// work-items, so each work-item holds only a handful of private floats and
+// the register-spill cliff of the old one-work-item-per-element kernel is
+// gone. Numerically a faithful port of the CPU `apply_element`.
 
 inline float3 cross3(float3 a, float3 b) {
     return (float3)(a.y * b.z - a.z * b.y,
                     a.z * b.x - a.x * b.z,
                     a.x * b.y - a.y * b.x);
-}
-
-// Physical curl of a node-major 3-vector field (`3*NP`) into `out` (`3*NP`).
-//
-// Looped output-node-outer: the reference and physical derivatives of one
-// node are tiny 9-float scratch, never the `3*NP` / `9*NP` arrays the
-// component-outer form needed. That keeps the work-item's private memory
-// off the register-spill cliff. `jinv_e[k*3+p] = jacobian_inv[k][p]`.
-void element_curl(constant const float* dr,
-                  constant const float* ds,
-                  constant const float* dt,
-                  global const float* jinv_e,
-                  __private const float* field,
-                  __private float* out) {
-    for (int i = 0; i < NP; i++) {
-        // Reference derivatives at node i: rd[k*3 + comp].
-        float rd[9];
-        for (int k = 0; k < 3; k++) {
-            constant const float* d =
-                (k == 0) ? dr : ((k == 1) ? ds : dt);
-            float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f;
-            for (int j = 0; j < NP; j++) {
-                float dij = d[i * NP + j];
-                a0 += dij * field[j * 3 + 0];
-                a1 += dij * field[j * 3 + 1];
-                a2 += dij * field[j * 3 + 2];
-            }
-            rd[k * 3 + 0] = a0;
-            rd[k * 3 + 1] = a1;
-            rd[k * 3 + 2] = a2;
-        }
-        // Physical derivatives at node i: pd[phys*3 + comp].
-        float pd[9];
-        for (int p = 0; p < 3; p++) {
-            float j0 = jinv_e[0 * 3 + p];
-            float j1 = jinv_e[1 * 3 + p];
-            float j2 = jinv_e[2 * 3 + p];
-            for (int c = 0; c < 3; c++)
-                pd[p * 3 + c] =
-                    j0 * rd[0 * 3 + c] + j1 * rd[1 * 3 + c]
-                    + j2 * rd[2 * 3 + c];
-        }
-        // curl_x = d(Fz)/dy - d(Fy)/dz, and cyclic.
-        out[i * 3 + 0] = pd[1 * 3 + 2] - pd[2 * 3 + 1];
-        out[i * 3 + 1] = pd[2 * 3 + 0] - pd[0 * 3 + 2];
-        out[i * 3 + 2] = pd[0 * 3 + 1] - pd[1 * 3 + 0];
-    }
 }
 
 kernel void apply(global const float* y,
@@ -78,39 +34,108 @@ kernel void apply(global const float* y,
                   global const int* face_perm,
                   const float flux_alpha,
                   const int n_elem) {
-    const int e = get_global_id(0);
-    if (e >= n_elem) return;
+    // Work-item layout: lid = le*NP + node, with `le` the element's slot in
+    // this group's EPG-element block and `node` its DG node.
+    const int lid = get_local_id(0);
+    const int le = lid / NP;
+    const int node = lid % NP;
+    const int e = (int)get_group_id(0) * EPG + le;
+    const int active = (e < n_elem);
 
-    float ee[3 * NP], hh[3 * NP], de[3 * NP], dh[3 * NP];
-    const int base = e * NP * 6;
-    for (int node = 0; node < NP; node++) {
-        for (int c = 0; c < 3; c++) {
-            ee[node * 3 + c] = y[base + node * 6 + c];
-            hh[node * 3 + c] = y[base + node * 6 + 3 + c];
+    // Per-element shared state. The four NP-sized field/accumulator arrays
+    // are the bulk of the element's working set; the flux scratch holds the
+    // numerical flux for each of the 4*NFP face nodes.
+    __local float ee[EPG][3 * NP];
+    __local float hh[EPG][3 * NP];
+    __local float de[EPG][3 * NP];
+    __local float dh[EPG][3 * NP];
+    __local float flx_e[EPG][3 * 4 * NFP];
+    __local float flx_h[EPG][3 * 4 * NFP];
+
+    // Phase 0: stage this node's field state into __local (AoS gather).
+    if (active) {
+        const int base = e * NP * 6;
+        ee[le][node * 3 + 0] = y[base + node * 6 + 0];
+        ee[le][node * 3 + 1] = y[base + node * 6 + 1];
+        ee[le][node * 3 + 2] = y[base + node * 6 + 2];
+        hh[le][node * 3 + 0] = y[base + node * 6 + 3];
+        hh[le][node * 3 + 1] = y[base + node * 6 + 4];
+        hh[le][node * 3 + 2] = y[base + node * 6 + 5];
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    // Phase 1: this work-item's volume curl. dE = curl(H), dH = -curl(E).
+    // Each work-item owns exactly one node; the reference and physical
+    // derivatives are tiny 9-float private scratch, no NP-sized arrays.
+    if (active) {
+        global const float* jinv_e = jinv + e * 9;
+        // Reference derivatives of H and E at this node: rd[k*6 + h*3 + c],
+        // h selecting the H (0) or E (1) field.
+        float rd[18];
+        for (int k = 0; k < 3; k++) {
+            constant const float* d =
+                (k == 0) ? diff_r : ((k == 1) ? diff_s : diff_t);
+            float h0 = 0.0f, h1 = 0.0f, h2 = 0.0f;
+            float e0 = 0.0f, e1 = 0.0f, e2 = 0.0f;
+            for (int j = 0; j < NP; j++) {
+                float dij = d[node * NP + j];
+                h0 += dij * hh[le][j * 3 + 0];
+                h1 += dij * hh[le][j * 3 + 1];
+                h2 += dij * hh[le][j * 3 + 2];
+                e0 += dij * ee[le][j * 3 + 0];
+                e1 += dij * ee[le][j * 3 + 1];
+                e2 += dij * ee[le][j * 3 + 2];
+            }
+            rd[k * 6 + 0] = h0;
+            rd[k * 6 + 1] = h1;
+            rd[k * 6 + 2] = h2;
+            rd[k * 6 + 3] = e0;
+            rd[k * 6 + 4] = e1;
+            rd[k * 6 + 5] = e2;
         }
+        // Physical derivatives pd[phys*6 + h*3 + c]; jinv_e[k*3+p].
+        float pd[18];
+        for (int p = 0; p < 3; p++) {
+            float j0 = jinv_e[0 * 3 + p];
+            float j1 = jinv_e[1 * 3 + p];
+            float j2 = jinv_e[2 * 3 + p];
+            for (int c = 0; c < 6; c++)
+                pd[p * 6 + c] =
+                    j0 * rd[0 * 6 + c] + j1 * rd[1 * 6 + c]
+                    + j2 * rd[2 * 6 + c];
+        }
+        // curl_x = d(Fz)/dy - d(Fy)/dz, cyclic. dH = -curl(E).
+        de[le][node * 3 + 0] = pd[1 * 6 + 2] - pd[2 * 6 + 1];
+        de[le][node * 3 + 1] = pd[2 * 6 + 0] - pd[0 * 6 + 2];
+        de[le][node * 3 + 2] = pd[0 * 6 + 1] - pd[1 * 6 + 0];
+        dh[le][node * 3 + 0] = -(pd[1 * 6 + 5] - pd[2 * 6 + 4]);
+        dh[le][node * 3 + 1] = -(pd[2 * 6 + 3] - pd[0 * 6 + 5]);
+        dh[le][node * 3 + 2] = -(pd[0 * 6 + 4] - pd[1 * 6 + 3]);
     }
 
-    // Volume term: dE = curl(H), dH = -curl(E).
-    element_curl(diff_r, diff_s, diff_t, jinv + e * 9, hh, de);
-    element_curl(diff_r, diff_s, diff_t, jinv + e * 9, ee, dh);
-    for (int i = 0; i < 3 * NP; i++)
-        dh[i] = -dh[i];
-
-    // Surface term — the numerical flux.
-    for (int f = 0; f < 4; f++) {
-        const int ff = e * 4 + f;
-        float3 nrm = (float3)(face_normal[ff * 3],
-                              face_normal[ff * 3 + 1],
-                              face_normal[ff * 3 + 2]);
-        float coef = 0.5f * face_fscale[ff];
-        int nbr = face_neighbor[ff];
-        int nbrlf = face_nbr_local[ff];
-        int port = face_port[ff];
-        float a = (port >= 0) ? 1.0f : flux_alpha;
-        for (int m = 0; m < NFP; m++) {
+    // Phase 2: the numerical flux. Cooperative over the 4*NFP face nodes —
+    // each work-item strides through the face-node slots of its element,
+    // computing fe/fh into the flux scratch. The barrier before this phase
+    // is not needed (Phase 2 reads only ee/hh, written in Phase 0), but the
+    // one after Phase 1 already separated the curl writes from the lift sum
+    // below; this loop only writes flx_e/flx_h.
+    if (active) {
+        for (int s = node; s < 4 * NFP; s += NP) {
+            const int f = s / NFP;
+            const int m = s % NFP;
+            const int ff = e * 4 + f;
+            float3 nrm = (float3)(face_normal[ff * 3],
+                                  face_normal[ff * 3 + 1],
+                                  face_normal[ff * 3 + 2]);
+            int nbr = face_neighbor[ff];
+            int nbrlf = face_nbr_local[ff];
+            int port = face_port[ff];
+            float a = (port >= 0) ? 1.0f : flux_alpha;
             int vi = face_nodes[f * NFP + m];
-            float3 em = (float3)(ee[vi * 3], ee[vi * 3 + 1], ee[vi * 3 + 2]);
-            float3 hm = (float3)(hh[vi * 3], hh[vi * 3 + 1], hh[vi * 3 + 2]);
+            float3 em = (float3)(ee[le][vi * 3], ee[le][vi * 3 + 1],
+                                 ee[le][vi * 3 + 2]);
+            float3 hm = (float3)(hh[le][vi * 3], hh[le][vi * 3 + 1],
+                                 hh[le][vi * 3 + 2]);
             float3 je, jh;
             if (port >= 0) {
                 // Port: characteristic flux against a zero incident field.
@@ -135,28 +160,50 @@ kernel void apply(global const float* y,
             }
             float3 pe = cross3(nrm, cross3(nrm, je));
             float3 ph = cross3(nrm, cross3(nrm, jh));
-            float3 fe = -cross3(nrm, jh) + a * pe;
-            float3 fh = cross3(nrm, je) + a * ph;
-            for (int i = 0; i < NP; i++) {
-                float w = coef * lift[i * COLS + f * NFP + m];
-                de[i * 3 + 0] += w * fe.x;
-                de[i * 3 + 1] += w * fe.y;
-                de[i * 3 + 2] += w * fe.z;
-                dh[i * 3 + 0] += w * fh.x;
-                dh[i * 3 + 1] += w * fh.y;
-                dh[i * 3 + 2] += w * fh.z;
-            }
+            float coef = 0.5f * face_fscale[ff];
+            float3 fe = coef * (-cross3(nrm, jh) + a * pe);
+            float3 fh = coef * (cross3(nrm, je) + a * ph);
+            flx_e[le][s * 3 + 0] = fe.x;
+            flx_e[le][s * 3 + 1] = fe.y;
+            flx_e[le][s * 3 + 2] = fe.z;
+            flx_h[le][s * 3 + 0] = fh.x;
+            flx_h[le][s * 3 + 1] = fh.y;
+            flx_h[le][s * 3 + 2] = fh.z;
         }
     }
+    barrier(CLK_LOCAL_MEM_FENCE);
 
-    // Per-element materials.
-    for (int node = 0; node < NP; node++) {
-        for (int c = 0; c < 3; c++) {
-            dy[base + node * 6 + c] = inv_eps[e * 3 + c] * de[node * 3 + c]
-                - sigma_eps[e * 3 + c] * ee[node * 3 + c];
-            dy[base + node * 6 + 3 + c] = inv_mu[e * 3 + c]
-                    * dh[node * 3 + c]
-                - sigma_mu[e * 3 + c] * hh[node * 3 + c];
+    // Phase 3: each volume node sums its lift contribution over the 4*NFP
+    // face-node fluxes, then applies the per-element materials and writes
+    // the result. `coef` is already folded into flx_e/flx_h above.
+    if (active) {
+        float dex = de[le][node * 3 + 0];
+        float dey = de[le][node * 3 + 1];
+        float dez = de[le][node * 3 + 2];
+        float dhx = dh[le][node * 3 + 0];
+        float dhy = dh[le][node * 3 + 1];
+        float dhz = dh[le][node * 3 + 2];
+        for (int s = 0; s < 4 * NFP; s++) {
+            float w = lift[node * COLS + s];
+            dex += w * flx_e[le][s * 3 + 0];
+            dey += w * flx_e[le][s * 3 + 1];
+            dez += w * flx_e[le][s * 3 + 2];
+            dhx += w * flx_h[le][s * 3 + 0];
+            dhy += w * flx_h[le][s * 3 + 1];
+            dhz += w * flx_h[le][s * 3 + 2];
         }
+        const int base = e * NP * 6;
+        dy[base + node * 6 + 0] =
+            inv_eps[e * 3 + 0] * dex - sigma_eps[e * 3 + 0] * ee[le][node * 3 + 0];
+        dy[base + node * 6 + 1] =
+            inv_eps[e * 3 + 1] * dey - sigma_eps[e * 3 + 1] * ee[le][node * 3 + 1];
+        dy[base + node * 6 + 2] =
+            inv_eps[e * 3 + 2] * dez - sigma_eps[e * 3 + 2] * ee[le][node * 3 + 2];
+        dy[base + node * 6 + 3] =
+            inv_mu[e * 3 + 0] * dhx - sigma_mu[e * 3 + 0] * hh[le][node * 3 + 0];
+        dy[base + node * 6 + 4] =
+            inv_mu[e * 3 + 1] * dhy - sigma_mu[e * 3 + 1] * hh[le][node * 3 + 1];
+        dy[base + node * 6 + 5] =
+            inv_mu[e * 3 + 2] * dhz - sigma_mu[e * 3 + 2] * hh[le][node * 3 + 2];
     }
 }
