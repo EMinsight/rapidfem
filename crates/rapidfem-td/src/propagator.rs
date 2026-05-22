@@ -12,8 +12,8 @@
 use rayon::prelude::*;
 
 use crate::constants::{
-    ARNOLDI_BREAKDOWN, ARNOLDI_CHUNK, Accum, EXPM_SCALE_THRESHOLD,
-    EXPM_TAYLOR_TERMS,
+    ARNOLDI_BREAKDOWN, ARNOLDI_MIN_CHUNK, ARNOLDI_TASKS_PER_THREAD, Accum,
+    EXPM_SCALE_THRESHOLD, EXPM_TAYLOR_TERMS,
 };
 
 /// Dense matrix exponential of an `n×n` row-major matrix, via
@@ -248,6 +248,13 @@ impl KrylovWorkspace {
         }
         self.h[..max_dim * max_dim].fill(0.0);
 
+        // CGS2 `w -= V·c` chunk: sized so the rayon pool is over-subscribed
+        // a few-fold rather than left with a fixed `⌈n/chunk⌉` tasks that
+        // starved every core but a handful on small and medium meshes.
+        let ortho_chunk = (n
+            / (ARNOLDI_TASKS_PER_THREAD * rayon::current_num_threads()))
+        .max(ARNOLDI_MIN_CHUNK);
+
         // Arnoldi with classical Gram-Schmidt + one reorthogonalisation
         // (CGS2). Unlike modified Gram-Schmidt's sequential dot/axpy chain
         // the `cols` projections of each pass are independent, so the
@@ -281,10 +288,10 @@ impl KrylovWorkspace {
                     let basis = &self.basis;
                     let proj = &self.proj;
                     self.w[..n]
-                        .par_chunks_mut(ARNOLDI_CHUNK)
+                        .par_chunks_mut(ortho_chunk)
                         .enumerate()
                         .for_each(|(ci, wc)| {
-                            let k0 = ci * ARNOLDI_CHUNK;
+                            let k0 = ci * ortho_chunk;
                             let len = wc.len();
                             for i in 0..cols {
                                 let coeff = proj[i];

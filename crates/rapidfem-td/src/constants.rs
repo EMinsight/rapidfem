@@ -44,9 +44,18 @@ pub const KRYLOV_TOL: Accum = 1e-10;
 /// invariant subspace exactly and the iteration stops.
 pub const ARNOLDI_BREAKDOWN: Accum = 1e-12;
 
-/// Working-vector slice length per rayon task in the parallel CGS2
-/// orthogonalisation — the granularity at which `w -= V·c` is fanned out.
-pub const ARNOLDI_CHUNK: usize = 8192;
+/// Minimum working-vector slice length per rayon task in the parallel CGS2
+/// orthogonalisation. The chunk is sized from `n` so every core gets work
+/// (see [`ARNOLDI_TASKS_PER_THREAD`]); this floor keeps a task above the
+/// rayon dispatch overhead and clear of cache-line false sharing on `w`.
+pub const ARNOLDI_MIN_CHUNK: usize = 256;
+
+/// Target rayon tasks per worker thread for the CGS2 `w -= V·c` update — a
+/// few-fold over-subscription so the work-stealing scheduler balances the
+/// pass even at modest `n`. A fixed chunk size starved the pass on small
+/// and medium meshes (only `⌈n/chunk⌉` tasks regardless of core count);
+/// deriving the chunk from `n` and the thread count fixes that.
+pub const ARNOLDI_TASKS_PER_THREAD: usize = 4;
 
 // ── Dense matrix exponential (scaling-and-squaring) ───────────────────────
 
