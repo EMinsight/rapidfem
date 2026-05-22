@@ -320,19 +320,221 @@ impl CoaxPort {
     }
 }
 
+/// Polarisation mode of a [`FloquetPort`].
+///
+/// TE (`s`-polarised): the electric field is perpendicular to the plane of
+/// incidence. TM (`p`-polarised): the electric field lies in the plane of
+/// incidence. The plane of incidence is spanned by the port inward normal
+/// `ŵ` and the in-plane scan direction
+/// `(cosφ·û + sinφ·v̂)`; at normal incidence (`scan_theta = 0`) the plane
+/// of incidence collapses to a line and the TE polarisation falls along
+/// the in-plane perpendicular `(−sinφ·û + cosφ·v̂)`, the TM along
+/// `(cosφ·û + sinφ·v̂)` (both purely transverse).
+///
+/// The same convention as the FD `FloquetPort` (microwave_bc.py:FloquetPort,
+/// `mode_nr = 1` -> TE, `mode_nr = 2` -> TM).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloquetPolarisation {
+    /// `s`-polarised, E perpendicular to the plane of incidence.
+    Te,
+    /// `p`-polarised, E in the plane of incidence.
+    Tm,
+}
+
+/// A Floquet plane-wave port: a uniform transverse plane wave on the port
+/// face of a periodic unit cell.
+///
+/// `u_hat`, `v_hat`, `w_hat` form a right-handed frame (`û × v̂ = ŵ`) with
+/// `w_hat` the **inward** normal — pointing into the simulation domain. At
+/// normal incidence the polarisation lies entirely in the port plane:
+/// `Te` picks the in-plane azimuth perpendicular,
+/// `Tm` picks the in-plane azimuth along the scan direction.
+///
+/// **Oblique-scan approximation.** A real Floquet mode carries a transverse
+/// phase factor `e^{-j·k_t·r_t}` across the port face, which makes the
+/// field complex-valued. The time-domain backend's port machinery is
+/// real-valued (the [`PortMode`] returns real `e_profile` / `h_profile`),
+/// so at oblique incidence (`scan_theta ≠ 0`) the transverse phase is
+/// **dropped** — the polarisation vector still rotates with `scan_theta`
+/// (the TM out-of-plane lift, the TE in-plane orientation) but the field
+/// stays uniform across the face. This matches the FD `FloquetPort`'s
+/// documented approach. Normal incidence (`scan_theta = 0`) is the
+/// validated, exact case; oblique angles are a documented approximation.
+#[derive(Clone, Debug)]
+pub struct FloquetPort {
+    /// A corner of the port rectangle (global coords) — the `(u,v)=(0,0)` point.
+    pub origin: [Field; 3],
+    /// Unit vector along the width `a` (global).
+    pub u_hat: [Field; 3],
+    /// Unit vector along the height `b` (global).
+    pub v_hat: [Field; 3],
+    /// Inward unit normal — points into the domain (global).
+    pub w_hat: [Field; 3],
+    /// Cross-section width.
+    pub a: Field,
+    /// Cross-section height.
+    pub b: Field,
+    /// TE / TM polarisation choice.
+    pub polarisation: FloquetPolarisation,
+    /// Elevation scan angle `θ` from the port normal, in radians.
+    pub scan_theta: Field,
+    /// Azimuth scan angle `φ` in the port plane, in radians.
+    pub scan_phi: Field,
+    /// Optional explicit in-plane polarisation override. If `Some`, this
+    /// (already-projected and normalised) in-plane unit vector is the
+    /// transverse electric-field direction — the `polarisation`, `scan_*`
+    /// derivation is bypassed entirely. The dominant use is hooking up an
+    /// experiment that pins a specific linear polarisation independent of
+    /// the φ-azimuth convention.
+    pub e_override: Option<[Field; 3]>,
+}
+
+impl FloquetPort {
+    /// Resolved unit polarisation vector in global coordinates.
+    ///
+    /// `e_override` short-circuits the derivation when present. Otherwise
+    /// the TE vector is the in-plane perpendicular to the scan azimuth
+    /// `(−sinφ·û + cosφ·v̂)`; the TM vector at normal incidence is the
+    /// in-plane scan direction `(cosφ·û + sinφ·v̂)`, tilted by `scan_theta`
+    /// out of the port plane along `−ŵ` for `θ > 0` (so its E·E stays unit
+    /// length). The transverse phase factor `e^{-j·k_t·r_t}` is **dropped**
+    /// — see the struct doc.
+    fn polarisation_vec(&self) -> [Field; 3] {
+        if let Some(p) = self.e_override {
+            return p;
+        }
+        let (cos_p, sin_p) = (self.scan_phi.cos(), self.scan_phi.sin());
+        let (cos_t, sin_t) = (self.scan_theta.cos(), self.scan_theta.sin());
+        match self.polarisation {
+            FloquetPolarisation::Te => {
+                // E ⟂ plane of incidence — in-plane perpendicular to (cosφ û + sinφ v̂).
+                let c = [-sin_p, cos_p];
+                [
+                    c[0] * self.u_hat[0] + c[1] * self.v_hat[0],
+                    c[0] * self.u_hat[1] + c[1] * self.v_hat[1],
+                    c[0] * self.u_hat[2] + c[1] * self.v_hat[2],
+                ]
+            }
+            FloquetPolarisation::Tm => {
+                // E in plane of incidence — at θ = 0 along (cosφ û + sinφ v̂);
+                // for θ > 0 it tilts out of the port plane along −ŵ so that
+                // E·E = 1 (cos²θ + sin²θ).
+                let inplane = (cos_t * cos_p, cos_t * sin_p);
+                [
+                    inplane.0 * self.u_hat[0]
+                        + inplane.1 * self.v_hat[0]
+                        - sin_t * self.w_hat[0],
+                    inplane.0 * self.u_hat[1]
+                        + inplane.1 * self.v_hat[1]
+                        - sin_t * self.w_hat[1],
+                    inplane.0 * self.u_hat[2]
+                        + inplane.1 * self.v_hat[2]
+                        - sin_t * self.w_hat[2],
+                ]
+            }
+        }
+    }
+
+    /// Transverse electric-field profile of the Floquet mode at a global
+    /// point on the port face — uniform across the face at the polarisation
+    /// vector derived from `polarisation`, `scan_theta`, `scan_phi`
+    /// (or `e_override` when supplied). The transverse phase factor
+    /// `e^{-j·k_t·r_t}` is dropped at oblique scan; see the struct doc.
+    pub fn e_profile(&self, _x: [Field; 3]) -> [Field; 3] {
+        self.polarisation_vec()
+    }
+
+    /// Transverse magnetic-field profile — `h_t = ŵ × e_t`, exactly as for
+    /// the rectangular and coax modes. Free-space impedance is `1` in the
+    /// solver's normalised units, so `|H| = |E|` for the propagating wave.
+    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        cross(self.w_hat, self.e_profile(x))
+    }
+
+    /// Cutoff angular frequency — always `0`. A plane wave propagates at
+    /// every frequency down to DC; the unit-cell periodicity sets the
+    /// transverse momentum, the longitudinal `k_z` carries the rest.
+    pub fn cutoff(&self) -> Field {
+        0.0
+    }
+
+    /// Modal wave impedance — flat `Z = 1` in the solver's normalised
+    /// units (free space, non-dispersive). The forward / backward modal
+    /// split therefore needs no per-frequency rescaling.
+    pub fn te_impedance(&self, _omega: Field) -> Field {
+        1.0
+    }
+
+    /// Fit a `FloquetPort` to an axis-aligned rectangular unit-cell face
+    /// from its mesh node coordinates and the inward normal.
+    ///
+    /// The frame fitting reuses [`RectPort::from_face`]'s axis-aligned
+    /// logic: the wider transverse dimension becomes `a` (`u_hat`), the
+    /// narrower `b` (`v_hat`); the frame is made right-handed. The
+    /// polarisation is then built from the TE / TM choice and the scan
+    /// angles. `polarisation_override`, if `Some`, supplies an explicit
+    /// in-plane polarisation direction (projected back into the port
+    /// plane and normalised). A direction parallel to the normal has no
+    /// in-plane part and is rejected by returning the auto-derived
+    /// polarisation (with `e_override = None`).
+    pub fn from_face(
+        nodes: &[[Field; 3]],
+        inward_normal: [Field; 3],
+        polarisation: FloquetPolarisation,
+        scan_theta: Field,
+        scan_phi: Field,
+        polarisation_override: Option<[Field; 3]>,
+    ) -> FloquetPort {
+        // Borrow the rectangular port's frame fitter — same axis-aligned
+        // (u, v, w) layout and right-handed convention; mode is irrelevant
+        // here so use the lumped sentinel.
+        let rect = RectPort::from_face(nodes, inward_normal, (0, 0), None);
+        let mut port = FloquetPort {
+            origin: rect.origin,
+            u_hat: rect.u_hat,
+            v_hat: rect.v_hat,
+            w_hat: rect.w_hat,
+            a: rect.a,
+            b: rect.b,
+            polarisation,
+            scan_theta,
+            scan_phi,
+            e_override: None,
+        };
+        if let Some(d) = polarisation_override {
+            // Project into the port plane and normalise.
+            let dn = dot(d, port.w_hat);
+            let proj = [
+                d[0] - dn * port.w_hat[0],
+                d[1] - dn * port.w_hat[1],
+                d[2] - dn * port.w_hat[2],
+            ];
+            let len = dot(proj, proj).sqrt();
+            if len > 1e-9 {
+                port.e_override =
+                    Some([proj[0] / len, proj[1] / len, proj[2] / len]);
+            }
+        }
+        port
+    }
+}
+
 /// A port's waveguide mode — the mode-specific data the port machinery
 /// consumes, dispatched by variant.
 ///
 /// The port flux, the injection source and the modal extraction are all
 /// mode-agnostic: they touch a mode only through `e_profile`, `h_profile`,
 /// `cutoff` and `te_impedance`. This enum is the single point where a
-/// rectangular `TE_mn` mode and a coaxial TEM mode differ.
+/// rectangular `TE_mn` mode, a coaxial TEM mode and a Floquet plane-wave
+/// mode differ.
 #[derive(Clone, Debug)]
 pub enum PortMode {
     /// A rectangular-waveguide `TE_mn` mode (or the `(0,0)` lumped sentinel).
     Rect(RectPort),
     /// A coaxial-line TEM mode.
     Coax(CoaxPort),
+    /// A Floquet plane-wave mode on a periodic unit-cell face.
+    Floquet(FloquetPort),
 }
 
 impl PortMode {
@@ -341,6 +543,7 @@ impl PortMode {
         match self {
             PortMode::Rect(p) => p.e_profile(x),
             PortMode::Coax(p) => p.e_profile(x),
+            PortMode::Floquet(p) => p.e_profile(x),
         }
     }
 
@@ -349,14 +552,16 @@ impl PortMode {
         match self {
             PortMode::Rect(p) => p.h_profile(x),
             PortMode::Coax(p) => p.h_profile(x),
+            PortMode::Floquet(p) => p.h_profile(x),
         }
     }
 
-    /// Cutoff angular frequency of the mode (`0` for a TEM mode).
+    /// Cutoff angular frequency of the mode (`0` for a TEM / plane-wave mode).
     pub fn cutoff(&self) -> Field {
         match self {
             PortMode::Rect(p) => p.cutoff(),
             PortMode::Coax(p) => p.cutoff(),
+            PortMode::Floquet(p) => p.cutoff(),
         }
     }
 
@@ -365,6 +570,7 @@ impl PortMode {
         match self {
             PortMode::Rect(p) => p.te_impedance(omega),
             PortMode::Coax(p) => p.te_impedance(omega),
+            PortMode::Floquet(p) => p.te_impedance(omega),
         }
     }
 }
@@ -646,5 +852,158 @@ mod tests {
         assert_eq!(mc.h_profile(xc), coax.h_profile(xc));
         assert_eq!(mc.cutoff(), coax.cutoff());
         assert_eq!(mc.te_impedance(1.0), 1.0);
+
+        // A normal-incidence Floquet port also dispatches through.
+        let fp = FloquetPort {
+            origin: [0.0; 3],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a: 1.0,
+            b: 1.0,
+            polarisation: FloquetPolarisation::Te,
+            scan_theta: 0.0,
+            scan_phi: 0.0,
+            e_override: None,
+        };
+        let mf = PortMode::Floquet(fp.clone());
+        let xf = [0.5, 0.5, 0.0];
+        assert_eq!(mf.e_profile(xf), fp.e_profile(xf));
+        assert_eq!(mf.h_profile(xf), fp.h_profile(xf));
+        assert_eq!(mf.cutoff(), 0.0);
+        assert_eq!(mf.te_impedance(2.0 * PI), 1.0);
+    }
+
+    #[test]
+    fn floquet_port_normal_incidence_te_polarisation() {
+        // TE at φ = 0: E is the in-plane perpendicular to (cosφ û + sinφ v̂),
+        // so along +v̂. Uniform across the face. |H| = |E|, E·H = 0,
+        // E×H = ŵ (inward Poynting).
+        let p = FloquetPort {
+            origin: [0.0; 3],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a: 1.0,
+            b: 1.0,
+            polarisation: FloquetPolarisation::Te,
+            scan_theta: 0.0,
+            scan_phi: 0.0,
+            e_override: None,
+        };
+        let e0 = p.e_profile([0.1, 0.1, 0.0]);
+        let e1 = p.e_profile([0.7, 0.4, 0.0]);
+        assert!((e0[0]).abs() < 1e-12 && (e0[1] - 1.0).abs() < 1e-12);
+        for k in 0..3 {
+            assert!((e0[k] - e1[k]).abs() < 1e-12, "TE field is not uniform");
+        }
+        let h = p.h_profile([0.5, 0.5, 0.0]);
+        // For E = (0, 1, 0) and ŵ = +ẑ: h = ŵ × E = (-1, 0, 0).
+        assert!((h[0] + 1.0).abs() < 1e-12 && h[1].abs() < 1e-12 && h[2].abs() < 1e-12);
+        let s = cross(e0, h);
+        assert!(dot(s, p.w_hat) > 0.999, "Poynting not inward, got {s:?}");
+        // No cutoff, flat impedance.
+        assert!(p.cutoff().abs() < 1e-12);
+        assert!((p.te_impedance(3.0).abs() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn floquet_port_normal_incidence_tm_polarisation() {
+        // TM at φ = 0 and θ = 0: E along +û. Cross-orthogonal to TE.
+        let p = FloquetPort {
+            origin: [0.0; 3],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a: 1.0,
+            b: 1.0,
+            polarisation: FloquetPolarisation::Tm,
+            scan_theta: 0.0,
+            scan_phi: 0.0,
+            e_override: None,
+        };
+        let e = p.e_profile([0.5, 0.5, 0.0]);
+        assert!((e[0] - 1.0).abs() < 1e-12 && e[1].abs() < 1e-12 && e[2].abs() < 1e-12);
+        // For φ = π/2 the TM polarisation rotates to +v̂.
+        let p_phi = FloquetPort {
+            scan_phi: PI / 2.0,
+            ..p.clone()
+        };
+        let e2 = p_phi.e_profile([0.5, 0.5, 0.0]);
+        assert!(e2[0].abs() < 1e-12 && (e2[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn floquet_port_oblique_tm_carries_out_of_plane_component() {
+        // At θ > 0 the TM polarisation tilts out of the port plane along
+        // −ŵ (so |E| stays 1). The transverse phase factor is dropped.
+        let p = FloquetPort {
+            origin: [0.0; 3],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0],
+            a: 1.0,
+            b: 1.0,
+            polarisation: FloquetPolarisation::Tm,
+            scan_theta: PI / 6.0, // 30 degrees
+            scan_phi: 0.0,
+            e_override: None,
+        };
+        let e = p.e_profile([0.5, 0.5, 0.0]);
+        let cos_t = (PI / 6.0).cos();
+        let sin_t = (PI / 6.0).sin();
+        assert!((e[0] - cos_t).abs() < 1e-12, "E_u != cosθ: {}", e[0]);
+        assert!(e[1].abs() < 1e-12);
+        assert!((e[2] + sin_t).abs() < 1e-12, "E_w != -sinθ: {}", e[2]);
+        // Unit norm.
+        let nrm = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
+        assert!((nrm - 1.0).abs() < 1e-12);
+        // And the field is still uniform across the face — the transverse
+        // phase is intentionally dropped (real-valued port API).
+        let e2 = p.e_profile([0.9, 0.1, 0.0]);
+        for k in 0..3 {
+            assert!((e[k] - e2[k]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn floquet_port_from_face_fits_an_axis_aligned_unit_cell() {
+        // A z = 0 face spanning [0, 2] x [0, 1], inward normal +z. Auto-fit
+        // makes (u, v) = (x, y) with u the wide axis. TE at φ = 0 gives a
+        // uniform field along v̂ = +ŷ.
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.5, 0.0],
+        ];
+        let p = FloquetPort::from_face(
+            &nodes,
+            [0.0, 0.0, 1.0],
+            FloquetPolarisation::Te,
+            0.0,
+            0.0,
+            None,
+        );
+        assert!((p.a - 2.0).abs() < 1e-12 && (p.b - 1.0).abs() < 1e-12);
+        assert!((p.w_hat[2] - 1.0).abs() < 1e-12);
+        // Right-handed frame.
+        let uxv = cross(p.u_hat, p.v_hat);
+        assert!(dot(uxv, p.w_hat) > 0.999);
+        let e = p.e_profile([1.0, 0.5, 0.0]);
+        // TE φ=0 gives E along +v̂; for this face v̂ = ŷ.
+        assert!((e[1].abs() - 1.0).abs() < 1e-12);
+        // Explicit polarisation override.
+        let q = FloquetPort::from_face(
+            &nodes,
+            [0.0, 0.0, 1.0],
+            FloquetPolarisation::Te,
+            0.0,
+            0.0,
+            Some([1.0, 0.0, 0.0]),
+        );
+        let eq = q.e_profile([1.0, 0.5, 0.0]);
+        assert!((eq[0] - 1.0).abs() < 1e-12, "override ignored: {eq:?}");
     }
 }

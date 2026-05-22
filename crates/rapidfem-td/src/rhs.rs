@@ -15,7 +15,9 @@ use crate::constants::{
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
-use crate::waveguide::{CoaxPort, PortMode, RectPort};
+use crate::waveguide::{
+    CoaxPort, FloquetPolarisation, FloquetPort, PortMode, RectPort,
+};
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
 use rayon::prelude::*;
@@ -295,6 +297,96 @@ impl PortSpec {
         }
         let coax = CoaxPort::from_face(&coords, nrm, center);
         Some(PortSpec { tris, mode: Some(PortMode::Coax(coax)) })
+    }
+
+    /// Build a Floquet plane-wave port from a gmsh face tag — collecting
+    /// the port triangles and fitting the rectangular unit-cell face.
+    ///
+    /// `polarisation` picks TE (`s`-pol) or TM (`p`-pol). The scan angles
+    /// `scan_theta`, `scan_phi` parametrise the incident-wave direction
+    /// (radians, measured from the port inward normal / port-plane
+    /// azimuth respectively); `scan_theta = 0` is the validated normal
+    /// incidence case. `polarisation_override`, if `Some`, supplies an
+    /// explicit in-plane polarisation direction; it is projected into the
+    /// port plane and normalised. Returns `None` if the tag carries no
+    /// triangles.
+    ///
+    /// The transverse Floquet phase factor `e^{-j·k_t·r_t}` is **dropped**
+    /// at oblique scan — see [`FloquetPort`]'s docstring. Normal incidence
+    /// is exact; oblique angles are a documented approximation matching
+    /// the FD backend's convention.
+    pub fn floquet_from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+        polarisation: FloquetPolarisation,
+        scan_theta: Field,
+        scan_phi: Field,
+        polarisation_override: Option<[Field; 3]>,
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        // Distinct node coordinates of the port face.
+        let mut node_ids: Vec<usize> = Vec::new();
+        for &t in &tris {
+            for &nd in &mesh.tris[t] {
+                if !node_ids.contains(&nd) {
+                    node_ids.push(nd);
+                }
+            }
+        }
+        let coords: Vec<[Field; 3]> = node_ids
+            .iter()
+            .map(|&nd| mesh.nodes[nd].map(|x| x as Field))
+            .collect();
+
+        // Geometric normal of a representative port triangle, oriented to
+        // point into the domain (toward the adjacent tet's centroid).
+        let t0 = tris[0];
+        let [v0, v1, v2] = mesh.tris[t0];
+        let (p0, p1, p2) = (
+            mesh.nodes[v0].map(|x| x as Field),
+            mesh.nodes[v1].map(|x| x as Field),
+            mesh.nodes[v2].map(|x| x as Field),
+        );
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let mut nrm = cross3(e1, e2);
+        let len =
+            (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        for c in nrm.iter_mut() {
+            *c /= len;
+        }
+        let tet = mesh.tri_to_tet[t0]
+            .iter()
+            .copied()
+            .find(|&x| x != usize::MAX)?;
+        let mut centroid = [0.0; 3];
+        for &nd in &mesh.tets[tet] {
+            for k in 0..3 {
+                centroid[k] += mesh.nodes[nd][k] as Field / 4.0;
+            }
+        }
+        let inward = [
+            centroid[0] - p0[0],
+            centroid[1] - p0[1],
+            centroid[2] - p0[2],
+        ];
+        if dot3(nrm, inward) < 0.0 {
+            for c in nrm.iter_mut() {
+                *c = -*c;
+            }
+        }
+        let floquet = FloquetPort::from_face(
+            &coords,
+            nrm,
+            polarisation,
+            scan_theta,
+            scan_phi,
+            polarisation_override,
+        );
+        Some(PortSpec { tris, mode: Some(PortMode::Floquet(floquet)) })
     }
 }
 
@@ -3736,5 +3828,223 @@ mod tests {
             "z-PEC reference must develop visibly more structure than \
              the periodic run: periodic {s_all:.3e}, z-PEC {s_zpec:.3e}",
         );
+    }
+
+    #[test]
+    fn floquet_port_transmits_through_empty_unit_cell() {
+        // C3 gate: a normal-incidence Floquet port injects a uniform plane
+        // wave into a periodic unit cell; the wave traverses the cell and is
+        // cleanly extracted at the opposite face. Verified for both TE and
+        // TM polarisations.
+        //
+        // The cell is a structured box with all four lateral faces periodic
+        // (the C2 machinery), and Floquet ports on the −z (TX) and +z (RX)
+        // faces. Free space inside, c = 1, so a Gaussian pulse injected at
+        // TX arrives at RX after a delay of exactly `lz` and the run is
+        // stopped before any far-end reflection can return. The reflected
+        // amplitude at the TX port (its backward modal amplitude) stays
+        // small at a matched normal-incidence port.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use crate::waveguide::FloquetPolarisation;
+        use std::f64::consts::PI;
+
+        // Run the same transmission experiment for the two polarisations and
+        // return the diagnostic numbers (transmitted delay, reflection
+        // ratio, peak amplitudes) so both can be asserted at the end.
+        let run_pol = |pol: FloquetPolarisation| -> (f64, f64, f64, f64) {
+            // Aspect ratio: a few cells across so the plane wave is well
+            // resolved laterally; many cells along z so the Gaussian pulse
+            // fits cleanly into the cell.
+            let (lx, ly, lz) = (0.5, 0.5, 6.0);
+            let mesh = structured_box(2, 2, 24, lx, ly, lz);
+
+            let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+                mesh.tris
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| {
+                        t.iter().all(|&nd| pred(mesh.nodes[nd]))
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let x_lo = on(&|p| p[0].abs() < 1e-9);
+            let x_hi = on(&|p| (p[0] - lx).abs() < 1e-9);
+            let y_lo = on(&|p| p[1].abs() < 1e-9);
+            let y_hi = on(&|p| (p[1] - ly).abs() < 1e-9);
+            let z0_tris = on(&|p| p[2].abs() < 1e-9);
+            let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
+            assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
+
+            // The −z Floquet port (inward +z), and the +z Floquet port
+            // (inward −z). Both at normal incidence; both with the same
+            // polarisation so transmission is mode-pure.
+            let port_tx = PortSpec {
+                tris: z0_tris,
+                mode: Some(PortMode::Floquet(FloquetPort {
+                    origin: [0.0, 0.0, 0.0],
+                    u_hat: [1.0, 0.0, 0.0],
+                    v_hat: [0.0, 1.0, 0.0],
+                    w_hat: [0.0, 0.0, 1.0],
+                    a: lx,
+                    b: ly,
+                    polarisation: pol,
+                    scan_theta: 0.0,
+                    scan_phi: 0.0,
+                    e_override: None,
+                })),
+            };
+            let port_rx = PortSpec {
+                tris: zl_tris,
+                mode: Some(PortMode::Floquet(FloquetPort {
+                    origin: [0.0, 0.0, lz],
+                    u_hat: [1.0, 0.0, 0.0],
+                    v_hat: [0.0, 1.0, 0.0],
+                    w_hat: [0.0, 0.0, -1.0],
+                    a: lx,
+                    b: ly,
+                    polarisation: pol,
+                    scan_theta: 0.0,
+                    scan_phi: 0.0,
+                    e_override: None,
+                })),
+            };
+            let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+            let op = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+                &mesh, 2, 1.0, &vacuum,
+                &[port_tx, port_rx], &[],
+                &[
+                    PeriodicSpec { tris_a: x_lo, tris_b: x_hi },
+                    PeriodicSpec { tris_a: y_lo, tris_b: y_hi },
+                ],
+            );
+            let n = op.n_dof();
+            // Floquet ports are non-dispersive plane waves — zero cutoff.
+            assert!(op.port_cutoff(0).abs() < 1e-12);
+            assert!(op.port_cutoff(1).abs() < 1e-12);
+
+            let b_tx = op.port_source(0);
+            assert!(
+                b_tx.iter().any(|&x| x != 0.0),
+                "Floquet TX port source is empty for {pol:?}",
+            );
+
+            // Modulated-Gaussian drive, well inside the resolved band.
+            let omega0 = 1.5 * PI;
+            let (t0, tau) = (2.0, 0.6);
+            let pulse = |t: f64| {
+                (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+            };
+
+            // Stop just before the RX port's response could be contaminated
+            // by a hypothetical round-trip reflection (lz + 2·lz = 3·lz in
+            // a worst case; we stop at ~lz + 4·tau ≪ 3·lz).
+            let dt = 0.02;
+            let steps = 600;
+            let mut y = vec![0.0; n];
+            let mut tx_pe: Vec<f64> = Vec::with_capacity(steps);
+            let mut tx_ph: Vec<f64> = Vec::with_capacity(steps);
+            let mut rx_pe: Vec<f64> = Vec::with_capacity(steps);
+            let mut rx_ph: Vec<f64> = Vec::with_capacity(steps);
+            for s in 0..steps {
+                let t = s as f64 * dt;
+                let g = pulse(t);
+                let bvec: Vec<f64> = b_tx.iter().map(|x| x * g).collect();
+                y = etd_step(|x| op.apply(x), &y, &bvec, dt, 20);
+                let (pe0, ph0) = op.port_modal_projections(&y, 0);
+                let (pe1, ph1) = op.port_modal_projections(&y, 1);
+                tx_pe.push(pe0);
+                tx_ph.push(ph0);
+                rx_pe.push(pe1);
+                rx_ph.push(ph1);
+            }
+            assert!(y.iter().all(|v| v.is_finite()), "{pol:?} run diverged");
+
+            // Modal forward / backward split. Free-space impedance Z = 1.
+            let dft = |sig: &[f64], omega: f64| -> (f64, f64) {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (k, &x) in sig.iter().enumerate() {
+                    let t = k as f64 * dt;
+                    re += x * (omega * t).cos();
+                    im -= x * (omega * t).sin();
+                }
+                (re * dt, im * dt)
+            };
+            let cmag = |z: (f64, f64)| (z.0 * z.0 + z.1 * z.1).sqrt();
+            // Pick the carrier — well inside the resolved band.
+            let omega = 1.5 * PI;
+            let pe_tx = dft(&tx_pe, omega);
+            let ph_tx = dft(&tx_ph, omega);
+            let pe_rx = dft(&rx_pe, omega);
+            let ph_rx = dft(&rx_ph, omega);
+            // At the TX port the forward (incident) is A = (P_e + P_h)/2,
+            // the backward (reflected) is B = (P_e − P_h)/2 (Z = 1).
+            let a_tx = (0.5 * (pe_tx.0 + ph_tx.0), 0.5 * (pe_tx.1 + ph_tx.1));
+            let b_tx_amp =
+                (0.5 * (pe_tx.0 - ph_tx.0), 0.5 * (pe_tx.1 - ph_tx.1));
+            // At the RX port "backward" is the wave outgoing through +z —
+            // i.e. the transmitted wave (the port's inward normal is −z).
+            let b_rx =
+                (0.5 * (pe_rx.0 - ph_rx.0), 0.5 * (pe_rx.1 - ph_rx.1));
+            let refl_ratio = cmag(b_tx_amp) / cmag(a_tx).max(1e-30);
+            let trans_ratio = cmag(b_rx) / cmag(a_tx).max(1e-30);
+            eprintln!(
+                "DIAG floquet {:?}: |A_TX|={:.3e} |B_TX|={:.3e} \
+                 |B_RX|={:.3e} refl={refl_ratio:.4} trans={trans_ratio:.4}",
+                pol,
+                cmag(a_tx),
+                cmag(b_tx_amp),
+                cmag(b_rx),
+            );
+
+            // Time-domain peak-arrival check on (P_e at RX): the
+            // transmitted pulse should peak at roughly t0 + lz (c = 1).
+            let mut peak = 0.0_f64;
+            let mut tpk = 0.0;
+            for (k, &v) in rx_pe.iter().enumerate() {
+                if v.abs() > peak {
+                    peak = v.abs();
+                    tpk = k as f64 * dt;
+                }
+            }
+            // Peak amplitudes for the diagnostic, and the arrival delay.
+            (refl_ratio, trans_ratio, tpk - t0, peak)
+        };
+
+        for &pol in &[FloquetPolarisation::Te, FloquetPolarisation::Tm] {
+            let (refl, trans, delay, peak) = run_pol(pol);
+            // The transmitted pulse arrives at roughly t = t0 + lz, with
+            // lz = 6 and t0 = 2. Allow ±0.7 (about one carrier period) for
+            // the discrete peak step.
+            assert!(
+                (delay - 6.0).abs() < 0.7,
+                "{pol:?} transit delay {delay:.2}, expected ≈ 6.0 (lz)"
+            );
+            // The receive-port modal projection picked up a non-negligible
+            // signal — the plane wave actually arrived.
+            assert!(
+                peak > 5e-2,
+                "{pol:?} no transmitted signal at RX: peak {peak:.2e}"
+            );
+            // Most of the incident energy passes through; reflected ≪ A.
+            // At a matched normal-incidence Floquet port the reflection
+            // stays well below the transmitted amplitude.
+            assert!(
+                refl < 0.25,
+                "{pol:?} TX port not matched: refl ratio {refl:.3} \
+                 (incident |A| should dominate the spurious backward part)",
+            );
+            // Transmission ratio bracket: with the periodic side walls the
+            // plane wave is preserved across the cell, so |B_RX|/|A_TX| is
+            // near unity. The matched-port modal split has its own ~few-
+            // percent error budget at finite dt and finite mesh resolution,
+            // so a wide bracket is the right gate.
+            assert!(
+                (0.5..1.5).contains(&trans),
+                "{pol:?} transmission |B_RX|/|A_TX| = {trans:.3} \
+                 (expected ≈ 1 for a lossless cell)",
+            );
+        }
     }
 }

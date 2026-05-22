@@ -489,8 +489,18 @@ impl PyTdOperator {
     /// centroids), and DG faces on either side then see the partner
     /// element across the period as their neighbour. The pair is
     /// unordered; the same triangle cannot also be tagged as a port.
+    ///
+    /// `floquet_ports` declares Floquet plane-wave ports for periodic
+    /// unit-cell simulations: `(face_tag, polarisation_mode, scan_theta,
+    /// scan_phi)` per port. `polarisation_mode` is `1` (TE / s-pol) or
+    /// `2` (TM / p-pol), matching the FD `FloquetPort` convention; scan
+    /// angles are radians. Floquet ports are appended to the operator's
+    /// port list AFTER the rectangular `ports` and coax `coax_ports`, so
+    /// their indices start at `len(ports) + len(coax_ports)`. The
+    /// transverse Floquet phase factor is dropped at oblique scan (a
+    /// real-valued port API approximation); normal incidence is exact.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -504,11 +514,13 @@ impl PyTdOperator {
         dispersive: Option<Vec<(i32, f64, f64, f64)>>,
         coax_ports: Option<Vec<(i32, Option<(f64, f64, f64)>)>>,
         periodic_pairs: Option<Vec<(i32, i32)>>,
+        floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
             ElemMaterial, MaxwellOperator, PeriodicSpec, PortSpec,
         };
+        use rapidfem_td::waveguide::FloquetPolarisation;
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
             .map_err(PyRuntimeError::new_err)?;
         let mut materials = vec![ElemMaterial::VACUUM; mesh.n_tets()];
@@ -604,6 +616,38 @@ impl PyTdOperator {
                             "coax port face tag {tag} has no triangles"
                         ))
                     })?;
+                port_specs.push(spec);
+            }
+        }
+        // Floquet plane-wave ports — appended after the rectangular and
+        // coax ports. `polarisation_mode` encodes the TE / TM choice as in
+        // the FD backend's `mode_nr`: 1 -> TE, 2 -> TM.
+        if let Some(fps) = floquet_ports {
+            for (tag, pol_nr, scan_theta, scan_phi) in fps {
+                let polarisation = match pol_nr {
+                    1 => FloquetPolarisation::Te,
+                    2 => FloquetPolarisation::Tm,
+                    _ => {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "floquet port face tag {tag}: \
+                             polarisation_mode must be 1 (TE) or 2 (TM), \
+                             got {pol_nr}"
+                        )));
+                    }
+                };
+                let spec = PortSpec::floquet_from_mesh_tag(
+                    &mesh,
+                    tag,
+                    polarisation,
+                    scan_theta,
+                    scan_phi,
+                    None,
+                )
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "floquet port face tag {tag} has no triangles"
+                    ))
+                })?;
                 port_specs.push(spec);
             }
         }

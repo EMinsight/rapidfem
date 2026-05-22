@@ -162,15 +162,22 @@ def _collect_dispersive(geometry):
 
 def _collect_ports(geometry):
     """Walk the geometry's port physics — :class:`RectWaveguidePort`,
-    :class:`LumpedPort` and :class:`CoaxPort`.
+    :class:`LumpedPort`, :class:`CoaxPort` and :class:`FloquetPort`.
 
-    Returns ``(rect_ports, coax_ports)``: ``rect_ports`` is
-    ``[(face_tag, mode_m, mode_n, direction)]`` for the native TD
-    operator's rectangular / lumped ports; ``coax_ports`` is
-    ``[(face_tag, center)]`` for its coaxial TEM ports. Operator port
-    indices follow the geometry declaration order, with all rectangular /
-    lumped ports first and coax ports appended after — matching the
-    native ``TdOperator.from_mesh_bytes`` layout.
+    Returns ``(rect_ports, coax_ports, floquet_ports)``:
+
+    - ``rect_ports`` is ``[(face_tag, mode_m, mode_n, direction)]`` for the
+      native TD operator's rectangular / lumped ports
+    - ``coax_ports`` is ``[(face_tag, center)]`` for its coaxial TEM ports
+    - ``floquet_ports`` is ``[(face_tag, pol_mode, scan_theta, scan_phi)]``
+      for its Floquet plane-wave ports — ``pol_mode`` is ``1`` (TE) or
+      ``2`` (TM), matching the FD ``mode_nr`` convention; scan angles
+      are radians.
+
+    Operator port indices follow the geometry declaration order, with
+    rectangular / lumped ports first, coax ports next, and Floquet ports
+    appended after — matching the native ``TdOperator.from_mesh_bytes``
+    layout.
 
     A lumped port maps to the ``(0, 0)`` sentinel mode — the operator's
     uniform-profile / TEM port (zero cutoff, flat impedance) — and forwards
@@ -178,12 +185,18 @@ def _collect_ports(geometry):
     axis. A waveguide port has ``direction`` ``None`` — its frame is
     auto-fit from the face. A coax port carries the analytic TEM ``E_ρ ∝
     ρ̂/ρ`` annular mode and forwards its optional axis ``origin`` to the
-    native ``center`` override.
+    native ``center`` override. A Floquet port carries a uniform plane
+    wave with the TE / TM polarisation and the scan angles
+    (``scan_theta_deg``, ``scan_phi_deg``) converted to radians; at
+    oblique scan the transverse phase factor is dropped (documented
+    approximation, see :class:`FloquetPort`).
     """
-    from ..physics import CoaxPort, LumpedPort, RectWaveguidePort
+    import math
+    from ..physics import CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort
 
     rect_out = []
     coax_out = []
+    floquet_out = []
     for phys in getattr(geometry, "_physics", []):
         tag = geometry._physics_tags.get(id(phys))
         if tag is None:
@@ -202,7 +215,14 @@ def _collect_ports(geometry):
                 else (float(phys.origin[0]), float(phys.origin[1]), float(phys.origin[2]))
             )
             coax_out.append((int(tag), center))
-    return rect_out, coax_out
+        elif isinstance(phys, FloquetPort):
+            # mode_nr 1 -> TE, mode_nr 2 -> TM, matching the FD backend's
+            # FloquetPort.mode_nr field; default phys.mode_nr is 1.
+            pol_mode = int(phys.mode_nr)
+            theta = math.radians(float(phys.scan_theta_deg))
+            phi = math.radians(float(phys.scan_phi_deg))
+            floquet_out.append((int(tag), pol_mode, theta, phi))
+    return rect_out, coax_out, floquet_out
 
 
 def _collect_periodic(geometry):
@@ -659,7 +679,7 @@ class ProblemTD:
         self.c = float(c)
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
-        tag_ports, coax_ports = _collect_ports(geometry)
+        tag_ports, coax_ports, floquet_ports = _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
         tag_periodic = _collect_periodic(geometry)
         # The TD operator runs in normalised units (c = 1, time measured in
@@ -676,6 +696,7 @@ class ProblemTD:
             tag_absorbers or None, tag_dispersive or None,
             coax_ports or None,
             tag_periodic or None,
+            floquet_ports or None,
         )
         self._geometry = geometry
         self.order = order
@@ -683,8 +704,9 @@ class ProblemTD:
         _log(
             f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
-            f"{len(tag_ports) + len(coax_ports)} ports "
-            f"({len(tag_ports)} rect/lumped, {len(coax_ports)} coax), "
+            f"{len(tag_ports) + len(coax_ports) + len(floquet_ports)} ports "
+            f"({len(tag_ports)} rect/lumped, {len(coax_ports)} coax, "
+            f"{len(floquet_ports)} floquet), "
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
             f"{len(tag_dispersive)} Debye dispersive regions, "
             f"{len(tag_periodic)} periodic boundary pair(s)"
