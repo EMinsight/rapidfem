@@ -23,6 +23,13 @@ jobs:
       - name: Build
         run: cargo build --workspace --exclude rapidfem-python
 
+      # Compile-check the optional OpenCL GPU backend. OpenCL is loaded at
+      # runtime through the ICD loader, so this builds with no OpenCL SDK
+      # on the runner; the GPU unit tests need a real device and run
+      # locally with `cargo test -p rapidfem-td --features gpu`.
+      - name: Build (gpu feature)
+        run: cargo build -p rapidfem-td --features gpu
+
       # Element-level accuracy and math-kernel checks only (fast, no real
       # geometry). The DGTD validation suite (rapidfem-td) runs full
       # transient solves on meshes - far too slow for CI; run it locally

@@ -774,8 +774,15 @@ impl PyTdOperator {
     /// Whether an OpenCL GPU backend is available — built lazily on the
     /// first call. `False` if there is no GPU / OpenCL runtime, or the
     /// operator is dispersive.
+    ///
+    /// The probe runs under `catch_unwind`: a machine with no OpenCL ICD
+    /// loader can panic in the driver-loading layer rather than return an
+    /// error, and that must not crash the caller — it just means no GPU.
     fn gpu_available(&mut self) -> bool {
-        self.ensure_gpu().is_ok()
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.ensure_gpu().is_ok()
+        }))
+        .unwrap_or(false)
     }
 
     /// Name of the GPU device, or an error if no GPU backend is available.
