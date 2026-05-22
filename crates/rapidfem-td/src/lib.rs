@@ -10,6 +10,8 @@ pub mod dg_basis;
 pub mod dispersive;
 pub mod explicit;
 pub mod geom_factors;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod mesh_gen;
 pub mod mor;
 pub mod propagator;
