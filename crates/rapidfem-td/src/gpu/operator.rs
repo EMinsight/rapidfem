@@ -656,6 +656,30 @@ impl GpuOperator {
         self.krylov = Some(kry);
         Ok(result)
     }
+
+    /// Exponential-warmup hybrid transient: the first `warmup` steps use
+    /// the exact exponential propagator, the rest the cheaper explicit
+    /// LSERK4 stepper. The exact integrator carries the opening transient,
+    /// then hands the smooth state to the explicit stepper.
+    pub fn transient_hybrid(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        warmup: usize,
+        krylov_dim: usize,
+    ) -> Result<Vec<f32>, String> {
+        let warmup = warmup.min(steps);
+        // Warmup: exact exponential steps in f64.
+        let mut y: Vec<f64> = y0.iter().map(|&v| v as f64).collect();
+        for _ in 0..warmup {
+            y = self.expmv(gpu, &y, dt as f64, krylov_dim)?;
+        }
+        // Remainder: device-resident explicit LSERK4.
+        let y32: Vec<f32> = y.iter().map(|&v| v as f32).collect();
+        self.transient(gpu, &y32, dt, steps - warmup)
+    }
 }
 
 #[cfg(test)]
@@ -889,6 +913,67 @@ mod tests {
         assert!(
             rel < GPU_REL_TOL,
             "GPU expmv rel.err {rel:.3e} exceeds GPU_REL_TOL",
+        );
+    }
+
+    #[test]
+    fn gpu_hybrid_transient_matches_cpu() {
+        // P2.4 gate: the GPU exponential-warmup hybrid matches a CPU hybrid
+        // (warmup expmv steps, then LSERK4) within GPU_REL_TOL.
+        use crate::explicit::LserkWorkspace;
+        use crate::propagator::expmv;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y0: Vec<Field> =
+            (0..n).map(|i| (0.15 + i as Field * 0.009).sin()).collect();
+
+        let mut v = y0.clone();
+        let mut rho = 1.0;
+        for _ in 0..30 {
+            let av = op.apply(&v);
+            rho = av.iter().map(|x| x * x).sum::<Field>().sqrt();
+            let inv = 1.0 / rho;
+            for (vi, &a) in v.iter_mut().zip(&av) {
+                *vi = a * inv;
+            }
+        }
+        let dt = 1.0 / rho;
+        let (steps, warmup, m) = (120, 10, 40);
+
+        // CPU hybrid: warmup exponential steps, then LSERK4.
+        let mut y_cpu = y0.clone();
+        for _ in 0..warmup {
+            y_cpu = expmv(|x| op.apply(x), &y_cpu, dt, m);
+        }
+        let mut ws = LserkWorkspace::new();
+        for _ in 0..(steps - warmup) {
+            ws.step_into(|x, ax| op.apply_into(x, ax), &mut y_cpu, dt);
+        }
+
+        // GPU hybrid.
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let y_gpu = gop
+            .transient_hybrid(&gpu, &y0_32, dt as f32, steps, warmup, m)
+            .expect("hybrid transient");
+
+        let rel = rel_l2(&y_gpu, &y_cpu);
+        eprintln!(
+            "GPU hybrid transient vs CPU [{warmup}+{} steps]: rel L2 = {rel:.3e}",
+            steps - warmup
+        );
+        assert!(
+            rel < GPU_REL_TOL,
+            "GPU hybrid rel.err {rel:.3e} exceeds GPU_REL_TOL",
         );
     }
 }
