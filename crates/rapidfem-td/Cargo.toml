@@ -23,3 +23,7 @@ faer = "0.24"
 # OpenCL is loaded at runtime via the ICD loader, so this adds no build-time
 # toolkit dependency.
 gpu = ["dep:opencl3"]
+
+[[example]]
+name = "gpu_bench"
+required-features = ["gpu"]
