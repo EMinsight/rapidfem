@@ -140,3 +140,22 @@ pub const COAX_RADIUS_FLOOR: Field = 1e-12;
 /// cache lines at the run boundaries. A per-element chunk regressed past
 /// roughly six cores; a contiguous run per task restores the scaling.
 pub const APPLY_TASKS_PER_THREAD: usize = 4;
+
+// ── Periodic boundary matcher ─────────────────────────────────────────────
+
+/// Relative tolerance (fraction of the period translation magnitude) used
+/// when matching a side-A boundary triangle to its side-B partner across a
+/// periodic translation. Two triangles are considered partners when their
+/// centroids agree (after translation) to within `PERIODIC_MATCH_REL_TOL`
+/// times the period magnitude. A meshing-symmetric pair lines up to
+/// machine precision; this loose-ish tolerance keeps the matcher robust to
+/// gmsh's floating-point round-off without ever wandering onto a wrong
+/// partner (the next nearest triangle on a structured face is one cell
+/// size away, orders of magnitude beyond this).
+pub const PERIODIC_MATCH_REL_TOL: Field = 1e-9;
+
+/// Absolute fallback (in mesh length units) for the periodic-triangle
+/// match tolerance when the period magnitude is zero, degenerate, but
+/// guarded so the matcher's tolerance never collapses to zero. A pair this
+/// close in absolute terms is effectively coincident.
+pub const PERIODIC_MATCH_ABS_FLOOR: Field = 1e-12;

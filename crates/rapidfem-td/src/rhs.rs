@@ -8,7 +8,10 @@
 //! Per-element fields are stored node-major: `field[node*3 + component]`,
 //! with components ordered `x, y, z`.
 
-use crate::constants::{APPLY_TASKS_PER_THREAD, Field};
+use crate::constants::{
+    APPLY_TASKS_PER_THREAD, Field, PERIODIC_MATCH_ABS_FLOOR,
+    PERIODIC_MATCH_REL_TOL,
+};
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
@@ -295,6 +298,42 @@ impl PortSpec {
     }
 }
 
+/// A periodic boundary pair, two opposite mesh faces whose triangles are
+/// matched across the period translation, so a DG face on side A's element
+/// sees side B's partner element as its neighbour (and vice-versa).
+///
+/// The pair is unordered: the matcher infers the translation vector from
+/// the two face centroids and walks both sides symmetrically. After the
+/// match, periodic boundary faces look exactly like interior faces to the
+/// flux kernel, same `neighbor`, `neighbor_local_face`, and face-node
+/// `perm`. The numerical flux for a periodic face is therefore the
+/// existing interior-face central / upwind flux, no special-casing.
+#[derive(Clone, Debug)]
+pub struct PeriodicSpec {
+    /// Mesh triangle indices on side A.
+    pub tris_a: Vec<usize>,
+    /// Mesh triangle indices on side B.
+    pub tris_b: Vec<usize>,
+}
+
+impl PeriodicSpec {
+    /// Build a periodic pair from two gmsh face tags, the periodic
+    /// counterpart of [`PortSpec::from_mesh_tag`]. Returns `None` if
+    /// either tag carries no triangles.
+    pub fn from_mesh_tags(
+        mesh: &Mesh,
+        face_a: i32,
+        face_b: i32,
+    ) -> Option<PeriodicSpec> {
+        let tris_a = mesh.ftag_to_tri.get(&face_a)?.clone();
+        let tris_b = mesh.ftag_to_tri.get(&face_b)?.clone();
+        if tris_a.is_empty() || tris_b.is_empty() {
+            return None;
+        }
+        Some(PeriodicSpec { tris_a, tris_b })
+    }
+}
+
 /// Resolved per-port data held by the operator.
 struct PortData {
     /// The port's waveguide mode, if any.
@@ -503,6 +542,253 @@ pub struct MaxwellOperator {
     disp_slot: Vec<usize>,
 }
 
+/// For one periodic boundary triangle, locate its owning (element, local
+/// face). A periodic face is always a domain-boundary triangle, exactly
+/// one of `mesh.tri_to_tet[tri]` slots is `usize::MAX`, the other carries
+/// the owning element.
+fn boundary_tri_owner(
+    mesh: &Mesh,
+    tri: usize,
+) -> Option<(usize, usize)> {
+    let owner = mesh.tri_to_tet[tri]
+        .iter()
+        .copied()
+        .find(|&t| t != usize::MAX)?;
+    let local_face = mesh.tet_to_tri[owner]
+        .iter()
+        .position(|&x| x == tri)?;
+    Some((owner, local_face))
+}
+
+/// Centroid of a periodic face, the average of the centroids of its
+/// boundary triangles, weighted by area. Used to infer the period
+/// translation between the two sides of a [`PeriodicSpec`].
+fn periodic_face_centroid(
+    mesh: &Mesh,
+    tris: &[usize],
+) -> [Field; 3] {
+    let mut acc = [0.0 as Field; 3];
+    let mut total = 0.0 as Field;
+    for &tri in tris {
+        let [a, b, c] = mesh.tris[tri];
+        let pa = mesh.nodes[a].map(|x| x as Field);
+        let pb = mesh.nodes[b].map(|x| x as Field);
+        let pc = mesh.nodes[c].map(|x| x as Field);
+        let e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+        let e2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        let n = cross3(e1, e2);
+        let area =
+            0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        for k in 0..3 {
+            acc[k] += area * (pa[k] + pb[k] + pc[k]) / 3.0;
+        }
+        total += area;
+    }
+    assert!(total > 0.0, "periodic face has zero total area");
+    [acc[0] / total, acc[1] / total, acc[2] / total]
+}
+
+/// Match periodic boundary faces across the period translation, then fill
+/// in their FaceInfo neighbour / perm so the existing interior-face flux
+/// path handles them with no special-casing.
+///
+/// The translation vector is inferred from the two face centroids (mean of
+/// each side's triangle centroids). For each side-A boundary triangle we
+/// find its side-B partner by matching the side-A centroid plus the
+/// translation against B's triangle centroids; the face-node permutation
+/// is then a per-node nearest-neighbour match in the same translated frame.
+/// The match is symmetric, A → B and B → A are both wired up, so the
+/// kernel's neighbour branch fires on either side.
+fn link_periodic_faces(
+    mesh: &Mesh,
+    re: &ReferenceElement,
+    geom: &[GeometricFactors],
+    tri_to_port: &[usize],
+    faces: &mut [FaceInfo],
+    tris_a: &[usize],
+    tris_b: &[usize],
+) {
+    assert!(
+        tris_a.len() == tris_b.len(),
+        "periodic pair has different triangle counts on each side: \
+         A has {}, B has {}",
+        tris_a.len(),
+        tris_b.len(),
+    );
+
+    // Reject a face that is already a port, periodic and port are mutually
+    // exclusive (a face cannot be both a periodic neighbour and a
+    // characteristic boundary).
+    for &tri in tris_a.iter().chain(tris_b.iter()) {
+        assert!(
+            tri_to_port[tri] == usize::MAX,
+            "triangle {tri} is marked both port and periodic",
+        );
+    }
+
+    // Period translation: B-centroid minus A-centroid.
+    let ca = periodic_face_centroid(mesh, tris_a);
+    let cb = periodic_face_centroid(mesh, tris_b);
+    let trans = [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]];
+    let trans_mag =
+        (trans[0] * trans[0] + trans[1] * trans[1] + trans[2] * trans[2])
+            .sqrt();
+    let tri_tol = (PERIODIC_MATCH_REL_TOL * trans_mag)
+        .max(PERIODIC_MATCH_ABS_FLOOR);
+    let tri_tol2 = tri_tol * tri_tol;
+
+    // Per-triangle centroid on each side, the matching key.
+    let tri_centroid = |tri: usize| -> [Field; 3] {
+        let [a, b, c] = mesh.tris[tri];
+        let pa = mesh.nodes[a].map(|x| x as Field);
+        let pb = mesh.nodes[b].map(|x| x as Field);
+        let pc = mesh.nodes[c].map(|x| x as Field);
+        [
+            (pa[0] + pb[0] + pc[0]) / 3.0,
+            (pa[1] + pb[1] + pc[1]) / 3.0,
+            (pa[2] + pb[2] + pc[2]) / 3.0,
+        ]
+    };
+    let centroids_a: Vec<[Field; 3]> =
+        tris_a.iter().map(|&t| tri_centroid(t)).collect();
+    let centroids_b: Vec<[Field; 3]> =
+        tris_b.iter().map(|&t| tri_centroid(t)).collect();
+
+    // Match each A triangle to a B triangle by translated-centroid distance.
+    // `partner[i_a] = i_b`; the inverse map ensures the pairing is a true
+    // bijection (no two A triangles share a B partner).
+    let mut partner_a_to_b = vec![usize::MAX; tris_a.len()];
+    let mut partner_b_to_a = vec![usize::MAX; tris_b.len()];
+    for (i_a, &ca_i) in centroids_a.iter().enumerate() {
+        let target =
+            [ca_i[0] + trans[0], ca_i[1] + trans[1], ca_i[2] + trans[2]];
+        let (mut best, mut bi) = (Field::MAX, usize::MAX);
+        for (i_b, &cb_i) in centroids_b.iter().enumerate() {
+            let d = (target[0] - cb_i[0]).powi(2)
+                + (target[1] - cb_i[1]).powi(2)
+                + (target[2] - cb_i[2]).powi(2);
+            if d < best {
+                best = d;
+                bi = i_b;
+            }
+        }
+        assert!(
+            best < tri_tol2,
+            "periodic triangle {} on side A: no partner on side B within \
+             tolerance {tri_tol:e} (best distance {:e}, period magnitude \
+             {trans_mag:e})",
+            tris_a[i_a],
+            best.sqrt(),
+        );
+        assert!(
+            partner_b_to_a[bi] == usize::MAX,
+            "periodic side-B triangle {} matched by two side-A triangles \
+             ({} and {}); a periodic pair must be a bijection",
+            tris_b[bi],
+            tris_a[partner_b_to_a[bi]],
+            tris_a[i_a],
+        );
+        partner_a_to_b[i_a] = bi;
+        partner_b_to_a[bi] = i_a;
+    }
+
+    // Face-node coordinates of a given (element, local face) under the
+    // operator's reference element, the same map used by the interior
+    // matcher.
+    let face_coords = |e: usize, f: usize| -> Vec<[Field; 3]> {
+        re.face_nodes[f]
+            .iter()
+            .map(|&vi| geom[e].map(re.nodes[vi]))
+            .collect()
+    };
+
+    // Per-pair: wire each side's FaceInfo to the partner element / local
+    // face and compute the face-node permutation in the translated frame.
+    for (i_a, &i_b) in partner_a_to_b.iter().enumerate() {
+        let tri_a = tris_a[i_a];
+        let tri_b = tris_b[i_b];
+        let (e_a, f_a) = boundary_tri_owner(mesh, tri_a).unwrap_or_else(
+            || panic!("periodic triangle {tri_a} carries no owning tet"),
+        );
+        let (e_b, f_b) = boundary_tri_owner(mesh, tri_b).unwrap_or_else(
+            || panic!("periodic triangle {tri_b} carries no owning tet"),
+        );
+        let here_a = face_coords(e_a, f_a);
+        let here_b = face_coords(e_b, f_b);
+
+        // For each face-node of A, find the partner face-node on B by
+        // matching A's coordinates (after the period translation) to B's.
+        // This is the direct analogue of the interior-face matcher above,
+        // with the translation supplying the periodic glue.
+        let perm_a: Vec<usize> = here_a
+            .iter()
+            .map(|p| {
+                let target =
+                    [p[0] + trans[0], p[1] + trans[1], p[2] + trans[2]];
+                let (mut best, mut bm) = (Field::MAX, 0);
+                for (m2, q) in here_b.iter().enumerate() {
+                    let d = (target[0] - q[0]).powi(2)
+                        + (target[1] - q[1]).powi(2)
+                        + (target[2] - q[2]).powi(2);
+                    if d < best {
+                        best = d;
+                        bm = m2;
+                    }
+                }
+                assert!(
+                    best < tri_tol2,
+                    "periodic face-node A({tri_a},{}) found no B partner \
+                     within tolerance {tri_tol:e} (best {:e})",
+                    re.face_nodes[f_a][0],
+                    best.sqrt(),
+                );
+                bm
+            })
+            .collect();
+        // The mirror permutation, used to wire side B's FaceInfo.
+        let perm_b: Vec<usize> = here_b
+            .iter()
+            .map(|p| {
+                let target =
+                    [p[0] - trans[0], p[1] - trans[1], p[2] - trans[2]];
+                let (mut best, mut bm) = (Field::MAX, 0);
+                for (m2, q) in here_a.iter().enumerate() {
+                    let d = (target[0] - q[0]).powi(2)
+                        + (target[1] - q[1]).powi(2)
+                        + (target[2] - q[2]).powi(2);
+                    if d < best {
+                        best = d;
+                        bm = m2;
+                    }
+                }
+                assert!(best < tri_tol2, "periodic face-node B unmatched");
+                bm
+            })
+            .collect();
+
+        // Sanity: a face originally tagged for periodic linking must be a
+        // domain boundary in the topology (neighbor = MAX); if not, the
+        // caller's tris list is corrupt (e.g. an interior face was passed).
+        let fi_a = &mut faces[e_a * 4 + f_a];
+        assert!(
+            fi_a.neighbor == usize::MAX,
+            "periodic triangle {tri_a} is not on the domain boundary",
+        );
+        fi_a.neighbor = e_b;
+        fi_a.neighbor_local_face = f_b;
+        fi_a.perm = perm_a;
+
+        let fi_b = &mut faces[e_b * 4 + f_b];
+        assert!(
+            fi_b.neighbor == usize::MAX,
+            "periodic triangle {tri_b} is not on the domain boundary",
+        );
+        fi_b.neighbor = e_a;
+        fi_b.neighbor_local_face = f_a;
+        fi_b.perm = perm_b;
+    }
+}
+
 impl MaxwellOperator {
     /// Build a vacuum operator (`ε = μ = 1`, `σ = 0`).
     pub fn new(mesh: &Mesh, order: usize, flux_alpha: Field) -> Self {
@@ -553,6 +839,30 @@ impl MaxwellOperator {
         materials: &[ElemMaterial],
         ports: &[PortSpec],
         dispersive: &[(usize, DebyeMaterial)],
+    ) -> Self {
+        Self::new_with_materials_ports_dispersive_periodic(
+            mesh, order, flux_alpha, materials, ports, dispersive, &[],
+        )
+    }
+
+    /// Like [`new_with_materials_ports_dispersive`](Self::new_with_materials_ports_dispersive)
+    /// but additionally accepts periodic boundary pairs. Each entry in
+    /// `periodic` declares two opposite mesh faces whose triangles are
+    /// matched across the period translation, so DG faces on either side
+    /// see the partner element across the period as their neighbour.
+    ///
+    /// The numerical flux on a periodic face is then the existing
+    /// interior-face flux, no kernel change. With `periodic` empty the
+    /// operator is byte-identical to the non-periodic build.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_materials_ports_dispersive_periodic(
+        mesh: &Mesh,
+        order: usize,
+        flux_alpha: Field,
+        materials: &[ElemMaterial],
+        ports: &[PortSpec],
+        dispersive: &[(usize, DebyeMaterial)],
+        periodic: &[PeriodicSpec],
     ) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
@@ -612,6 +922,26 @@ impl MaxwellOperator {
                 });
             }
         }
+
+        // Periodic boundary matcher, link each periodic face to its partner
+        // across the period translation. After this each periodic face's
+        // FaceInfo carries the partner element and the partner's local face,
+        // and a face-node permutation that maps this face's node ordering to
+        // the partner's. The DG flux on a periodic face then looks exactly
+        // like an interior face to the kernel (CPU and GPU alike), no
+        // special-case branch needed.
+        for spec in periodic {
+            link_periodic_faces(
+                mesh,
+                &re,
+                &geom,
+                &tri_to_port,
+                &mut faces,
+                &spec.tris_a,
+                &spec.tris_b,
+            );
+        }
+
         assert_eq!(materials.len(), n_elem, "one material per element");
         let recip = |v: [Field; 3]| [1.0 / v[0], 1.0 / v[1], 1.0 / v[2]];
         let inv_eps: Vec<[Field; 3]> =
@@ -3073,5 +3403,338 @@ mod tests {
         let (hi_re, _) = p_phasor(want_g, want_a, 1e6);
         assert!((debye.eps_inf + lo_re - debye.eps_static).abs() < 1e-3);
         assert!((debye.eps_inf + hi_re - debye.eps_inf).abs() < 1e-3);
+    }
+
+    #[test]
+    fn periodic_boundary_passes_plane_wave() {
+        // C2 gate: a Gaussian plane-wave packet aligned with the periodic
+        // axis propagates through a periodic-paired pair of opposite faces
+        // without spurious reflection.
+        //
+        // The discriminator is a *forward-wave coherence* metric, for a
+        // +z TEM packet with c = 1, vacuum, the initial state is
+        // E_x(z) = f(z), H_y(z) = -f(z) and the coherence
+        //   r = sum(E_x * (-H_y)) / sum(E_x^2)
+        // is 1.0 by construction. A periodic +z-face leaves the packet a
+        // clean forward wave, so r stays close to 1 across the run. A PEC
+        // +z-face reflects the packet into a -z component (flipping E_x or
+        // H_y, depending on flux), so r decays toward 0 as the packet
+        // bounces. The energy of either run is conserved by the central
+        // flux; the qualitative reflection signature is the metric that
+        // distinguishes them.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+
+        let (lx, ly, lz) = (0.5, 0.5, 4.0);
+        // Several z-cells per Gaussian sigma so the packet is resolved; the
+        // x/y direction can stay coarse since the test field is z-only.
+        let mesh = structured_box(1, 1, 16, lx, ly, lz);
+
+        // All three axis-pairs are periodic, so the +z TEM packet propagates
+        // through a translation-invariant medium, the only thing the run is
+        // probing is the z-face periodic link. A PEC y-wall would clip a
+        // +z TEM packet's tangential E_x, so the side walls must be wired
+        // through too. The C2 discriminator is the periodic-vs-PEC contrast
+        // on the z-faces only.
+        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let x_lo = on(&|p| p[0].abs() < 1e-9);
+        let x_hi = on(&|p| (p[0] - lx).abs() < 1e-9);
+        let y_lo = on(&|p| p[1].abs() < 1e-9);
+        let y_hi = on(&|p| (p[1] - ly).abs() < 1e-9);
+        let z0_tris = on(&|p| p[2].abs() < 1e-9);
+        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
+        assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
+
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+
+        // Initial state, a +z TEM Gaussian packet (E_x, H_y = -E_x). The
+        // bump is narrow enough that its initial value at z = 0 / z = lz is
+        // negligible (the periodic face is not loaded at t = 0); the run
+        // covers more than one period so the packet has to traverse the
+        // periodic face to keep going forward.
+        let make_state = |op: &MaxwellOperator| -> Vec<f64> {
+            let n = op.n_dof();
+            let coords = op.node_coords();
+            let z_c = 0.5 * lz;
+            let sigma = 0.40;
+            let mut y = vec![0.0; n];
+            for (idx, p) in coords.iter().enumerate() {
+                let f = (-((p[2] - z_c) / sigma).powi(2)).exp();
+                y[idx * 6] = f;       // E_x
+                y[idx * 6 + 4] = -f;  // H_y
+            }
+            y
+        };
+        // Forward-wave coherence on the E_x / H_y components, 1 for a
+        // pure +z wave, 0 for a standing wave, -1 for pure -z.
+        let coherence = |op: &MaxwellOperator, y: &[f64]| -> f64 {
+            let np = op.re.n_nodes;
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for e in 0..op.n_elem {
+                for node in 0..np {
+                    let ex = y[(e * np + node) * 6];
+                    let hy = y[(e * np + node) * 6 + 4];
+                    num += ex * (-hy);
+                    den += ex * ex;
+                }
+            }
+            if den > 0.0 { num / den } else { 0.0 }
+        };
+
+        // (a) periodic run, z + x + y all periodic.
+        let op_per = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+            &mesh, 2, 0.0, &vacuum, &[], &[],
+            &[
+                PeriodicSpec { tris_a: x_lo.clone(), tris_b: x_hi.clone() },
+                PeriodicSpec { tris_a: y_lo.clone(), tris_b: y_hi.clone() },
+                PeriodicSpec { tris_a: z0_tris.clone(), tris_b: zl_tris.clone() },
+            ],
+        );
+        let n = op_per.n_dof();
+        let mut y_per = make_state(&op_per);
+        let e0_per = op_per.field_energy(&y_per);
+        let r0 = coherence(&op_per, &y_per);
+        assert!(
+            (r0 - 1.0).abs() < 1e-9,
+            "initial coherence should be 1 by construction, got {r0}"
+        );
+        // Propagate well past one period so the packet has to cross the
+        // periodic face. With central flux + periodic + no other boundaries
+        // active for the test field, this stays a clean forward wave.
+        let dt = 0.04;
+        let steps = 250;  // 10 time units = 2.5 box periods at c = 1
+        for _ in 0..steps {
+            y_per = etd_step(|x| op_per.apply(x), &y_per, &vec![0.0; n], dt, 24);
+        }
+        assert!(y_per.iter().all(|v| v.is_finite()), "periodic run diverged");
+        let e_per = op_per.field_energy(&y_per);
+        let r_per = coherence(&op_per, &y_per);
+        let de_per = (e_per - e0_per).abs() / e0_per;
+        eprintln!(
+            "DIAG periodic: energy ratio {:.4} (drift {de_per:.2e}), \
+             forward coherence {r_per:.4}",
+            e_per / e0_per,
+        );
+        // Central flux + periodic boundaries, exactly energy-conserving
+        // (the periodic face is just an interior face), so the energy must
+        // hold tight; the wave must stay a forward wave (no spurious
+        // reflection at the periodic faces).
+        assert!(
+            de_per < 5e-3,
+            "periodic energy drifted: {de_per:.2e} (kept {:.4})",
+            e_per / e0_per,
+        );
+        assert!(
+            r_per > 0.85,
+            "periodic boundary leaked a backward wave: coherence {r_per:.3} \
+             (was {r0:.3} initially)",
+        );
+
+        // (b) PEC reference, same x/y periodicity (so the side walls do
+        // not contaminate the comparison), only the z-faces switched to
+        // PEC. The packet bounces off the z = lz wall, and the forward
+        // coherence drifts down as a backward wave builds up.
+        let op_pec = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+            &mesh, 2, 0.0, &vacuum, &[], &[],
+            &[
+                PeriodicSpec { tris_a: x_lo, tris_b: x_hi },
+                PeriodicSpec { tris_a: y_lo, tris_b: y_hi },
+            ],
+        );
+        let mut y_pec = make_state(&op_pec);
+        for _ in 0..steps {
+            y_pec = etd_step(|x| op_pec.apply(x), &y_pec, &vec![0.0; n], dt, 24);
+        }
+        assert!(y_pec.iter().all(|v| v.is_finite()));
+        let r_pec = coherence(&op_pec, &y_pec);
+        eprintln!(
+            "DIAG PEC reference: forward coherence {r_pec:.4}",
+        );
+        // The PEC run must show clearly less forward-coherence than the
+        // periodic one, the discriminator that proves the periodic case
+        // is genuinely passing the wave through, not just incidentally
+        // bouncing.
+        assert!(
+            r_per - r_pec > 0.3,
+            "periodic vs PEC contrast too weak: periodic coherence \
+             {r_per:.3}, PEC coherence {r_pec:.3}",
+        );
+    }
+
+    #[test]
+    fn periodic_boundary_is_translation_invariant() {
+        // C2 sanity: a uniform field in a box with a periodic pair on the
+        // z-faces stays exactly uniform under propagation, the periodic
+        // face is invisible to a translation-invariant state. With PEC on
+        // the z-faces (no periodic) the same state is *not* a steady state
+        // (the PEC ghost flips tangential E, creating a non-zero jump
+        // across z = 0 / z = lz), so the field develops structure. The two
+        // runs together prove that the periodic glue is genuinely
+        // translation-invariant, not just numerically close to a PEC run.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+
+        let (lx, ly, lz) = (0.5, 0.5, 1.5);
+        let mesh = structured_box(1, 1, 4, lx, ly, lz);
+        let z0_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| mesh.nodes[nd][2].abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let zl_tris: Vec<usize> = mesh
+            .tris
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.iter().all(|&nd| (mesh.nodes[nd][2] - lz).abs() < 1e-9)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+
+        // Uniform E_x = 1, all other components zero. The side walls
+        // (x = 0 / lx and y = 0 / ly) carry PEC; E_x is normal to the
+        // x-walls (the PEC tangential-E ghost is zero on a purely normal
+        // field), and on the y-walls it IS tangential, so this state is
+        // not a steady state of the full all-PEC box, but the variation
+        // it induces is the same in the periodic and PEC reference runs
+        // (the side walls are identical between them). The discriminator
+        // is the *additional* drift caused by the z-face treatment.
+        let make_state = |op: &MaxwellOperator| -> Vec<f64> {
+            let n = op.n_dof();
+            let mut y = vec![0.0; n];
+            let np = op.re.n_nodes;
+            for e in 0..op.n_elem {
+                for node in 0..np {
+                    y[(e * np + node) * 6] = 1.0;
+                }
+            }
+            y
+        };
+        // Standard deviation of E_x across all DG nodes, a structure
+        // metric: 0 means perfectly uniform, anything else is induced
+        // variation.
+        let std_ex = |op: &MaxwellOperator, y: &[f64]| -> f64 {
+            let np = op.re.n_nodes;
+            let n_pts = op.n_elem * np;
+            let mean: f64 = (0..n_pts)
+                .map(|i| y[i * 6])
+                .sum::<f64>()
+                / n_pts as f64;
+            let var: f64 = (0..n_pts)
+                .map(|i| (y[i * 6] - mean).powi(2))
+                .sum::<f64>()
+                / n_pts as f64;
+            var.sqrt()
+        };
+
+        // To isolate the z-face effect, build TWO operators on the *same*
+        // mesh with identical side walls but different z-face treatment:
+        // (a) periodic on z, (b) PEC on z. Compare additional drift.
+        let op_per = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+            &mesh, 2, 0.0, &vacuum, &[], &[],
+            &[PeriodicSpec { tris_a: z0_tris, tris_b: zl_tris }],
+        );
+        let op_pec = MaxwellOperator::new_with_materials(
+            &mesh, 2, 0.0, &vacuum,
+        );
+
+        // Critically: we use a problem whose *side* walls are also
+        // periodic, so the *only* boundaries are the z-faces. Build a
+        // fully-periodic box (all six faces in three pairs); then the
+        // uniform E_x truly is a steady state of the periodic operator.
+        // A PEC equivalent on the z-faces (with the x/y faces still
+        // periodic) is not.
+        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let x_lo = on(&|p| p[0].abs() < 1e-9);
+        let x_hi = on(&|p| (p[0] - lx).abs() < 1e-9);
+        let y_lo = on(&|p| p[1].abs() < 1e-9);
+        let y_hi = on(&|p| (p[1] - ly).abs() < 1e-9);
+        let z_lo = on(&|p| p[2].abs() < 1e-9);
+        let z_hi = on(&|p| (p[2] - lz).abs() < 1e-9);
+        let op_all_per =
+            MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+                &mesh, 2, 0.0, &vacuum, &[], &[],
+                &[
+                    PeriodicSpec { tris_a: x_lo.clone(), tris_b: x_hi.clone() },
+                    PeriodicSpec { tris_a: y_lo.clone(), tris_b: y_hi.clone() },
+                    PeriodicSpec { tris_a: z_lo.clone(), tris_b: z_hi.clone() },
+                ],
+            );
+        // Reference: keep x/y periodic but leave z as PEC, only the
+        // z-face treatment differs.
+        let op_z_pec =
+            MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+                &mesh, 2, 0.0, &vacuum, &[], &[],
+                &[
+                    PeriodicSpec { tris_a: x_lo, tris_b: x_hi },
+                    PeriodicSpec { tris_a: y_lo, tris_b: y_hi },
+                ],
+            );
+
+        let n = op_all_per.n_dof();
+        assert_eq!(n, op_z_pec.n_dof());
+        // Suppress unused warnings, the two-operator variants are the
+        // reference; op_per / op_pec exist for explanatory completeness.
+        let _ = (&op_per, &op_pec);
+
+        let mut y_all = make_state(&op_all_per);
+        let mut y_zpec = make_state(&op_z_pec);
+        let s0 = std_ex(&op_all_per, &y_all);
+        assert!(
+            s0 < 1e-12,
+            "initial state should be uniform, std = {s0:e}"
+        );
+
+        let dt = 0.05;
+        let steps = 80;
+        let z = vec![0.0; n];
+        for _ in 0..steps {
+            y_all = etd_step(|x| op_all_per.apply(x), &y_all, &z, dt, 18);
+            y_zpec = etd_step(|x| op_z_pec.apply(x), &y_zpec, &z, dt, 18);
+        }
+        assert!(y_all.iter().all(|v| v.is_finite()));
+        assert!(y_zpec.iter().all(|v| v.is_finite()));
+
+        let s_all = std_ex(&op_all_per, &y_all);
+        let s_zpec = std_ex(&op_z_pec, &y_zpec);
+        eprintln!(
+            "DIAG translation-invariance: fully-periodic std(E_x) = \
+             {s_all:.3e}, z-PEC reference std(E_x) = {s_zpec:.3e}"
+        );
+        // Fully-periodic: a uniform field is an exact steady state of the
+        // operator, so the variation must stay at round-off.
+        assert!(
+            s_all < 1e-9,
+            "fully-periodic box: uniform E_x developed structure, \
+             std(E_x) = {s_all:.3e}",
+        );
+        // PEC-on-z reference: the PEC ghost on the z-faces drives a real
+        // non-zero variation, well above the periodic-run round-off.
+        assert!(
+            s_zpec > 100.0 * s_all,
+            "z-PEC reference must develop visibly more structure than \
+             the periodic run: periodic {s_all:.3e}, z-PEC {s_zpec:.3e}",
+        );
     }
 }

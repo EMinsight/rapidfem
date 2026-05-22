@@ -57,7 +57,7 @@ from rapidfem.materials import (
 )
 from rapidfem.physics import (
     RectWaveguidePort, LumpedPort, CoaxPort, UserDefinedPort, FloquetPort,
-    PEC, PMC, ABC, SurfaceImpedance, LumpedElement, PML,
+    PEC, PMC, ABC, SurfaceImpedance, LumpedElement, PML, PeriodicBoundary,
 )
 from rapidfem.problem import Problem, ProblemFD, ProblemTD, Adaptive
 from rapidfem.excitation import GaussianPulse
@@ -194,6 +194,7 @@ __all__ = [
     "Material", "Air", "Dielectric", "Conductor", "Anisotropic", "Debye", "Drude",
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
+    "PeriodicBoundary",
     "Problem", "ProblemFD", "ProblemTD", "Adaptive", "GaussianPulse",
     "io", "rfic", "show", "lambda_maxh",
 ]

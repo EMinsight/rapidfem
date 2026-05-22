@@ -482,8 +482,15 @@ impl PyTdOperator {
     /// `(cx, cy, cz)` triple to override the coax axis. Coax ports are
     /// appended to the operator's port list AFTER the rectangular `ports`,
     /// so their indices start at `len(ports)`.
+    ///
+    /// `periodic_pairs` declares normal-incidence periodic boundary
+    /// pairs: `(face_tag_a, face_tag_b)` per pair. Each tag set is matched
+    /// across the period translation (inferred from the two faces'
+    /// centroids), and DG faces on either side then see the partner
+    /// element across the period as their neighbour. The pair is
+    /// unordered; the same triangle cannot also be tagged as a port.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -496,9 +503,12 @@ impl PyTdOperator {
         absorbers: Option<Vec<(i32, usize, f64, f64, f64, bool)>>,
         dispersive: Option<Vec<(i32, f64, f64, f64)>>,
         coax_ports: Option<Vec<(i32, Option<(f64, f64, f64)>)>>,
+        periodic_pairs: Option<Vec<(i32, i32)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
-        use rapidfem_td::rhs::{ElemMaterial, MaxwellOperator, PortSpec};
+        use rapidfem_td::rhs::{
+            ElemMaterial, MaxwellOperator, PeriodicSpec, PortSpec,
+        };
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
             .map_err(PyRuntimeError::new_err)?;
         let mut materials = vec![ElemMaterial::VACUUM; mesh.n_tets()];
@@ -597,8 +607,25 @@ impl PyTdOperator {
                 port_specs.push(spec);
             }
         }
-        let op = MaxwellOperator::new_with_materials_ports_dispersive(
+        // Periodic boundary pairs, collect each `(face_a, face_b)` into a
+        // PeriodicSpec. The matcher inside the operator handles the
+        // transverse alignment and the face-node permutation.
+        let mut periodic_specs: Vec<PeriodicSpec> = Vec::new();
+        if let Some(pairs) = periodic_pairs {
+            for (face_a, face_b) in pairs {
+                let spec = PeriodicSpec::from_mesh_tags(&mesh, face_a, face_b)
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "periodic pair ({face_a}, {face_b}): one of the \
+                             face tags has no triangles"
+                        ))
+                    })?;
+                periodic_specs.push(spec);
+            }
+        }
+        let op = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
             &mesh, order, flux_alpha, &materials, &port_specs, &disp_elems,
+            &periodic_specs,
         );
         Ok(PyTdOperator {
             op,

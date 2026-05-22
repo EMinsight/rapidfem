@@ -205,6 +205,30 @@ def _collect_ports(geometry):
     return rect_out, coax_out
 
 
+def _collect_periodic(geometry):
+    """Walk the geometry's :class:`PeriodicBoundary` physics objects.
+
+    Returns ``[(face_tag_a, face_tag_b)]`` for the native TD operator's
+    ``periodic_pairs`` argument. Each :class:`PeriodicBoundary` registers
+    as two physical-group tags in the gmsh export (one per side), stored
+    by the geometry as a ``(tag_a, tag_b)`` tuple under ``_physics_tags``;
+    this walker pulls each tuple out in declaration order, so the native
+    operator's periodic matcher sees the pairs in the order they were
+    declared in Python.
+    """
+    from ..physics import PeriodicBoundary
+
+    out = []
+    for phys in getattr(geometry, "_physics", []):
+        if not isinstance(phys, PeriodicBoundary):
+            continue
+        pair = geometry._physics_tags.get(id(phys))
+        if pair is None or not isinstance(pair, tuple):
+            continue
+        out.append((int(pair[0]), int(pair[1])))
+    return out
+
+
 def _collect_absorbers(geometry):
     """Walk the geometry's :class:`PML` physics regions.
 
@@ -637,6 +661,7 @@ class ProblemTD:
         tag_materials = _collect_materials(geometry)
         tag_ports, coax_ports = _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
+        tag_periodic = _collect_periodic(geometry)
         # The TD operator runs in normalised units (c = 1, time measured in
         # the mesh's length units), so a Debye relaxation time given in
         # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /
@@ -650,6 +675,7 @@ class ProblemTD:
             tag_materials or None, tag_ports or None,
             tag_absorbers or None, tag_dispersive or None,
             coax_ports or None,
+            tag_periodic or None,
         )
         self._geometry = geometry
         self.order = order
@@ -660,7 +686,8 @@ class ProblemTD:
             f"{len(tag_ports) + len(coax_ports)} ports "
             f"({len(tag_ports)} rect/lumped, {len(coax_ports)} coax), "
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
-            f"{len(tag_dispersive)} Debye dispersive regions"
+            f"{len(tag_dispersive)} Debye dispersive regions, "
+            f"{len(tag_periodic)} periodic boundary pair(s)"
         )
 
     @classmethod

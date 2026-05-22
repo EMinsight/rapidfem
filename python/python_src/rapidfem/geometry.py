@@ -2279,6 +2279,28 @@ class Geometry:
 
         # 2) Physics objects → faces or volume groups.
         for phys in self._physics:
+            # A PeriodicBoundary is a two-sided physics object: each side
+            # must carry its own physical-group tag so the time-domain
+            # backend can match the pair. The geometry stores the pair as
+            # `(tag_a, tag_b)` under `_physics_tags`; downstream walkers
+            # ignore it unless they are the periodic collector.
+            if type(phys).__name__ == "PeriodicBoundary":
+                ents_a = getattr(phys, "_entities_a", None)
+                ents_b = getattr(phys, "_entities_b", None)
+                if not ents_a or not ents_b:
+                    continue
+                name = _phys_group_name(phys)
+                tag_a = next_tag
+                next_tag += 1
+                gmsh.model.addPhysicalGroup(
+                    2, [e.tag for e in ents_a], tag=tag_a, name=f"{name}_a")
+                tag_b = next_tag
+                next_tag += 1
+                gmsh.model.addPhysicalGroup(
+                    2, [e.tag for e in ents_b], tag=tag_b, name=f"{name}_b")
+                self._physics_tags[id(phys)] = (tag_a, tag_b)
+                continue
+
             ents = getattr(phys, "_entities", None)
             if not ents:
                 continue

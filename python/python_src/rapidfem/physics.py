@@ -856,7 +856,77 @@ class PML(_Physics):
         )
 
 
+class PeriodicBoundary(_Physics):
+    """Normal-incidence periodic boundary pair (time-domain backend).
+
+    Links two opposite mesh faces as a periodic pair: a DG face on either
+    side sees the partner element across the period translation as its
+    neighbour, and the existing interior-face numerical flux carries the
+    coupling, no special-case kernel. The translation vector is inferred
+    from the two faces' centroids, and per-face-node alignment is computed
+    from the transverse coordinates after applying that translation.
+
+    Real time domain only: no Floquet phase factor (that is the oblique
+    scan case, handled by :class:`FloquetPort`). The two faces must
+    geometrically match, same shape, same triangle count, same in-plane
+    layout up to the period translation.
+
+    Note
+    ----
+    A periodic-paired face cannot also be a port or PEC: it is wired into
+    the interior-face flux path, so a port / PEC declaration on the same
+    triangle is rejected by the time-domain operator at build time.
+
+    Example
+    -------
+    Periodic unit cell in z, PEC on the side walls, top / bottom paired:
+
+    .. code-block:: python
+
+        air = g.box(W, H, L, material=rf.Air())
+        rf.PEC(air.faces.min(axis="x"), air.faces.max(axis="x"))
+        rf.PeriodicBoundary(
+            air.faces.min(axis="z"),
+            air.faces.max(axis="z"),
+        )
+
+    Parameters
+    ----------
+    face_a, face_b : GeoObject, EntityCollection, or single face
+        the two opposite faces of the periodic pair, unordered
+    """
+
+    def __init__(self, face_a, face_b):
+        # Run the parent's _normalize on each side so the pair check is
+        # symmetric and a face-pair object stays a single physics object
+        # in the geometry's _physics list, rather than registering twice.
+        ents_a, geom_a = _normalize([face_a],
+                                    expected_dim=2,
+                                    cls_name=type(self).__name__)
+        ents_b, geom_b = _normalize([face_b],
+                                    expected_dim=2,
+                                    cls_name=type(self).__name__)
+        if geom_a is not geom_b:
+            raise ValueError(
+                f"{type(self).__name__}: face_a and face_b must belong "
+                f"to the same Geometry"
+            )
+        # The base class _to_toml / tagging machinery assumes one tag per
+        # _Physics, but we need two (one per face) for a periodic pair.
+        # Store the two entity lists separately and overload the geometry
+        # registration: a single PeriodicBoundary registers as two
+        # physical-group tags, one per face.
+        self._entities_a = ents_a
+        self._entities_b = ents_b
+        # _entities is kept (the union) so the parent _to_toml signature
+        # and downstream tag walkers still see something sensible.
+        self._entities = list(ents_a) + list(ents_b)
+        self._geometry = geom_a
+        geom_a._physics.append(self)
+
+
 __all__ = [
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
+    "PeriodicBoundary",
 ]
