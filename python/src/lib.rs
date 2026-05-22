@@ -793,14 +793,17 @@ impl PyTdOperator {
 
     /// Explicit LSERK4 transient on the GPU. Returns the flattened field
     /// trajectory `[(steps+1) * n_dof]` (row 0 is `y0`); the caller
-    /// reshapes to `[steps+1, n_dof]`. The state steps device-resident,
-    /// one snapshot is downloaded per step. Zero-copy numpy in.
+    /// reshapes to `[steps+1, n_dof]`. `h` is the output cadence; the
+    /// integrator takes `substeps` LSERK4 steps of `h/substeps` between
+    /// snapshots, so the substep stays within the CFL limit. The state
+    /// steps device-resident. Zero-copy numpy in.
     fn gpu_transient<'py>(
         &mut self,
         py: Python<'py>,
         y0: PyReadonlyArray1<'py, f64>,
         h: f64,
         steps: usize,
+        substeps: usize,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
         let y0 = y0
@@ -810,7 +813,7 @@ impl PyTdOperator {
         let backend = self.gpu.as_mut().unwrap();
         let traj = backend
             .op
-            .transient_traj(&backend.ctx, &y0_32, h as f32, steps)
+            .transient_traj(&backend.ctx, &y0_32, h as f32, steps, substeps)
             .map_err(PyRuntimeError::new_err)?;
         let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
         Ok(traj64.into_pyarray_bound(py))

@@ -155,9 +155,24 @@ def main():
         ptd.step_explicit(y, h_cfl)  # warm
         t_explicit = median(20, lambda: ptd.step_explicit(y, h_cfl))
 
+        # GPU vs CPU explicit transient on this real unstructured mesh.
+        tr_steps = 40
+        t = time.perf_counter()
+        ptd.transient(y, dt=DT, steps=tr_steps, method="explicit",
+                      device="cpu", verbose=False)
+        cpu_tr = time.perf_counter() - t
+        gpu_tr = None
+        if ptd._op.gpu_available():
+            ptd.transient(y, dt=DT, steps=3, device="gpu", verbose=False)
+            t = time.perf_counter()
+            ptd.transient(y, dt=DT, steps=tr_steps, device="gpu",
+                          verbose=False)
+            gpu_tr = time.perf_counter() - t
+
         rows.append(dict(n=n, t_rhs=t_rhs, t_adaptive=t_adaptive,
                          t_fixed=t_fixed, rho=rho, z_cfl=z_cfl,
-                         h_cfl=h_cfl, t_explicit=t_explicit))
+                         h_cfl=h_cfl, t_explicit=t_explicit,
+                         cpu_tr=cpu_tr, gpu_tr=gpu_tr, tr_steps=tr_steps))
 
     # --- where the exponential step's time goes ---------------------------
     print("exponential step breakdown")
@@ -191,6 +206,19 @@ def main():
         print(f"{r['n']:>10} {r['h_cfl']:>12.3e} {DT / r['h_cfl']:>9.1f} "
               f"{r['t_explicit'] * 1e3:>10.2f} {exp_cost:>10.2f} "
               f"{expl_cost:>10.2f} {verdict:>16}")
+
+    # --- GPU vs CPU explicit transient on the real unstructured mesh ------
+    tr_steps = rows[0]["tr_steps"]
+    print(f"\nGPU vs CPU explicit transient ({tr_steps} steps)")
+    print(f"{'n_dof':>10} {'CPU [ms]':>12} {'GPU [ms]':>12} {'speedup':>10}")
+    for r in rows:
+        if r["gpu_tr"] is None:
+            print(f"{r['n']:>10} {r['cpu_tr'] * 1e3:>12.1f} "
+                  f"{'no GPU':>12} {'-':>10}")
+        else:
+            print(f"{r['n']:>10} {r['cpu_tr'] * 1e3:>12.1f} "
+                  f"{r['gpu_tr'] * 1e3:>12.1f} "
+                  f"{r['cpu_tr'] / r['gpu_tr']:>9.2f}x")
 
 
 if __name__ == "__main__":

@@ -432,17 +432,23 @@ impl GpuOperator {
 
     /// Like [`transient`](Self::transient) but returns the full field
     /// trajectory, flat `[(steps+1) * n_dof]` with row 0 the initial
-    /// state. One snapshot is downloaded per step; the state itself still
-    /// steps device-resident.
+    /// state. `dt` is the output cadence; the explicit integrator takes
+    /// `substeps` LSERK4 steps of `dt/substeps` between snapshots, so the
+    /// caller can keep the substep within the CFL limit while sampling at
+    /// any cadence. One snapshot is downloaded per output step; the state
+    /// itself steps device-resident.
     pub fn transient_traj(
         &mut self,
         gpu: &GpuContext,
         y0: &[f32],
         dt: f32,
         steps: usize,
+        substeps: usize,
     ) -> Result<Vec<f32>, String> {
         assert_eq!(y0.len(), self.n_dof, "state length mismatch");
         let n = self.n_dof;
+        let substeps = substeps.max(1);
+        let h = dt / substeps as f32;
         unsafe {
             gpu.queue()
                 .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
@@ -459,14 +465,16 @@ impl GpuOperator {
         let mut traj = Vec::with_capacity((steps + 1) * n);
         traj.extend_from_slice(y0);
         for _ in 0..steps {
-            for stage in 0..LSERK4_STAGES {
-                self.enqueue_apply(gpu)?;
-                self.enqueue_lserk(
-                    gpu,
-                    LSERK4_A[stage] as f32,
-                    LSERK4_B[stage] as f32,
-                    dt,
-                )?;
+            for _ in 0..substeps {
+                for stage in 0..LSERK4_STAGES {
+                    self.enqueue_apply(gpu)?;
+                    self.enqueue_lserk(
+                        gpu,
+                        LSERK4_A[stage] as f32,
+                        LSERK4_B[stage] as f32,
+                        h,
+                    )?;
+                }
             }
             let row = gpu.download(&self.y, n)?;
             traj.extend_from_slice(&row);

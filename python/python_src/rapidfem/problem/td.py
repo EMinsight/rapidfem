@@ -1299,14 +1299,18 @@ class ProblemTD:
             elif not self._op.gpu_available():
                 _log("transient: no OpenCL GPU available, using CPU")
             else:
+                # Substep so each LSERK4 substep stays within the CFL
+                # limit, exactly as the CPU explicit path does.
+                cfl = self.cfl_dt()
+                nsub = max(1, int(np.ceil(abs(dt) / cfl)))
                 if verbose:
                     _log(
                         f"transient: GPU explicit LSERK4 "
-                        f"({self._op.gpu_device()})"
+                        f"({self._op.gpu_device()}, {nsub} substeps/step)"
                     )
                 t0 = time.time()
                 flat = self._op.gpu_transient(
-                    _arr(y), float(self.c * dt), int(steps)
+                    _arr(y), float(self.c * dt), int(steps), nsub
                 )
                 traj = np.asarray(flat).reshape(steps + 1, n)
                 if verbose:
