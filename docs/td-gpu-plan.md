@@ -195,18 +195,33 @@ run-to-run noise (CPU side roughly +-18%, GPU +-13%). That is itself the
 finding: `apply` responds neither to less matrix traffic nor to less
 private memory, so register spilling is not the dominant cost.
 
-Open items, for a future pass:
+### Done: work-group-per-element apply kernel
+
+The contained tweaks above missed because register spilling needed the
+*full* restructure, not a partial one. `apply` was rewritten as
+work-group-per-element: a work-group processes a block of `EPG` elements,
+its work-items are the `Np` DG nodes of each, and the element field plus
+the curl / flux accumulators live in local memory. Per-work-item private
+memory drops from ~240-480 floats to a handful, so the spilling is gone.
+
+This *did* move the needle, clearly past the noise: the LSERK4 transient
+is ~1.8x faster at production sizes (622k DOF order 2: ~60 -> 34 ms;
+1.24M DOF order 3: ~126 -> 68 ms), now **31-39x over the CPU**. Order 3
+gains most, it spilled worst. `expmv` is unchanged, it is bound by the
+f64 orthogonalisation, not the matvec.
+
+### Tried and dropped: struct-of-arrays field layout
+
+A SoA `[e][field][node]` state layout (to coalesce the kernel's global
+load / store) was implemented and validated, then **reverted**: two
+benchmark runs showed no gain measurable against the noise. The
+load / store it coalesces is too small a fraction of the work-group
+kernel's time, the curl matmul and lift sum dominate. Not worth the
+host-side transpose ripple it cost.
+
+### Open
 
 - **A low-noise benchmark harness** (many runs, the minimum rather than
-  the median, warm-up, core pinning). A sub-2x kernel optimisation
-  cannot be confirmed against the current noise; this is the
-  prerequisite for the rest.
-- **Struct-of-arrays field layout.** `y` / `dy` are AoS
-  (`[e][node][field]`), so adjacent work-items (elements) access memory
-  a stride apart, uncoalesced. An `[e][field][node]` layout paired with
-  a work-group-per-element kernel would coalesce the global access. The
-  likely remaining lever.
-- **Work-group per element.** One work-group per element, work-items
-  mapped to nodes, the element field staged in local memory. Targets
-  register spilling, which the `element_curl` result suggests is the
-  lower-priority of the two.
+  the median, warm-up, core pinning). The SoA attempt could not be
+  judged against the current +-15-30% run-to-run noise; a sub-1.5x
+  kernel optimisation needs this first.
