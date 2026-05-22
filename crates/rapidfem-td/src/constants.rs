@@ -67,3 +67,32 @@ pub const EXPM_SCALE_THRESHOLD: Accum = 0.5;
 /// summed after scaling. About 18 terms reach double precision once the
 /// scaled norm is within [`EXPM_SCALE_THRESHOLD`].
 pub const EXPM_TAYLOR_TERMS: usize = 18;
+
+// ── Explicit low-storage Runge-Kutta (LSERK4) ─────────────────────────────
+
+/// `a` coefficients of the Carpenter-Kennedy 5-stage 4th-order low-storage
+/// Runge-Kutta scheme (LSERK4). The explicit alternative to the Krylov
+/// exponential propagator: five matvecs per step, two state registers, and
+/// — unlike the unconditionally stable exponential integrator — a CFL step
+/// limit set by the spectral radius of the operator. Standard nodal-DG
+/// integrator (Hesthaven & Warburton, *Nodal DG Methods*).
+pub const LSERK4_A: [Field; 5] = [
+    0.0,
+    -567301805773.0 / 1357537059087.0,
+    -2404267990393.0 / 2016746695238.0,
+    -3550918686646.0 / 2091501179385.0,
+    -1275806237668.0 / 842570457699.0,
+];
+
+/// `b` coefficients of LSERK4 — the per-stage update weights. Paired with
+/// [`LSERK4_A`]; see there.
+pub const LSERK4_B: [Field; 5] = [
+    1432997174477.0 / 9575080441755.0,
+    5161836677717.0 / 13612068292357.0,
+    1720146321549.0 / 2090206949498.0,
+    3134564353537.0 / 4481467310338.0,
+    2277821191437.0 / 14882151754819.0,
+];
+
+/// LSERK4 stage count — five stages reaching fourth order.
+pub const LSERK4_STAGES: usize = 5;
