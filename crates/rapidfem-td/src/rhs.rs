@@ -873,24 +873,34 @@ impl MaxwellOperator {
                 },
             );
         // The appended polarisation block — one local relaxation ODE per
-        // Debye element: dP = a*P + g*E. No spatial coupling, so a flat
-        // parallel chunk over P-block slots.
+        // Debye element: dP = a*P + g*E. No spatial coupling; dealt out in
+        // coarse contiguous runs of slots, like the [E,H] block above, so
+        // neighbouring threads do not false-share the P-block lines.
         if !self.disp.is_empty() {
             let p_stride = np * 3;
-            dy_p.par_chunks_mut(p_stride).enumerate().for_each(
-                |(slot, out)| {
-                    let d = &self.disp[slot];
-                    let e_base = d.elem * stride;
-                    let p_base = eh_len + slot * p_stride;
-                    for node in 0..np {
-                        for c in 0..3 {
-                            let e_val = y[e_base + node * 6 + c];
-                            let p_val = y[p_base + node * 3 + c];
-                            out[node * 3 + c] = d.a * p_val + d.g * e_val;
+            let chunk = (self.disp.len()
+                / (APPLY_TASKS_PER_THREAD * rayon::current_num_threads()))
+            .max(1);
+            dy_p
+                .par_chunks_mut(chunk * p_stride)
+                .enumerate()
+                .for_each(|(ci, run)| {
+                    let s0 = ci * chunk;
+                    for (ls, out) in run.chunks_mut(p_stride).enumerate() {
+                        let slot = s0 + ls;
+                        let d = &self.disp[slot];
+                        let e_base = d.elem * stride;
+                        let p_base = eh_len + slot * p_stride;
+                        for node in 0..np {
+                            for c in 0..3 {
+                                let e_val = y[e_base + node * 6 + c];
+                                let p_val = y[p_base + node * 3 + c];
+                                out[node * 3 + c] =
+                                    d.a * p_val + d.g * e_val;
+                            }
                         }
                     }
-                },
-            );
+                });
         }
     }
 
