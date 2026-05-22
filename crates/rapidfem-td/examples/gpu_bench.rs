@@ -1,13 +1,15 @@
-//! GPU vs CPU benchmark for the time-domain backend.
+//! GPU scaling benchmark for the time-domain backend.
 //!
-//! Three workloads, each timed on the CPU (24-thread rayon) and the GPU:
+//! Sweeps structured-box grids from a few hundred thousand to ~10M state
+//! DOFs in three geometries — a cube, an elongated beam, a flat slab — and
+//! reports the GPU throughput of the explicit LSERK4 transient and the
+//! Krylov exponential propagator. The cube / beam / slab differ in
+//! surface-to-volume ratio, so the flux-to-volume work balance shifts
+//! across them.
 //!
-//! * the explicit LSERK4 transient (homogeneous);
-//! * the explicit LSERK4 transient with a driven soft source;
-//! * the Krylov exponential propagator (`expmv`).
-//!
-//! Run across polynomial order 2 and 3 and a range of structured-box mesh
-//! sizes, so the scaling shows.
+//! The CPU is timed alongside only at the smaller grids; above
+//! `CPU_DOF_LIMIT` its run dominates the benchmark without adding
+//! information (the speedup is already clear by then).
 //!
 //! ```text
 //! cargo run --release -p rapidfem-td --features gpu --example gpu_bench
@@ -24,7 +26,11 @@ use rapidfem_td::rhs::MaxwellOperator;
 
 const STEPS: usize = 100;
 const KRYLOV_DIM: usize = 40;
-const SIZES: [usize; 4] = [4, 6, 8, 12];
+/// Polynomial order of the sweep (order 2: 60 state DOFs per tet).
+const ORDER: usize = 2;
+/// Above this state-DOF count the CPU reference is skipped — its run
+/// would dominate the benchmark without adding information.
+const CPU_DOF_LIMIT: usize = 1_500_000;
 
 /// Median wall-clock seconds of `reps` runs of `f`.
 fn time_median(reps: usize, mut f: impl FnMut()) -> f64 {
@@ -62,37 +68,70 @@ fn main() {
             return;
         }
     };
-    println!("GPU vs CPU benchmark — time-domain backend");
+    println!("GPU scaling benchmark — time-domain backend");
     println!("device: {}", gpu.device_name);
-    println!("rayon worker threads: {}", rayon::current_num_threads());
+    println!(
+        "order {ORDER}, {STEPS} LSERK4 steps, krylov-dim {KRYLOV_DIM}, \
+         rayon threads {}\n",
+        rayon::current_num_threads(),
+    );
 
-    for &order in &[2usize, 3] {
-        println!("\n========== order {order} ==========");
-        println!(
-            "{:>10} {:>14} {:>14} {:>14} {:>14} {:>14} {:>14} {:>14} {:>14} {:>14}",
-            "n_dof",
-            "lserk CPU",
-            "lserk GPU",
-            "lserk x",
-            "driven CPU",
-            "driven GPU",
-            "driven x",
-            "expmv CPU",
-            "expmv GPU",
-            "expmv x",
-        );
+    // (geometry label, nx, ny, nz) — three shapes across a size sweep,
+    // each reaching ~10M state DOFs at the top end.
+    let cases: &[(&str, usize, usize, usize)] = &[
+        ("cube", 8, 8, 8),
+        ("cube", 14, 14, 14),
+        ("cube", 20, 20, 20),
+        ("cube", 26, 26, 26),
+        ("cube", 30, 30, 30),
+        ("beam", 48, 8, 8),
+        ("beam", 110, 11, 11),
+        ("beam", 140, 14, 14),
+        ("slab", 28, 28, 6),
+        ("slab", 60, 60, 6),
+        ("slab", 96, 96, 6),
+    ];
 
-        for &c in &SIZES {
-            let mesh = structured_box(c, c, c, 1.0, 1.0, 1.0);
-            let op = MaxwellOperator::new(&mesh, order, 1.0);
-            let n = op.n_dof();
-            let y0: Vec<Field> =
-                (0..n).map(|i| (i as Field * 0.05).sin()).collect();
-            let dt = 1.0 / spectral_radius(&op, n);
-            let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
-            let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+    println!(
+        "{:>6} {:>11} {:>9} {:>12} {:>11} {:>12} {:>9} {:>12} {:>9}",
+        "geom",
+        "n_dof",
+        "tets",
+        "lserk GPU",
+        "GDOF-st/s",
+        "lserk CPU",
+        "lserk x",
+        "expmv GPU",
+        "expmv x",
+    );
 
-            // --- homogeneous LSERK4 transient -------------------------
+    for &(label, nx, ny, nz) in cases {
+        let mesh = structured_box(nx, ny, nz, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, ORDER, 1.0);
+        let n = op.n_dof();
+        let tets = n / 60;
+        let y0: Vec<Field> =
+            (0..n).map(|i| (i as Field * 0.05).sin()).collect();
+        let dt = 1.0 / spectral_radius(&op, n);
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+
+        // GPU explicit LSERK4 transient.
+        gop.transient(&gpu, &y0_32, dt as f32, 3).unwrap();
+        let gpu_lserk = time_median(5, || {
+            gop.transient(&gpu, &y0_32, dt as f32, STEPS).unwrap();
+        });
+        let gdof = n as f64 * STEPS as f64 / gpu_lserk / 1e9;
+
+        // GPU Krylov exponential propagator.
+        let t_exp = 0.5 * dt * STEPS as Field;
+        gop.expmv(&gpu, &y0, t_exp, KRYLOV_DIM).unwrap();
+        let gpu_expmv = time_median(5, || {
+            gop.expmv(&gpu, &y0, t_exp, KRYLOV_DIM).unwrap();
+        });
+
+        // CPU reference, only at the smaller grids.
+        let cpu = if n <= CPU_DOF_LIMIT {
             let cpu_lserk = time_median(3, || {
                 let mut y = y0.clone();
                 let mut ws = LserkWorkspace::new();
@@ -100,64 +139,28 @@ fn main() {
                     ws.step_into(|x, ax| op.apply_into(x, ax), &mut y, dt);
                 }
             });
-            gop.transient(&gpu, &y0_32, dt as f32, 3).unwrap();
-            let gpu_lserk = time_median(5, || {
-                gop.transient(&gpu, &y0_32, dt as f32, STEPS).unwrap();
-            });
-
-            // --- driven LSERK4 transient ------------------------------
-            let sdof = n / 3;
-            let src: Vec<Field> =
-                (0..STEPS).map(|k| (0.3 * k as Field).sin()).collect();
-            let src32: Vec<f32> = src.iter().map(|&v| v as f32).collect();
-            let cpu_driven = time_median(3, || {
-                let mut y = vec![0.0; n];
-                let mut ws = LserkWorkspace::new();
-                for &g in &src {
-                    ws.step_driven_into(
-                        |x, ax| op.apply_into(x, ax),
-                        &mut y,
-                        dt,
-                        sdof,
-                        g,
-                    );
-                }
-            });
-            let zero32 = vec![0.0_f32; n];
-            gop.transient_driven(&gpu, &zero32, dt as f32, sdof, &src32[..3])
-                .unwrap();
-            let gpu_driven = time_median(5, || {
-                gop.transient_driven(
-                    &gpu, &zero32, dt as f32, sdof, &src32,
-                )
-                .unwrap();
-            });
-
-            // --- Krylov exponential propagator ------------------------
-            let t_exp = 0.5 * dt * STEPS as Field;
-            let cpu_expmv = time_median(5, || {
+            let cpu_expmv = time_median(3, || {
                 expmv(|x| op.apply(x), &y0, t_exp, KRYLOV_DIM);
             });
-            gop.expmv(&gpu, &y0, t_exp, KRYLOV_DIM).unwrap();
-            let gpu_expmv = time_median(8, || {
-                gop.expmv(&gpu, &y0, t_exp, KRYLOV_DIM).unwrap();
-            });
+            Some((cpu_lserk, cpu_expmv))
+        } else {
+            None
+        };
 
-            let ms = |s: f64| s * 1e3;
-            println!(
-                "{:>10} {:>13.1} {:>13.1} {:>13.2}x {:>13.1} {:>13.1} \
-                 {:>13.2}x {:>13.1} {:>13.1} {:>13.2}x",
-                n,
-                ms(cpu_lserk),
-                ms(gpu_lserk),
-                cpu_lserk / gpu_lserk,
-                ms(cpu_driven),
-                ms(gpu_driven),
-                cpu_driven / gpu_driven,
-                ms(cpu_expmv),
-                ms(gpu_expmv),
-                cpu_expmv / gpu_expmv,
-            );
-        }
+        let ms = |s: f64| s * 1e3;
+        let (cpu_lserk, lserk_x, expmv_x) = match cpu {
+            Some((cl, ce)) => (
+                format!("{:.1}", ms(cl)),
+                format!("{:.1}x", cl / gpu_lserk),
+                format!("{:.1}x", ce / gpu_expmv),
+            ),
+            None => ("-".to_string(), "-".to_string(), "-".to_string()),
+        };
+        println!(
+            "{label:>6} {n:>11} {tets:>9} {:>12.1} {gdof:>11.2} \
+             {cpu_lserk:>12} {lserk_x:>9} {:>12.1} {expmv_x:>9}",
+            ms(gpu_lserk),
+            ms(gpu_expmv),
+        );
     }
 }
