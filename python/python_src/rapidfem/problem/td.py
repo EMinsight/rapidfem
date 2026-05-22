@@ -57,6 +57,20 @@ _SPARAM_ARRIVAL_FRAC = 0.05
 # deliberately NOT used as the TD loss rate.)
 _ABSORBER_LOSS_BUDGET = 24.0
 
+# Explicit-integrator (LSERK4) CFL calibration. The exponential propagator
+# is unconditionally stable; the explicit stepper is not, so `cfl_dt`
+# brackets the scheme's stability limit empirically. The dimensionless
+# product `z = h_solver·ρ(A)` is bisected between a known-stable and a
+# known-unstable value, each candidate probed by a short explicit run from
+# a delta excitation.
+_CFL_POWER_ITERS = 40       # power-iteration count for the spectral radius
+_CFL_PROBE_STEPS = 16       # explicit steps run per stability probe
+_CFL_BISECT_ITERS = 7       # bisection steps bracketing the stability limit
+_CFL_Z_STABLE = 3.0         # z = h_solver·ρ known stable for LSERK4 + DG Maxwell
+_CFL_Z_UNSTABLE = 15.0      # z known to diverge
+_CFL_GROWTH_FACTOR = 10.0   # norm growth over a probe that flags divergence
+_CFL_SAFETY = 0.8           # margin applied to the bracketed stability limit
+
 
 def _log(msg):
     """Progress logging for long TD runs — to stderr, like the FD solver."""
@@ -245,27 +259,33 @@ class TdODE:
 
 
 class TdStepper:
-    """A reusable one-step exponential propagator bound to a fixed ``dt``.
+    """A reusable one-step propagator bound to a fixed ``dt``.
 
-    Call the stepper on a state to advance it by ``dt``; the exponential
-    step is exact for the linear homogeneous system at any ``dt``.
-    Obtained from :meth:`ProblemTD.stepper`.
+    Call the stepper on a state to advance it by ``dt``. With
+    ``method="exponential"`` the step is exact for the linear homogeneous
+    system at any ``dt``; with ``method="explicit"`` it is the cheaper
+    LSERK4 stepper, substepped to respect its CFL limit. Obtained from
+    :meth:`ProblemTD.stepper`.
     """
 
-    def __init__(self, problem, dt, krylov_dim):
+    def __init__(self, problem, dt, krylov_dim,
+                 method="exponential", cfl_dt=None):
         self._p = problem
         self.dt = float(dt)
         self.krylov_dim = int(krylov_dim)
+        self.method = method
+        self._cfl = cfl_dt
 
     def __call__(self, y):
-        return self._p.step(y, self.dt, self.krylov_dim)
+        return self._p._advance(y, self.dt, self.method,
+                                self.krylov_dim, self._cfl)
 
     def advance(self, y):
         """Advance ``y`` by one ``dt`` step — same as calling the stepper."""
         return self(y)
 
     def __repr__(self):
-        return f"TdStepper(dt={self.dt:g}, krylov_dim={self.krylov_dim})"
+        return f"TdStepper(dt={self.dt:g}, method={self.method!r})"
 
 
 class TdReducedModel:
@@ -772,13 +792,88 @@ class ProblemTD:
         set by the output cadence rather than by stability."""
         return self._op.step_explicit(_arr(y), float(self.c * h))
 
-    def stepper(self, dt, *, krylov_dim=40):
+    def cfl_dt(self, *, recompute=False):
+        """Largest stable time step for the explicit LSERK4 integrator, in
+        physical time units.
+
+        The exponential propagator (:meth:`step`) is unconditionally
+        stable; the explicit stepper (:meth:`step_explicit`) is not, and a
+        step past this limit diverges. The limit is found by power-iterating
+        the operator's spectral radius and bracketing the LSERK4 stability
+        boundary empirically; the result is cached.
+
+        A :meth:`transient` or :meth:`stepper` run with ``method="explicit"``
+        calls this itself and substeps to stay within the limit, so the
+        limit rarely needs to be read directly."""
+        cached = getattr(self, "_cfl_dt_cache", None)
+        if cached is not None and not recompute:
+            return cached
+
+        n = self.n_dof
+        # Spectral radius by power iteration: ||A.v|| / ||v|| approaches
+        # rho(A) as v aligns with the largest-magnitude eigenvector.
+        rng = np.random.default_rng(0)
+        v = rng.standard_normal(n)
+        v /= np.linalg.norm(v)
+        rho = 1.0
+        for _ in range(_CFL_POWER_ITERS):
+            av = self.rhs(v)
+            rho = float(np.linalg.norm(av))
+            v = av / rho
+
+        # Probe: a short explicit run from a unit delta at z = h_solver*rho
+        # is stable iff it stays finite and bounded.
+        probe = np.zeros(n)
+        probe[0] = 1.0
+
+        def stable(z):
+            h = z / (self.c * rho)
+            y = probe
+            for _ in range(_CFL_PROBE_STEPS):
+                y = self.step_explicit(y, h)
+            return bool(np.all(np.isfinite(y))
+                        and np.linalg.norm(y) < _CFL_GROWTH_FACTOR)
+
+        lo, hi = _CFL_Z_STABLE, _CFL_Z_UNSTABLE
+        while not stable(lo) and lo > 0.1:
+            lo *= 0.5                       # operator stiffer than expected
+        while stable(hi) and hi < 1e3:
+            hi *= 1.5                       # dissipation extends the range
+        for _ in range(_CFL_BISECT_ITERS):
+            mid = 0.5 * (lo + hi)
+            if stable(mid):
+                lo = mid
+            else:
+                hi = mid
+
+        self._cfl_dt_cache = _CFL_SAFETY * lo / (self.c * rho)
+        return self._cfl_dt_cache
+
+    def _advance(self, y, dt, method, krylov_dim, cfl_dt):
+        """Advance ``y`` by one output step ``dt`` with the chosen
+        integrator. The explicit integrator substeps so each substep stays
+        within the CFL limit ``cfl_dt``."""
+        if method == "exponential":
+            return self.step(y, dt, krylov_dim)
+        nsub = max(1, int(np.ceil(abs(dt) / cfl_dt)))
+        h = dt / nsub
+        for _ in range(nsub):
+            y = self.step_explicit(y, h)
+        return y
+
+    def stepper(self, dt, *, krylov_dim=40, method="exponential"):
         """A reusable one-step propagator bound to a fixed ``dt``.
 
         Returns a :class:`TdStepper` — call it repeatedly to advance a
         state without re-passing ``dt``/``krylov_dim`` each time.
-        """
-        return TdStepper(self, dt, krylov_dim)
+
+        ``method`` selects the integrator: ``"exponential"`` (exact at any
+        ``dt``) or ``"explicit"`` (the cheaper LSERK4 stepper, substepped
+        to respect its CFL limit)."""
+        if method not in ("exponential", "explicit"):
+            raise ValueError("method must be 'exponential' or 'explicit'")
+        cfl = self.cfl_dt() if method == "explicit" else None
+        return TdStepper(self, dt, krylov_dim, method, cfl)
 
     # -- model-order reduction ---------------------------------------------
     def reduce(self, start, *, dim=60):
@@ -1120,7 +1215,8 @@ class ProblemTD:
 
     # -- turnkey: a transient run ------------------------------------------
     def transient(self, y0=None, *, dt, steps, source=None, waveform=None,
-                  krylov_dim=40, verbose=True):
+                  krylov_dim=40, method="exponential", warmup=0,
+                  verbose=True):
         """Propagate the field for ``steps`` steps of size ``dt``.
 
         With ``y0`` only this is the free (homogeneous) evolution of an
@@ -1143,6 +1239,16 @@ class ProblemTD:
             ``source`` and ``waveform``.
         waveform : callable, optional
             Excitation ``g(t)``, e.g. a :class:`~rapidfem.GaussianPulse`.
+        method : {"exponential", "explicit"}
+            Time integrator. ``"exponential"`` is exact at any ``dt``;
+            ``"explicit"`` is the cheaper LSERK4 stepper, substepped to
+            respect its CFL limit (see :meth:`cfl_dt`). The explicit
+            integrator does not yet drive soft sources.
+        warmup : int
+            Output steps to run with the exponential integrator before
+            handing off to ``method``. With ``method="explicit"`` this
+            covers the opening transient with the exact integrator, then
+            continues on the cheaper explicit stepper.
 
         Returns
         -------
@@ -1153,14 +1259,28 @@ class ProblemTD:
             :func:`rapidfem.show` plays it back as a 3-D field animation
             in the UI.
         """
+        if method not in ("exponential", "explicit"):
+            raise ValueError("method must be 'exponential' or 'explicit'")
         n = self.n_dof
         y = np.zeros(n) if y0 is None else _arr(y0)
         driven = source is not None and waveform is not None
+        if driven and method == "explicit":
+            raise NotImplementedError(
+                "the explicit integrator does not yet drive soft sources; "
+                "use method='exponential' for a driven transient")
         sdof = None
         if driven:
             sp, sf, sc = source
             sdof = self.probe_dof(sp, field=sf, component=sc)
         h_op = float(self.c * dt)
+        warmup = min(max(int(warmup), 0), steps)
+        # The explicit integrator is CFL-bound; resolve the limit once so
+        # the post-warmup phase can substep within it.
+        cfl = self.cfl_dt() if method == "explicit" else None
+        if verbose and method == "explicit" and not driven:
+            nsub = max(1, int(np.ceil(abs(dt) / cfl)))
+            _log(f"transient: {warmup} exponential warmup step(s), then "
+                 f"explicit LSERK4 ({nsub} substeps/step)")
         traj = np.empty((steps + 1, n))
         traj[0] = y
         t0 = time.time()
@@ -1171,7 +1291,8 @@ class ProblemTD:
                 g = float(waveform(k * dt))
                 y = self._op.step_driven(_arr(y), sdof, g, h_op, krylov_dim)
             else:
-                y = self.step(y, dt, krylov_dim)
+                phase = "exponential" if k < warmup else method
+                y = self._advance(y, dt, phase, krylov_dim, cfl)
             traj[k + 1] = y
             if verbose and (k + 1) % every == 0:
                 el = time.time() - t0
