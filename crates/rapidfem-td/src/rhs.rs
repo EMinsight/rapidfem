@@ -1342,8 +1342,8 @@ impl MaxwellOperator {
 
     /// `true` if port `port_idx` carries a waveguide mode (rectangular,
     /// coaxial or Floquet). A port with no mode is a pure characteristic
-    /// absorbing boundary, not an input / output channel; the macromodel
-    /// build skips those.
+    /// absorbing boundary (ABC), not an input / output channel — port
+    /// inspection and S-parameter extraction routines should skip those.
     /// Number of resolved `(element, local_face)` boundary-face pairs
     /// for port `port_idx`. For a port plate on a *domain boundary*
     /// (the validated case) this equals one face per triangle. For an
@@ -3156,8 +3156,7 @@ mod tests {
         // The companion test
         // `lumped_port_carries_a_dispersionless_tem_wave` validates
         // ONE active port + ONE absorbing port (mode=None). This test
-        // covers the missing two-active-ports case the macromodel
-        // and `sparams` rely on.
+        // covers the two-active-lumped-ports case `sparams` relies on.
         use crate::mesh_gen::structured_box;
         use crate::propagator::etd_step;
         use std::f64::consts::PI;

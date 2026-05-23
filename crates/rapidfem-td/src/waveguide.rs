@@ -55,10 +55,10 @@ pub struct RectPort {
     /// whose impedance is dispersive and set by the cutoff.
     ///
     /// The lumped port's `h_profile` is `(w_hat x v_hat) / z0`, so the
-    /// ratio `|E| / |H|` of the port-mode profile equals `z0`. The
-    /// macromodel's forward / backward split
-    /// `A, B = (P_e +- z0 * P_h) / 2` then references S-parameters to
-    /// this Z0.
+    /// ratio `|E| / |H|` of the port-mode profile equals `z0`. Any
+    /// forward / backward modal split `A, B = (P_e +- z0 * P_h) / 2`
+    /// referenced from this port (e.g. inside `ProblemTD.sparams`) is
+    /// then normalised to this Z0.
     pub z0: Field,
 }
 
