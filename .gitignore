@@ -1,5 +1,8 @@
 /target
 
+# Claude Code agent worktrees / scratch
+.claude/
+
 # Solver outputs
 tests/**/*.vtk
 tests/**/*.csv

@@ -349,6 +349,146 @@ impl MacroModel {
         }
         s
     }
+
+    /// Evaluate the S-matrix on a frequency sweep, one row per angular
+    /// frequency. Each row is an `N x N` complex matrix in row-major
+    /// order (the [`MacroModel::evaluate`] convention).
+    ///
+    /// The per-frequency cost is the small `r x r` dense LU; a thousand
+    /// points at `r ~ few hundred` is milliseconds on the CPU.
+    pub fn sweep(&self, omegas: &[Field]) -> Vec<Vec<C64>> {
+        omegas.iter().map(|&w| self.evaluate(w)).collect()
+    }
+
+    /// Write the S-matrix sweep to a Touchstone `.s{N}p` file.
+    ///
+    /// `frequencies` are in `frequency_unit` (Hz / kHz / MHz / GHz). The
+    /// file header is `# <unit> S <fmt> R <Z_ref>`; the body is
+    /// `f  <pair_1>  <pair_2>  ...` with the per-port column ordering
+    /// dictated by the Touchstone 1.x convention (`S11 S21 S12 S22` for
+    /// `N = 2`, then per row of S for `N > 2`).
+    ///
+    /// One sweep evaluation per frequency; emits no allocations outside
+    /// the file writer.
+    pub fn to_touchstone(
+        &self,
+        path: &std::path::Path,
+        frequencies_in_unit: &[Field],
+        frequency_unit: TouchstoneFrequencyUnit,
+        z_ref: Field,
+        format: TouchstoneFormat,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        let omega_scale = 2.0 * std::f64::consts::PI * frequency_unit.to_hz();
+        let mut file = std::fs::File::create(path)?;
+        writeln!(
+            file,
+            "! Touchstone file written by rapidfem-td macromodel",
+        )?;
+        writeln!(
+            file,
+            "! ports = {}, reduced order r = {}",
+            self.n_ports, self.r,
+        )?;
+        writeln!(
+            file,
+            "# {} S {} R {}",
+            frequency_unit.as_str(),
+            format.as_str(),
+            z_ref,
+        )?;
+        let n = self.n_ports;
+        for &f in frequencies_in_unit {
+            let omega = f * omega_scale;
+            let s = self.evaluate(omega);
+            write!(file, "{:.9e}", f)?;
+            // Touchstone 1.x ordering for N = 2 is column-major within
+            // the row (S11 S21 S12 S22); for N != 2 it is row-major
+            // (S11 S12 S13 ..., then S21 S22 ...). Our internal `s`
+            // buffer is always row-major `s[i*n + j]`.
+            if n == 2 {
+                let order = [(0, 0), (1, 0), (0, 1), (1, 1)];
+                for (i, j) in order {
+                    let v = s[i * n + j];
+                    let (p, q) = format.encode(v);
+                    write!(file, " {:.9e} {:.9e}", p, q)?;
+                }
+            } else {
+                for i in 0..n {
+                    if i > 0 {
+                        // Touchstone wraps long rows at 4 ports per line;
+                        // emit a continuation with the same column layout.
+                        writeln!(file)?;
+                        write!(file, "{:18}", "")?;
+                    }
+                    for j in 0..n {
+                        let v = s[i * n + j];
+                        let (p, q) = format.encode(v);
+                        write!(file, " {:.9e} {:.9e}", p, q)?;
+                    }
+                }
+            }
+            writeln!(file)?;
+        }
+        Ok(())
+    }
+}
+
+/// Frequency unit of a Touchstone file header (`# HZ | KHZ | MHZ | GHZ`).
+#[derive(Clone, Copy, Debug)]
+pub enum TouchstoneFrequencyUnit {
+    Hz,
+    Khz,
+    Mhz,
+    Ghz,
+}
+
+impl TouchstoneFrequencyUnit {
+    fn as_str(self) -> &'static str {
+        match self {
+            TouchstoneFrequencyUnit::Hz => "HZ",
+            TouchstoneFrequencyUnit::Khz => "KHZ",
+            TouchstoneFrequencyUnit::Mhz => "MHZ",
+            TouchstoneFrequencyUnit::Ghz => "GHZ",
+        }
+    }
+    fn to_hz(self) -> Field {
+        match self {
+            TouchstoneFrequencyUnit::Hz => 1.0,
+            TouchstoneFrequencyUnit::Khz => 1.0e3,
+            TouchstoneFrequencyUnit::Mhz => 1.0e6,
+            TouchstoneFrequencyUnit::Ghz => 1.0e9,
+        }
+    }
+}
+
+/// Touchstone per-entry format. `MA` is magnitude / angle (degrees),
+/// `RI` is real / imaginary, `DB` is 20*log10|S| / angle (degrees).
+#[derive(Clone, Copy, Debug)]
+pub enum TouchstoneFormat {
+    Ma,
+    Ri,
+    Db,
+}
+
+impl TouchstoneFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            TouchstoneFormat::Ma => "MA",
+            TouchstoneFormat::Ri => "RI",
+            TouchstoneFormat::Db => "DB",
+        }
+    }
+    fn encode(self, v: C64) -> (Field, Field) {
+        match self {
+            TouchstoneFormat::Ma => (v.norm(), v.arg().to_degrees()),
+            TouchstoneFormat::Ri => (v.re, v.im),
+            TouchstoneFormat::Db => {
+                let mag = v.norm().max(1.0e-300);
+                (20.0 * mag.log10(), v.arg().to_degrees())
+            }
+        }
+    }
 }
 
 // Internals.
@@ -645,5 +785,174 @@ mod tests {
             "reciprocity violated: max |S21 - S12| = {:.3}",
             max_reciprocity_err,
         );
+    }
+
+    #[test]
+    fn macromodel_sweep_matches_pointwise_evaluate() {
+        // M2 WP 2.1 sanity: `sweep(&omegas)` is a thin convenience and
+        // must agree bit-identically with the per-omega `evaluate`.
+        let (a_w, b_h, lz) = (1.0, 0.5, 2.0);
+        let mesh = structured_box(2, 1, 8, a_w, b_h, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a: a_w,
+            b: b_h,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
+                },
+            ],
+        );
+        let model = MacroModel::build(&op, 80);
+
+        let omegas: Vec<f64> =
+            (0..5).map(|i| (1.35 + 0.20 * i as f64 / 4.0) * PI).collect();
+        let pointwise: Vec<Vec<C64>> =
+            omegas.iter().map(|&w| model.evaluate(w)).collect();
+        let swept = model.sweep(&omegas);
+        assert_eq!(pointwise.len(), swept.len());
+        for (p, s) in pointwise.iter().zip(&swept) {
+            assert_eq!(p.len(), s.len());
+            for (pv, sv) in p.iter().zip(s) {
+                assert_eq!(pv.re, sv.re);
+                assert_eq!(pv.im, sv.im);
+            }
+        }
+    }
+
+    #[test]
+    fn macromodel_touchstone_writer_roundtrip() {
+        // M2 WP 2.2 gate: write the matched-guide S-matrix as a `.s2p`
+        // file, then re-parse it and check the parsed values reproduce
+        // what `evaluate` returns. This proves the Touchstone writer's
+        // header / formatting / column ordering, without taking a
+        // dependency on an external Touchstone parser.
+        let (a_w, b_h, lz) = (1.0, 0.5, 2.0);
+        let mesh = structured_box(2, 1, 8, a_w, b_h, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a: a_w,
+            b: b_h,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
+                },
+            ],
+        );
+        let model = MacroModel::build(&op, 80);
+
+        // `frequencies` are in the unit declared in the writer; here Hz
+        // so f == omega / (2*pi). Three points are enough to exercise
+        // the parser (one f, four (mag, ang) pairs per line).
+        let omegas = [1.35 * PI, 1.45 * PI, 1.55 * PI];
+        let freqs_hz: Vec<f64> =
+            omegas.iter().map(|&w| w / (2.0 * PI)).collect();
+        let path = std::env::temp_dir()
+            .join("rapidfem_macromodel_roundtrip.s2p");
+        model
+            .to_touchstone(
+                &path,
+                &freqs_hz,
+                TouchstoneFrequencyUnit::Hz,
+                50.0,
+                TouchstoneFormat::Ri,
+            )
+            .expect("touchstone write must succeed");
+
+        // Re-parse the file: skip `!`/`#` lines, read `f re im re im ...`
+        // in the Touchstone-N=2 column order S11 S21 S12 S22.
+        let text = std::fs::read_to_string(&path)
+            .expect("touchstone read must succeed");
+        let mut parsed: Vec<(f64, [C64; 4])> = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('!') || line.starts_with('#') {
+                continue;
+            }
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(toks.len(), 1 + 8, "line: {}", line);
+            let f: f64 = toks[0].parse().unwrap();
+            let mut entries = [C64::new(0.0, 0.0); 4];
+            for k in 0..4 {
+                let re: f64 = toks[1 + 2 * k].parse().unwrap();
+                let im: f64 = toks[2 + 2 * k].parse().unwrap();
+                entries[k] = C64::new(re, im);
+            }
+            parsed.push((f, entries));
+        }
+        assert_eq!(parsed.len(), freqs_hz.len());
+
+        for ((parsed_f, entries), &expected_omega) in
+            parsed.iter().zip(omegas.iter())
+        {
+            assert!((*parsed_f - expected_omega / (2.0 * PI)).abs() < 1e-15);
+            let s_ref = model.evaluate(expected_omega);
+            // Touchstone N=2 ordering: S11, S21, S12, S22.
+            let order = [(0, 0), (1, 0), (0, 1), (1, 1)];
+            for (k, (i, j)) in order.iter().enumerate() {
+                let r = s_ref[i * 2 + j];
+                let p = entries[k];
+                // Loose tolerance — file format keeps ~9 decimals.
+                assert!(
+                    (r.re - p.re).abs() < 1e-8 && (r.im - p.im).abs() < 1e-8,
+                    "S[{i},{j}] mismatch: ref={:?}, parsed={:?}",
+                    r,
+                    p,
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
