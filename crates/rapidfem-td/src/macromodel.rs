@@ -612,24 +612,38 @@ impl MacroModel {
 
     /// Write the S-matrix sweep to a Touchstone `.s{N}p` file.
     ///
-    /// `frequencies` are in `frequency_unit` (Hz / kHz / MHz / GHz). The
-    /// file header is `# <unit> S <fmt> R <Z_ref>`; the body is
+    /// `frequencies_for_header` are written into the file in
+    /// `frequency_unit`; `omegas_for_evaluate` are fed to
+    /// [`MacroModel::evaluate`] (the operator's angular-frequency
+    /// units). The two arrays must have the same length. Keeping the
+    /// header units and the operator units as separate inputs means
+    /// the same writer works for both the Rust-native normalised-unit
+    /// path (`c = 1`, omega in rad/m) and the Python wrapper's
+    /// physical-Hz path (omega = `2*pi*f_Hz / c`).
+    ///
+    /// The header is `# <unit> S <fmt> R <Z_ref>`; the body is
     /// `f  <pair_1>  <pair_2>  ...` with the per-port column ordering
     /// dictated by the Touchstone 1.x convention (`S11 S21 S12 S22` for
-    /// `N = 2`, then per row of S for `N > 2`).
+    /// `N = 2`, then row-by-row of `S` for `N > 2`).
     ///
-    /// One sweep evaluation per frequency; emits no allocations outside
-    /// the file writer.
+    /// One sweep evaluation per frequency; no allocations outside the
+    /// file writer.
     pub fn to_touchstone(
         &self,
         path: &std::path::Path,
-        frequencies_in_unit: &[Field],
+        frequencies_for_header: &[Field],
+        omegas_for_evaluate: &[Field],
         frequency_unit: TouchstoneFrequencyUnit,
         z_ref: Field,
         format: TouchstoneFormat,
     ) -> std::io::Result<()> {
         use std::io::Write;
-        let omega_scale = 2.0 * std::f64::consts::PI * frequency_unit.to_hz();
+        assert_eq!(
+            frequencies_for_header.len(),
+            omegas_for_evaluate.len(),
+            "Touchstone writer: header frequency / evaluate omega arrays \
+             must agree in length",
+        );
         let mut file = std::fs::File::create(path)?;
         writeln!(
             file,
@@ -648,8 +662,8 @@ impl MacroModel {
             z_ref,
         )?;
         let n = self.n_ports;
-        for &f in frequencies_in_unit {
-            let omega = f * omega_scale;
+        for (k, &f) in frequencies_for_header.iter().enumerate() {
+            let omega = omegas_for_evaluate[k];
             let s = self.evaluate(omega);
             write!(file, "{:.9e}", f)?;
             // Touchstone 1.x ordering for N = 2 is column-major within
@@ -796,17 +810,139 @@ impl ImpedanceProbe {
 }
 
 /// Project an `N x N` complex S-matrix onto the bounded-real cone
-/// `sigma_max(S) <= 1` by clipping its singular values. Uses a one-sided
-/// Jacobi diagonalisation of `S^H * S` to get the right singular
-/// vectors `V`, then forms `U = S * V * diag(1 / sigma)` and rebuilds
-/// `S' = U * diag(min(sigma, 1)) * V^H`.
+/// `sigma_max(S) <= 1` by clipping its singular values. Computes the
+/// SVD `S = U * diag(sigma) * V^H` (closed form for `N = 2`, Hermitian
+/// Jacobi on `S^H * S` for `N >= 3`), then rebuilds with the clipped
+/// singular values.
 ///
 /// Hand-rolled because the workspace's only SVD path (faer) is real
-/// and the N-by-N matrices here are tiny — N ports is typically 2-4
+/// and the N-by-N matrices here are tiny - N ports is typically 2-4
 /// on the structures the macromodel targets.
 fn clip_singular_values_to_unit_circle(s: &[C64], n: usize) -> Vec<C64> {
     assert_eq!(s.len(), n * n);
-    // Form M = S^H * S, Hermitian PSD.
+    let (mut u, mut sigmas, mut v) = svd_small(s, n);
+    for sigma in sigmas.iter_mut() {
+        if *sigma > 1.0 {
+            *sigma = 1.0;
+        }
+    }
+    // S' = U * diag(sigma_clipped) * V^H.
+    let mut s_passive = vec![C64::new(0.0, 0.0); n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut acc = C64::new(0.0, 0.0);
+            for k in 0..n {
+                acc += u[i * n + k]
+                    * C64::new(sigmas[k], 0.0)
+                    * v[j * n + k].conj();
+            }
+            s_passive[i * n + j] = acc;
+        }
+    }
+    // Suppress an unused-mut warning when n is held fixed by the
+    // caller (the SVD path consumes the basis once and the only
+    // reason it is `mut` is the in-place Jacobi for n >= 3).
+    let _ = (&mut u, &mut v);
+    s_passive
+}
+
+/// Small-N complex SVD, returning `(U, sigma, V)` row-major with
+/// `S = U diag(sigma) V^H`. `U` and `V` are `n x n` unitary; `sigma` is
+/// a vector of `n` non-negative singular values (not necessarily
+/// ordered).
+fn svd_small(s: &[C64], n: usize) -> (Vec<C64>, Vec<f64>, Vec<C64>) {
+    if n == 2 {
+        return svd_2x2_closed_form(s);
+    }
+    svd_jacobi(s, n)
+}
+
+/// Closed-form complex 2x2 SVD. Solves the 2x2 Hermitian eigenproblem
+/// `M = S^H S` analytically, builds `V` from its eigenvectors, then
+/// `U = S V diag(1 / sigma)` (with a zero-singular-value guard).
+fn svd_2x2_closed_form(s: &[C64]) -> (Vec<C64>, Vec<f64>, Vec<C64>) {
+    debug_assert_eq!(s.len(), 4);
+    // M = S^H S, 2x2 Hermitian.
+    let m00 = s[0].conj() * s[0] + s[2].conj() * s[2]; // |S00|^2 + |S10|^2
+    let m11 = s[1].conj() * s[1] + s[3].conj() * s[3]; // |S01|^2 + |S11|^2
+    let m01 = s[0].conj() * s[1] + s[2].conj() * s[3]; // S00^* S01 + S10^* S11
+    // M is Hermitian, so m00, m11 are real.
+    let a = m00.re;
+    let b = m11.re;
+    let c = m01;
+    // Eigenvalues of [[a, c], [c^*, b]]:
+    //   lambda = (a + b)/2 +/- sqrt(((a - b)/2)^2 + |c|^2).
+    let half_sum = 0.5 * (a + b);
+    let half_diff = 0.5 * (a - b);
+    let rad = (half_diff * half_diff + c.norm_sqr()).max(0.0).sqrt();
+    let lam0 = (half_sum + rad).max(0.0);
+    let lam1 = (half_sum - rad).max(0.0);
+    let sigmas = vec![lam0.sqrt(), lam1.sqrt()];
+    // Eigenvectors: for lambda, v ~ [c, lambda - a] (unless c == 0, in
+    // which case the eigenvectors are axis-aligned).
+    let mut v = vec![C64::new(0.0, 0.0); 4];
+    if c.norm() > 1e-30 {
+        let v0 = [c, C64::new(lam0 - a, 0.0)];
+        let v1 = [c, C64::new(lam1 - a, 0.0)];
+        let n0 = (v0[0].norm_sqr() + v0[1].norm_sqr()).sqrt();
+        let n1 = (v1[0].norm_sqr() + v1[1].norm_sqr()).sqrt();
+        v[0] = v0[0] / n0;
+        v[2] = v0[1] / n0;
+        v[1] = v1[0] / n1;
+        v[3] = v1[1] / n1;
+    } else if a >= b {
+        v[0] = C64::new(1.0, 0.0);
+        v[3] = C64::new(1.0, 0.0);
+    } else {
+        v[1] = C64::new(1.0, 0.0);
+        v[2] = C64::new(1.0, 0.0);
+    }
+    // U columns from S V diag(1/sigma); zero-singular-value columns get
+    // an arbitrary orthonormal complement so U stays unitary.
+    let mut u = vec![C64::new(0.0, 0.0); 4];
+    for col in 0..2 {
+        let svcol_0 =
+            s[0] * v[col] + s[1] * v[2 + col];
+        let svcol_1 =
+            s[2] * v[col] + s[3] * v[2 + col];
+        if sigmas[col] > 1e-18 {
+            let inv = 1.0 / sigmas[col];
+            u[col] = svcol_0 * inv;
+            u[2 + col] = svcol_1 * inv;
+        }
+    }
+    // Fill missing U columns by Gram-Schmidt complement of the filled
+    // ones. Robust for the degenerate sigma = 0 cases this guards.
+    if sigmas[0] <= 1e-18 && sigmas[1] > 1e-18 {
+        // Orthogonal complement of column 1.
+        let u01 = u[1];
+        let u11 = u[3];
+        u[0] = -u11.conj();
+        u[2] = u01.conj();
+    } else if sigmas[1] <= 1e-18 && sigmas[0] > 1e-18 {
+        let u00 = u[0];
+        let u10 = u[2];
+        u[1] = -u10.conj();
+        u[3] = u00.conj();
+    } else if sigmas[0] <= 1e-18 && sigmas[1] <= 1e-18 {
+        u[0] = C64::new(1.0, 0.0);
+        u[3] = C64::new(1.0, 0.0);
+    }
+    (u, sigmas, v)
+}
+
+/// `n >= 3` complex SVD by Hermitian Jacobi on `S^H S`. Robust for the
+/// small `n` (3, 4) that an N-port macromodel might hit, but not the
+/// hot path - the 2x2 closed form covers most calls.
+///
+/// The rotation convention here is from Golub & Van Loan, Algorithm
+/// 8.4.5 generalised to the complex case: at each (p, q) pair, take
+/// `delta = m_pq`, set `phi = arg(delta)`, build the real Jacobi
+/// rotation that nulls `|delta|` against the real diagonal split
+/// `(m_qq - m_pp)`, then carry the complex phase `phi` on the off-
+/// diagonal rotation entries. The resulting 2x2 unitary
+/// `J = [[c, s e^{i phi}], [-s e^{-i phi}, c]]` zeros `m_pq` exactly.
+fn svd_jacobi(s: &[C64], n: usize) -> (Vec<C64>, Vec<f64>, Vec<C64>) {
     let mut m = vec![C64::new(0.0, 0.0); n * n];
     for i in 0..n {
         for j in 0..n {
@@ -817,13 +953,11 @@ fn clip_singular_values_to_unit_circle(s: &[C64], n: usize) -> Vec<C64> {
             m[i * n + j] = acc;
         }
     }
-    // Hermitian Jacobi: rotate off-diagonal pairs of (i, j) to zero,
-    // accumulate the unitary `V` such that `V^H M V = diag(sigma^2)`.
     let mut v = vec![C64::new(0.0, 0.0); n * n];
     for i in 0..n {
         v[i * n + i] = C64::new(1.0, 0.0);
     }
-    let max_sweeps = 30;
+    let max_sweeps = 60;
     let tol = 1e-14_f64;
     for _sweep in 0..max_sweeps {
         let mut off_norm = 0.0_f64;
@@ -843,44 +977,42 @@ fn clip_singular_values_to_unit_circle(s: &[C64], n: usize) -> Vec<C64> {
                 if apq.norm() < 1e-18 {
                     continue;
                 }
-                // Complex Hermitian Jacobi rotation: pick `phi` such
-                // that `e^{-i*phi} * apq` is real, then the 2x2
-                // real-symmetric Jacobi gives the rotation angle.
                 let phi = apq.arg();
-                let apq_real = apq.norm();
-                let theta = 0.5 * (2.0 * apq_real).atan2(aqq - app);
+                let apq_abs = apq.norm();
+                // Real 2x2 Jacobi angle nulling 2|apq| against
+                // (aqq - app).
+                let theta = 0.5 * (2.0 * apq_abs).atan2(aqq - app);
                 let c_r = theta.cos();
                 let s_r = theta.sin();
-                let c = C64::new(c_r, 0.0);
-                let s = C64::from_polar(s_r, phi);
-                // Update M in place: rows p, q and columns p, q.
+                let ep = C64::from_polar(1.0, phi);
+                let em = ep.conj();
+                // J = [[c, s e^{i phi}], [-s e^{-i phi}, c]].
+                // M' = J^H M J: column update with J, then row update
+                // with J^H (= [[c, -s e^{i phi}], [s e^{-i phi}, c]]).
                 for k in 0..n {
                     let mkp = m[k * n + p];
                     let mkq = m[k * n + q];
-                    m[k * n + p] = c * mkp + s.conj() * mkq;
-                    m[k * n + q] = -s * mkp + c * mkq;
+                    m[k * n + p] = mkp * c_r + mkq * (-s_r * em);
+                    m[k * n + q] = mkp * (s_r * ep) + mkq * c_r;
                 }
                 for k in 0..n {
                     let mpk = m[p * n + k];
                     let mqk = m[q * n + k];
-                    m[p * n + k] = c * mpk + s * mqk;
-                    m[q * n + k] = -s.conj() * mpk + c * mqk;
+                    m[p * n + k] = c_r * mpk + (-s_r * ep) * mqk;
+                    m[q * n + k] = (s_r * em) * mpk + c_r * mqk;
                 }
-                // Accumulate V.
+                // V accumulates the right-side rotation.
                 for k in 0..n {
                     let vkp = v[k * n + p];
                     let vkq = v[k * n + q];
-                    v[k * n + p] = c * vkp + s.conj() * vkq;
-                    v[k * n + q] = -s * vkp + c * vkq;
+                    v[k * n + p] = vkp * c_r + vkq * (-s_r * em);
+                    v[k * n + q] = vkp * (s_r * ep) + vkq * c_r;
                 }
             }
         }
     }
-    // Diagonal of M now holds sigma_i^2 (real >= 0).
-    let mut sigmas: Vec<f64> = (0..n).map(|i| m[i * n + i].re.max(0.0).sqrt()).collect();
-    // Compute U = S * V * diag(1 / sigma). For sigma == 0 the column
-    // is irrelevant — pick a zero column (the corresponding clipped
-    // sigma is also zero).
+    let mut sigmas: Vec<f64> =
+        (0..n).map(|i| m[i * n + i].re.max(0.0).sqrt()).collect();
     let mut u = vec![C64::new(0.0, 0.0); n * n];
     for col in 0..n {
         if sigmas[col] > 1e-18 {
@@ -894,23 +1026,8 @@ fn clip_singular_values_to_unit_circle(s: &[C64], n: usize) -> Vec<C64> {
             }
         }
     }
-    // Clip and reassemble.
-    for sigma in sigmas.iter_mut() {
-        if *sigma > 1.0 {
-            *sigma = 1.0;
-        }
-    }
-    let mut s_passive = vec![C64::new(0.0, 0.0); n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut acc = C64::new(0.0, 0.0);
-            for k in 0..n {
-                acc += u[i * n + k] * C64::new(sigmas[k], 0.0) * v[j * n + k].conj();
-            }
-            s_passive[i * n + j] = acc;
-        }
-    }
-    s_passive
+    let _ = &mut sigmas;
+    (u, sigmas, v)
 }
 
 /// Zero the H block of a state vector (components `c = 3..6` in each
@@ -1345,6 +1462,7 @@ mod tests {
             .to_touchstone(
                 &path,
                 &freqs_hz,
+                &omegas,
                 TouchstoneFrequencyUnit::Hz,
                 50.0,
                 TouchstoneFormat::Ri,

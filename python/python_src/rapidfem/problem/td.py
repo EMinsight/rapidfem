@@ -389,6 +389,115 @@ class TdReducedModel:
         return f"TdReducedModel(r={self.r}, n={self.n})"
 
 
+class TdMacroModel:
+    """A compact MIMO macromodel of a :class:`ProblemTD`'s modal-port
+    network: a block-Krylov projection of the impulse-response Krylov
+    subspace seeded by all ports. Obtained from
+    :meth:`ProblemTD.macromodel`.
+
+    Once built, evaluating the S-matrix at one frequency costs a small
+    dense complex LU solve (microseconds at ``r ~ a few hundred``);
+    sweeping a thousand-point band is milliseconds. Touchstone export
+    lands at any frequency unit / format.
+
+    The TD operator runs in normalised units (``c = 1``); this wrapper
+    accepts and reports frequencies in physical Hertz. The angular
+    frequency at the operator level is ``omega_op = 2*pi*f_Hz / c``.
+
+    Attributes
+    ----------
+    r : int
+        realised reduced order
+    n_ports : int
+        number of modal ports (size of the S-matrix)
+    """
+
+    def __init__(self, native, c):
+        self._m = native
+        self._c = float(c)
+
+    @property
+    def r(self):
+        """Realised reduced order (block-Krylov dimension after any
+        deflation)."""
+        return self._m.r
+
+    @property
+    def n_ports(self):
+        """Number of modal ports — size of the S-matrix."""
+        return self._m.n_ports
+
+    def evaluate(self, frequency_hz, *, passive=False):
+        """Evaluate the S-matrix at one physical frequency. Returns an
+        ``[n_ports, n_ports]`` complex numpy array.
+
+        Parameters
+        ----------
+        frequency_hz : float
+            Physical frequency in Hertz.
+        passive : bool
+            If ``True``, apply the WP 3.2 passivity-enforcement
+            perturbation: the SVD of ``S`` is computed and its
+            singular values clipped to at most 1, guaranteeing
+            ``sigma_max(S) <= 1``. Composes with either the plain or
+            SPRIM build.
+        """
+        omega_op = 2.0 * np.pi * float(frequency_hz) / self._c
+        if passive:
+            return np.asarray(self._m.evaluate_passive(omega_op))
+        return np.asarray(self._m.evaluate(omega_op))
+
+    def sweep(self, frequencies_hz):
+        """Evaluate the S-matrix on a sweep of physical frequencies.
+        Returns an ``[n_freq, n_ports, n_ports]`` complex numpy array.
+        """
+        f = np.asarray(frequencies_hz, dtype=float).ravel()
+        omegas_op = 2.0 * np.pi * f / self._c
+        return np.asarray(self._m.sweep(omegas_op))
+
+    def to_touchstone(
+        self,
+        path,
+        frequencies_hz,
+        *,
+        format="MA",
+        z_ref=50.0,
+    ):
+        """Write the S-matrix sweep to a Touchstone ``.s{N}p`` file.
+
+        Parameters
+        ----------
+        path : str
+            Output path. The Touchstone version 1.x convention is one
+            file per N-port macromodel, with extension matching N.
+        frequencies_hz : array_like
+            Frequencies to sample, in Hertz.
+        format : {"MA", "RI", "DB"}
+            Per-entry format - magnitude/angle (degrees), real/imaginary,
+            or 20*log10|S| / angle (degrees).
+        z_ref : float
+            Reference impedance (header `R` field).
+        """
+        f = np.asarray(frequencies_hz, dtype=float).ravel()
+        # Write to the file as GHz with f converted accordingly, since
+        # GHz is the conventional RF unit and reads cleanly. `omegas`
+        # is what `evaluate` consumes: operator units (c = 1, omega in
+        # rad/m).
+        f_ghz = f / 1.0e9
+        omegas_op = 2.0 * np.pi * f / self._c
+        self._m.to_touchstone(
+            str(path),
+            f_ghz,
+            omegas_op,
+            "GHZ",
+            float(z_ref),
+            str(format),
+        )
+
+    def __repr__(self):
+        return f"TdMacroModel(r={self.r}, n_ports={self.n_ports})"
+
+
 def _point_label(spec):
     """Human-readable label for a ``(point, field, component)`` probe/source
     spec — e.g. ``"E_z @ (0.25, 0.25, 0.5)"``."""
@@ -996,6 +1105,53 @@ class ProblemTD:
         rom = TdReducedModel(self._op.reduced_model(s, int(dim)), self.c)
         _log(f"reduce complete - reduced order r={rom.r}")
         return rom
+
+    def macromodel(self, *, r=120, sprim=False):
+        """Build a compact MIMO macromodel of the modal-port network.
+
+        Block-Krylov projection of the matrix-free operator seeded by
+        all port-injection vectors. The result evaluates the S-matrix
+        in microseconds per frequency, sweeps a band in milliseconds,
+        and writes Touchstone. See ``docs/td-macromodel-plan.md`` for
+        the method and gates.
+
+        Parameters
+        ----------
+        r : int
+            Requested block-Krylov dimension. Tens to a few hundred is
+            the regime impulse-Krylov lives in; deflation may reduce
+            the realised order.
+        sprim : bool
+            Use the SPRIM-style structure-preserving E/H block-split
+            build for better passivity preservation (the M3 path).
+            The default plain build is slightly faster and matches the
+            M1 / M2 deliverables.
+
+        Returns
+        -------
+        TdMacroModel
+            Carries ``evaluate(f_Hz)``, ``sweep(freqs_Hz)`` and
+            ``to_touchstone(path, freqs_Hz)``; ``evaluate(f_Hz,
+            passive=True)`` applies the WP 3.2 passivity-enforcement
+            perturbation.
+        """
+        if self._op.n_ports() == 0:
+            raise RuntimeError(
+                "ProblemTD has no ports — attach RectWaveguidePort(s), "
+                "LumpedPort(s), CoaxPort(s) or FloquetPort(s) to the "
+                "geometry before calling macromodel"
+            )
+        _log(
+            f"macromodel - {'SPRIM' if sprim else 'plain'} block-Krylov "
+            f"r={int(r)} on {self.n_dof} DOFs"
+        )
+        native = self._op.macromodel(int(r), bool(sprim))
+        m = TdMacroModel(native, self.c)
+        _log(
+            f"macromodel complete - reduced order r={m.r}, "
+            f"n_ports={m.n_ports}"
+        )
+        return m
 
     # -- ports: soft sources & field probes --------------------------------
     def probe_dof(self, point, *, field="E", component="z"):

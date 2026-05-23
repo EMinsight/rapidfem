@@ -1090,6 +1090,27 @@ impl PyTdOperator {
         );
         Ok(PyReducedModel { inner })
     }
+
+    /// Build a block-Krylov MIMO macromodel of the operator's modal
+    /// ports. The result evaluates the S-matrix in microseconds per
+    /// frequency, sweeps a band in milliseconds, and writes Touchstone.
+    ///
+    /// `r` is the requested block-Krylov dimension. `sprim = True` uses
+    /// the SPRIM-style structure-preserving E/H block-split build for
+    /// better passivity preservation (the M3 path); the default plain
+    /// build (`sprim = False`) is slightly faster.
+    ///
+    /// Requires at least one port carrying a waveguide mode. Pure
+    /// absorbing-only ports do not contribute and are silently skipped.
+    #[pyo3(signature = (r, sprim = false))]
+    fn macromodel(&self, r: usize, sprim: bool) -> PyResult<PyMacroModel> {
+        let inner = if sprim {
+            rapidfem_td::macromodel::MacroModel::build_sprim(&self.op, r)
+        } else {
+            rapidfem_td::macromodel::MacroModel::build(&self.op, r)
+        };
+        Ok(PyMacroModel { inner })
+    }
 }
 
 /// A Krylov model-order-reduced model of a `TdOperator` — `A ≈ V·Â·Vᵀ`
@@ -1165,6 +1186,161 @@ impl PyReducedModel {
     }
 }
 
+// --- Block-Krylov macromodel (MIMO + S-parameters + Touchstone) ----------
+
+/// A compact MIMO macromodel of a `TdOperator` produced by
+/// block-Krylov projection of the impulse-response Krylov subspace
+/// seeded by all modal ports. Evaluates S-parameters across a sweep
+/// in microseconds per frequency, writes Touchstone files.
+#[pyclass(name = "MacroModel", unsendable)]
+struct PyMacroModel {
+    inner: rapidfem_td::macromodel::MacroModel,
+}
+
+#[pymethods]
+impl PyMacroModel {
+    /// Realised reduced order `r` (block-Krylov dimension after any
+    /// deflation).
+    #[getter]
+    fn r(&self) -> usize {
+        self.inner.r()
+    }
+
+    /// Number of modal ports `N` (the size of the S-matrix).
+    #[getter]
+    fn n_ports(&self) -> usize {
+        self.inner.n_ports()
+    }
+
+    /// Evaluate the `N x N` S-matrix at angular frequency `omega`.
+    /// Returns a numpy complex128 array of shape `(N, N)`.
+    fn evaluate<'py>(
+        &self,
+        py: Python<'py>,
+        omega: f64,
+    ) -> Bound<'py, PyArray2<NpC64>> {
+        let n = self.inner.n_ports();
+        let s = self.inner.evaluate(omega);
+        let np_s: Vec<NpC64> = s
+            .into_iter()
+            .map(|c| NpC64::new(c.re, c.im))
+            .collect();
+        numpy::ndarray::Array2::from_shape_vec((n, n), np_s)
+            .expect("S is NxN")
+            .into_pyarray_bound(py)
+    }
+
+    /// Evaluate the S-matrix with the WP 3.2 passivity-enforcement
+    /// perturbation: the singular values of `S` are clipped to at
+    /// most 1, giving the bounded-real property `sigma_max(S) <= 1`
+    /// by construction. Composes with either the plain or SPRIM build.
+    fn evaluate_passive<'py>(
+        &self,
+        py: Python<'py>,
+        omega: f64,
+    ) -> Bound<'py, PyArray2<NpC64>> {
+        let n = self.inner.n_ports();
+        let s = self.inner.evaluate_passive(omega);
+        let np_s: Vec<NpC64> = s
+            .into_iter()
+            .map(|c| NpC64::new(c.re, c.im))
+            .collect();
+        numpy::ndarray::Array2::from_shape_vec((n, n), np_s)
+            .expect("S is NxN")
+            .into_pyarray_bound(py)
+    }
+
+    /// Evaluate the S-matrix on a sweep of angular frequencies.
+    /// Returns a numpy complex128 array of shape `(n_omega, N, N)`.
+    fn sweep<'py>(
+        &self,
+        py: Python<'py>,
+        omegas: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray3<NpC64>>> {
+        let omegas = omegas
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let n = self.inner.n_ports();
+        let rows = self.inner.sweep(omegas);
+        let mut flat: Vec<NpC64> = Vec::with_capacity(omegas.len() * n * n);
+        for row in rows {
+            for c in row {
+                flat.push(NpC64::new(c.re, c.im));
+            }
+        }
+        Ok(
+            numpy::ndarray::Array3::from_shape_vec(
+                (omegas.len(), n, n),
+                flat,
+            )
+            .expect("sweep result is n_omega x N x N")
+            .into_pyarray_bound(py),
+        )
+    }
+
+    /// Write the S-matrix sweep to a Touchstone `.s{N}p` file.
+    ///
+    /// `frequencies_for_header` is what appears in the file under
+    /// `frequency_unit` ("HZ" / "KHZ" / "MHZ" / "GHZ"). `omegas` is
+    /// what is fed to [`MacroModel::evaluate`] for each row, in the
+    /// operator's angular-frequency units. The Python wrapper sets
+    /// `omegas = 2*pi*f_Hz / c` and the file frequency to physical
+    /// Hertz independently.
+    ///
+    /// `format` is "MA" (magnitude/angle in degrees), "RI"
+    /// (real/imaginary) or "DB" (20*log10|S| / angle in degrees).
+    #[pyo3(signature = (path, frequencies_for_header, omegas, frequency_unit = "GHZ", z_ref = 50.0, format = "MA"))]
+    fn to_touchstone(
+        &self,
+        path: &str,
+        frequencies_for_header: PyReadonlyArray1<'_, f64>,
+        omegas: PyReadonlyArray1<'_, f64>,
+        frequency_unit: &str,
+        z_ref: f64,
+        format: &str,
+    ) -> PyResult<()> {
+        use rapidfem_td::macromodel::{
+            TouchstoneFormat, TouchstoneFrequencyUnit,
+        };
+        let unit = match frequency_unit.to_ascii_uppercase().as_str() {
+            "HZ" => TouchstoneFrequencyUnit::Hz,
+            "KHZ" => TouchstoneFrequencyUnit::Khz,
+            "MHZ" => TouchstoneFrequencyUnit::Mhz,
+            "GHZ" => TouchstoneFrequencyUnit::Ghz,
+            other => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "unknown frequency unit '{}', use HZ/KHZ/MHZ/GHZ",
+                    other,
+                )))
+            }
+        };
+        let fmt = match format.to_ascii_uppercase().as_str() {
+            "MA" => TouchstoneFormat::Ma,
+            "RI" => TouchstoneFormat::Ri,
+            "DB" => TouchstoneFormat::Db,
+            other => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "unknown format '{}', use MA/RI/DB",
+                    other,
+                )))
+            }
+        };
+        let freqs = frequencies_for_header
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let ws = omegas
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.inner
+            .to_touchstone(
+                std::path::Path::new(path), freqs, ws, unit, z_ref, fmt,
+            )
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("touchstone write: {}", e))
+            })
+    }
+}
+
 /// rapidfem — frequency- and time-domain EM FEM solver.
 #[pymodule]
 #[pyo3(name = "_native")]
@@ -1179,5 +1355,6 @@ fn rapidfem_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRadiationPattern>()?;
     m.add_class::<PyTdOperator>()?;
     m.add_class::<PyReducedModel>()?;
+    m.add_class::<PyMacroModel>()?;
     Ok(())
 }
