@@ -78,41 +78,47 @@ def main():
     t_fd = time.perf_counter() - t0
     print(f"    FD sweep: {t_fd:.1f} s ({len(FREQS)} pts, {prob_fd.n_dofs} DOFs)")
 
-    print("\n[2] Building TD macromodel (central flux, matches the Rust gate cases) ...")
+    print("\n[2] Building TD operator ...")
     g_td = build_geometry()
-    # Central flux: the Rust macromodel gate tests all used flux_alpha=0.
-    # Upwind adds DG dissipation that damps the propagating signal
-    # before it reaches port 2, flattening |S21| to zero.
-    ptd = rf.ProblemTD(g_td, order=2, flux="central")
+    ptd = rf.ProblemTD(g_td, order=2, flux="upwind")
     print(f"    TD operator: {ptd.n_dof} DOFs, {ptd._op.n_ports()} ports")
 
-    # Diagnostic at several r values.
+    # Diagnostic at several r values, comparing plain impulse-Krylov
+    # vs shift-invert (M4 WP 4.3). The microstrip is in the regime
+    # where the design band sits far below the operator's spectral
+    # radius - plain impulse-Krylov cannot reach the in-band physics,
+    # shift-invert biases the basis around the centre frequency.
     s_fd = res_fd.sparams       # [n_freq, 2, 2]
-    print("\n[3] Macromodel accuracy vs r ...")
+    f_centre = float(np.mean(FREQS))
+
+    print("\n[3] Macromodel accuracy vs method ...")
     print(
-        f"\n{'r':>5} {'build [s]':>10} {'sweep [ms]':>11} "
+        f"\n{'method':>20} {'r':>5} {'build [s]':>10} {'sweep [ms]':>11} "
         f"{'max|S11| err':>13} {'max|S21| err':>13}"
     )
-    for r in (60, 150, 300):
-        t0 = time.perf_counter()
-        mac = ptd.macromodel(r=r, sprim=False)
-        t_build = time.perf_counter() - t0
 
+    def bench(label, r, **kwargs):
+        t0 = time.perf_counter()
+        mac = ptd.macromodel(r=r, **kwargs)
+        t_build = time.perf_counter() - t0
         t0 = time.perf_counter()
         s_td = mac.sweep(FREQS)
         t_sweep = time.perf_counter() - t0
-
         d11 = float(np.max(np.abs(np.abs(s_td[:, 0, 0]) - np.abs(s_fd[:, 0, 0]))))
         d21 = float(np.max(np.abs(np.abs(s_td[:, 1, 0]) - np.abs(s_fd[:, 1, 0]))))
         print(
-            f"{r:>5} {t_build:>10.2f} {t_sweep*1e3:>11.1f} "
+            f"{label:>20} {r:>5} {t_build:>10.2f} {t_sweep*1e3:>11.1f} "
             f"{d11:>13.3f} {d21:>13.3f}"
         )
+        return mac, s_td
 
-    # Detailed comparison at the best r tested.
-    print("\n[4] Detailed |S| at r = 300 ...")
-    mac = ptd.macromodel(r=300, sprim=False)
-    s_td = mac.sweep(FREQS)
+    bench("plain Krylov", 150)
+    bench("plain Krylov", 300)
+    mac_si, s_td = bench(
+        "shift-invert", 40, shift_freq_hz=f_centre,
+    )
+
+    print(f"\n[4] Detailed |S| with shift-invert at {f_centre/1e9:.3f} GHz, r=40 ...")
     print(f"\n{'f [GHz]':>8} {'|S11| TD':>10} {'|S11| FD':>10} "
           f"{'|S21| TD':>10} {'|S21| FD':>10}")
     for k, f in enumerate(FREQS):

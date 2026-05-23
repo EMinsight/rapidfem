@@ -1116,14 +1116,42 @@ impl PyTdOperator {
     /// better passivity preservation (the M3 path); the default plain
     /// build (`sprim = False`) is slightly faster.
     ///
+    /// `shift_omega_op`, if given, switches to the shift-invert
+    /// rational-Krylov build (M4 WP 4.3). The Krylov subspace is then
+    /// biased toward eigenfrequencies of the operator near
+    /// `omega_shift = shift_omega_op` (operator angular-frequency
+    /// units, `c = 1`). Use this when the design band sits well
+    /// below the mesh-induced spectral radius (the RFIC regime),
+    /// where plain impulse-Krylov can't reach the in-band physics.
+    /// `shift_omega_op` is mutually exclusive with `sprim`.
+    ///
     /// Requires at least one port carrying a waveguide mode. Pure
     /// absorbing-only ports do not contribute and are silently skipped.
-    #[pyo3(signature = (r, sprim = false))]
-    fn macromodel(&self, r: usize, sprim: bool) -> PyResult<PyMacroModel> {
-        let inner = if sprim {
-            rapidfem_td::macromodel::MacroModel::build_sprim(&self.op, r)
-        } else {
-            rapidfem_td::macromodel::MacroModel::build(&self.op, r)
+    #[pyo3(signature = (r, sprim = false, shift_omega_op = None))]
+    fn macromodel(
+        &self,
+        r: usize,
+        sprim: bool,
+        shift_omega_op: Option<f64>,
+    ) -> PyResult<PyMacroModel> {
+        let inner = match (sprim, shift_omega_op) {
+            (true, Some(_)) => {
+                return Err(PyRuntimeError::new_err(
+                    "macromodel: pass either sprim=True OR \
+                     shift_omega_op, not both",
+                ));
+            }
+            (_, Some(omega)) => {
+                rapidfem_td::macromodel::MacroModel::build_shift_invert(
+                    &self.op, omega, r,
+                )
+            }
+            (true, None) => {
+                rapidfem_td::macromodel::MacroModel::build_sprim(&self.op, r)
+            }
+            (false, None) => {
+                rapidfem_td::macromodel::MacroModel::build(&self.op, r)
+            }
         };
         Ok(PyMacroModel { inner })
     }

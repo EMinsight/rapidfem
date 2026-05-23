@@ -1142,7 +1142,7 @@ class ProblemTD:
         _log(f"reduce complete - reduced order r={rom.r}")
         return rom
 
-    def macromodel(self, *, r=120, sprim=False):
+    def macromodel(self, *, r=120, sprim=False, shift_freq_hz=None):
         """Build a compact MIMO macromodel of the modal-port network.
 
         Block-Krylov projection of the matrix-free operator seeded by
@@ -1162,6 +1162,15 @@ class ProblemTD:
             build for better passivity preservation (the M3 path).
             The default plain build is slightly faster and matches the
             M1 / M2 deliverables.
+        shift_freq_hz : float, optional
+            Switch to the shift-invert rational-Krylov build (M4 WP
+            4.3), with the shift placed at this physical frequency in
+            Hertz (typically the band centre). Use this when the
+            design band sits well below the mesh-induced spectral
+            radius - the RFIC regime where plain impulse-Krylov
+            cannot reach the in-band physics. Mutually exclusive with
+            ``sprim``. A modest ``r`` (tens) is usually enough since
+            shift-invert focuses the basis around the shift.
 
         Returns
         -------
@@ -1177,11 +1186,22 @@ class ProblemTD:
                 "LumpedPort(s), CoaxPort(s) or FloquetPort(s) to the "
                 "geometry before calling macromodel"
             )
+        if sprim and shift_freq_hz is not None:
+            raise ValueError(
+                "macromodel: pass either sprim=True OR shift_freq_hz, "
+                "not both"
+            )
+        if shift_freq_hz is not None:
+            omega_op = 2.0 * np.pi * float(shift_freq_hz) / self.c
+            mode = f"shift-invert at f={shift_freq_hz/1e9:.3f} GHz"
+        else:
+            omega_op = None
+            mode = "SPRIM" if sprim else "plain"
         _log(
-            f"macromodel - {'SPRIM' if sprim else 'plain'} block-Krylov "
-            f"r={int(r)} on {self.n_dof} DOFs"
+            f"macromodel - {mode} block-Krylov r={int(r)} on "
+            f"{self.n_dof} DOFs"
         )
-        native = self._op.macromodel(int(r), bool(sprim))
+        native = self._op.macromodel(int(r), bool(sprim), omega_op)
         m = TdMacroModel(native, self.c)
         _log(
             f"macromodel complete - reduced order r={m.r}, "

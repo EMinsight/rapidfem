@@ -40,8 +40,8 @@
 use num_complex::Complex64 as C64;
 
 use crate::constants::{
-    Accum, Field, MACROMODEL_DEFAULT_R, MACROMODEL_DEFLATION_TOL,
-    TD_STATE_BLOCK_STRIDE,
+    Accum, Field, GMRES_SHIFT_MAX_ITER, GMRES_SHIFT_TOL,
+    MACROMODEL_DEFAULT_R, MACROMODEL_DEFLATION_TOL, TD_STATE_BLOCK_STRIDE,
 };
 use crate::rhs::MaxwellOperator;
 
@@ -312,6 +312,188 @@ impl MacroModel {
         // A_hat, B_hat, C_hat using the *raw* port source vectors so
         // the macromodel sees the physical port excitation, not the
         // filtered seed.
+        let mut a_hat = vec![0.0 as Field; r_eff * r_eff];
+        for j in 0..r_eff {
+            let av = op.apply(&basis[j]);
+            for i in 0..r_eff {
+                a_hat[i * r_eff + j] = dot(&basis[i], &av);
+            }
+        }
+        let mut b_hat = vec![0.0 as Field; r_eff * n_ports];
+        for (j, &k) in modal_port_idx.iter().enumerate() {
+            let b_raw = op.port_source(k);
+            for i in 0..r_eff {
+                b_hat[i * n_ports + j] = dot(&basis[i], &b_raw);
+            }
+        }
+        let mut c_e_hat = vec![0.0 as Field; n_ports * r_eff];
+        let mut c_h_hat = vec![0.0 as Field; n_ports * r_eff];
+        for (port_i, &port_k) in modal_port_idx.iter().enumerate() {
+            for col_k in 0..r_eff {
+                let (pe, ph) =
+                    op.port_modal_projections(&basis[col_k], port_k);
+                c_e_hat[port_i * r_eff + col_k] = pe;
+                c_h_hat[port_i * r_eff + col_k] = ph;
+            }
+        }
+        let port_modes_for_closure: Vec<_> = modal_port_idx
+            .iter()
+            .map(|&k| ImpedanceProbe::new(op, k))
+            .collect();
+        let impedances: Box<dyn Fn(Field) -> Vec<Field> + Send + Sync> =
+            Box::new(move |omega: Field| {
+                port_modes_for_closure
+                    .iter()
+                    .map(|p| p.impedance(omega))
+                    .collect()
+            });
+        MacroModel {
+            a_hat,
+            b_hat,
+            c_e_hat,
+            c_h_hat,
+            impedances,
+            n_ports,
+            r: r_eff,
+        }
+    }
+
+    /// Shift-invert (rational-Krylov) block build (M4 WP 4.3).
+    ///
+    /// Impulse Krylov `span{B, A*B, A^2*B, ...}` is biased toward the
+    /// largest eigenvalues of `A`. For Maxwell operators where the
+    /// design band sits *far below* the mesh-induced spectral radius
+    /// (the RFIC regime: `omega_band ~ 10^11` rad/s vs
+    /// `rho(A) ~ 10^14` rad/s set by `c / h_min`), impulse moments
+    /// underflow on the in-band modes and the macromodel never sees
+    /// port-to-port coupling.
+    ///
+    /// Shift-invert flips the bias: the rational Krylov
+    /// `span{(sigma I - A)^{-1} B, (sigma I - A)^{-2} B, ...}` has
+    /// large amplitude exactly where `A`'s eigenvalues are close to
+    /// `sigma`, so picking `sigma = j*omega_center` for the band of
+    /// interest gives a basis dominated by the in-band physics.
+    ///
+    /// `(sigma I - A)^{-1}` is applied via a matrix-free complex
+    /// GMRES on the same `op.apply` matvec - no assembled matrix, no
+    /// dependence on the FD iterative-solver path. The complex Krylov
+    /// vectors are split into their real / imaginary parts and
+    /// re-orthonormalised, so the downstream `(A_hat, B_hat, C_hat)`
+    /// stays real and the per-frequency evaluate is unchanged.
+    ///
+    /// `omega_shift` is the operator-angular-frequency centre of the
+    /// target band (operator units, `c = 1`). For a Python caller
+    /// `omega_op = 2*pi*f_Hz / c`. A reasonable default is the mid-band.
+    pub fn build_shift_invert(
+        op: &MaxwellOperator,
+        omega_shift: Field,
+        r: usize,
+    ) -> Self {
+        Self::build_shift_invert_with(
+            op,
+            omega_shift,
+            r,
+            GMRES_SHIFT_MAX_ITER,
+            GMRES_SHIFT_TOL,
+            MACROMODEL_DEFLATION_TOL,
+        )
+    }
+
+    /// Shift-invert build with explicit GMRES + deflation tolerances.
+    pub fn build_shift_invert_with(
+        op: &MaxwellOperator,
+        omega_shift: Field,
+        r: usize,
+        gmres_max_iter: usize,
+        gmres_tol: Accum,
+        deflation_tol: Accum,
+    ) -> Self {
+        assert!(r > 0, "shift-invert macromodel order r must be positive");
+        assert!(
+            omega_shift > 0.0,
+            "shift omega must be positive (sigma = j*omega)",
+        );
+
+        let mut modal_port_idx: Vec<usize> = Vec::new();
+        for k in 0..op.n_ports() {
+            if op.port_has_mode(k) {
+                modal_port_idx.push(k);
+            }
+        }
+        let n_ports = modal_port_idx.len();
+        assert!(
+            n_ports > 0,
+            "macromodel needs at least one port carrying a waveguide mode",
+        );
+
+        let n_dof = op.n_dof();
+        let sigma = C64::new(0.0, omega_shift);
+
+        // Build the rational-Krylov basis: starting from each port
+        // source vector (real, lifted into a complex zero-imag seed),
+        // repeatedly apply `(sigma I - A)^{-1}` via GMRES and split
+        // each complex Krylov vector into a real-part vector and an
+        // imag-part vector; orthonormalise both into the real basis.
+        let mut basis: Vec<Vec<Field>> = Vec::with_capacity(r);
+        for &port_k in modal_port_idx.iter() {
+            if basis.len() >= r {
+                break;
+            }
+            // Seed: real port-source vector.
+            let mut current = real_to_complex(&op.port_source(port_k));
+            // Generate enough rational-Krylov powers from this seed
+            // to bring the basis up to its target size, then move on
+            // to the next seed.
+            let target_after_this_seed = std::cmp::min(
+                r,
+                basis.len()
+                    + r.div_ceil(n_ports).max(2),
+            );
+            while basis.len() < target_after_this_seed {
+                let basis_before = basis.len();
+                // Solve (sigma I - A) x = current, x complex.
+                let x = gmres_shifted(
+                    |v| op.apply(v),
+                    sigma,
+                    &current,
+                    n_dof,
+                    gmres_max_iter,
+                    gmres_tol,
+                );
+                // Split into real/imag, orthogonalise both into the
+                // basis.
+                let (xr, xi) = split_complex(&x);
+                for mut w in [xr, xi].into_iter() {
+                    block_cgs2(&mut w, &basis);
+                    let wn = norm2(&w);
+                    if wn < deflation_tol {
+                        continue;
+                    }
+                    let inv = 1.0 / wn;
+                    for v in w.iter_mut() {
+                        *v *= inv;
+                    }
+                    basis.push(w);
+                    if basis.len() == r {
+                        break;
+                    }
+                }
+                if basis.len() == basis_before {
+                    // No progress: both halves of the shift-invert
+                    // image are already in the basis. The Krylov
+                    // subspace from this seed is closed; move on.
+                    break;
+                }
+                current = x;
+                if basis.len() >= r {
+                    break;
+                }
+            }
+        }
+        let r_eff = basis.len();
+
+        // Standard projections - same as plain build past this
+        // point. The basis is now real and orthonormal.
         let mut a_hat = vec![0.0 as Field; r_eff * r_eff];
         for j in 0..r_eff {
             let av = op.apply(&basis[j]);
@@ -1308,6 +1490,203 @@ fn svd_jacobi(s: &[C64], n: usize) -> (Vec<C64>, Vec<f64>, Vec<C64>) {
     (u, sigmas, v)
 }
 
+/// Lift a real state vector into a zero-imag complex vector.
+fn real_to_complex(v: &[Field]) -> Vec<C64> {
+    v.iter().map(|&x| C64::new(x, 0.0)).collect()
+}
+
+/// Split a complex vector into its real and imaginary parts (two
+/// real vectors of the same length).
+fn split_complex(z: &[C64]) -> (Vec<Field>, Vec<Field>) {
+    let n = z.len();
+    let mut re = vec![0.0 as Field; n];
+    let mut im = vec![0.0 as Field; n];
+    for i in 0..n {
+        re[i] = z[i].re;
+        im[i] = z[i].im;
+    }
+    (re, im)
+}
+
+/// Hermitian inner product `<a, b> = sum a^*_i b_i` on complex vectors.
+fn cdot(a: &[C64], b: &[C64]) -> C64 {
+    let mut acc = C64::new(0.0, 0.0);
+    for i in 0..a.len() {
+        acc += a[i].conj() * b[i];
+    }
+    acc
+}
+
+/// Euclidean (Hermitian) norm of a complex vector.
+fn cnorm(a: &[C64]) -> Field {
+    let mut acc = 0.0 as Field;
+    for &z in a {
+        acc += z.norm_sqr();
+    }
+    acc.sqrt()
+}
+
+/// Apply `(sigma I - A) v` to a complex vector. `A` is the real
+/// matrix-free operator from `apply`; sigma is complex. Splits the
+/// complex `v = v_re + i v_im`, runs `A` twice, recombines.
+fn apply_shifted_complex<F>(
+    mut apply: F,
+    sigma: C64,
+    v: &[C64],
+) -> Vec<C64>
+where
+    F: FnMut(&[Field]) -> Vec<Field>,
+{
+    let n = v.len();
+    let (vr, vi) = split_complex(v);
+    let avr = apply(&vr);
+    let avi = apply(&vi);
+    let mut out = vec![C64::new(0.0, 0.0); n];
+    for i in 0..n {
+        let sv = sigma * v[i];
+        out[i] = sv - C64::new(avr[i], avi[i]);
+    }
+    out
+}
+
+/// Matrix-free GMRES for `(sigma I - A) x = b`, A real, sigma
+/// complex. Cold-start with `x = 0`, classical Givens-rotated
+/// least-squares update, no restart (the outer loop caps the
+/// iteration count instead).
+///
+/// Each iteration is one `(sigma I - A) v` matvec, i.e. two `A`
+/// matvecs of the underlying real DG operator. The hand-rolled form
+/// fits the macromodel's footprint (small, self-contained, no extra
+/// dependency) and stays well below LAPACK overhead at the typical
+/// `max_iter ~ 60`.
+fn gmres_shifted<F>(
+    mut apply: F,
+    sigma: C64,
+    b: &[C64],
+    n: usize,
+    max_iter: usize,
+    rel_tol: Accum,
+) -> Vec<C64>
+where
+    F: FnMut(&[Field]) -> Vec<Field>,
+{
+    assert_eq!(b.len(), n);
+    let b_norm = cnorm(b);
+    if b_norm == 0.0 {
+        return vec![C64::new(0.0, 0.0); n];
+    }
+    let abs_tol = rel_tol * b_norm;
+
+    // x = 0 cold start; r = b - (sigma I - A)*0 = b.
+    let mut v_basis: Vec<Vec<C64>> = Vec::with_capacity(max_iter + 1);
+    let inv_b = 1.0 / b_norm;
+    let v0: Vec<C64> = b.iter().map(|&z| z * inv_b).collect();
+    v_basis.push(v0);
+
+    // Hessenberg matrix `h[i][k]` row-major as a Vec of column-Vecs.
+    // Givens rotations stored as (c, s) pairs (c real, s complex).
+    let mut h_cols: Vec<Vec<C64>> = Vec::with_capacity(max_iter);
+    let mut cs: Vec<(Field, C64)> = Vec::with_capacity(max_iter);
+    // RHS of the least-squares projected problem.
+    let mut g: Vec<C64> =
+        std::iter::once(C64::new(b_norm, 0.0)).collect();
+    g.resize(max_iter + 1, C64::new(0.0, 0.0));
+
+    let mut iter = 0;
+    while iter < max_iter {
+        // Arnoldi step: w = (sigma I - A) v_basis[iter].
+        let mut w = apply_shifted_complex(&mut apply, sigma, &v_basis[iter]);
+        // Classical Gram-Schmidt against existing basis, two passes
+        // for stability.
+        let mut h_col = vec![C64::new(0.0, 0.0); iter + 2];
+        for _pass in 0..2 {
+            for j in 0..=iter {
+                let coef = cdot(&v_basis[j], &w);
+                h_col[j] += coef;
+                for i in 0..n {
+                    w[i] -= coef * v_basis[j][i];
+                }
+            }
+        }
+        let h_next = cnorm(&w);
+        h_col[iter + 1] = C64::new(h_next, 0.0);
+        // Apply previous Givens rotations to the new column.
+        for k in 0..iter {
+            let (c_k, s_k) = cs[k];
+            let h_k = h_col[k];
+            let h_kp1 = h_col[k + 1];
+            h_col[k] = C64::new(c_k, 0.0) * h_k + s_k * h_kp1;
+            h_col[k + 1] = -s_k.conj() * h_k + C64::new(c_k, 0.0) * h_kp1;
+        }
+        // Form the new Givens rotation to zero h_col[iter + 1].
+        let h_diag = h_col[iter];
+        let h_sub = h_col[iter + 1];
+        let denom = (h_diag.norm_sqr() + h_sub.norm_sqr()).sqrt();
+        let (c_new, s_new) = if denom == 0.0 {
+            (1.0, C64::new(0.0, 0.0))
+        } else {
+            let c = h_diag.norm() / denom;
+            // Sign-corrected complex sine.
+            let phase_h = if h_diag.norm() > 0.0 {
+                h_diag / h_diag.norm()
+            } else {
+                C64::new(1.0, 0.0)
+            };
+            let s = phase_h * h_sub.conj() / denom;
+            (c, s)
+        };
+        // Apply to h_col diagonal / sub-diagonal and to g.
+        let h_new_diag =
+            C64::new(c_new, 0.0) * h_diag + s_new * h_sub;
+        h_col[iter] = h_new_diag;
+        h_col[iter + 1] = C64::new(0.0, 0.0);
+        let g_diag = g[iter];
+        let g_next = g[iter + 1];
+        g[iter] = C64::new(c_new, 0.0) * g_diag + s_new * g_next;
+        g[iter + 1] =
+            -s_new.conj() * g_diag + C64::new(c_new, 0.0) * g_next;
+        cs.push((c_new, s_new));
+        h_cols.push(h_col);
+
+        // Residual norm is |g[iter + 1]|.
+        let res = g[iter + 1].norm();
+        iter += 1;
+        if res < abs_tol {
+            break;
+        }
+        // Normalise the new basis vector.
+        if h_next == 0.0 {
+            // Lucky breakdown - cannot proceed past this dimension.
+            break;
+        }
+        let inv = 1.0 / h_next;
+        let v_new: Vec<C64> = w.into_iter().map(|z| z * inv).collect();
+        v_basis.push(v_new);
+    }
+    // Solve upper-triangular system H_iter * y = g[..iter] for y.
+    // h_cols[k] has length k + 2; h_cols[k][i] is row i, col k.
+    let m = iter;
+    let mut y = vec![C64::new(0.0, 0.0); m];
+    for i in (0..m).rev() {
+        let mut acc = g[i];
+        for j in (i + 1)..m {
+            acc -= h_cols[j][i] * y[j];
+        }
+        let diag = h_cols[i][i];
+        if diag.norm() > 0.0 {
+            y[i] = acc / diag;
+        }
+    }
+    // x = sum_k y[k] * v_basis[k].
+    let mut x = vec![C64::new(0.0, 0.0); n];
+    for k in 0..m {
+        for i in 0..n {
+            x[i] += y[k] * v_basis[k][i];
+        }
+    }
+    x
+}
+
 /// Apply the Chebyshev polynomial `T_degree(M)` to a vector `b`,
 /// where `M = (-A^2 - t_center) / t_half_width` is the
 /// spectrally-mapped image of `T = -A^2` onto `[-1, 1]` on the target
@@ -2283,6 +2662,90 @@ mod tests {
             max_rel_diff < 5.0 * GPU_REL_TOL,
             "GPU macromodel drifts too far from CPU: {:.3e}",
             max_rel_diff,
+        );
+    }
+
+    #[test]
+    fn macromodel_shift_invert_concentrates_near_target() {
+        // M4 WP 4.3 sanity: shift-invert build at the matched 2-port,
+        // with shift at band centre. Each shift-invert step requires
+        // a complex GMRES solve, so this is meant as a small
+        // correctness check rather than a precision gate.
+        //
+        // The accuracy claim relative to plain block-Krylov is in the
+        // RFIC regime where ``rho(A) >> omega_band``; the matched
+        // 2-port has ``rho(A) ~ pi`` (similar order to the band), so
+        // plain and shift-invert see similar dynamics here. The gate
+        // just confirms the build runs and returns reciprocal
+        // S-matrices with finite magnitude.
+        let (a_w, b_h, lz) = (1.0, 0.5, 2.0);
+        let mesh = structured_box(2, 1, 8, a_w, b_h, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a: a_w,
+            b: b_h,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
+                },
+            ],
+        );
+
+        // Shift at band centre, single point, small `r`.
+        let omega_shift = 1.45 * PI;
+        let model = MacroModel::build_shift_invert(&op, omega_shift, 24);
+        assert_eq!(model.n_ports(), 2);
+        eprintln!(
+            "DIAG shift-invert: realised r = {}, omega_shift/pi = {:.3}",
+            model.r(),
+            omega_shift / PI,
+        );
+
+        let omegas: Vec<f64> =
+            (0..5).map(|i| (1.35 + 0.20 * i as f64 / 4.0) * PI).collect();
+        let mut max_reciprocity: f64 = 0.0;
+        for &omega in &omegas {
+            let s = model.evaluate(omega);
+            assert!(s.iter().all(|c| c.is_finite()));
+            let rec = (s[2] - s[1]).norm();
+            max_reciprocity = max_reciprocity.max(rec);
+            eprintln!(
+                "DIAG shift-invert omega/pi={:.3}: |S11|={:.3} |S21|={:.3}",
+                omega / PI,
+                s[0].norm(),
+                s[2].norm(),
+            );
+        }
+        assert!(
+            max_reciprocity < 0.10,
+            "shift-invert reciprocity broken: max |S21 - S12| = {:.3}",
+            max_reciprocity,
         );
     }
 

@@ -113,6 +113,22 @@ pub const MACROMODEL_DEFAULT_R: usize = 80;
 /// or H-part for structure-preserving block-Krylov.
 pub const TD_STATE_BLOCK_STRIDE: usize = 6;
 
+/// Relative residual tolerance for the matrix-free complex GMRES that
+/// solves the shifted system `(sigma I - A) x = b` inside the
+/// shift-invert macromodel build
+/// ([`crate::macromodel::MacroModel::build_shift_invert`]). Loose by
+/// design: the shift-invert step's output is then re-orthogonalised
+/// against the basis, so a GMRES residual at `~1e-6` is amply tighter
+/// than the orthogonalisation drift.
+pub const GMRES_SHIFT_TOL: Accum = 1.0e-6;
+
+/// Maximum GMRES iterations per shift-invert solve before restart.
+/// Larger keeps the Arnoldi basis bigger (more memory, fewer restarts);
+/// smaller restarts more often and costs more matvecs at hard
+/// frequencies. 60 is a healthy default for the small spectral region
+/// around a single shift in a Maxwell macromodel.
+pub const GMRES_SHIFT_MAX_ITER: usize = 60;
+
 // ── Dense matrix exponential (scaling-and-squaring) ───────────────────────
 
 /// Scaling-and-squaring threshold: the matrix is halved until its
