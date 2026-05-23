@@ -67,7 +67,12 @@ print(f"DOFs: {ptd.n_dof}, total ports (incl. ABC): {n_ports}")
 # the third entry is the ABC face which has no mode.
 MODAL_PORTS = [0, 1]
 for k in MODAL_PORTS:
-    print(f"  port {k} cutoff = {op.port_cutoff(k):.3g}")
+    n_faces = op.port_n_faces(k)
+    n_interior = op.port_n_interior_faces(k)
+    print(
+        f"  port {k}: cutoff = {op.port_cutoff(k):.3g}, "
+        f"face pairs = {n_faces}, of which interior = {n_interior}"
+    )
 
 # Step 1: inspect port_source for each modal port.
 print("\n[1] port_source magnitudes")

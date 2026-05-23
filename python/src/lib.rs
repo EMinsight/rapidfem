@@ -980,6 +980,23 @@ impl PyTdOperator {
         self.op.port_has_mode(port_idx)
     }
 
+    /// Number of resolved (element, local-face) pairs in port
+    /// `port_idx`'s face set - boundary-attached ports return one per
+    /// triangle, internal-plate-attached ports return two per triangle.
+    /// Diagnostic for verifying that a port plate was correctly
+    /// fragmented to lie on a domain boundary.
+    fn port_n_faces(&self, port_idx: usize) -> usize {
+        self.op.port_n_faces(port_idx)
+    }
+
+    /// Of the port's face pairs, how many face an INTERIOR neighbor
+    /// (the plate has another tet on its other side, i.e. it is
+    /// internal to the domain). A correctly boundary-attached port
+    /// has zero interior faces; an internal plate has all of them.
+    fn port_n_interior_faces(&self, port_idx: usize) -> usize {
+        self.op.port_n_interior_faces(port_idx)
+    }
+
     /// Spatial source vector for driving port `port_idx` with a unit
     /// waveform — the system is `dy/dt = A·y + b·g(t)`.
     fn port_source<'py>(

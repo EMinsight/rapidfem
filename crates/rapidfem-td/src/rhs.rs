@@ -1251,6 +1251,32 @@ impl MaxwellOperator {
     /// coaxial or Floquet). A port with no mode is a pure characteristic
     /// absorbing boundary, not an input / output channel; the macromodel
     /// build skips those.
+    /// Number of resolved `(element, local_face)` boundary-face pairs
+    /// for port `port_idx`. For a port plate on a *domain boundary*
+    /// (the validated case) this equals one face per triangle. For an
+    /// internal plate that ended up tagged on both sides of an
+    /// interior face, the count is twice the triangle count - a
+    /// diagnostic signal that the port is not properly boundary-attached.
+    pub fn port_n_faces(&self, port_idx: usize) -> usize {
+        self.ports[port_idx].faces.len()
+    }
+
+    /// Number of port faces whose neighbor element is *another* tet
+    /// (interior face, both sides in the domain) vs `MAX` (boundary
+    /// face, the side facing outside the domain). A *correctly*
+    /// boundary-attached port has zero interior faces; an internal
+    /// plate that ended up port-tagged on both sides has all interior
+    /// faces.
+    pub fn port_n_interior_faces(&self, port_idx: usize) -> usize {
+        let pd = &self.ports[port_idx];
+        pd.faces
+            .iter()
+            .filter(|&&(e, f)| {
+                self.faces[e * 4 + f].neighbor != usize::MAX
+            })
+            .count()
+    }
+
     pub fn port_has_mode(&self, port_idx: usize) -> bool {
         self.ports[port_idx].mode.is_some()
     }
@@ -3019,6 +3045,118 @@ mod tests {
         assert!(
             v_tem > v_pec + 0.15,
             "TEM ({v_tem:.3}) not clearly faster than TE₁₀ ({v_pec:.3})",
+        );
+    }
+
+    #[test]
+    fn two_lumped_ports_carry_tem_between_them() {
+        // Diagnostic for the lumped-port two-port pipeline: drive a
+        // lumped port at z=0, project the modal amplitude at a SECOND
+        // lumped port at z=lz (mode=(0,0), not mode=None). The wave
+        // should physically reach port 1 and its modal projection
+        // should be of order the drive amplitude, not zero.
+        //
+        // The companion test
+        // `lumped_port_carries_a_dispersionless_tem_wave` validates
+        // ONE active port + ONE absorbing port (mode=None). This test
+        // covers the missing two-active-ports case the macromodel
+        // and `sparams` rely on.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use std::f64::consts::PI;
+
+        let (a, b, lz) = (2.0, 0.5, 6.0);
+        let mesh = structured_box(6, 2, 16, a, b, lz);
+        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let z0_tris = on(&|p| p[2].abs() < 1e-9);
+        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
+
+        // Side walls absorbing (mode=None) so the TEM mode is the only
+        // propagating thing.
+        let x_lo = on(&|p| p[0].abs() < 1e-9);
+        let x_hi = on(&|p| (p[0] - a).abs() < 1e-9);
+
+        let port0 = RectPort {
+            origin: [0.0, 0.0, 0.0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, 1.0], // inward +z
+            a,
+            b,
+            mode: (0, 0),
+        };
+        let port1 = RectPort {
+            origin: [0.0, 0.0, lz],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, -1.0], // inward -z (looking into the box)
+            a,
+            b,
+            mode: (0, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: z0_tris,
+                    mode: Some(PortMode::Rect(port0)),
+                },
+                PortSpec {
+                    tris: zl_tris,
+                    mode: Some(PortMode::Rect(port1)),
+                },
+                PortSpec { tris: x_lo, mode: None },
+                PortSpec { tris: x_hi, mode: None },
+            ],
+        );
+
+        let wc = 0.0; // (0,0) TEM cutoff
+        let omega0 = PI / a; // band centre, above the would-be cutoff
+        let (t0, tau) = (5.0, 1.6);
+        let pulse = |t: f64| {
+            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
+        };
+        let dt = 0.02;
+        let steps = 800;
+        let src = op.port_source(0);
+        let mut y = vec![0.0; op.n_dof()];
+
+        // Track the time series of modal projections at BOTH ports.
+        let mut p1e_max = 0.0_f64;
+        let mut p0e_max = 0.0_f64;
+        for s in 0..steps {
+            let t = s as f64 * dt;
+            let g = pulse(t);
+            let bvec: Vec<f64> = src.iter().map(|x| x * g).collect();
+            y = etd_step(|x| op.apply(x), &y, &bvec, dt, 18);
+            let (p0e, _p0h) = op.port_modal_projections(&y, 0);
+            let (p1e, _p1h) = op.port_modal_projections(&y, 1);
+            p0e_max = p0e_max.max(p0e.abs());
+            p1e_max = p1e_max.max(p1e.abs());
+        }
+        let _ = wc;
+        eprintln!(
+            "DIAG two-lumped: drive port 0, peak |P_e(port 0)|={:.3e}, \
+             peak |P_e(port 1)|={:.3e}",
+            p0e_max, p1e_max,
+        );
+        assert!(
+            p1e_max > 1e-3 * p0e_max,
+            "TEM wave from port 0 did not reach port 1 in modal sense: \
+             P_e(port 0) peak = {:.3e}, P_e(port 1) peak = {:.3e}",
+            p0e_max,
+            p1e_max,
         );
     }
 
