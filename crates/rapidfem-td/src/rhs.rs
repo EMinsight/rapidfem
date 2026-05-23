@@ -155,6 +155,20 @@ impl PortSpec {
         mode: (usize, usize),
         direction: Option<[Field; 3]>,
     ) -> Option<PortSpec> {
+        Self::from_mesh_tag_with_z0(mesh, face_tag, mode, direction, 1.0)
+    }
+
+    /// Like [`from_mesh_tag`] but with an explicit reference impedance
+    /// `z0` for the lumped `(0, 0)` mode (operator units, so a 50 ohm
+    /// physical port is `z0 = 50.0 / 377.0`). Ignored for `TE_mn`
+    /// modes whose impedance is dispersive.
+    pub fn from_mesh_tag_with_z0(
+        mesh: &Mesh,
+        face_tag: i32,
+        mode: (usize, usize),
+        direction: Option<[Field; 3]>,
+        z0: Field,
+    ) -> Option<PortSpec> {
         let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
         if tris.is_empty() {
             return None;
@@ -224,7 +238,8 @@ impl PortSpec {
                 return None;
             }
         }
-        let rect = RectPort::from_face(&coords, nrm, mode, direction);
+        let mut rect = RectPort::from_face(&coords, nrm, mode, direction);
+        rect.z0 = z0;
         Some(PortSpec { tris, mode: Some(PortMode::Rect(rect)) })
     }
 
@@ -2765,6 +2780,7 @@ mod tests {
             a,
             b,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2861,6 +2877,7 @@ mod tests {
             a,
             b,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2965,6 +2982,7 @@ mod tests {
             a: 1.0,
             b: 1.0,
             mode: (0, 0), // lumped / TEM port
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -3036,6 +3054,7 @@ mod tests {
             a,
             b,
             mode: (0, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
 
@@ -3169,6 +3188,7 @@ mod tests {
             a,
             b,
             mode: (0, 0),
+            z0: 1.0,
         };
         let port1 = RectPort {
             origin: [0.0, 0.0, lz],
@@ -3178,6 +3198,7 @@ mod tests {
             a,
             b,
             mode: (0, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -3465,6 +3486,7 @@ mod tests {
             a,
             b,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(

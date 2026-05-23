@@ -194,6 +194,9 @@ def _collect_ports(geometry):
     import math
     from ..physics import CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort
 
+    # Free-space wave impedance (operator's normalised Z = 1). User
+    # Z0 in ohm becomes z0_op = Z0 / Z_FREE for the lumped (0,0) port.
+    Z_FREE = 376.7303135
     rect_out = []
     coax_out = []
     floquet_out = []
@@ -203,11 +206,13 @@ def _collect_ports(geometry):
             continue
         if isinstance(phys, RectWaveguidePort):
             mode = (int(phys.mode[0]), int(phys.mode[1]))
-            rect_out.append((int(tag), mode[0], mode[1], None))
+            # z0 ignored for TE_mn (mode != (0,0)); pass 1.0 placeholder.
+            rect_out.append((int(tag), mode[0], mode[1], None, 1.0))
         elif isinstance(phys, LumpedPort):
             d = phys.direction
             direction = (float(d[0]), float(d[1]), float(d[2]))
-            rect_out.append((int(tag), 0, 0, direction))
+            z0_op = float(phys.z0) / Z_FREE
+            rect_out.append((int(tag), 0, 0, direction, z0_op))
         elif isinstance(phys, CoaxPort):
             center = (
                 None

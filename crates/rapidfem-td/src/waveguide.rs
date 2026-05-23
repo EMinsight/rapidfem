@@ -48,6 +48,18 @@ pub struct RectPort {
     pub b: Field,
     /// `TE` mode indices `(m, n)`.
     pub mode: (usize, usize),
+    /// Reference impedance for the lumped `(0, 0)` mode, in the
+    /// operator's normalised units (`Z = 1` is free-space 377 ohm).
+    /// A user-specified `Z0 = 50 ohm` becomes `z0 = 50.0 / 377.0`.
+    /// Ignored for true waveguide modes `TE_mn` with `(m, n) != (0, 0)`,
+    /// whose impedance is dispersive and set by the cutoff.
+    ///
+    /// The lumped port's `h_profile` is `(w_hat x v_hat) / z0`, so the
+    /// ratio `|E| / |H|` of the port-mode profile equals `z0`. The
+    /// macromodel's forward / backward split
+    /// `A, B = (P_e +- z0 * P_h) / 2` then references S-parameters to
+    /// this Z0.
+    pub z0: Field,
 }
 
 impl RectPort {
@@ -89,10 +101,18 @@ impl RectPort {
     }
 
     /// Transverse magnetic-field profile for a mode propagating along the
-    /// inward normal — `h_t = ŵ × e_t` (free-space impedance in the
-    /// solver's normalised units). Global coordinates.
+    /// inward normal. For `TE_mn` modes (m, n != 0, 0) this is just
+    /// `h_t = ŵ × e_t` at the free-space impedance the operator's
+    /// normalisation uses. For the lumped `(0, 0)` mode the result is
+    /// scaled by `1 / z0` so the port carries a wave at the user's
+    /// reference impedance: `|E| / |H| = z0`. Global coordinates.
     pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
-        cross(self.w_hat, self.e_profile(x))
+        let h = cross(self.w_hat, self.e_profile(x));
+        if self.mode == (0, 0) && self.z0 > 0.0 {
+            [h[0] / self.z0, h[1] / self.z0, h[2] / self.z0]
+        } else {
+            h
+        }
     }
 
     /// Cutoff angular frequency `ω_c = π·√((m/a)² + (n/b)²)` (`c = 1`).
@@ -174,7 +194,16 @@ impl RectPort {
                 u_hat = cross(v_hat, w_hat); // û = v̂×ŵ ⇒ û×v̂ = ŵ
             }
         }
-        RectPort { origin, u_hat, v_hat, w_hat, a, b, mode }
+        RectPort {
+            origin,
+            u_hat,
+            v_hat,
+            w_hat,
+            a,
+            b,
+            mode,
+            z0: 1.0,
+        }
     }
 
     /// `TE`-mode wave impedance at angular frequency `omega`, in the
@@ -185,6 +214,12 @@ impl RectPort {
     /// frequency-dependent the split must be done per frequency. Valid
     /// for `omega > cutoff`.
     pub fn te_impedance(&self, omega: Field) -> Field {
+        // Lumped (0,0) is dispersionless and carries the user-set Z0;
+        // a true TE_mn mode follows the standard dispersive formula
+        // with free-space impedance Z = 1 in operator units.
+        if self.mode == (0, 0) {
+            return self.z0;
+        }
         let r = self.cutoff() / omega;
         1.0 / (1.0 - r * r).sqrt()
     }
@@ -590,6 +625,7 @@ mod tests {
             a,
             b,
             mode,
+            z0: 1.0,
         }
     }
 

@@ -2134,6 +2134,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2255,6 +2256,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2317,6 +2319,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2433,6 +2436,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2531,6 +2535,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2643,6 +2648,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2755,6 +2761,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2866,6 +2873,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -2944,6 +2952,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -3023,6 +3032,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(
@@ -3139,6 +3149,7 @@ mod tests {
             a: a_w,
             b: b_h,
             mode: (1, 0),
+            z0: 1.0,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
         let op = MaxwellOperator::new_with_materials_ports(

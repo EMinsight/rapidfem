@@ -509,7 +509,7 @@ impl PyTdOperator {
         tag_materials: Option<
             Vec<(i32, (f64, f64, f64), (f64, f64, f64), f64)>,
         >,
-        ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>)>>,
+        ports: Option<Vec<(i32, usize, usize, Option<(f64, f64, f64)>, f64)>>,
         absorbers: Option<Vec<(i32, usize, f64, f64, f64, bool)>>,
         dispersive: Option<Vec<(i32, f64, f64, f64)>>,
         coax_ports: Option<Vec<(i32, Option<(f64, f64, f64)>)>>,
@@ -596,15 +596,17 @@ impl PyTdOperator {
         }
         let mut port_specs: Vec<PortSpec> = Vec::new();
         if let Some(ps) = ports {
-            for (tag, m, n, dir) in ps {
+            for (tag, m, n, dir, z0_op) in ps {
                 let dir = dir.map(|(x, y, z)| [x, y, z]);
-                let spec = PortSpec::from_mesh_tag(&mesh, tag, (m, n), dir)
-                    .ok_or_else(|| {
-                        PyRuntimeError::new_err(format!(
-                            "port face tag {tag} has no triangles, or its \
-                             direction is zero / parallel to the face"
-                        ))
-                    })?;
+                let spec = PortSpec::from_mesh_tag_with_z0(
+                    &mesh, tag, (m, n), dir, z0_op,
+                )
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "port face tag {tag} has no triangles, or its \
+                         direction is zero / parallel to the face"
+                    ))
+                })?;
                 port_specs.push(spec);
             }
         }
