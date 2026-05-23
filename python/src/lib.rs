@@ -972,6 +972,14 @@ impl PyTdOperator {
         self.op.port_cutoff(port_idx)
     }
 
+    /// True if port `port_idx` carries a waveguide / lumped mode (and
+    /// thus participates in S-parameter extraction); false for a pure
+    /// absorbing-only ABC face. Used by Python callers to filter
+    /// the operator's port list down to its modal subset.
+    fn port_has_mode(&self, port_idx: usize) -> bool {
+        self.op.port_has_mode(port_idx)
+    }
+
     /// Spatial source vector for driving port `port_idx` with a unit
     /// waveform — the system is `dy/dt = A·y + b·g(t)`.
     fn port_source<'py>(

@@ -1444,17 +1444,27 @@ class ProblemTD:
             unchanged; :func:`rapidfem.show` plots the S-parameters.
         """
         freqs = np.asarray(freqs, dtype=float).ravel()
-        n_ports = self._op.n_ports()
+        total_ports = self._op.n_ports()
+        # Modal ports only — ABC faces (port_has_mode == False) are
+        # absorbing-only and do not participate in S-parameter
+        # extraction. The S-matrix is indexed over the modal subset
+        # in declaration order, matching the macromodel convention.
+        modal_idx = [
+            p for p in range(total_ports) if self._op.port_has_mode(p)
+        ]
+        n_ports = len(modal_idx)
         if n_ports == 0:
             raise RuntimeError(
-                "ProblemTD has no ports — attach RectWaveguidePort(s) or "
-                "LumpedPort(s) to the geometry before constructing it"
+                "ProblemTD has no modal ports — attach "
+                "RectWaveguidePort(s) or LumpedPort(s) to the "
+                "geometry before constructing it; ABC faces alone do "
+                "not carry a mode for extraction"
             )
         # Below a waveguide port's cutoff the modal wave impedance turns
         # imaginary and the scattering parameters are undefined; reject the
         # run up front rather than let NaN poison the whole S-matrix.
         f_min = float(freqs.min())
-        for p in range(n_ports):
+        for p in modal_idx:
             f_cut = self.c * self._op.port_cutoff(p) / (2.0 * np.pi)
             if f_min <= f_cut:
                 raise ValueError(
@@ -1478,8 +1488,8 @@ class ProblemTD:
         a_inc = np.zeros((n_ports, freqs.size), dtype=complex)
         b_out = np.zeros((n_ports, n_ports, freqs.size), dtype=complex)
         every = max(1, steps // 5)
-        for j in range(n_ports):
-            src = self._op.port_source(j)
+        for jx, j_port in enumerate(modal_idx):
+            src = self._op.port_source(j_port)
             y = np.zeros(n)
             pe = np.zeros((n_ports, steps))
             ph = np.zeros((n_ports, steps))
@@ -1488,11 +1498,13 @@ class ProblemTD:
                 y = self._op.step_with_source(
                     y, src * g[s], h_op, krylov_dim
                 )
-                for i in range(n_ports):
-                    pe[i, s], ph[i, s] = self._op.port_projections(y, i)
+                for ix, i_port in enumerate(modal_idx):
+                    pe[ix, s], ph[ix, s] = self._op.port_projections(
+                        y, i_port
+                    )
                 if verbose and (s + 1) % every == 0:
                     _log(
-                        f"sparams drive {j + 1}/{n_ports}: "
+                        f"sparams drive {jx + 1}/{n_ports}: "
                         f"step {s + 1}/{steps} ({time.time() - t0:.1f}s)"
                     )
             # Reflection (i == j) and transmission (i != j) terms need
@@ -1504,10 +1516,10 @@ class ProblemTD:
             # at the nearest other port -- the round-trip travel time.
             peak = float(np.abs(pe).max())
             arrivals = []
-            for i in range(n_ports):
-                if i == j or peak <= 0.0:
+            for ix in range(n_ports):
+                if ix == jx or peak <= 0.0:
                     continue
-                env = np.abs(pe[i])
+                env = np.abs(pe[ix])
                 above = np.flatnonzero(env > _SPARAM_ARRIVAL_FRAC * peak)
                 if above.size:
                     arrivals.append(int(above[0]))
@@ -1522,27 +1534,28 @@ class ProblemTD:
                 * dt
             )
             # Forward / backward modal split A,B = (P_e +- Z*P_h)/2 of the
-            # recorded total field.
-            for i in range(n_ports):
+            # recorded total field. Impedance is looked up on the
+            # operator's port index (i_port), not the modal-list index.
+            for ix, i_port in enumerate(modal_idx):
                 z = np.array(
-                    [self._port_impedance(i, f) for f in freqs]
+                    [self._port_impedance(i_port, f) for f in freqs]
                 )
-                if i == j:
-                    pe_f = phase_r @ pe[i, :refl_w]
-                    ph_f = phase_r @ ph[i, :refl_w]
-                    a_inc[j] = 0.5 * (pe_f + z * ph_f)
-                    b_out[j, i] = 0.5 * (pe_f - z * ph_f)
+                if ix == jx:
+                    pe_f = phase_r @ pe[ix, :refl_w]
+                    ph_f = phase_r @ ph[ix, :refl_w]
+                    a_inc[jx] = 0.5 * (pe_f + z * ph_f)
+                    b_out[jx, ix] = 0.5 * (pe_f - z * ph_f)
                 else:
-                    pe_f = phase @ pe[i]
-                    ph_f = phase @ ph[i]
-                    b_out[j, i] = 0.5 * (pe_f - z * ph_f)
+                    pe_f = phase @ pe[ix]
+                    ph_f = phase @ ph[ix]
+                    b_out[jx, ix] = 0.5 * (pe_f - z * ph_f)
             # Closing the loop: the transmission DFT stays leakage-free
             # only once the transient has decayed by the window end.
             tail = max(1, steps // 20)
             resid = float(np.abs(pe[:, -tail:]).max())
             if verbose and peak > 0.0 and resid > _SPARAM_DECAY_FRAC * peak:
                 _log(
-                    f"sparams drive {j + 1}: port signal still at "
+                    f"sparams drive {jx + 1}: port signal still at "
                     f"{resid / peak:.0%} of peak at the window end, "
                     f"raise steps for a cleaner extraction"
                 )
