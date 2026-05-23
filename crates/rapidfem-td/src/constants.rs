@@ -105,6 +105,14 @@ pub const MACROMODEL_DEFLATION_TOL: Accum = 1e-10;
 /// since the macromodel build is one-shot and not sub-stepped.
 pub const MACROMODEL_DEFAULT_R: usize = 80;
 
+/// Stride of the interleaved `[E, H]` block in the time-domain state
+/// layout `y[(e*Np + i)*6 + c]`: components `c = 0..3` are the three
+/// electric-field components at the node, components `c = 3..6` the
+/// three magnetic-field components. Used by the SPRIM-style E/H mask
+/// in [`crate::macromodel`] to project a state vector onto its E-part
+/// or H-part for structure-preserving block-Krylov.
+pub const TD_STATE_BLOCK_STRIDE: usize = 6;
+
 // ── Dense matrix exponential (scaling-and-squaring) ───────────────────────
 
 /// Scaling-and-squaring threshold: the matrix is halved until its
