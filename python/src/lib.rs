@@ -500,7 +500,7 @@ impl PyTdOperator {
     /// transverse Floquet phase factor is dropped at oblique scan (a
     /// real-valued port API approximation); normal incidence is exact.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -515,6 +515,7 @@ impl PyTdOperator {
         coax_ports: Option<Vec<(i32, Option<(f64, f64, f64)>)>>,
         periodic_pairs: Option<Vec<(i32, i32)>>,
         floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
+        abc_faces: Option<Vec<i32>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
@@ -648,6 +649,21 @@ impl PyTdOperator {
                         "floquet port face tag {tag} has no triangles"
                     ))
                 })?;
+                port_specs.push(spec);
+            }
+        }
+        // Absorbing-only (ABC) boundary faces - characteristic
+        // non-reflecting flux, no waveguide mode. Appended after the
+        // modal ports, so absorbing faces do NOT shift the modal-port
+        // indices used by `sparams` / `macromodel`.
+        if let Some(faces) = abc_faces {
+            for tag in faces {
+                let spec = PortSpec::absorbing_from_mesh_tag(&mesh, tag)
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "ABC face tag {tag} has no triangles"
+                        ))
+                    })?;
                 port_specs.push(spec);
             }
         }

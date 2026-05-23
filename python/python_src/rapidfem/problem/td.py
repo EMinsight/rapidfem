@@ -225,6 +225,39 @@ def _collect_ports(geometry):
     return rect_out, coax_out, floquet_out
 
 
+def _collect_abc(geometry):
+    """Walk the geometry's :class:`ABC` physics objects.
+
+    Returns ``[face_tag]`` for the native TD operator's ``abc_faces``
+    argument. Each face is registered with the operator as a
+    pure-absorbing boundary (a :class:`PortSpec` with ``mode = None``),
+    which the DG flux treats as a Silver-Mueller first-order ABC:
+    near-normally-incident outgoing waves leave with negligible
+    reflection, oblique incidence reflects more.
+
+    Order / abctype attributes on the FD ``rf.ABC`` are ignored here;
+    the TD characteristic absorber is a first-order condition by
+    construction. The user keeps a single ``rf.ABC(*faces, order=...)``
+    declaration that both backends respect; only its boundary
+    treatment differs.
+    """
+    from ..physics import ABC
+
+    tags = []
+    for phys in getattr(geometry, "_physics", []):
+        if not isinstance(phys, ABC):
+            continue
+        tag = geometry._physics_tags.get(id(phys))
+        if tag is None:
+            continue
+        if isinstance(tag, tuple):
+            for t in tag:
+                tags.append(int(t))
+        else:
+            tags.append(int(tag))
+    return tags
+
+
 def _collect_periodic(geometry):
     """Walk the geometry's :class:`PeriodicBoundary` physics objects.
 
@@ -791,6 +824,7 @@ class ProblemTD:
         tag_ports, coax_ports, floquet_ports = _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
         tag_periodic = _collect_periodic(geometry)
+        tag_abc = _collect_abc(geometry)
         # The TD operator runs in normalised units (c = 1, time measured in
         # the mesh's length units), so a Debye relaxation time given in
         # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /
@@ -806,6 +840,7 @@ class ProblemTD:
             coax_ports or None,
             tag_periodic or None,
             floquet_ports or None,
+            tag_abc or None,
         )
         self._geometry = geometry
         self.order = order
@@ -818,7 +853,8 @@ class ProblemTD:
             f"{len(floquet_ports)} floquet), "
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
             f"{len(tag_dispersive)} Debye dispersive regions, "
-            f"{len(tag_periodic)} periodic boundary pair(s)"
+            f"{len(tag_periodic)} periodic boundary pair(s), "
+            f"{len(tag_abc)} ABC face(s)"
         )
 
     @classmethod

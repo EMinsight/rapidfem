@@ -228,7 +228,30 @@ impl PortSpec {
         Some(PortSpec { tris, mode: Some(PortMode::Rect(rect)) })
     }
 
-    /// Build a coaxial TEM port from a gmsh face tag — collecting the port
+    /// Build a *pure absorbing* boundary from a gmsh face tag, no
+    /// waveguide mode attached, just the characteristic non-reflecting
+    /// flux at the face. This is the DG analogue of the FD backend's
+    /// first-order ABC (Silver-Mueller): the upwind flux with a zero
+    /// ghost state lets outgoing plane waves leave at near-normal
+    /// incidence without reflection.
+    ///
+    /// Useful for terminating an air box around a small radiating /
+    /// scattering structure when a full volumetric PML is overkill.
+    /// Reflection grows with the angle of incidence; place the face
+    /// several wavelengths from the source for clean termination.
+    /// Returns `None` if the tag carries no triangles.
+    pub fn absorbing_from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        Some(PortSpec { tris, mode: None })
+    }
+
+    /// Build a coaxial TEM port from a gmsh face tag, collecting the port
     /// triangles and fitting the coaxial annulus to the face.
     ///
     /// The coax center defaults to the port-face centroid; `center` supplies
