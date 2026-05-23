@@ -384,6 +384,29 @@ impl GpuOperator {
         gpu.download(&self.dy, self.n_dof)
     }
 
+    /// `f64` host wrapper around [`Self::apply`] for the macromodel
+    /// build: cast `f64 -> f32`, run the device matvec, cast back
+    /// `f32 -> f64`. The mixed-precision drift is bounded by
+    /// [`crate::constants::GPU_REL_TOL`] per matvec; the block-Krylov
+    /// build calls this once per basis vector and the projection
+    /// onto the orthonormal `V` averages the rounding noise to that
+    /// scale across the macromodel.
+    ///
+    /// Used by the `apply_fn` closure that
+    /// [`crate::macromodel::MacroModel::build_with_apply_fn`] takes,
+    /// so the CPU and GPU build paths share the same block-CGS2
+    /// orthogonalisation and Hessenberg loop. The GPU does the
+    /// `n_dof`-sized work; the CPU does the small dot products.
+    pub fn apply_f64(
+        &mut self,
+        gpu: &GpuContext,
+        y_host: &[f64],
+    ) -> Result<Vec<f64>, String> {
+        let y_f32: Vec<f32> = y_host.iter().map(|&v| v as f32).collect();
+        let dy_f32 = self.apply(gpu, &y_f32)?;
+        Ok(dy_f32.into_iter().map(|v| v as f64).collect())
+    }
+
     /// Enqueue the soft-source add: `dy[source_dof] += val`.
     fn enqueue_add_source(
         &self,

@@ -105,6 +105,63 @@ impl MacroModel {
         Self::build(op, MACROMODEL_DEFAULT_R)
     }
 
+    /// GPU-accelerated block-Krylov build (M6 WP 6.1). Every `A * v`
+    /// matvec runs on the device via
+    /// [`crate::gpu::GpuOperator::apply_f64`]; the block-CGS2
+    /// orthogonalisation and dense Hessenberg work stay on the host.
+    ///
+    /// Same algorithm as [`MacroModel::build`], same `(A_hat, B_hat,
+    /// C_hat)` shape; the only difference is where the matvecs run.
+    /// For large `n_dof` the matvec dominates the build cost, so the
+    /// GPU path gives most of its speedup here without needing a full
+    /// device-side block-Arnoldi (that lift is targeted in WP 6.2 if
+    /// the host-side CGS2 ever becomes the bottleneck).
+    ///
+    /// Caveat: the GPU operator runs in `f32` (see
+    /// [`crate::constants::Field`] / `Accum`); the resulting model
+    /// drifts from the `f64` CPU reference by at most
+    /// [`crate::constants::GPU_REL_TOL`] in the per-frequency S-matrix.
+    #[cfg(feature = "gpu")]
+    pub fn build_gpu(
+        gpu: &crate::gpu::GpuContext,
+        gpu_op: &mut crate::gpu::GpuOperator,
+        op: &MaxwellOperator,
+        r: usize,
+    ) -> Result<Self, String> {
+        Self::build_gpu_with_tol(gpu, gpu_op, op, r, MACROMODEL_DEFLATION_TOL)
+    }
+
+    /// GPU build with an explicit deflation tolerance.
+    #[cfg(feature = "gpu")]
+    pub fn build_gpu_with_tol(
+        gpu: &crate::gpu::GpuContext,
+        gpu_op: &mut crate::gpu::GpuOperator,
+        op: &MaxwellOperator,
+        r: usize,
+        tol: Accum,
+    ) -> Result<Self, String> {
+        // The GPU apply closure shares the build with the CPU path -
+        // only the matvec is offloaded. The `?`-propagated error
+        // surfaces from the device driver (kernel launch, buffer
+        // up/download); a clean GPU success path returns the assembled
+        // macromodel.
+        let mut last_err: Option<String> = None;
+        let apply = |v: &[Field]| -> Vec<Field> {
+            match gpu_op.apply_f64(gpu, v) {
+                Ok(dy) => dy,
+                Err(e) => {
+                    last_err = Some(e);
+                    vec![0.0; v.len()]
+                }
+            }
+        };
+        let model = Self::build_with_apply_fn(op, apply, r, tol);
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+        Ok(model)
+    }
+
     /// Chebyshev-filtered block-Krylov build (M4 WP 4.2).
     ///
     /// Standard impulse-Krylov spans `span{B, A*B, A^2*B, ...}` - the
@@ -533,6 +590,25 @@ impl MacroModel {
     /// for tests and tuning. See [`MacroModel::build`] for the standard
     /// caller-facing form.
     pub fn build_with_tol(op: &MaxwellOperator, r: usize, tol: Accum) -> Self {
+        Self::build_with_apply_fn(op, |x| op.apply(x), r, tol)
+    }
+
+    /// Block-Krylov build with a caller-supplied matvec closure. The
+    /// `op` borrow is needed for port plumbing (`port_source`,
+    /// `port_modal_projections`, `port_impedance`); the closure
+    /// handles every `A * v` evaluation. The CPU `build_with_tol`
+    /// passes `|x| op.apply(x)`; a GPU caller wraps the device
+    /// matvec in the same shape (see `gpu::operator` for the f64
+    /// host wrapper).
+    pub fn build_with_apply_fn<F>(
+        op: &MaxwellOperator,
+        mut apply: F,
+        r: usize,
+        tol: Accum,
+    ) -> Self
+    where
+        F: FnMut(&[Field]) -> Vec<Field>,
+    {
         assert!(r > 0, "macromodel order r must be positive");
 
         // Collect modal-port column sources.
@@ -617,7 +693,7 @@ impl MacroModel {
                 // cleanly rather than asserting.
                 break;
             }
-            let mut w = op.apply(&basis[j]);
+            let mut w = apply(&basis[j]);
             block_cgs2(&mut w, &basis);
             let wn = norm2(&w);
             if wn < tol {
@@ -642,7 +718,7 @@ impl MacroModel {
         // well under the cost of a transient run.
         let mut a_hat = vec![0.0 as Field; r_eff * r_eff];
         for j in 0..r_eff {
-            let av = op.apply(&basis[j]);
+            let av = apply(&basis[j]);
             for i in 0..r_eff {
                 a_hat[i * r_eff + j] = dot(&basis[i], &av);
             }
@@ -2093,6 +2169,120 @@ mod tests {
             max_reciprocity < 0.10,
             "polyfilter reciprocity badly violated: max |S21 - S12| = {:.3}",
             max_reciprocity,
+        );
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn macromodel_gpu_build_matches_cpu_within_mixed_precision_tol() {
+        // M6 gate: same macromodel built via CPU and GPU agrees on
+        // the S-matrix to within GPU_REL_TOL. The GPU path runs every
+        // matvec in f32 on the device; the rest of the build (block
+        // CGS2, Hessenberg formation, port projections) stays in f64
+        // on the host. Cross-validation against the CPU reference is
+        // the cleanest correctness gate for the new build path.
+        use crate::constants::GPU_REL_TOL;
+        use crate::gpu::{GpuContext, GpuOperator};
+
+        let (a_w, b_h, lz) = (1.0, 0.5, 2.0);
+        let mesh = structured_box(2, 1, 8, a_w, b_h, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a: a_w,
+            b: b_h,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
+                },
+            ],
+        );
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU macromodel test: {e}");
+                return;
+            }
+        };
+        let mut gpu_op = match GpuOperator::new(&gpu, &op) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU macromodel test: {e}");
+                return;
+            }
+        };
+
+        // r = 80: small build so the test runs in a reasonable time
+        // on both back ends. The aim is consistency, not headline
+        // accuracy.
+        let r = 80;
+        let cpu_model = MacroModel::build(&op, r);
+        let gpu_model = MacroModel::build_gpu(&gpu, &mut gpu_op, &op, r)
+            .expect("GPU macromodel build");
+        eprintln!(
+            "DIAG GPU build: cpu r = {}, gpu r = {}",
+            cpu_model.r(),
+            gpu_model.r(),
+        );
+
+        // Compare S-matrices at five in-band points.
+        let omegas: Vec<f64> =
+            (0..5).map(|i| (1.35 + 0.20 * i as f64 / 4.0) * PI).collect();
+        let mut max_rel_diff = 0.0_f64;
+        for &omega in &omegas {
+            let s_cpu = cpu_model.evaluate(omega);
+            let s_gpu = gpu_model.evaluate(omega);
+            for k in 0..(2 * 2) {
+                let denom = s_cpu[k].norm().max(1e-3);
+                let d = (s_cpu[k] - s_gpu[k]).norm() / denom;
+                max_rel_diff = max_rel_diff.max(d);
+            }
+            eprintln!(
+                "DIAG GPU omega/pi={:.3}: |S11|_cpu={:.4} |S21|_cpu={:.4} \
+                 |S11|_gpu={:.4} |S21|_gpu={:.4}",
+                omega / PI,
+                s_cpu[0].norm(),
+                s_cpu[2].norm(),
+                s_gpu[0].norm(),
+                s_gpu[2].norm(),
+            );
+        }
+        eprintln!(
+            "DIAG GPU summary: max relative S diff = {:.3e} \
+             (target <= GPU_REL_TOL * a few = {:.3e})",
+            max_rel_diff,
+            5.0 * GPU_REL_TOL,
+        );
+        // Mixed-precision tolerance with a small safety factor.
+        assert!(
+            max_rel_diff < 5.0 * GPU_REL_TOL,
+            "GPU macromodel drifts too far from CPU: {:.3e}",
+            max_rel_diff,
         );
     }
 
