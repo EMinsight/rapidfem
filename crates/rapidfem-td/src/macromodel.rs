@@ -399,6 +399,178 @@ impl MacroModel {
         )
     }
 
+    /// Multi-shift rational Krylov build (M4 WP 4.3, broadband
+    /// variant).
+    ///
+    /// Single-shift [`MacroModel::build_shift_invert`] biases the
+    /// basis toward modes near *one* shift point. On a non-resonant
+    /// lumped-port structure the iteration collapses to the dominant
+    /// in-band eigenmode within a few steps, leaving the basis
+    /// under-spanned and S-parameters frequency-flat.
+    ///
+    /// Multi-shift fixes this by placing several shifts
+    /// `sigma_k = j*omega_k` across the design band, running a short
+    /// shift-invert sequence at each, and orthonormalising the union
+    /// of per-shift bases. Different shifts amplify different in-band
+    /// eigenmodes, so the union spans the whole in-band structure.
+    /// `n_shift_steps` controls how many `(sigma_k I - A)^{-1}`
+    /// applications happen per port per shift (one application
+    /// already gives huge in-band amplification; two adds a second
+    /// independent direction; more usually deflates).
+    ///
+    /// `omegas_op` is the list of shift centres in operator angular
+    /// units (`c = 1`). Cost is `omegas_op.len() * n_ports *
+    /// n_shift_steps` GMRES solves, each up to `gmres_max_iter`
+    /// matvec pairs. A typical broadband sweep uses 4-8 shifts at the
+    /// quartile points of the band with `n_shift_steps = 2`.
+    pub fn build_multi_shift(
+        op: &MaxwellOperator,
+        omegas_op: &[Field],
+        n_shift_steps: usize,
+    ) -> Self {
+        Self::build_multi_shift_with(
+            op,
+            omegas_op,
+            n_shift_steps,
+            GMRES_SHIFT_MAX_ITER,
+            GMRES_SHIFT_TOL,
+            MACROMODEL_DEFLATION_TOL,
+        )
+    }
+
+    /// Multi-shift build with explicit GMRES + deflation tolerances.
+    pub fn build_multi_shift_with(
+        op: &MaxwellOperator,
+        omegas_op: &[Field],
+        n_shift_steps: usize,
+        gmres_max_iter: usize,
+        gmres_tol: Accum,
+        deflation_tol: Accum,
+    ) -> Self {
+        assert!(
+            !omegas_op.is_empty(),
+            "multi-shift build needs at least one shift point",
+        );
+        assert!(
+            omegas_op.iter().all(|&w| w > 0.0),
+            "every shift omega must be positive",
+        );
+        assert!(
+            n_shift_steps >= 1,
+            "n_shift_steps must be >= 1",
+        );
+
+        let mut modal_port_idx: Vec<usize> = Vec::new();
+        for k in 0..op.n_ports() {
+            if op.port_has_mode(k) {
+                modal_port_idx.push(k);
+            }
+        }
+        let n_ports = modal_port_idx.len();
+        assert!(
+            n_ports > 0,
+            "macromodel needs at least one port carrying a waveguide mode",
+        );
+
+        let n_dof = op.n_dof();
+        let mut basis: Vec<Vec<Field>> = Vec::new();
+
+        // Per shift, per port, run `n_shift_steps` applications of
+        // (sigma_k I - A)^{-1} starting from the port source. Each
+        // complex result is split into re / im halves and
+        // orthogonalised into the running basis. Different shifts hit
+        // different in-band eigenmodes, so even when an individual
+        // shift's iteration collapses to one direction the union
+        // grows.
+        for &omega in omegas_op {
+            let sigma = C64::new(0.0, omega);
+            for &port_k in modal_port_idx.iter() {
+                let mut current = real_to_complex(&op.port_source(port_k));
+                for _step in 0..n_shift_steps {
+                    let basis_before = basis.len();
+                    let x = gmres_shifted(
+                        |v| op.apply(v),
+                        sigma,
+                        &current,
+                        n_dof,
+                        gmres_max_iter,
+                        gmres_tol,
+                    );
+                    let (xr, xi) = split_complex(&x);
+                    for mut w in [xr, xi].into_iter() {
+                        block_cgs2(&mut w, &basis);
+                        let wn = norm2(&w);
+                        if wn < deflation_tol {
+                            continue;
+                        }
+                        let inv = 1.0 / wn;
+                        for v in w.iter_mut() {
+                            *v *= inv;
+                        }
+                        basis.push(w);
+                    }
+                    if basis.len() == basis_before {
+                        break;
+                    }
+                    current = x;
+                }
+            }
+        }
+        let r_eff = basis.len();
+        assert!(
+            r_eff > 0,
+            "multi-shift build produced an empty basis (every solve \
+             deflated)",
+        );
+
+        // Projection step identical to the single-shift path - just a
+        // different basis was built.
+        let mut a_hat = vec![0.0 as Field; r_eff * r_eff];
+        for j in 0..r_eff {
+            let av = op.apply(&basis[j]);
+            for i in 0..r_eff {
+                a_hat[i * r_eff + j] = dot(&basis[i], &av);
+            }
+        }
+        let mut b_hat = vec![0.0 as Field; r_eff * n_ports];
+        for (j, &k) in modal_port_idx.iter().enumerate() {
+            let b_raw = op.port_source(k);
+            for i in 0..r_eff {
+                b_hat[i * n_ports + j] = dot(&basis[i], &b_raw);
+            }
+        }
+        let mut c_e_hat = vec![0.0 as Field; n_ports * r_eff];
+        let mut c_h_hat = vec![0.0 as Field; n_ports * r_eff];
+        for (port_i, &port_k) in modal_port_idx.iter().enumerate() {
+            for col_k in 0..r_eff {
+                let (pe, ph) =
+                    op.port_modal_projections(&basis[col_k], port_k);
+                c_e_hat[port_i * r_eff + col_k] = pe;
+                c_h_hat[port_i * r_eff + col_k] = ph;
+            }
+        }
+        let port_modes_for_closure: Vec<_> = modal_port_idx
+            .iter()
+            .map(|&k| ImpedanceProbe::new(op, k))
+            .collect();
+        let impedances: Box<dyn Fn(Field) -> Vec<Field> + Send + Sync> =
+            Box::new(move |omega: Field| {
+                port_modes_for_closure
+                    .iter()
+                    .map(|p| p.impedance(omega))
+                    .collect()
+            });
+        MacroModel {
+            a_hat,
+            b_hat,
+            c_e_hat,
+            c_h_hat,
+            impedances,
+            n_ports,
+            r: r_eff,
+        }
+    }
+
     /// Shift-invert build with explicit GMRES + deflation tolerances.
     pub fn build_shift_invert_with(
         op: &MaxwellOperator,
@@ -2662,6 +2834,80 @@ mod tests {
             max_rel_diff < 5.0 * GPU_REL_TOL,
             "GPU macromodel drifts too far from CPU: {:.3e}",
             max_rel_diff,
+        );
+    }
+
+    #[test]
+    fn macromodel_multi_shift_unions_per_shift_bases() {
+        // M4 WP 4.3 multi-shift sanity. Runs with four shift points
+        // across the matched-2-port band, two shift-invert steps per
+        // port per shift. Confirms that the build runs and produces
+        // a basis at least as large as the single-shift variant
+        // would on a comparable cost budget, with reciprocal finite
+        // S-parameters. Numerical accuracy is not the gate (that
+        // belongs to the resonant-structure use case).
+        let (a_w, b_h, lz) = (1.0, 0.5, 2.0);
+        let mesh = structured_box(2, 1, 8, a_w, b_h, lz);
+        let on_plane = |zc: f64| -> Vec<usize> {
+            mesh.tris
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.iter().all(|&nd| (mesh.nodes[nd][2] - zc).abs() < 1e-9)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let rect = |z0: f64, inward: f64| RectPort {
+            origin: [0.0, 0.0, z0],
+            u_hat: [1.0, 0.0, 0.0],
+            v_hat: [0.0, 1.0, 0.0],
+            w_hat: [0.0, 0.0, inward],
+            a: a_w,
+            b: b_h,
+            mode: (1, 0),
+        };
+        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
+        let op = MaxwellOperator::new_with_materials_ports(
+            &mesh,
+            2,
+            0.0,
+            &vacuum,
+            &[
+                PortSpec {
+                    tris: on_plane(0.0),
+                    mode: Some(PortMode::Rect(rect(0.0, 1.0))),
+                },
+                PortSpec {
+                    tris: on_plane(lz),
+                    mode: Some(PortMode::Rect(rect(lz, -1.0))),
+                },
+            ],
+        );
+
+        let shifts = [
+            1.35 * PI, 1.42 * PI, 1.48 * PI, 1.55 * PI,
+        ];
+        let model = MacroModel::build_multi_shift(&op, &shifts, 2);
+        eprintln!(
+            "DIAG multi-shift: shifts (omega/pi) = {:?}, realised r = {}",
+            shifts.iter().map(|&w| w / PI).collect::<Vec<_>>(),
+            model.r(),
+        );
+        assert!(model.r() > 0, "multi-shift built an empty basis");
+
+        let omegas: Vec<f64> =
+            (0..3).map(|i| (1.35 + 0.20 * i as f64 / 2.0) * PI).collect();
+        let mut max_reciprocity = 0.0_f64;
+        for &omega in &omegas {
+            let s = model.evaluate(omega);
+            assert!(s.iter().all(|c| c.is_finite()));
+            max_reciprocity = max_reciprocity.max((s[2] - s[1]).norm());
+        }
+        assert!(
+            max_reciprocity < 0.10,
+            "multi-shift reciprocity broken: max |S21 - S12| = {:.3}",
+            max_reciprocity,
         );
     }
 

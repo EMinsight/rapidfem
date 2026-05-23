@@ -1142,7 +1142,8 @@ class ProblemTD:
         _log(f"reduce complete - reduced order r={rom.r}")
         return rom
 
-    def macromodel(self, *, r=120, sprim=False, shift_freq_hz=None):
+    def macromodel(self, *, r=120, sprim=False, shift_freq_hz=None,
+                   shift_freqs_hz=None, n_shift_steps=2):
         """Build a compact MIMO macromodel of the modal-port network.
 
         Block-Krylov projection of the matrix-free operator seeded by
@@ -1163,14 +1164,24 @@ class ProblemTD:
             The default plain build is slightly faster and matches the
             M1 / M2 deliverables.
         shift_freq_hz : float, optional
-            Switch to the shift-invert rational-Krylov build (M4 WP
-            4.3), with the shift placed at this physical frequency in
-            Hertz (typically the band centre). Use this when the
-            design band sits well below the mesh-induced spectral
-            radius - the RFIC regime where plain impulse-Krylov
-            cannot reach the in-band physics. Mutually exclusive with
-            ``sprim``. A modest ``r`` (tens) is usually enough since
-            shift-invert focuses the basis around the shift.
+            Switch to the single-shift rational-Krylov build (M4 WP
+            4.3), with the shift placed at this physical frequency.
+            Concentrates the basis around one frequency; best for a
+            single-resonance design point. Mutually exclusive with
+            ``sprim`` and ``shift_freqs_hz``.
+        shift_freqs_hz : sequence of float, optional
+            Multi-shift broadband rational-Krylov build: shift
+            centres in Hertz distributed across the design band.
+            Each shift contributes basis vectors via
+            ``(sigma_k I - A)^{-1} * port_source``; the union spans
+            the in-band physics that single-shift cannot reach on a
+            non-resonant lumped-port structure. Mutually exclusive
+            with ``sprim`` and ``shift_freq_hz``.
+        n_shift_steps : int
+            Per-port `(sigma_k I - A)^{-1}` applications per shift.
+            One step usually saturates the in-band amplification;
+            two adds a second independent direction; more typically
+            deflates. Default 2.
 
         Returns
         -------
@@ -1186,22 +1197,40 @@ class ProblemTD:
                 "LumpedPort(s), CoaxPort(s) or FloquetPort(s) to the "
                 "geometry before calling macromodel"
             )
-        if sprim and shift_freq_hz is not None:
+        n_shift_modes = sum(
+            x is not None for x in (shift_freq_hz, shift_freqs_hz)
+        )
+        if sprim and n_shift_modes > 0:
             raise ValueError(
-                "macromodel: pass either sprim=True OR shift_freq_hz, "
-                "not both"
+                "macromodel: sprim is mutually exclusive with "
+                "shift_freq_hz / shift_freqs_hz"
             )
+        if n_shift_modes > 1:
+            raise ValueError(
+                "macromodel: pass either shift_freq_hz (single shift) "
+                "or shift_freqs_hz (multi-shift), not both"
+            )
+        omegas_op = None
         if shift_freq_hz is not None:
-            omega_op = 2.0 * np.pi * float(shift_freq_hz) / self.c
-            mode = f"shift-invert at f={shift_freq_hz/1e9:.3f} GHz"
+            omegas_op = [2.0 * np.pi * float(shift_freq_hz) / self.c]
+            mode = f"single-shift at {shift_freq_hz/1e9:.3f} GHz"
+        elif shift_freqs_hz is not None:
+            fs = [float(f) for f in shift_freqs_hz]
+            omegas_op = [2.0 * np.pi * f / self.c for f in fs]
+            mode = (
+                f"multi-shift ({len(fs)} shifts at "
+                f"{fs[0]/1e9:.2f}-{fs[-1]/1e9:.2f} GHz, "
+                f"n_shift_steps={int(n_shift_steps)})"
+            )
         else:
-            omega_op = None
             mode = "SPRIM" if sprim else "plain"
         _log(
             f"macromodel - {mode} block-Krylov r={int(r)} on "
             f"{self.n_dof} DOFs"
         )
-        native = self._op.macromodel(int(r), bool(sprim), omega_op)
+        native = self._op.macromodel(
+            int(r), bool(sprim), omegas_op, int(n_shift_steps),
+        )
         m = TdMacroModel(native, self.c)
         _log(
             f"macromodel complete - reduced order r={m.r}, "

@@ -1116,35 +1116,48 @@ impl PyTdOperator {
     /// better passivity preservation (the M3 path); the default plain
     /// build (`sprim = False`) is slightly faster.
     ///
-    /// `shift_omega_op`, if given, switches to the shift-invert
-    /// rational-Krylov build (M4 WP 4.3). The Krylov subspace is then
-    /// biased toward eigenfrequencies of the operator near
-    /// `omega_shift = shift_omega_op` (operator angular-frequency
-    /// units, `c = 1`). Use this when the design band sits well
-    /// below the mesh-induced spectral radius (the RFIC regime),
-    /// where plain impulse-Krylov can't reach the in-band physics.
-    /// `shift_omega_op` is mutually exclusive with `sprim`.
+    /// `shift_omegas_op`, if given, switches to the shift-invert
+    /// rational-Krylov build (M4 WP 4.3). One shift point gives the
+    /// single-shift rational Krylov; multiple shifts run the
+    /// broadband multi-shift variant that distributes the basis
+    /// across the band. Operator angular-frequency units (`c = 1`).
+    /// `n_shift_steps` controls how many `(sigma_k I - A)^{-1}`
+    /// applications run per port per shift (typical 1-3; default 2).
+    /// Use shift-invert when the design band sits well below the
+    /// mesh-induced spectral radius (the RFIC regime), where plain
+    /// impulse-Krylov cannot reach the in-band physics.
+    /// `shift_omegas_op` is mutually exclusive with `sprim`.
     ///
     /// Requires at least one port carrying a waveguide mode. Pure
     /// absorbing-only ports do not contribute and are silently skipped.
-    #[pyo3(signature = (r, sprim = false, shift_omega_op = None))]
+    #[pyo3(signature = (r, sprim = false, shift_omegas_op = None, n_shift_steps = 2))]
     fn macromodel(
         &self,
         r: usize,
         sprim: bool,
-        shift_omega_op: Option<f64>,
+        shift_omegas_op: Option<Vec<f64>>,
+        n_shift_steps: usize,
     ) -> PyResult<PyMacroModel> {
-        let inner = match (sprim, shift_omega_op) {
+        let inner = match (sprim, shift_omegas_op) {
             (true, Some(_)) => {
                 return Err(PyRuntimeError::new_err(
                     "macromodel: pass either sprim=True OR \
-                     shift_omega_op, not both",
+                     shift_omegas_op, not both",
                 ));
             }
-            (_, Some(omega)) => {
-                rapidfem_td::macromodel::MacroModel::build_shift_invert(
-                    &self.op, omega, r,
-                )
+            (_, Some(omegas)) => {
+                if omegas.len() == 1 {
+                    // Single shift: keep the original
+                    // shift-invert path so the `r` argument still
+                    // controls the basis cap there.
+                    rapidfem_td::macromodel::MacroModel::build_shift_invert(
+                        &self.op, omegas[0], r,
+                    )
+                } else {
+                    rapidfem_td::macromodel::MacroModel::build_multi_shift(
+                        &self.op, &omegas, n_shift_steps,
+                    )
+                }
             }
             (true, None) => {
                 rapidfem_td::macromodel::MacroModel::build_sprim(&self.op, r)

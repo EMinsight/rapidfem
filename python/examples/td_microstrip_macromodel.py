@@ -114,11 +114,16 @@ def main():
 
     bench("plain Krylov", 150)
     bench("plain Krylov", 300)
-    mac_si, s_td = bench(
-        "shift-invert", 40, shift_freq_hz=f_centre,
+    bench("single-shift", 40, shift_freq_hz=f_centre)
+    # Multi-shift: 8 shift points evenly across the band, 2 GMRES
+    # applications per port per shift.
+    shifts = list(np.linspace(FREQS[0], FREQS[-1], 8))
+    mac_ms, s_td = bench(
+        "multi-shift x8", 40, shift_freqs_hz=shifts, n_shift_steps=2,
     )
 
-    print(f"\n[4] Detailed |S| with shift-invert at {f_centre/1e9:.3f} GHz, r=40 ...")
+    print(f"\n[4] Detailed |S| with multi-shift across {FREQS[0]/1e9:.2f}-"
+          f"{FREQS[-1]/1e9:.2f} GHz ({len(shifts)} shifts) ...")
     print(f"\n{'f [GHz]':>8} {'|S11| TD':>10} {'|S11| FD':>10} "
           f"{'|S21| TD':>10} {'|S21| FD':>10}")
     for k, f in enumerate(FREQS):
