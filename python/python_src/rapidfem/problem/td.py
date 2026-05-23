@@ -225,6 +225,40 @@ def _collect_ports(geometry):
     return rect_out, coax_out, floquet_out
 
 
+def _collect_pec(geometry):
+    """Walk the geometry's :class:`PEC` physics objects and return the
+    face tags of *internal* PEC plates (thin sheets inside the
+    domain, e.g. a microstrip trace).
+
+    Domain-boundary PEC faces are handled automatically by the TD
+    operator (a boundary face without any port assignment is PEC by
+    default); they are silently filtered out here. Only the internal
+    plates - where the face has neighbour tets on both sides - need
+    the explicit `pec_faces` wiring that retags both sides to behave
+    as PEC walls.
+
+    The returned tags include every face tag listed under `rf.PEC`;
+    the Rust side accepts the union and only retags faces whose
+    triangle list actually sits between two tets, so passing
+    boundary tags through is a no-op.
+    """
+    from ..physics import PEC
+
+    tags = []
+    for phys in getattr(geometry, "_physics", []):
+        if not isinstance(phys, PEC):
+            continue
+        tag = geometry._physics_tags.get(id(phys))
+        if tag is None:
+            continue
+        if isinstance(tag, tuple):
+            for t in tag:
+                tags.append(int(t))
+        else:
+            tags.append(int(tag))
+    return tags
+
+
 def _collect_abc(geometry):
     """Walk the geometry's :class:`ABC` physics objects.
 
@@ -825,6 +859,7 @@ class ProblemTD:
         tag_absorbers = _collect_absorbers(geometry)
         tag_periodic = _collect_periodic(geometry)
         tag_abc = _collect_abc(geometry)
+        tag_pec = _collect_pec(geometry)
         # The TD operator runs in normalised units (c = 1, time measured in
         # the mesh's length units), so a Debye relaxation time given in
         # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /
@@ -841,6 +876,7 @@ class ProblemTD:
             tag_periodic or None,
             floquet_ports or None,
             tag_abc or None,
+            tag_pec or None,
         )
         self._geometry = geometry
         self.order = order
@@ -854,7 +890,9 @@ class ProblemTD:
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
             f"{len(tag_dispersive)} Debye dispersive regions, "
             f"{len(tag_periodic)} periodic boundary pair(s), "
-            f"{len(tag_abc)} ABC face(s)"
+            f"{len(tag_abc)} ABC face(s), "
+            f"{len(tag_pec)} PEC face tag(s) (internal plates only "
+            f"are retagged; boundary PEC is the default)"
         )
 
     @classmethod

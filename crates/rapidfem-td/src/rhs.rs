@@ -431,6 +431,35 @@ pub struct PeriodicSpec {
     pub tris_b: Vec<usize>,
 }
 
+/// A 2D PEC plate sitting *inside* the simulation domain (e.g. a
+/// microstrip trace between substrate and air). DG faces matched to a
+/// triangle in this list have their `neighbor` overwritten to `MAX` on
+/// BOTH element sides, so the default boundary-face logic (PEC ghost
+/// state) kicks in symmetrically: each side of the plate sees the
+/// other as a perfect conductor.
+///
+/// Domain-boundary faces (those with one neighbor `MAX` already)
+/// remain PEC by default - this struct is *only* needed for internal
+/// plates, where without it the face would otherwise be treated as a
+/// transparent interior face by the central / upwind flux.
+#[derive(Clone, Debug)]
+pub struct PecSpec {
+    /// Mesh triangle indices forming this PEC plate's faces.
+    pub tris: Vec<usize>,
+}
+
+impl PecSpec {
+    /// Build an internal-PEC plate spec from a gmsh face tag. Returns
+    /// `None` if the tag carries no triangles.
+    pub fn from_mesh_tag(mesh: &Mesh, face_tag: i32) -> Option<PecSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        Some(PecSpec { tris })
+    }
+}
+
 impl PeriodicSpec {
     /// Build a periodic pair from two gmsh face tags, the periodic
     /// counterpart of [`PortSpec::from_mesh_tag`]. Returns `None` if
@@ -979,6 +1008,30 @@ impl MaxwellOperator {
         dispersive: &[(usize, DebyeMaterial)],
         periodic: &[PeriodicSpec],
     ) -> Self {
+        Self::new_full(
+            mesh, order, flux_alpha, materials, ports, dispersive,
+            periodic, &[],
+        )
+    }
+
+    /// Most-general operator builder: like the
+    /// `_dispersive_periodic` form, plus internal-PEC plates. The
+    /// PEC plates retag both sides of each listed triangle as boundary
+    /// faces so the existing PEC ghost-state logic applies on both
+    /// sides; this lets microstrip / RFIC traces, ground planes, and
+    /// other thin internal conductors be modelled as zero-thickness
+    /// perfect conductors.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_full(
+        mesh: &Mesh,
+        order: usize,
+        flux_alpha: Field,
+        materials: &[ElemMaterial],
+        ports: &[PortSpec],
+        dispersive: &[(usize, DebyeMaterial)],
+        periodic: &[PeriodicSpec],
+        pec_plates: &[PecSpec],
+    ) -> Self {
         let re = ReferenceElement::new(order);
         let geom = all_geometric_factors(mesh);
         let topo = FaceTopology::build(mesh);
@@ -1038,6 +1091,31 @@ impl MaxwellOperator {
             }
         }
 
+        // Internal PEC plates: for each tagged triangle, retag both
+        // element-side faces as boundary (neighbor = MAX). The
+        // existing PEC ghost-state logic then applies symmetrically
+        // on both sides. Done *before* the periodic matcher because
+        // periodic links also need a sane neighbor map; an internal
+        // PEC plate is by definition not periodic.
+        let mut pec_tri_set = vec![false; mesh.tris.len()];
+        for spec in pec_plates {
+            for &tri in &spec.tris {
+                pec_tri_set[tri] = true;
+            }
+        }
+        for e in 0..n_elem {
+            for f in 0..4 {
+                let df = topo.face(e, f);
+                if pec_tri_set[df.tri] {
+                    // Sever this face from its neighbor on both
+                    // sides; PEC boundary logic then applies. Also
+                    // clear the perm (used only for interior faces).
+                    faces[e * 4 + f].neighbor = usize::MAX;
+                    faces[e * 4 + f].neighbor_local_face = 0;
+                    faces[e * 4 + f].perm = Vec::new();
+                }
+            }
+        }
         // Periodic boundary matcher, link each periodic face to its partner
         // across the period translation. After this each periodic face's
         // FaceInfo carries the partner element and the partner's local face,

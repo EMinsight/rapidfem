@@ -500,7 +500,7 @@ impl PyTdOperator {
     /// transverse Floquet phase factor is dropped at oblique scan (a
     /// real-valued port API approximation); normal incidence is exact.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None, pec_faces = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -516,10 +516,11 @@ impl PyTdOperator {
         periodic_pairs: Option<Vec<(i32, i32)>>,
         floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
         abc_faces: Option<Vec<i32>>,
+        pec_faces: Option<Vec<i32>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
-            ElemMaterial, MaxwellOperator, PeriodicSpec, PortSpec,
+            ElemMaterial, MaxwellOperator, PecSpec, PeriodicSpec, PortSpec,
         };
         use rapidfem_td::waveguide::FloquetPolarisation;
         let mesh = rapidfem_core::mesh_io::parse_mesh_bytes(mesh_bytes)
@@ -683,9 +684,22 @@ impl PyTdOperator {
                 periodic_specs.push(spec);
             }
         }
-        let op = MaxwellOperator::new_with_materials_ports_dispersive_periodic(
+        // Internal-PEC plates: collect from face tags.
+        let mut pec_specs: Vec<PecSpec> = Vec::new();
+        if let Some(tags) = pec_faces {
+            for tag in tags {
+                let spec = PecSpec::from_mesh_tag(&mesh, tag)
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "PEC face tag {tag} has no triangles"
+                        ))
+                    })?;
+                pec_specs.push(spec);
+            }
+        }
+        let op = MaxwellOperator::new_full(
             &mesh, order, flux_alpha, &materials, &port_specs, &disp_elems,
-            &periodic_specs,
+            &periodic_specs, &pec_specs,
         );
         Ok(PyTdOperator {
             op,
