@@ -3,32 +3,29 @@
 //! A modal port injects and extracts a known transverse field profile
 //! `(e_t, h_t)`. For a rectangular waveguide or a coaxial line that
 //! profile is analytic ([`crate::waveguide`]); for an *arbitrary*
-//! cross-section (a ridged guide, an L-shaped duct, and — once the
-//! vector/inhomogeneous extension lands — a microstrip or coplanar
-//! line) the profile has no closed form and must be computed by a 2D
-//! eigensolve on the port face.
+//! cross-section (a ridged guide, an L-shaped duct, a microstrip or
+//! coplanar line) the profile has no closed form and is computed here by
+//! a 2D eigensolve on the port-face triangulation. Backend-agnostic —
+//! the time-domain and frequency-domain solvers share it.
 //!
-//! This module is the first stage of that solver: the **scalar
-//! Helmholtz eigenproblem** for a *homogeneously filled* cross-section,
-//! which yields the `TE` (`H_z`) and `TM` (`E_z`) modes and their cutoff
-//! wavenumbers `k_c`. On the port-face triangulation, P1 nodal finite
-//! elements discretise
+//! Two solvers, both on the extracted [`PortMesh2D`] cross-section:
 //!
-//! ```text
-//!     ∇_t² ψ + k_c² ψ = 0,
-//! ```
+//! - [`solve_modes`] — the **scalar Helmholtz** eigenproblem
+//!   `∇_t² ψ + k_c² ψ = 0` (P1 nodal), giving the `TE`/`TM` modes and
+//!   cutoffs `k_c` of a *homogeneously filled* hollow guide. `TM` is
+//!   Dirichlet (`E_z = 0` on PEC), `TE` Neumann.
+//! - [`solve_vector_modes`] — the **full-vector hybrid** eigenproblem
+//!   (mixed Nédélec-edge `E_t` + Lagrange-nodal `E_z`, eigenvalue
+//!   `λ = β²/k0² = n_eff²`) with per-triangle `ε_r`, so it resolves the
+//!   quasi-TEM mode of an *inhomogeneous* (substrate + air) line. PEC
+//!   walls — the outer boundary and any internal conductor (a microstrip
+//!   trace, via [`PortMesh2D::on_pec`]) — impose `tangential E = 0`.
 //!
-//! a generalized eigenproblem `S ψ = k_c² T ψ` with the stiffness matrix
-//! `S_ij = ∫ ∇ψ_i · ∇ψ_j` and the mass matrix `T_ij = ∫ ψ_i ψ_j`. `TM`
-//! modes carry a Dirichlet condition (`ψ = 0`, i.e. `E_z = 0`, on the
-//! PEC boundary); `TE` modes carry the natural Neumann condition
-//! (`∂ψ/∂n = 0`). The transverse fields then follow from `ψ` by the
-//! standard waveguide relations, but this stage returns the eigenpairs
-//! themselves — validation against analytic cutoffs lives in the tests.
-//!
-//! The inhomogeneous (per-triangle `ε`) hybrid-mode vector eigensolve
-//! that a true microstrip port needs is a follow-up built on this same
-//! cross-section extraction.
+//! A solved mode becomes a [`NumericalMode`], which samples `(e_t, h_t)`
+//! at arbitrary points for the port machinery: the scalar path
+//! barycentric-interpolates a nodal `E_t`, the vector path evaluates the
+//! Whitney edge field directly. Validation against analytic cutoffs and
+//! effective indices lives in the tests.
 
 
 
