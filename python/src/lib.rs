@@ -1013,6 +1013,16 @@ impl PyTdOperator {
         self.op.port_n_interior_faces(port_idx)
     }
 
+    /// Modal wave impedance `Z(omega)` of port `port_idx` at angular
+    /// frequency `omega`, in the operator's normalised units (`Z = 1`
+    /// is free space). Dispersive `Z_TE(omega)` for a `TE_mn` waveguide
+    /// port, flat `Z = 1` for coax / Floquet. Returns `0` for an
+    /// absorbing-only (ABC) port. The forward / backward modal split
+    /// `A, B = (P_e ± Z · P_h) / 2` uses this per frequency.
+    fn port_impedance(&self, port_idx: usize, omega: f64) -> f64 {
+        self.op.port_impedance(port_idx, omega)
+    }
+
     /// Spatial source vector for driving port `port_idx` with a unit
     /// waveform — the system is `dy/dt = A·y + b·g(t)`.
     fn port_source<'py>(
@@ -1098,6 +1108,30 @@ impl PyTdOperator {
             col_idx.into_pyarray_bound(py),
             csr.values.into_pyarray_bound(py),
         )
+    }
+
+    /// Assemble the operator as a dense row-major `N×N` matrix, returned
+    /// as a flat `N²` float64 numpy array (reshape to `(N, N)`). This is
+    /// `O(N²)` memory — for **validation on small meshes only**; use
+    /// `state_space` (sparse CSR) for anything sizeable.
+    fn assemble_dense<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        self.op.assemble_dense().into_pyarray_bound(py)
+    }
+
+    /// Assemble the energy mass matrix `M` as a dense row-major `N×N`
+    /// matrix (flat `N²` float64 array, reshape to `(N, N)`): the
+    /// material-weighted DG mass matrix whose quadratic form gives the
+    /// field energy `½ yᵀ M y` (matching `field_energy`). Consistent
+    /// (non-lumped), so it carries off-diagonal element-mass coupling.
+    /// `O(N²)` memory — small meshes / validation only.
+    fn assemble_energy_mass<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        self.op.assemble_energy_mass().into_pyarray_bound(py)
     }
 
     /// DG node physical coordinates — an `(n_elem·Np, 3)` numpy array, in
