@@ -366,6 +366,7 @@ impl PortSpec {
         mode_index: usize,
         eps_per_tet: Option<&[Field]>,
         k0: Field,
+        pec_nodes: Option<&[bool]>,
     ) -> Option<PortSpec> {
         let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
         if tris.is_empty() {
@@ -412,7 +413,8 @@ impl PortSpec {
             mesh.nodes.iter().map(|p| p.map(|x| x as Field)).collect();
         let face_tris: Vec<[usize; 3]> =
             tris.iter().map(|&t| mesh.tris[t]).collect();
-        let pm = PortMesh2D::from_face(&global_nodes, &face_tris, nrm);
+        let pm =
+            PortMesh2D::from_face(&global_nodes, &face_tris, nrm, pec_nodes);
         if k0 > 0.0 {
             // Vector hybrid solve: per-face-triangle ε_r from the adjacent
             // tet (the same tet whose centroid oriented the normal, taken

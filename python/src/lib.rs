@@ -668,6 +668,24 @@ impl PyTdOperator {
         if let Some(wps) = wave_ports {
             let eps_per_tet: Vec<f64> =
                 materials.iter().map(|m| m.eps[0]).collect();
+            // Per-node internal-PEC mask: any node on a PEC face tag is a
+            // conductor node (the microstrip trace + ground). The vector
+            // wave-port solve pins tangential E = 0 there, resolving the
+            // quasi-TEM mode of an inhomogeneous line with an embedded
+            // trace. Borrowed from `pec_faces` before it is consumed below.
+            let pec_nodes: Option<Vec<bool>> = pec_faces.as_ref().map(|tags| {
+                let mut mask = vec![false; mesh.n_nodes()];
+                for &tag in tags {
+                    if let Some(tris) = mesh.ftag_to_tri.get(&tag) {
+                        for &t in tris {
+                            for &nd in &mesh.tris[t] {
+                                mask[nd] = true;
+                            }
+                        }
+                    }
+                }
+                mask
+            });
             for (tag, te, mode_index, k0) in wps {
                 let spec = PortSpec::wave_from_mesh_tag(
                     &mesh,
@@ -676,6 +694,7 @@ impl PyTdOperator {
                     mode_index,
                     Some(&eps_per_tet),
                     k0,
+                    pec_nodes.as_deref(),
                 )
                 .ok_or_else(|| {
                     PyRuntimeError::new_err(format!(

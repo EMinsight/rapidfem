@@ -45,6 +45,12 @@ pub struct PortMesh2D {
     /// a boundary edge is one used by exactly one triangle. These get
     /// the Dirichlet condition for `TM` modes.
     pub on_boundary: Vec<bool>,
+    /// `true` for a node lying on an *internal* PEC conductor (e.g. a
+    /// microstrip trace cutting through the cross-section). These carry
+    /// the same `tangential E = 0` condition as the outer wall; an edge
+    /// with both endpoints on the conductor is a PEC edge. Empty / all
+    /// false when the cross-section has no internal conductor.
+    pub on_pec: Vec<bool>,
     /// The local frame `(û, v̂)` and origin, so a solved mode profile
     /// can be lifted back to 3D global coordinates.
     pub u_hat: [f64; 3],
@@ -77,10 +83,15 @@ impl PortMesh2D {
     /// built from the first triangle's edge, and every node is projected
     /// onto it. Boundary nodes are detected from edges used by a single
     /// triangle.
+    ///
+    /// `pec_global`, if given, is a per-global-node mask marking nodes
+    /// that lie on an internal PEC conductor (a microstrip trace); the
+    /// resulting cross-section nodes inherit it as [`on_pec`](Self::on_pec).
     pub fn from_face(
         global_nodes: &[[f64; 3]],
         face_tris: &[[usize; 3]],
         inward_normal: [f64; 3],
+        pec_global: Option<&[bool]>,
     ) -> PortMesh2D {
         // Normalise the out-of-plane axis.
         let nl = dot3(inward_normal, inward_normal).sqrt();
@@ -110,6 +121,7 @@ impl PortMesh2D {
         let mut remap: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         let mut nodes: Vec<[f64; 2]> = Vec::new();
+        let mut local_to_global: Vec<usize> = Vec::new();
         let mut tris: Vec<[usize; 3]> = Vec::with_capacity(face_tris.len());
         let project = |g: usize| -> [f64; 2] {
             let p = global_nodes[g];
@@ -125,12 +137,21 @@ impl PortMesh2D {
             for (k, &g) in t.iter().enumerate() {
                 let idx = *remap.entry(g).or_insert_with(|| {
                     nodes.push(project(g));
+                    local_to_global.push(g);
                     nodes.len() - 1
                 });
                 local[k] = idx;
             }
             tris.push(local);
         }
+        // Internal-PEC mask: a cross-section node inherits the PEC flag of
+        // its global mesh node (e.g. on a microstrip trace surface).
+        let on_pec: Vec<bool> = match pec_global {
+            Some(mask) => {
+                local_to_global.iter().map(|&g| mask[g]).collect()
+            }
+            None => vec![false; nodes.len()],
+        };
 
         // Boundary edges are used by exactly one triangle. Tally each
         // undirected edge; mark the endpoints of singly-used edges.
@@ -150,7 +171,7 @@ impl PortMesh2D {
             }
         }
 
-        PortMesh2D { nodes, tris, on_boundary, u_hat, v_hat, origin }
+        PortMesh2D { nodes, tris, on_boundary, on_pec, u_hat, v_hat, origin }
     }
 
     /// Number of cross-section nodes.
@@ -242,12 +263,18 @@ pub fn solve_modes(
     let n_full = mesh.n_nodes();
     let (s_full, m_full) = mesh.assemble();
 
-    // For TM, restrict to interior DOFs (Dirichlet on the boundary).
+    // PEC nodes (outer wall + any internal conductor) carry Dirichlet for
+    // TM (E_z = 0) and Neumann for TE; an internal conductor still pins
+    // E_z, so it is constrained in both — but for the scalar TE Neumann
+    // problem only the internal conductor (not the outer wall) is pinned.
+    let pec = |i: usize| {
+        mesh.on_boundary[i] || mesh.on_pec.get(i).copied().unwrap_or(false)
+    };
     let keep: Vec<usize> = match kind {
-        ModeKind::Tm => {
-            (0..n_full).filter(|&i| !mesh.on_boundary[i]).collect()
-        }
-        ModeKind::Te => (0..n_full).collect(),
+        ModeKind::Tm => (0..n_full).filter(|&i| !pec(i)).collect(),
+        ModeKind::Te => (0..n_full)
+            .filter(|&i| !mesh.on_pec.get(i).copied().unwrap_or(false))
+            .collect(),
     };
     let n = keep.len();
     if n == 0 {
@@ -587,12 +614,30 @@ pub fn solve_vector_modes(
     let n_node = mesh.n_nodes();
     let (n_edge, tri_edges, edge_use) = build_edges(mesh);
 
-    let edge_boundary: Vec<bool> =
-        edge_use.iter().map(|&c| c == 1).collect();
+    let on_pec = |i: usize| mesh.on_pec.get(i).copied().unwrap_or(false);
+    // A node is PEC-constrained on the outer wall OR an internal conductor.
+    let node_pec: Vec<bool> =
+        (0..n_node).map(|i| mesh.on_boundary[i] || on_pec(i)).collect();
+    // Edge is PEC if (a) an outer-boundary edge (used by one triangle), or
+    // (b) both endpoints lie on an INTERNAL conductor — the edge then runs
+    // along the trace surface and its tangential E must vanish. The
+    // internal rule uses `on_pec` (not `node_pec`) so two outer-boundary
+    // nodes joined by an interior chord are not spuriously constrained.
+    let mut edge_pec = edge_use.iter().map(|&c| c == 1).collect::<Vec<_>>();
+    for (ti, &t) in mesh.tris.iter().enumerate() {
+        let te = &tri_edges[ti];
+        for e in 0..3 {
+            let a = t[(e + 1) % 3];
+            let b = t[(e + 2) % 3];
+            if on_pec(a) && on_pec(b) {
+                edge_pec[te.gidx[e]] = true;
+            }
+        }
+    }
     let edge_free: Vec<usize> =
-        (0..n_edge).filter(|&e| !edge_boundary[e]).collect();
+        (0..n_edge).filter(|&e| !edge_pec[e]).collect();
     let node_free: Vec<usize> =
-        (0..n_node).filter(|&i| !mesh.on_boundary[i]).collect();
+        (0..n_node).filter(|&i| !node_pec[i]).collect();
     let ne = edge_free.len();
     let nn = node_free.len();
     let ndof = ne + nn;
@@ -830,7 +875,7 @@ mod tests {
     #[test]
     fn extracts_a_rectangular_cross_section() {
         let (nodes, tris) = rect_mesh(2.0, 1.0, 4, 2);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         assert_eq!(pm.n_nodes(), 5 * 3);
         // The 4 rectangle sides are boundary; interior nodes are not.
         let n_boundary = pm.on_boundary.iter().filter(|&&x| x).count();
@@ -847,7 +892,7 @@ mod tests {
         // TM_mn cutoff of an a×b guide: k_c = π·√((m/a)² + (n/b)²).
         // Lowest TM mode is TM₁₁. Use a square 1×1 → k_c = π√2.
         let (nodes, tris) = rect_mesh(1.0, 1.0, 16, 16);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         let modes = solve_modes(&pm, ModeKind::Tm, 1);
         assert!(!modes.is_empty(), "no TM mode found");
         let kc = modes[0].k_c;
@@ -865,7 +910,7 @@ mod tests {
         // index must match the analytic TE₁₀: n_eff² = 1 − (k_c/k0)² with
         // k_c = π/a = π/2.
         let (nodes, tris) = rect_mesh(2.0, 1.0, 20, 10);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         let eps = vec![1.0; pm.tris.len()];
         let k0 = 3.0; // > π/2 ≈ 1.571, so TE₁₀ propagates
         let modes = solve_vector_modes(&pm, &eps, k0, 1);
@@ -897,13 +942,60 @@ mod tests {
     }
 
     #[test]
+    fn internal_pec_septum_raises_vector_cutoff() {
+        // A 2×1 guide with a vertical PEC septum at x = 1 splits into two
+        // 1×1 half-guides. The dominant mode's cutoff jumps from the open
+        // guide's k_c = π/2 (width 2) to k_c = π (width 1). In the vector
+        // solver a PEC is `tangential E = 0` — applied to the internal
+        // septum edges + nodes. At k0 = 5 (above both cutoffs) the
+        // effective index drops accordingly: n_eff² = 1 − (k_c/k0)² goes
+        // from ≈ 0.901 (open) to ≈ 0.605 (septum). This is the clean
+        // signature that the internal-PEC constraint splits the guide.
+        let (nodes, tris) = rect_mesh(2.0, 1.0, 20, 10);
+        let pec_global: Vec<bool> =
+            nodes.iter().map(|p| (p[0] - 1.0).abs() < 1e-9).collect();
+        let eps = vec![1.0; tris.len()];
+        let k0 = 5.0;
+
+        let pm_open =
+            PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
+        let open = solve_vector_modes(&pm_open, &eps, k0, 1);
+        assert!(!open.is_empty(), "no open-guide mode");
+        let neff2_open = open[0].n_eff.powi(2);
+
+        let pm_sept = PortMesh2D::from_face(
+            &nodes, &tris, [0.0, 0.0, 1.0], Some(&pec_global),
+        );
+        assert!(pm_sept.on_pec.iter().any(|&x| x), "no septum PEC nodes");
+        let sept = solve_vector_modes(&pm_sept, &eps, k0, 1);
+        assert!(!sept.is_empty(), "no septum mode (check cutoff < k0)");
+        let neff2_sept = sept[0].n_eff.powi(2);
+
+        let want_open = 1.0 - (PI / 2.0 / k0).powi(2); // ≈ 0.901
+        let want_sept = 1.0 - (PI / k0).powi(2); // ≈ 0.605
+        assert!(
+            (neff2_open - want_open).abs() < 0.05,
+            "open n_eff² = {neff2_open:.3}, want {want_open:.3}",
+        );
+        assert!(
+            (neff2_sept - want_sept).abs() < 0.06,
+            "septum n_eff² = {neff2_sept:.3}, want {want_sept:.3} — \
+             internal PEC not splitting the guide",
+        );
+        assert!(
+            neff2_sept < neff2_open - 0.1,
+            "septum did not raise the cutoff: {neff2_sept:.3} vs {neff2_open:.3}",
+        );
+    }
+
+    #[test]
     fn vector_solver_dielectric_filled_neff() {
         // A 2×1 guide fully filled with ε_r = 4: the TE₁₀ dispersion
         // becomes β² = ε_r k0² − k_c², so n_eff² = ε_r − (k_c/k0)² with
         // k_c = π/a = π/2. This validates the ε_r coupling in the
         // assembly (mass + longitudinal terms).
         let (nodes, tris) = rect_mesh(2.0, 1.0, 20, 10);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         let eps = vec![4.0; pm.tris.len()];
         let k0 = 3.0;
         let modes = solve_vector_modes(&pm, &eps, k0, 1);
@@ -926,7 +1018,7 @@ mod tests {
         // bracketed by its homogeneous limits) — the qualitative signature
         // of a correct inhomogeneous (microstrip-class) hybrid solve.
         let (nodes, tris) = rect_mesh(2.0, 1.0, 20, 10);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         // ε = 4 in the lower half (v < 0.5), air above.
         let eps: Vec<f64> = pm
             .tris
@@ -958,7 +1050,7 @@ mod tests {
         // analytic transverse-E shape E_y ∝ sin(πx/a): a peak at
         // mid-width, vanishing at the side walls, purely along v̂ = ŷ.
         let (nodes, tris) = rect_mesh(2.0, 1.0, 24, 12);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         let modes = solve_modes(&pm, ModeKind::Te, 1);
         let nm = NumericalMode::from_scalar(pm, &modes[0], ModeKind::Te);
         // Mid-width (x = a/2 = 1): |e_t| near the unit peak, along ŷ.
@@ -986,7 +1078,7 @@ mod tests {
         // TE_mn cutoff of an a×b guide: k_c = π·√((m/a)² + (n/b)²).
         // Dominant TE₁₀ of a 2×1 guide → k_c = π/2.
         let (nodes, tris) = rect_mesh(2.0, 1.0, 24, 12);
-        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
         let modes = solve_modes(&pm, ModeKind::Te, 1);
         assert!(!modes.is_empty(), "no TE mode found");
         let kc = modes[0].k_c;
