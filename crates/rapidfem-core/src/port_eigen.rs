@@ -30,7 +30,7 @@
 //! that a true microstrip port needs is a follow-up built on this same
 //! cross-section extraction.
 
-use crate::constants::Field;
+
 
 /// A port face flattened to its 2D cross-section: nodes in the port
 /// plane's local `(u, v)` coordinates, the triangles connecting them,
@@ -38,7 +38,7 @@ use crate::constants::Field;
 #[derive(Clone, Debug)]
 pub struct PortMesh2D {
     /// Local 2D coordinates of each distinct cross-section node.
-    pub nodes: Vec<[Field; 2]>,
+    pub nodes: Vec<[f64; 2]>,
     /// Triangles as triples of indices into `nodes`.
     pub tris: Vec<[usize; 3]>,
     /// `true` for a node on the outer boundary of the cross-section —
@@ -47,18 +47,18 @@ pub struct PortMesh2D {
     pub on_boundary: Vec<bool>,
     /// The local frame `(û, v̂)` and origin, so a solved mode profile
     /// can be lifted back to 3D global coordinates.
-    pub u_hat: [Field; 3],
-    pub v_hat: [Field; 3],
-    pub origin: [Field; 3],
+    pub u_hat: [f64; 3],
+    pub v_hat: [f64; 3],
+    pub origin: [f64; 3],
 }
 
 #[inline]
-fn dot3(a: [Field; 3], b: [Field; 3]) -> Field {
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 #[inline]
-fn cross3(a: [Field; 3], b: [Field; 3]) -> [Field; 3] {
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -78,9 +78,9 @@ impl PortMesh2D {
     /// onto it. Boundary nodes are detected from edges used by a single
     /// triangle.
     pub fn from_face(
-        global_nodes: &[[Field; 3]],
+        global_nodes: &[[f64; 3]],
         face_tris: &[[usize; 3]],
-        inward_normal: [Field; 3],
+        inward_normal: [f64; 3],
     ) -> PortMesh2D {
         // Normalise the out-of-plane axis.
         let nl = dot3(inward_normal, inward_normal).sqrt();
@@ -109,9 +109,9 @@ impl PortMesh2D {
         // Collect distinct nodes (remap global → local index) and project.
         let mut remap: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
-        let mut nodes: Vec<[Field; 2]> = Vec::new();
+        let mut nodes: Vec<[f64; 2]> = Vec::new();
         let mut tris: Vec<[usize; 3]> = Vec::with_capacity(face_tris.len());
-        let project = |g: usize| -> [Field; 2] {
+        let project = |g: usize| -> [f64; 2] {
             let p = global_nodes[g];
             let d = [
                 p[0] - origin[0],
@@ -160,7 +160,7 @@ impl PortMesh2D {
 
     /// Per-triangle area and the three constant P1 gradients
     /// `∇λ_i` (2D), for one triangle. Returns `(area, [g0, g1, g2])`.
-    fn tri_geom(&self, t: [usize; 3]) -> (Field, [[Field; 2]; 3]) {
+    fn tri_geom(&self, t: [usize; 3]) -> (f64, [[f64; 2]; 3]) {
         let p = [self.nodes[t[0]], self.nodes[t[1]], self.nodes[t[2]]];
         // Edge vectors; signed area via the cross product of two edges.
         let (x0, y0) = (p[0][0], p[0][1]);
@@ -182,7 +182,7 @@ impl PortMesh2D {
     /// length-`n` diagonal (row-sum-lumped consistent mass), which makes
     /// the generalized eigenproblem `S ψ = k_c² diag(m) ψ` reducible to
     /// a symmetric standard problem without a Cholesky factorisation.
-    pub fn assemble(&self) -> (Vec<Field>, Vec<Field>) {
+    pub fn assemble(&self) -> (Vec<f64>, Vec<f64>) {
         let n = self.n_nodes();
         let mut s = vec![0.0; n * n];
         let mut m = vec![0.0; n];
@@ -210,10 +210,10 @@ impl PortMesh2D {
 pub struct PortEigenmode {
     /// Cutoff wavenumber `k_c` (operator units; `ω_c = c·k_c`, and with
     /// `c = 1` the cutoff angular frequency equals `k_c`).
-    pub k_c: Field,
+    pub k_c: f64,
     /// The scalar modal field `ψ` at every cross-section node
     /// (`E_z` for a `TM` mode, `H_z` for a `TE` mode).
-    pub psi: Vec<Field>,
+    pub psi: Vec<f64>,
 }
 
 /// Boundary condition for the scalar mode solve.
@@ -255,7 +255,7 @@ pub fn solve_modes(
     }
 
     // Symmetric reduced problem B = D^{-1/2} S D^{-1/2}.
-    let d_inv_sqrt: Vec<Field> =
+    let d_inv_sqrt: Vec<f64> =
         keep.iter().map(|&i| 1.0 / m_full[i].sqrt()).collect();
     let b = faer::Mat::<f64>::from_fn(n, n, |i, j| {
         s_full[keep[i] * n_full + keep[j]] * d_inv_sqrt[i] * d_inv_sqrt[j]
@@ -269,7 +269,7 @@ pub fn solve_modes(
     let evecs = eig.U();
 
     // Collect (k_c², column) for positive eigenvalues, then sort.
-    let mut idx: Vec<(Field, usize)> = (0..n)
+    let mut idx: Vec<(f64, usize)> = (0..n)
         .filter_map(|k| {
             let lam = evals[k].re;
             // Drop the (near-)zero TE constant mode and any numerical
@@ -316,14 +316,14 @@ pub fn solve_modes(
 pub struct NumericalMode {
     mesh: PortMesh2D,
     kind: ModeKind,
-    k_c: Field,
+    k_c: f64,
     /// Per-triangle constant transverse gradient `∇_t ψ` in `(u, v)`.
-    grad: Vec<[Field; 2]>,
+    grad: Vec<[f64; 2]>,
     /// Inverse of the peak `|e_t|` over the cross-section — the unit-peak
     /// normalisation applied in `e_profile`.
-    inv_peak: Field,
+    inv_peak: f64,
     /// Inward normal `ŵ = û × v̂` (global), the mode propagation axis.
-    w_hat: [Field; 3],
+    w_hat: [f64; 3],
 }
 
 impl NumericalMode {
@@ -357,7 +357,7 @@ impl NumericalMode {
     }
 
     /// Cutoff angular frequency (`= k_c` in operator units, `c = 1`).
-    pub fn cutoff(&self) -> Field {
+    pub fn cutoff(&self) -> f64 {
         self.k_c
     }
 
@@ -365,7 +365,7 @@ impl NumericalMode {
     /// `Z_TE = 1/√(1−(ω_c/ω)²)`, `Z_TM = √(1−(ω_c/ω)²)`. Valid above
     /// cutoff; the caller restricts the S-parameter sweep to the
     /// propagating band.
-    pub fn te_impedance(&self, omega: Field) -> Field {
+    pub fn te_impedance(&self, omega: f64) -> f64 {
         let r = self.k_c / omega;
         let s = (1.0 - r * r).max(0.0).sqrt();
         match self.kind {
@@ -373,7 +373,7 @@ impl NumericalMode {
                 if s > 0.0 {
                     1.0 / s
                 } else {
-                    Field::INFINITY
+                    f64::INFINITY
                 }
             }
             ModeKind::Tm => s,
@@ -384,9 +384,9 @@ impl NumericalMode {
     /// return its index, or the nearest triangle's index if the point
     /// is just outside the meshed cross-section (DG face nodes can sit a
     /// hair outside due to curved-face / rounding). Barycentric test.
-    fn locate(&self, uv: [Field; 2]) -> usize {
+    fn locate(&self, uv: [f64; 2]) -> usize {
         let mut best = 0usize;
-        let mut best_slack = Field::NEG_INFINITY;
+        let mut best_slack = f64::NEG_INFINITY;
         for (ti, &t) in self.mesh.tris.iter().enumerate() {
             let a = self.mesh.nodes[t[0]];
             let b = self.mesh.nodes[t[1]];
@@ -416,7 +416,7 @@ impl NumericalMode {
     }
 
     /// In-plane `(u, v)` coordinates of a global point on the port face.
-    fn to_uv(&self, x: [Field; 3]) -> [Field; 2] {
+    fn to_uv(&self, x: [f64; 3]) -> [f64; 2] {
         let o = self.mesh.origin;
         let d = [x[0] - o[0], x[1] - o[1], x[2] - o[2]];
         [dot3(d, self.mesh.u_hat), dot3(d, self.mesh.v_hat)]
@@ -424,7 +424,7 @@ impl NumericalMode {
 
     /// Transverse electric-field profile at a global point on the port
     /// face, in global coordinates, unit-peak normalised.
-    pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
+    pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
         let uv = self.to_uv(x);
         let ti = self.locate(uv);
         let g = self.grad[ti];
@@ -446,7 +446,7 @@ impl NumericalMode {
 
     /// Transverse magnetic-field profile `h_t = ŵ × e_t` at a global
     /// point — the inward-propagating partner of `e_t`. Global coords.
-    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
+    pub fn h_profile(&self, x: [f64; 3]) -> [f64; 3] {
         cross3(self.w_hat, self.e_profile(x))
     }
 }
@@ -460,17 +460,17 @@ mod tests {
     /// with `nx × ny` cells (each split into two triangles). Returns the
     /// global 3D nodes (on the z = 0 plane) and the triangle connectivity.
     fn rect_mesh(
-        a: Field,
-        b: Field,
+        a: f64,
+        b: f64,
         nx: usize,
         ny: usize,
-    ) -> (Vec<[Field; 3]>, Vec<[usize; 3]>) {
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let mut nodes = Vec::new();
         for j in 0..=ny {
             for i in 0..=nx {
                 nodes.push([
-                    a * i as Field / nx as Field,
-                    b * j as Field / ny as Field,
+                    a * i as f64 / nx as f64,
+                    b * j as f64 / ny as f64,
                     0.0,
                 ]);
             }
@@ -498,7 +498,7 @@ mod tests {
         // Perimeter nodes of a 5×3 grid: 2*(5+3) - 4 = 12.
         assert_eq!(n_boundary, 12, "boundary node count");
         // Total area recovered = a·b.
-        let area: Field =
+        let area: f64 =
             pm.tris.iter().map(|&t| pm.tri_geom(t).0).sum();
         assert!((area - 2.0).abs() < 1e-12, "area = {area}");
     }

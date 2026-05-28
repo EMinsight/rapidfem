@@ -574,8 +574,9 @@ pub enum PortMode {
     Floquet(FloquetPort),
     /// A numerically-solved mode from a 2D cross-section eigensolve — the
     /// wave port for an arbitrary (ridged, circular, ...) cross-section
-    /// whose profile has no closed form. See [`crate::port_eigen`].
-    Numerical(crate::port_eigen::NumericalMode),
+    /// whose profile has no closed form. See
+    /// [`rapidfem_core::port_eigen`].
+    Numerical(rapidfem_core::port_eigen::NumericalMode),
 }
 
 impl PortMode {

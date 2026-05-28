@@ -13,7 +13,6 @@ pub mod geom_factors;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod mesh_gen;
-pub mod port_eigen;
 pub mod propagator;
 pub mod rhs;
 pub mod waveguide;

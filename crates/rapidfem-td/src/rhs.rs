@@ -15,9 +15,11 @@ use crate::constants::{
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
-use crate::port_eigen::{ModeKind, NumericalMode, PortMesh2D, solve_modes};
 use crate::waveguide::{
     CoaxPort, FloquetPolarisation, FloquetPort, PortMode, RectPort,
+};
+use rapidfem_core::port_eigen::{
+    ModeKind, NumericalMode, PortMesh2D, solve_modes,
 };
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
