@@ -343,11 +343,21 @@ pub fn solve_modes(
 pub struct NumericalMode {
     mesh: PortMesh2D,
     /// Transverse electric field `E_t` at each cross-section node, in the
-    /// port-plane `(u, v)` components — the unified profile representation
-    /// fed by both the scalar (`from_scalar`) and vector (`from_vector`)
-    /// solves; `e_profile` barycentric-interpolates it.
+    /// port-plane `(u, v)` components — the **scalar**-path profile
+    /// (`from_scalar`); `e_profile` barycentric-interpolates it. Empty
+    /// when the Whitney representation is used.
     e_uv_node: Vec<[f64; 2]>,
-    /// Inverse peak `|E_t|` over the nodes — the unit-peak normalisation.
+    /// The **vector**-path profile (`from_vector`): the raw Nédélec edge
+    /// solution `e_edge` (one coefficient per global cross-section edge)
+    /// plus the per-triangle edge data, so `e_profile` evaluates the
+    /// Whitney field *directly* at each query point. This preserves the
+    /// concentrated quasi-TEM shape that area-averaging to nodes smears
+    /// away — the smearing makes the wave port degenerate to a uniform
+    /// (lumped-like) profile and undercount `|S21|`, so the direct eval
+    /// is essential for microstrip-class lines. `None` for scalar modes.
+    whitney: Option<(Vec<f64>, Vec<TriEdges>)>,
+    /// Inverse peak `|E_t|` over the cross-section — the unit-peak
+    /// normalisation.
     inv_peak: f64,
     /// Inward normal `ŵ = û × v̂` (global), the mode propagation axis.
     w_hat: [f64; 3],
@@ -414,36 +424,54 @@ impl NumericalMode {
             ModeKind::Te => ImpedanceModel::Te { k_c: mode.k_c },
             ModeKind::Tm => ImpedanceModel::Tm { k_c: mode.k_c },
         };
-        NumericalMode::assemble(mesh, e_uv_node, mode.k_c, z_model)
-    }
-
-    /// Build a numerical mode from a full-vector hybrid solve. The
-    /// transverse field is the solver's recovered nodal `E_t`; the mode
-    /// is treated as quasi-TEM (zero cutoff, flat impedance `1/n_eff`),
-    /// the right model for a microstrip-class guided mode.
-    pub fn from_vector(mesh: PortMesh2D, mode: &VectorMode) -> NumericalMode {
-        let z = if mode.n_eff > 0.0 { 1.0 / mode.n_eff } else { 1.0 };
-        NumericalMode::assemble(
-            mesh,
-            mode.e_uv_node.clone(),
-            0.0,
-            ImpedanceModel::Flat { z },
-        )
-    }
-
-    fn assemble(
-        mesh: PortMesh2D,
-        e_uv_node: Vec<[f64; 2]>,
-        cutoff: f64,
-        z_model: ImpedanceModel,
-    ) -> NumericalMode {
         let w_hat = cross3(mesh.u_hat, mesh.v_hat);
         let peak = e_uv_node
             .iter()
             .map(|e| (e[0] * e[0] + e[1] * e[1]).sqrt())
             .fold(0.0_f64, f64::max);
         let inv_peak = if peak > 0.0 { 1.0 / peak } else { 0.0 };
-        NumericalMode { mesh, e_uv_node, inv_peak, w_hat, cutoff, z_model }
+        NumericalMode {
+            mesh,
+            e_uv_node,
+            whitney: None,
+            inv_peak,
+            w_hat,
+            cutoff: mode.k_c,
+            z_model,
+        }
+    }
+
+    /// Build a numerical mode from a full-vector hybrid solve. Stores the
+    /// raw edge solution and evaluates the Whitney field **directly** at
+    /// query points (no nodal averaging), preserving the concentrated
+    /// quasi-TEM shape. Zero cutoff, flat impedance `1/n_eff`.
+    pub fn from_vector(mesh: PortMesh2D, mode: &VectorMode) -> NumericalMode {
+        let z = if mode.n_eff > 0.0 { 1.0 / mode.n_eff } else { 1.0 };
+        let (_n_edge, tri_edges, _use) = build_edges(&mesh);
+        let e_edge = mode.e_edge.clone();
+        // Unit-peak normalisation: sample |E_t| at every triangle's three
+        // vertices via the direct Whitney sum and take the max.
+        let mut peak = 0.0_f64;
+        for (ti, &t) in mesh.tris.iter().enumerate() {
+            let (_a, g) = mesh.tri_geom(t);
+            for vloc in 0..3 {
+                let mut l = [0.0; 3];
+                l[vloc] = 1.0;
+                let e = whitney_at(&tri_edges[ti], &g, &e_edge, l);
+                peak = peak.max((e[0] * e[0] + e[1] * e[1]).sqrt());
+            }
+        }
+        let inv_peak = if peak > 0.0 { 1.0 / peak } else { 0.0 };
+        let w_hat = cross3(mesh.u_hat, mesh.v_hat);
+        NumericalMode {
+            mesh,
+            e_uv_node: Vec::new(),
+            whitney: Some((e_edge, tri_edges)),
+            inv_peak,
+            w_hat,
+            cutoff: 0.0,
+            z_model: ImpedanceModel::Flat { z },
+        }
     }
 
     /// Cutoff angular frequency (`= k_c`; `0` for a quasi-TEM mode).
@@ -507,17 +535,28 @@ impl NumericalMode {
     }
 
     /// Transverse electric-field profile at a global point on the port
-    /// face, in global coordinates, unit-peak normalised. Barycentric
-    /// interpolation of the nodal `E_t`.
+    /// face, in global coordinates, unit-peak normalised. The vector path
+    /// evaluates the Whitney edge field directly (sharp); the scalar path
+    /// barycentric-interpolates the nodal `E_t`.
     pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
         let uv = self.to_uv(x);
         let (ti, l) = self.locate(uv);
-        let t = self.mesh.tris[ti];
-        let mut e = [0.0f64; 2];
-        for k in 0..3 {
-            e[0] += l[k] * self.e_uv_node[t[k]][0];
-            e[1] += l[k] * self.e_uv_node[t[k]][1];
-        }
+        let e: [f64; 2] = match &self.whitney {
+            Some((e_edge, tri_edges)) => {
+                let t = self.mesh.tris[ti];
+                let (_a, g) = self.mesh.tri_geom(t);
+                whitney_at(&tri_edges[ti], &g, e_edge, l)
+            }
+            None => {
+                let t = self.mesh.tris[ti];
+                let mut e = [0.0f64; 2];
+                for k in 0..3 {
+                    e[0] += l[k] * self.e_uv_node[t[k]][0];
+                    e[1] += l[k] * self.e_uv_node[t[k]][1];
+                }
+                e
+            }
+        };
         let (eu, ev) = (e[0] * self.inv_peak, e[1] * self.inv_peak);
         [
             eu * self.mesh.u_hat[0] + ev * self.mesh.v_hat[0],
@@ -543,17 +582,42 @@ pub struct VectorMode {
     pub k0: f64,
     /// Transverse electric field `E_t` at each cross-section node, in the
     /// port-plane `(u, v)` components — recovered (area-averaged) from the
-    /// edge-element solution for downstream profile sampling.
+    /// edge-element solution. Convenience for inspection; the sharp profile
+    /// uses `e_edge` directly.
     pub e_uv_node: Vec<[f64; 2]>,
+    /// Raw Nédélec edge solution — one coefficient per global cross-section
+    /// edge (zero on constrained PEC edges). Feeds the direct Whitney-field
+    /// evaluation in [`NumericalMode::from_vector`].
+    pub e_edge: Vec<f64>,
 }
 
 /// Per-triangle edge data for the Whitney (Nédélec) assembly: the global
 /// edge index, orientation sign and length, for each of the triangle's
 /// three edges (local edge `e` joins local nodes `((e+1)%3, (e+2)%3)`).
+#[derive(Clone, Debug)]
 struct TriEdges {
     gidx: [usize; 3],
     sign: [f64; 3],
     len: [f64; 3],
+}
+
+/// Evaluate the transverse Whitney (edge-element) field `E_t = Σ_e e_edge[e]
+/// · W_e` at barycentric coordinates `l` inside one triangle, given its
+/// edge data and constant P1 gradients `g`. Returns the `(u, v)` components.
+fn whitney_at(
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    e_edge: &[f64],
+    l: [f64; 3],
+) -> [f64; 2] {
+    let mut e = [0.0f64; 2];
+    for k in 0..3 {
+        let (a, b) = ((k + 1) % 3, (k + 2) % 3);
+        let s = te.sign[k] * te.len[k] * e_edge[te.gidx[k]];
+        e[0] += s * (l[a] * g[b][0] - l[b] * g[a][0]);
+        e[1] += s * (l[a] * g[b][1] - l[b] * g[a][1]);
+    }
+    e
 }
 
 /// Enumerate unique mesh edges and, per triangle, the global index,
@@ -830,7 +894,15 @@ pub fn solve_vector_modes(
                     }
                 })
                 .collect();
-            VectorMode { n_eff: neff2.sqrt(), k0, e_uv_node }
+            // Raw edge solution scattered to global edges (0 on PEC edges),
+            // for the sharp direct-Whitney profile evaluation downstream.
+            let mut e_edge = vec![0.0f64; n_edge];
+            for (g, &r) in edge_red.iter().enumerate() {
+                if r != usize::MAX {
+                    e_edge[g] = evecs[(r, k)].re;
+                }
+            }
+            VectorMode { n_eff: neff2.sqrt(), k0, e_uv_node, e_edge }
         })
         .collect()
 }
