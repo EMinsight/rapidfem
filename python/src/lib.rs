@@ -500,7 +500,7 @@ impl PyTdOperator {
     /// transverse Floquet phase factor is dropped at oblique scan (a
     /// real-valued port API approximation); normal incidence is exact.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None, pec_faces = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None, pec_faces = None, wave_ports = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -517,6 +517,7 @@ impl PyTdOperator {
         floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
         abc_faces: Option<Vec<i32>>,
         pec_faces: Option<Vec<i32>>,
+        wave_ports: Option<Vec<(i32, bool, usize, f64)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
@@ -650,6 +651,57 @@ impl PyTdOperator {
                 .ok_or_else(|| {
                     PyRuntimeError::new_err(format!(
                         "floquet port face tag {tag} has no triangles"
+                    ))
+                })?;
+                port_specs.push(spec);
+            }
+        }
+        // Numerically-solved wave ports — appended after the rectangular,
+        // coax and Floquet modal ports (and before the absorbing faces),
+        // so the modal-port subset stays contiguous. Each entry is
+        // `(face_tag, te, mode_index, k0)`: a 2D cross-section eigensolve
+        // runs at build time and the sampled profile becomes the port
+        // mode. `k0 > 0` selects the inhomogeneous vector solve at that
+        // operating wavenumber (microstrip-class); `k0 <= 0` the scalar
+        // TE/TM solve (homogeneous hollow guide). Per-tet `ε_r` is read
+        // off the already-resolved `materials`.
+        if let Some(wps) = wave_ports {
+            let eps_per_tet: Vec<f64> =
+                materials.iter().map(|m| m.eps[0]).collect();
+            // Per-node internal-PEC mask: any node on a PEC face tag is a
+            // conductor node (the microstrip trace + ground). The vector
+            // wave-port solve pins tangential E = 0 there, resolving the
+            // quasi-TEM mode of an inhomogeneous line with an embedded
+            // trace. Borrowed from `pec_faces` before it is consumed below.
+            let pec_nodes: Option<Vec<bool>> = pec_faces.as_ref().map(|tags| {
+                let mut mask = vec![false; mesh.n_nodes()];
+                for &tag in tags {
+                    if let Some(tris) = mesh.ftag_to_tri.get(&tag) {
+                        for &t in tris {
+                            for &nd in &mesh.tris[t] {
+                                mask[nd] = true;
+                            }
+                        }
+                    }
+                }
+                mask
+            });
+            for (tag, te, mode_index, k0) in wps {
+                let spec = PortSpec::wave_from_mesh_tag(
+                    &mesh,
+                    tag,
+                    te,
+                    mode_index,
+                    Some(&eps_per_tet),
+                    k0,
+                    pec_nodes.as_deref(),
+                )
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "wave port face tag {tag}: no triangles, or the \
+                         cross-section eigensolve found fewer than \
+                         {} mode(s)",
+                        mode_index + 1,
                     ))
                 })?;
                 port_specs.push(spec);
@@ -1013,6 +1065,16 @@ impl PyTdOperator {
         self.op.port_n_interior_faces(port_idx)
     }
 
+    /// Modal wave impedance `Z(omega)` of port `port_idx` at angular
+    /// frequency `omega`, in the operator's normalised units (`Z = 1`
+    /// is free space). Dispersive `Z_TE(omega)` for a `TE_mn` waveguide
+    /// port, flat `Z = 1` for coax / Floquet. Returns `0` for an
+    /// absorbing-only (ABC) port. The forward / backward modal split
+    /// `A, B = (P_e ± Z · P_h) / 2` uses this per frequency.
+    fn port_impedance(&self, port_idx: usize, omega: f64) -> f64 {
+        self.op.port_impedance(port_idx, omega)
+    }
+
     /// Spatial source vector for driving port `port_idx` with a unit
     /// waveform — the system is `dy/dt = A·y + b·g(t)`.
     fn port_source<'py>(
@@ -1098,6 +1160,30 @@ impl PyTdOperator {
             col_idx.into_pyarray_bound(py),
             csr.values.into_pyarray_bound(py),
         )
+    }
+
+    /// Assemble the operator as a dense row-major `N×N` matrix, returned
+    /// as a flat `N²` float64 numpy array (reshape to `(N, N)`). This is
+    /// `O(N²)` memory — for **validation on small meshes only**; use
+    /// `state_space` (sparse CSR) for anything sizeable.
+    fn assemble_dense<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        self.op.assemble_dense().into_pyarray_bound(py)
+    }
+
+    /// Assemble the energy mass matrix `M` as a dense row-major `N×N`
+    /// matrix (flat `N²` float64 array, reshape to `(N, N)`): the
+    /// material-weighted DG mass matrix whose quadratic form gives the
+    /// field energy `½ yᵀ M y` (matching `field_energy`). Consistent
+    /// (non-lumped), so it carries off-diagonal element-mass coupling.
+    /// `O(N²)` memory — small meshes / validation only.
+    fn assemble_energy_mass<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray1<f64>> {
+        self.op.assemble_energy_mass().into_pyarray_bound(py)
     }
 
     /// DG node physical coordinates — an `(n_elem·Np, 3)` numpy array, in

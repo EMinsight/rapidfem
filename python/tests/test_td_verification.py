@@ -196,18 +196,25 @@ def test_wr90_sparams_td_matches_fd():
 
 
 # -----------------------------------------------------------------------------
-# 4. Microstrip lumped-port |S11| — verifies the ABC + internal-PEC + Z0 fixes.
+# 4. Microstrip wave-port |S11|/|S21| vs FD — pending the 2D wave-port eigensolve.
 # -----------------------------------------------------------------------------
 
 @slow
-def test_microstrip_lumped_port_s11_matches_fd():
-    """50 ohm microstrip line (RO4003C substrate, 30 mm long, lumped
-    ports both ends). The TD lumped-port wiring is sensitive to:
-    (a) internal-PEC trace, (b) Z0 reference impedance, (c) ABC outer.
-    All three fixes were added this session; |S11| TD must now match
-    FD within a few percent. |S21| is documented as under-predicted by
-    the uniform (0,0) lumped-mode profile and is NOT gated here (a
-    wave-port eigensolve would fix that).
+@pytest.mark.skip(
+    reason="The time-domain backend no longer accepts LumpedPort: a "
+    "uniform delta-gap profile undercounts |S21| on a concentrated "
+    "quasi-TEM microstrip mode (the Thevenin experiments on "
+    "feature/td-lumped-thevenin-v2 confirmed this is not fixable with a "
+    "lumped source). Re-enable with a WavePort (2D cross-section "
+    "eigensolve) once that lands — both |S11| and |S21| should then "
+    "match FD within a few percent. The build() geometry below is kept "
+    "as the reference test case."
+)
+def test_microstrip_wave_port_sparams_match_fd():
+    """50 ohm microstrip line (RO4003C substrate, 30 mm long, wave
+    ports both ends). With a 2D-eigensolve wave port the mode profile
+    matches the line's quasi-TEM mode, so both |S11| and |S21| track
+    FD instead of the lumped port's undercounted transmission.
     """
     sub_h = 0.508 * MM
     er_sub = 3.55

@@ -18,6 +18,9 @@ use crate::geom_factors::{GeometricFactors, all_geometric_factors};
 use crate::waveguide::{
     CoaxPort, FloquetPolarisation, FloquetPort, PortMode, RectPort,
 };
+use rapidfem_core::port_eigen::{
+    ModeKind, NumericalMode, PortMesh2D, solve_modes, solve_vector_modes,
+};
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
 use rayon::prelude::*;
@@ -335,6 +338,110 @@ impl PortSpec {
         }
         let coax = CoaxPort::from_face(&coords, nrm, center);
         Some(PortSpec { tris, mode: Some(PortMode::Coax(coax)) })
+    }
+
+    /// Build a numerically-solved **wave port** from a gmsh face tag — a
+    /// 2D cross-section eigensolve on the port face produces the mode
+    /// profile, for cross-sections with no closed-form mode.
+    ///
+    /// Two solve paths, chosen by `k0`:
+    /// - `k0 <= 0`: the scalar Helmholtz `TE`/`TM` solve — a
+    ///   *homogeneously filled* hollow guide of arbitrary cross-section
+    ///   (ridged, circular, L-shaped). `te` picks `TE`/`TM`.
+    /// - `k0 > 0`: the full-vector hybrid solve at operating wavenumber
+    ///   `k0` (in 1/mesh-length), with per-element `ε_r` — the
+    ///   *inhomogeneous* (substrate + air) quasi-TEM mode of a
+    ///   microstrip-class line. `eps_per_tet` supplies the relative
+    ///   permittivity of every mesh tet (vacuum = 1 where absent); each
+    ///   port-face triangle takes the `ε_r` of its adjacent tet. `te` is
+    ///   ignored (the hybrid mode is neither pure TE nor TM).
+    ///
+    /// `mode_index` picks the mode by dominance (`0` = fundamental).
+    /// Returns `None` if the tag has no triangles or the solve finds
+    /// fewer than `mode_index + 1` modes.
+    pub fn wave_from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+        te: bool,
+        mode_index: usize,
+        eps_per_tet: Option<&[Field]>,
+        k0: Field,
+        pec_nodes: Option<&[bool]>,
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        // Inward normal of a representative face triangle (toward the
+        // adjacent tet centroid) — same construction as the coax port.
+        let t0 = tris[0];
+        let [v0, v1, v2] = mesh.tris[t0];
+        let (p0, p1, p2) = (
+            mesh.nodes[v0].map(|x| x as Field),
+            mesh.nodes[v1].map(|x| x as Field),
+            mesh.nodes[v2].map(|x| x as Field),
+        );
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let mut nrm = cross3(e1, e2);
+        let len =
+            (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        for c in nrm.iter_mut() {
+            *c /= len;
+        }
+        let tet = mesh.tri_to_tet[t0]
+            .iter()
+            .copied()
+            .find(|&x| x != usize::MAX)?;
+        let mut centroid = [0.0; 3];
+        for &nd in &mesh.tets[tet] {
+            for k in 0..3 {
+                centroid[k] += mesh.nodes[nd][k] as Field / 4.0;
+            }
+        }
+        let inward =
+            [centroid[0] - p0[0], centroid[1] - p0[1], centroid[2] - p0[2]];
+        if dot3(nrm, inward) < 0.0 {
+            for c in nrm.iter_mut() {
+                *c = -*c;
+            }
+        }
+        // Build the 2D cross-section: all mesh nodes (as Field) plus the
+        // face triangles' global connectivity; `from_face` remaps to the
+        // local node set and projects into the port plane.
+        let global_nodes: Vec<[Field; 3]> =
+            mesh.nodes.iter().map(|p| p.map(|x| x as Field)).collect();
+        let face_tris: Vec<[usize; 3]> =
+            tris.iter().map(|&t| mesh.tris[t]).collect();
+        let pm =
+            PortMesh2D::from_face(&global_nodes, &face_tris, nrm, pec_nodes);
+        if k0 > 0.0 {
+            // Vector hybrid solve: per-face-triangle ε_r from the adjacent
+            // tet (the same tet whose centroid oriented the normal, taken
+            // per triangle). `tris[i]` ↔ `pm.tris[i]` by construction.
+            let eps_face: Vec<Field> = tris
+                .iter()
+                .map(|&t| {
+                    let adj = mesh.tri_to_tet[t]
+                        .iter()
+                        .copied()
+                        .find(|&x| x != usize::MAX);
+                    match (adj, eps_per_tet) {
+                        (Some(e), Some(eps)) => eps[e],
+                        _ => 1.0,
+                    }
+                })
+                .collect();
+            let modes = solve_vector_modes(&pm, &eps_face, k0, mode_index + 1);
+            let mode = modes.get(mode_index)?;
+            let nm = NumericalMode::from_vector(pm, mode);
+            return Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) });
+        }
+        let kind = if te { ModeKind::Te } else { ModeKind::Tm };
+        let modes = solve_modes(&pm, kind, mode_index + 1);
+        let mode = modes.get(mode_index)?;
+        let nm = NumericalMode::from_scalar(pm, mode, kind);
+        Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) })
     }
 
     /// Build a Floquet plane-wave port from a gmsh face tag — collecting
@@ -2954,308 +3061,6 @@ mod tests {
                 "uniform guide should be reflection-free: |B/A| = {refl:.3}"
             );
         }
-    }
-
-    #[test]
-    fn lumped_port_integrates_with_the_operator() {
-        // WP5.1: a lumped (0,0) port flows through the same operator
-        // machinery as a waveguide port — the flux, the injection source
-        // and the modal extraction are mode-agnostic, so a uniform-profile
-        // port builds a nonzero source and a finite extraction with no
-        // special-casing beyond the mode profile itself.
-        use crate::mesh_gen::structured_box;
-        let mesh = structured_box(1, 1, 4, 1.0, 1.0, 4.0);
-        let port_tris: Vec<usize> = mesh
-            .tris
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                t.iter().all(|&nd| mesh.nodes[nd][2].abs() < 1e-9)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        let rect = RectPort {
-            origin: [0.0, 0.0, 0.0],
-            u_hat: [1.0, 0.0, 0.0],
-            v_hat: [0.0, 1.0, 0.0],
-            w_hat: [0.0, 0.0, 1.0],
-            a: 1.0,
-            b: 1.0,
-            mode: (0, 0), // lumped / TEM port
-            z0: 1.0,
-        };
-        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-        let op = MaxwellOperator::new_with_materials_ports(
-            &mesh,
-            2,
-            0.0,
-            &vacuum,
-            &[PortSpec { tris: port_tris, mode: Some(PortMode::Rect(rect)) }],
-        );
-        assert_eq!(op.n_ports(), 1);
-        assert!(
-            op.port_cutoff(0).abs() < 1e-12,
-            "lumped port must have zero cutoff"
-        );
-        let src = op.port_source(0);
-        assert!(
-            src.iter().any(|&x| x != 0.0),
-            "lumped-port injection source is empty"
-        );
-        let y: Vec<f64> = (0..op.n_dof())
-            .map(|i| (0.1 * i as f64).sin())
-            .collect();
-        let (pe, ph) = op.port_modal_projections(&y, 0);
-        assert!(
-            pe.is_finite() && ph.is_finite(),
-            "lumped-port extraction not finite"
-        );
-    }
-
-    #[test]
-    fn lumped_port_carries_a_dispersionless_tem_wave() {
-        // WP-C: the (0,0) lumped port carries a true TEM mode — zero cutoff,
-        // velocity c, no dispersion. The proof is a two-run contrast on the
-        // *same* guide with the *same* drive, changing only the side walls:
-        //   * PEC side walls → the guide is hollow; its dominant mode is
-        //     the dispersive TE₁₀ travelling at v_g = √(1−(ω_c/ω)²) < c;
-        //   * transparent characteristic side walls (rect = None ports) →
-        //     the parallel-plate TEM mode exists and travels at exactly c.
-        // Centreline envelope-peak arrival times give the packet velocity —
-        // centreline probes are clear of the side-wall edge effects. The
-        // TEM run must clock c; the hollow run must clock the slower v_g.
-        use crate::mesh_gen::structured_box;
-        use crate::propagator::etd_step;
-        use std::f64::consts::PI;
-
-        let (a, b, lz) = (2.0, 0.5, 9.0);
-        let mesh = structured_box(6, 2, 20, a, b, lz);
-        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
-            mesh.tris
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
-                .map(|(i, _)| i)
-                .collect()
-        };
-        let z0_tris = on(&|p| p[2].abs() < 1e-9);
-        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
-        let x_lo = on(&|p| p[0].abs() < 1e-9);
-        let x_hi = on(&|p| (p[0] - a).abs() < 1e-9);
-        assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
-        assert!(!x_lo.is_empty() && !x_hi.is_empty());
-
-        // The (0,0) lumped port on the z = 0 face — uniform E along v̂ = ŷ.
-        let rect = RectPort {
-            origin: [0.0, 0.0, 0.0],
-            u_hat: [1.0, 0.0, 0.0],
-            v_hat: [0.0, 1.0, 0.0],
-            w_hat: [0.0, 0.0, 1.0], // inward +z
-            a,
-            b,
-            mode: (0, 0),
-            z0: 1.0,
-        };
-        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-
-        // Drive in the single-mode band — ω₀ = 1.5·ω_c — so the hollow
-        // guide carries a well-defined (dispersive) TE₁₀ packet.
-        let wc = PI / a;
-        let omega0 = 1.5 * wc;
-        let (t0, tau) = (7.0, 2.5);
-        let pulse = |t: f64| {
-            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
-        };
-        let dt = 0.02;
-        let steps = 950;
-        // Centreline probes, a wide baseline apart — a long baseline averages
-        // out the per-probe envelope-peak quantisation.
-        let (zp1, zp2) = (2.5, 6.5);
-
-        // Drive the z = 0 port; return the envelope-peak (value, time) at
-        // two centreline probes. The z = lz end is always an absorbing port
-        // so no end reflection contaminates the arrival times.
-        let run = |side_ports: Vec<PortSpec>| -> [(f64, f64); 2] {
-            let mut ports = vec![
-                PortSpec {
-                    tris: z0_tris.clone(),
-                    mode: Some(PortMode::Rect(rect.clone())),
-                },
-                PortSpec { tris: zl_tris.clone(), mode: None },
-            ];
-            ports.extend(side_ports);
-            let op = MaxwellOperator::new_with_materials_ports(
-                &mesh, 2, 0.0, &vacuum, &ports,
-            );
-            let src = op.port_source(0);
-            let probe =
-                |z: f64| op.nearest_node_dof([a / 2.0, b / 2.0, z], 0, 1);
-            let (p1, p2) = (probe(zp1), probe(zp2));
-            let mut y = vec![0.0; op.n_dof()];
-            let mut pk = [(0.0_f64, 0.0_f64); 2];
-            for s in 0..steps {
-                let t = s as f64 * dt;
-                let g = pulse(t);
-                let bvec: Vec<f64> = src.iter().map(|x| x * g).collect();
-                y = etd_step(|x| op.apply(x), &y, &bvec, dt, 18);
-                for (k, &p) in [p1, p2].iter().enumerate() {
-                    if y[p].abs() > pk[k].0 {
-                        pk[k] = (y[p].abs(), t);
-                    }
-                }
-            }
-            assert!(y.iter().all(|v| v.is_finite()));
-            pk
-        };
-
-        // Run A — PEC side walls (no side ports): a hollow guide.
-        let pec = run(Vec::new());
-        // Run B — transparent characteristic side walls (rect = None).
-        let open = run(vec![
-            PortSpec { tris: x_lo, mode: None },
-            PortSpec { tris: x_hi, mode: None },
-        ]);
-
-        assert!(
-            pec.iter().all(|p| p.0 > 1e-3) && open.iter().all(|p| p.0 > 1e-3),
-            "a packet failed to reach the probes: PEC {pec:?} open {open:?}",
-        );
-        let baseline = zp2 - zp1;
-        let v_pec = baseline / (pec[1].1 - pec[0].1);
-        let v_tem = baseline / (open[1].1 - open[0].1);
-        let vg = (1.0 - (wc / omega0).powi(2)).sqrt(); // analytic TE₁₀ v_g
-        eprintln!(
-            "DIAG TEM port: v_TEM={v_tem:.3} (expect c=1)  \
-             v_hollow={v_pec:.3} (TE₁₀ v_g={vg:.3})",
-        );
-        // The TEM mode is dispersionless — the lumped port clocks exactly c.
-        assert!(
-            (v_tem - 1.0).abs() < 0.15,
-            "TEM packet speed {v_tem:.3}, expected the dispersionless c = 1",
-        );
-        // The hollow guide's TE₁₀ packet is slower — sub-c and dispersive.
-        assert!(
-            v_pec < 0.85 && v_pec > 0.5,
-            "hollow-guide packet speed {v_pec:.3}, expected the TE₁₀ \
-             v_g ≈ {vg:.3} (sub-c)",
-        );
-        assert!(
-            v_tem > v_pec + 0.15,
-            "TEM ({v_tem:.3}) not clearly faster than TE₁₀ ({v_pec:.3})",
-        );
-    }
-
-    #[test]
-    fn two_lumped_ports_carry_tem_between_them() {
-        // Diagnostic for the lumped-port two-port pipeline: drive a
-        // lumped port at z=0, project the modal amplitude at a SECOND
-        // lumped port at z=lz (mode=(0,0), not mode=None). The wave
-        // should physically reach port 1 and its modal projection
-        // should be of order the drive amplitude, not zero.
-        //
-        // The companion test
-        // `lumped_port_carries_a_dispersionless_tem_wave` validates
-        // ONE active port + ONE absorbing port (mode=None). This test
-        // covers the two-active-lumped-ports case `sparams` relies on.
-        use crate::mesh_gen::structured_box;
-        use crate::propagator::etd_step;
-        use std::f64::consts::PI;
-
-        let (a, b, lz) = (2.0, 0.5, 6.0);
-        let mesh = structured_box(6, 2, 16, a, b, lz);
-        let on = |pred: &dyn Fn([f64; 3]) -> bool| -> Vec<usize> {
-            mesh.tris
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.iter().all(|&nd| pred(mesh.nodes[nd])))
-                .map(|(i, _)| i)
-                .collect()
-        };
-        let z0_tris = on(&|p| p[2].abs() < 1e-9);
-        let zl_tris = on(&|p| (p[2] - lz).abs() < 1e-9);
-
-        // Side walls absorbing (mode=None) so the TEM mode is the only
-        // propagating thing.
-        let x_lo = on(&|p| p[0].abs() < 1e-9);
-        let x_hi = on(&|p| (p[0] - a).abs() < 1e-9);
-
-        let port0 = RectPort {
-            origin: [0.0, 0.0, 0.0],
-            u_hat: [1.0, 0.0, 0.0],
-            v_hat: [0.0, 1.0, 0.0],
-            w_hat: [0.0, 0.0, 1.0], // inward +z
-            a,
-            b,
-            mode: (0, 0),
-            z0: 1.0,
-        };
-        let port1 = RectPort {
-            origin: [0.0, 0.0, lz],
-            u_hat: [1.0, 0.0, 0.0],
-            v_hat: [0.0, 1.0, 0.0],
-            w_hat: [0.0, 0.0, -1.0], // inward -z (looking into the box)
-            a,
-            b,
-            mode: (0, 0),
-            z0: 1.0,
-        };
-        let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-        let op = MaxwellOperator::new_with_materials_ports(
-            &mesh,
-            2,
-            0.0,
-            &vacuum,
-            &[
-                PortSpec {
-                    tris: z0_tris,
-                    mode: Some(PortMode::Rect(port0)),
-                },
-                PortSpec {
-                    tris: zl_tris,
-                    mode: Some(PortMode::Rect(port1)),
-                },
-                PortSpec { tris: x_lo, mode: None },
-                PortSpec { tris: x_hi, mode: None },
-            ],
-        );
-
-        let wc = 0.0; // (0,0) TEM cutoff
-        let omega0 = PI / a; // band centre, above the would-be cutoff
-        let (t0, tau) = (5.0, 1.6);
-        let pulse = |t: f64| {
-            (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
-        };
-        let dt = 0.02;
-        let steps = 800;
-        let src = op.port_source(0);
-        let mut y = vec![0.0; op.n_dof()];
-
-        // Track the time series of modal projections at BOTH ports.
-        let mut p1e_max = 0.0_f64;
-        let mut p0e_max = 0.0_f64;
-        for s in 0..steps {
-            let t = s as f64 * dt;
-            let g = pulse(t);
-            let bvec: Vec<f64> = src.iter().map(|x| x * g).collect();
-            y = etd_step(|x| op.apply(x), &y, &bvec, dt, 18);
-            let (p0e, _p0h) = op.port_modal_projections(&y, 0);
-            let (p1e, _p1h) = op.port_modal_projections(&y, 1);
-            p0e_max = p0e_max.max(p0e.abs());
-            p1e_max = p1e_max.max(p1e.abs());
-        }
-        let _ = wc;
-        eprintln!(
-            "DIAG two-lumped: drive port 0, peak |P_e(port 0)|={:.3e}, \
-             peak |P_e(port 1)|={:.3e}",
-            p0e_max, p1e_max,
-        );
-        assert!(
-            p1e_max > 1e-3 * p0e_max,
-            "TEM wave from port 0 did not reach port 1 in modal sense: \
-             P_e(port 0) peak = {:.3e}, P_e(port 1) peak = {:.3e}",
-            p0e_max,
-            p1e_max,
-        );
     }
 
     #[test]

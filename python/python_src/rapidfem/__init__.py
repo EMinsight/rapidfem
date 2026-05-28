@@ -56,7 +56,8 @@ from rapidfem.materials import (
     Material, Air, Dielectric, Conductor, Anisotropic, Debye, Drude,
 )
 from rapidfem.physics import (
-    RectWaveguidePort, LumpedPort, CoaxPort, UserDefinedPort, FloquetPort,
+    RectWaveguidePort, LumpedPort, CoaxPort, WavePort, UserDefinedPort,
+    FloquetPort,
     PEC, PMC, ABC, SurfaceImpedance, LumpedElement, PML, PeriodicBoundary,
 )
 from rapidfem.problem import Problem, ProblemFD, ProblemTD, Adaptive
@@ -192,7 +193,8 @@ __all__ = [
     "SweepResult", "Eigenmode", "RadiationPattern",
     "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
     "Material", "Air", "Dielectric", "Conductor", "Anisotropic", "Debye", "Drude",
-    "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
+    "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
+    "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
     "PeriodicBoundary",
     "Problem", "ProblemFD", "ProblemTD", "Adaptive", "GaussianPulse",

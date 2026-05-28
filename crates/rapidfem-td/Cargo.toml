@@ -15,7 +15,8 @@ rapidfem-core = { path = "../rapidfem-core" }
 rayon = "1.11.0"
 
 [dev-dependencies]
-# Dense eigensolver — used only by the cavity-mode validation gate.
+# Dense eigensolver — only the cavity-mode validation gate (tests) uses
+# it directly now; the wave-port mode solver lives in rapidfem-core.
 faer = "0.24"
 
 [features]

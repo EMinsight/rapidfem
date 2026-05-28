@@ -357,6 +357,77 @@ class CoaxPort(_Physics):
         return s
 
 
+class WavePort(_Physics):
+    """Numerically-solved wave port (time-domain backend only).
+
+    Computes the port's transverse mode profile by a 2D eigensolve on
+    the port-face cross-section, instead of assuming an analytic shape.
+    This is the right port for a guide whose mode has no closed form —
+    a ridged or circular waveguide, and (once the inhomogeneous vector
+    solve lands) a microstrip or coplanar line. The solved profile then
+    flows through the same injection / extraction machinery as the
+    analytic :class:`RectWaveguidePort` and :class:`CoaxPort`.
+
+    At this stage the solver handles a **homogeneously filled**
+    cross-section (the scalar Helmholtz :math:`\\mathrm{TE}` / :math:`\\mathrm{TM}`
+    eigenproblem); the dominant mode of an arbitrary hollow guide is
+    captured exactly. Inhomogeneous (dielectric + air) hybrid modes for
+    microstrip-class lines are a follow-up on the same machinery.
+
+    Frequency-domain ``ProblemFD`` does not support :class:`WavePort`.
+
+
+    Example
+    -------
+    Dominant mode of a ridged-waveguide cross-section:
+
+    .. code-block:: python
+
+        rf.WavePort(guide.faces.min(axis="z"))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    te : bool
+        for the homogeneous (``f0 = None``) scalar solve: pick a
+        :math:`\\mathrm{TE}` mode (``True``, default) or :math:`\\mathrm{TM}`
+        (``False``). Ignored for the vector solve.
+    mode_index : int
+        which mode to use, ordered by dominance (``0`` = fundamental)
+    f0 : float or None
+        design frequency in Hz. ``None`` (default) runs the scalar
+        ``TE``/``TM`` solve for a homogeneously filled hollow guide.
+        Setting ``f0`` switches to the **full-vector hybrid** solve at
+        that operating frequency, using the per-element permittivity —
+        the path for an inhomogeneous (substrate + air) microstrip-class
+        line, whose quasi-TEM mode profile is needed there. The profile
+        is weakly frequency-dependent, so a single ``f0`` near the band
+        of interest suffices.
+    power : float
+        incident power in watts
+    """
+
+    def __init__(self, *targets,
+                 te: bool = True,
+                 mode_index: int = 0,
+                 f0: float | None = None,
+                 power: float = 1.0):
+        super().__init__(*targets)
+        self.te = bool(te)
+        self.mode_index = int(mode_index)
+        self.f0 = None if f0 is None else float(f0)
+        self.power = float(power)
+
+    def _to_toml(self, tag: int) -> str:
+        raise NotImplementedError(
+            "WavePort is a time-domain feature; the frequency-domain "
+            "backend (ProblemFD) has no wave-port mode solver. Use "
+            "RectWaveguidePort / CoaxPort / LumpedPort with ProblemFD."
+        )
+
+
 class UserDefinedPort(_Physics):
     """Driven port with a user-supplied uniform E-field on the face.
 
@@ -926,7 +997,8 @@ class PeriodicBoundary(_Physics):
 
 
 __all__ = [
-    "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
+    "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
+    "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
     "PeriodicBoundary",
 ]
