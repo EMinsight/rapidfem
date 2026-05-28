@@ -391,10 +391,20 @@ class WavePort(_Physics):
     targets : GeoObject or EntityCollection
         port face(s)
     te : bool
-        solve a :math:`\\mathrm{TE}` mode (``True``, default) or a
-        :math:`\\mathrm{TM}` mode (``False``)
+        for the homogeneous (``f0 = None``) scalar solve: pick a
+        :math:`\\mathrm{TE}` mode (``True``, default) or :math:`\\mathrm{TM}`
+        (``False``). Ignored for the vector solve.
     mode_index : int
-        which mode to use, ordered by ascending cutoff (``0`` = dominant)
+        which mode to use, ordered by dominance (``0`` = fundamental)
+    f0 : float or None
+        design frequency in Hz. ``None`` (default) runs the scalar
+        ``TE``/``TM`` solve for a homogeneously filled hollow guide.
+        Setting ``f0`` switches to the **full-vector hybrid** solve at
+        that operating frequency, using the per-element permittivity —
+        the path for an inhomogeneous (substrate + air) microstrip-class
+        line, whose quasi-TEM mode profile is needed there. The profile
+        is weakly frequency-dependent, so a single ``f0`` near the band
+        of interest suffices.
     power : float
         incident power in watts
     """
@@ -402,10 +412,12 @@ class WavePort(_Physics):
     def __init__(self, *targets,
                  te: bool = True,
                  mode_index: int = 0,
+                 f0: float | None = None,
                  power: float = 1.0):
         super().__init__(*targets)
         self.te = bool(te)
         self.mode_index = int(mode_index)
+        self.f0 = None if f0 is None else float(f0)
         self.power = float(power)
 
     def _to_toml(self, tag: int) -> str:

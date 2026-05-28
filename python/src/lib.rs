@@ -517,7 +517,7 @@ impl PyTdOperator {
         floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
         abc_faces: Option<Vec<i32>>,
         pec_faces: Option<Vec<i32>>,
-        wave_ports: Option<Vec<(i32, bool, usize)>>,
+        wave_ports: Option<Vec<(i32, bool, usize, f64)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
@@ -659,20 +659,30 @@ impl PyTdOperator {
         // Numerically-solved wave ports — appended after the rectangular,
         // coax and Floquet modal ports (and before the absorbing faces),
         // so the modal-port subset stays contiguous. Each entry is
-        // `(face_tag, te, mode_index)`: a 2D cross-section eigensolve runs
-        // at build time and the sampled profile becomes the port mode.
+        // `(face_tag, te, mode_index, k0)`: a 2D cross-section eigensolve
+        // runs at build time and the sampled profile becomes the port
+        // mode. `k0 > 0` selects the inhomogeneous vector solve at that
+        // operating wavenumber (microstrip-class); `k0 <= 0` the scalar
+        // TE/TM solve (homogeneous hollow guide). Per-tet `ε_r` is read
+        // off the already-resolved `materials`.
         if let Some(wps) = wave_ports {
-            for (tag, te, mode_index) in wps {
+            let eps_per_tet: Vec<f64> =
+                materials.iter().map(|m| m.eps[0]).collect();
+            for (tag, te, mode_index, k0) in wps {
                 let spec = PortSpec::wave_from_mesh_tag(
-                    &mesh, tag, te, mode_index,
+                    &mesh,
+                    tag,
+                    te,
+                    mode_index,
+                    Some(&eps_per_tet),
+                    k0,
                 )
                 .ok_or_else(|| {
                     PyRuntimeError::new_err(format!(
                         "wave port face tag {tag}: no triangles, or the \
                          cross-section eigensolve found fewer than \
-                         {} {} mode(s)",
+                         {} mode(s)",
                         mode_index + 1,
-                        if te { "TE" } else { "TM" },
                     ))
                 })?;
                 port_specs.push(spec);

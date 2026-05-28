@@ -315,84 +315,141 @@ pub fn solve_modes(
 #[derive(Clone, Debug)]
 pub struct NumericalMode {
     mesh: PortMesh2D,
-    kind: ModeKind,
-    k_c: f64,
-    /// Per-triangle constant transverse gradient `∇_t ψ` in `(u, v)`.
-    grad: Vec<[f64; 2]>,
-    /// Inverse of the peak `|e_t|` over the cross-section — the unit-peak
-    /// normalisation applied in `e_profile`.
+    /// Transverse electric field `E_t` at each cross-section node, in the
+    /// port-plane `(u, v)` components — the unified profile representation
+    /// fed by both the scalar (`from_scalar`) and vector (`from_vector`)
+    /// solves; `e_profile` barycentric-interpolates it.
+    e_uv_node: Vec<[f64; 2]>,
+    /// Inverse peak `|E_t|` over the nodes — the unit-peak normalisation.
     inv_peak: f64,
     /// Inward normal `ŵ = û × v̂` (global), the mode propagation axis.
     w_hat: [f64; 3],
+    /// Cutoff wavenumber (`0` for a quasi-TEM numerical mode).
+    cutoff: f64,
+    /// Modal-impedance model for the forward/backward split.
+    z_model: ImpedanceModel,
+}
+
+/// How a numerical mode's wave impedance varies with frequency.
+#[derive(Clone, Copy, Debug)]
+enum ImpedanceModel {
+    /// `TE`: `Z = 1/√(1−(k_c/ω)²)`.
+    Te { k_c: f64 },
+    /// `TM`: `Z = √(1−(k_c/ω)²)`.
+    Tm { k_c: f64 },
+    /// Flat `Z = z` — a quasi-TEM / hybrid vector mode, with `z = 1/n_eff`
+    /// (the TEM wave impedance `η√(μ/ε_eff)` in `η = 1` units).
+    Flat { z: f64 },
 }
 
 impl NumericalMode {
-    /// Build a numerical mode from a solved eigenpair on a cross-section.
-    pub fn from_eigenmode(
+    /// Build a numerical mode from a scalar `TE`/`TM` eigenpair. The
+    /// transverse field follows from `ψ`: `TM` → `E_t ∝ ∇_t ψ`, `TE` →
+    /// `E_t ∝ ẑ × ∇_t ψ`. The per-triangle constant gradient is averaged
+    /// (area-weighted) to the nodes for the unified nodal representation.
+    pub fn from_scalar(
         mesh: PortMesh2D,
         mode: &PortEigenmode,
         kind: ModeKind,
     ) -> NumericalMode {
-        // Per-triangle ∇_t ψ (constant for P1): Σ_i ψ_i ∇λ_i.
-        let mut grad = Vec::with_capacity(mesh.tris.len());
+        let n_node = mesh.n_nodes();
+        let mut acc = vec![[0.0f64; 2]; n_node];
+        let mut wsum = vec![0.0f64; n_node];
         for &t in &mesh.tris {
-            let (_a, g) = mesh.tri_geom(t);
+            let (area, g) = mesh.tri_geom(t);
+            // ∇_t ψ (constant on the triangle).
             let mut gp = [0.0; 2];
             for k in 0..3 {
                 gp[0] += mode.psi[t[k]] * g[k][0];
                 gp[1] += mode.psi[t[k]] * g[k][1];
             }
-            grad.push(gp);
+            // E_t direction: TM → ∇ψ, TE → ẑ×∇ψ = (−∂v, ∂u).
+            let et = match kind {
+                ModeKind::Tm => [gp[0], gp[1]],
+                ModeKind::Te => [-gp[1], gp[0]],
+            };
+            for k in 0..3 {
+                acc[t[k]][0] += area * et[0];
+                acc[t[k]][1] += area * et[1];
+                wsum[t[k]] += area;
+            }
         }
+        let e_uv_node: Vec<[f64; 2]> = (0..n_node)
+            .map(|i| {
+                if wsum[i] > 0.0 {
+                    [acc[i][0] / wsum[i], acc[i][1] / wsum[i]]
+                } else {
+                    [0.0, 0.0]
+                }
+            })
+            .collect();
+        let z_model = match kind {
+            ModeKind::Te => ImpedanceModel::Te { k_c: mode.k_c },
+            ModeKind::Tm => ImpedanceModel::Tm { k_c: mode.k_c },
+        };
+        NumericalMode::assemble(mesh, e_uv_node, mode.k_c, z_model)
+    }
+
+    /// Build a numerical mode from a full-vector hybrid solve. The
+    /// transverse field is the solver's recovered nodal `E_t`; the mode
+    /// is treated as quasi-TEM (zero cutoff, flat impedance `1/n_eff`),
+    /// the right model for a microstrip-class guided mode.
+    pub fn from_vector(mesh: PortMesh2D, mode: &VectorMode) -> NumericalMode {
+        let z = if mode.n_eff > 0.0 { 1.0 / mode.n_eff } else { 1.0 };
+        NumericalMode::assemble(
+            mesh,
+            mode.e_uv_node.clone(),
+            0.0,
+            ImpedanceModel::Flat { z },
+        )
+    }
+
+    fn assemble(
+        mesh: PortMesh2D,
+        e_uv_node: Vec<[f64; 2]>,
+        cutoff: f64,
+        z_model: ImpedanceModel,
+    ) -> NumericalMode {
         let w_hat = cross3(mesh.u_hat, mesh.v_hat);
-        // Peak transverse-field magnitude. For TM/TE the in-plane |e_t|
-        // equals |∇ψ| (the ẑ× rotation preserves length), so the peak
-        // is just the largest gradient magnitude across the triangles.
-        let peak = grad
+        let peak = e_uv_node
             .iter()
-            .map(|g| (g[0] * g[0] + g[1] * g[1]).sqrt())
+            .map(|e| (e[0] * e[0] + e[1] * e[1]).sqrt())
             .fold(0.0_f64, f64::max);
         let inv_peak = if peak > 0.0 { 1.0 / peak } else { 0.0 };
-        NumericalMode { mesh, kind, k_c: mode.k_c, grad, inv_peak, w_hat }
+        NumericalMode { mesh, e_uv_node, inv_peak, w_hat, cutoff, z_model }
     }
 
-    /// Cutoff angular frequency (`= k_c` in operator units, `c = 1`).
+    /// Cutoff angular frequency (`= k_c`; `0` for a quasi-TEM mode).
     pub fn cutoff(&self) -> f64 {
-        self.k_c
+        self.cutoff
     }
 
-    /// Modal wave impedance `Z(omega)` in operator units (`η = 1`):
-    /// `Z_TE = 1/√(1−(ω_c/ω)²)`, `Z_TM = √(1−(ω_c/ω)²)`. Valid above
-    /// cutoff; the caller restricts the S-parameter sweep to the
-    /// propagating band.
+    /// Modal wave impedance `Z(omega)` in operator units (`η = 1`).
     pub fn te_impedance(&self, omega: f64) -> f64 {
-        let r = self.k_c / omega;
-        let s = (1.0 - r * r).max(0.0).sqrt();
-        match self.kind {
-            ModeKind::Te => {
-                if s > 0.0 {
-                    1.0 / s
-                } else {
-                    f64::INFINITY
-                }
+        match self.z_model {
+            ImpedanceModel::Flat { z } => z,
+            ImpedanceModel::Te { k_c } => {
+                let s = (1.0 - (k_c / omega).powi(2)).max(0.0).sqrt();
+                if s > 0.0 { 1.0 / s } else { f64::INFINITY }
             }
-            ModeKind::Tm => s,
+            ImpedanceModel::Tm { k_c } => {
+                (1.0 - (k_c / omega).powi(2)).max(0.0).sqrt()
+            }
         }
     }
 
     /// Locate the triangle containing the in-plane point `(u, v)` and
-    /// return its index, or the nearest triangle's index if the point
-    /// is just outside the meshed cross-section (DG face nodes can sit a
-    /// hair outside due to curved-face / rounding). Barycentric test.
-    fn locate(&self, uv: [f64; 2]) -> usize {
-        let mut best = 0usize;
+    /// return its index plus the barycentric coordinates there. Falls back
+    /// to the nearest triangle if the point sits just outside the mesh.
+    fn locate(&self, uv: [f64; 2]) -> (usize, [f64; 3]) {
+        let mut best = (0usize, [1.0, 0.0, 0.0]);
         let mut best_slack = f64::NEG_INFINITY;
         for (ti, &t) in self.mesh.tris.iter().enumerate() {
             let a = self.mesh.nodes[t[0]];
             let b = self.mesh.nodes[t[1]];
             let c = self.mesh.nodes[t[2]];
-            // Signed bary coords via edge cross products.
-            let d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+            let d =
+                (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
             if d.abs() < 1e-30 {
                 continue;
             }
@@ -403,13 +460,13 @@ impl NumericalMode {
                 + (a[0] - c[0]) * (uv[1] - c[1]))
                 / d;
             let l2 = 1.0 - l0 - l1;
-            let slack = l0.min(l1).min(l2); // ≥ 0 inside
+            let slack = l0.min(l1).min(l2);
             if slack >= -1e-9 {
-                return ti;
+                return (ti, [l0, l1, l2]);
             }
             if slack > best_slack {
                 best_slack = slack;
-                best = ti;
+                best = (ti, [l0, l1, l2]);
             }
         }
         best
@@ -423,20 +480,18 @@ impl NumericalMode {
     }
 
     /// Transverse electric-field profile at a global point on the port
-    /// face, in global coordinates, unit-peak normalised.
+    /// face, in global coordinates, unit-peak normalised. Barycentric
+    /// interpolation of the nodal `E_t`.
     pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
         let uv = self.to_uv(x);
-        let ti = self.locate(uv);
-        let g = self.grad[ti];
-        // In-plane e_t vector (u, v components), before lifting to 3D.
-        let (eu, ev) = match self.kind {
-            // TM: E_t ∝ ∇_t ψ.
-            ModeKind::Tm => (g[0], g[1]),
-            // TE: E_t ∝ ẑ × ∇_t ψ = (−∂v, ∂u) in the (û, v̂) plane
-            // (ẑ = ŵ = û × v̂, so ŵ × û = v̂ and ŵ × v̂ = −û).
-            ModeKind::Te => (-g[1], g[0]),
-        };
-        let (eu, ev) = (eu * self.inv_peak, ev * self.inv_peak);
+        let (ti, l) = self.locate(uv);
+        let t = self.mesh.tris[ti];
+        let mut e = [0.0f64; 2];
+        for k in 0..3 {
+            e[0] += l[k] * self.e_uv_node[t[k]][0];
+            e[1] += l[k] * self.e_uv_node[t[k]][1];
+        }
+        let (eu, ev) = (e[0] * self.inv_peak, e[1] * self.inv_peak);
         [
             eu * self.mesh.u_hat[0] + ev * self.mesh.v_hat[0],
             eu * self.mesh.u_hat[1] + ev * self.mesh.v_hat[1],
@@ -905,7 +960,7 @@ mod tests {
         let (nodes, tris) = rect_mesh(2.0, 1.0, 24, 12);
         let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
         let modes = solve_modes(&pm, ModeKind::Te, 1);
-        let nm = NumericalMode::from_eigenmode(pm, &modes[0], ModeKind::Te);
+        let nm = NumericalMode::from_scalar(pm, &modes[0], ModeKind::Te);
         // Mid-width (x = a/2 = 1): |e_t| near the unit peak, along ŷ.
         let mid = nm.e_profile([1.0, 0.5, 0.0]);
         let mag = (mid[0] * mid[0] + mid[1] * mid[1] + mid[2] * mid[2]).sqrt();

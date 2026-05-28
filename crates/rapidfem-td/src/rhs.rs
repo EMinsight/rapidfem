@@ -19,7 +19,7 @@ use crate::waveguide::{
     CoaxPort, FloquetPolarisation, FloquetPort, PortMode, RectPort,
 };
 use rapidfem_core::port_eigen::{
-    ModeKind, NumericalMode, PortMesh2D, solve_modes,
+    ModeKind, NumericalMode, PortMesh2D, solve_modes, solve_vector_modes,
 };
 use rapidfem_core::mesh::Mesh;
 use rapidfem_core::topology::FaceTopology;
@@ -342,21 +342,30 @@ impl PortSpec {
 
     /// Build a numerically-solved **wave port** from a gmsh face tag — a
     /// 2D cross-section eigensolve on the port face produces the mode
-    /// profile, for cross-sections with no closed-form mode (ridged /
-    /// circular / arbitrary hollow waveguides). `te` selects `TE`
-    /// (`true`) or `TM` (`false`) modes; `mode_index` picks the mode by
-    /// ascending cutoff (`0` = dominant). Returns `None` if the tag has
-    /// no triangles or the eigensolve finds fewer than `mode_index + 1`
-    /// propagating modes.
+    /// profile, for cross-sections with no closed-form mode.
     ///
-    /// Homogeneous-fill only at this stage (the scalar Helmholtz solve);
-    /// an inhomogeneous (per-triangle `ε`) hybrid vector solve for
-    /// microstrip-class lines builds on the same extraction.
+    /// Two solve paths, chosen by `k0`:
+    /// - `k0 <= 0`: the scalar Helmholtz `TE`/`TM` solve — a
+    ///   *homogeneously filled* hollow guide of arbitrary cross-section
+    ///   (ridged, circular, L-shaped). `te` picks `TE`/`TM`.
+    /// - `k0 > 0`: the full-vector hybrid solve at operating wavenumber
+    ///   `k0` (in 1/mesh-length), with per-element `ε_r` — the
+    ///   *inhomogeneous* (substrate + air) quasi-TEM mode of a
+    ///   microstrip-class line. `eps_per_tet` supplies the relative
+    ///   permittivity of every mesh tet (vacuum = 1 where absent); each
+    ///   port-face triangle takes the `ε_r` of its adjacent tet. `te` is
+    ///   ignored (the hybrid mode is neither pure TE nor TM).
+    ///
+    /// `mode_index` picks the mode by dominance (`0` = fundamental).
+    /// Returns `None` if the tag has no triangles or the solve finds
+    /// fewer than `mode_index + 1` modes.
     pub fn wave_from_mesh_tag(
         mesh: &Mesh,
         face_tag: i32,
         te: bool,
         mode_index: usize,
+        eps_per_tet: Option<&[Field]>,
+        k0: Field,
     ) -> Option<PortSpec> {
         let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
         if tris.is_empty() {
@@ -404,10 +413,32 @@ impl PortSpec {
         let face_tris: Vec<[usize; 3]> =
             tris.iter().map(|&t| mesh.tris[t]).collect();
         let pm = PortMesh2D::from_face(&global_nodes, &face_tris, nrm);
+        if k0 > 0.0 {
+            // Vector hybrid solve: per-face-triangle ε_r from the adjacent
+            // tet (the same tet whose centroid oriented the normal, taken
+            // per triangle). `tris[i]` ↔ `pm.tris[i]` by construction.
+            let eps_face: Vec<Field> = tris
+                .iter()
+                .map(|&t| {
+                    let adj = mesh.tri_to_tet[t]
+                        .iter()
+                        .copied()
+                        .find(|&x| x != usize::MAX);
+                    match (adj, eps_per_tet) {
+                        (Some(e), Some(eps)) => eps[e],
+                        _ => 1.0,
+                    }
+                })
+                .collect();
+            let modes = solve_vector_modes(&pm, &eps_face, k0, mode_index + 1);
+            let mode = modes.get(mode_index)?;
+            let nm = NumericalMode::from_vector(pm, mode);
+            return Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) });
+        }
         let kind = if te { ModeKind::Te } else { ModeKind::Tm };
         let modes = solve_modes(&pm, kind, mode_index + 1);
         let mode = modes.get(mode_index)?;
-        let nm = NumericalMode::from_eigenmode(pm, mode, kind);
+        let nm = NumericalMode::from_scalar(pm, mode, kind);
         Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) })
     }
 

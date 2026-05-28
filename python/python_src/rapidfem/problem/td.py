@@ -213,9 +213,17 @@ def _collect_ports(geometry):
             mode = (int(phys.mode[0]), int(phys.mode[1]))
             rect_out.append((int(tag), mode[0], mode[1], None, 1.0))
         elif isinstance(phys, WavePort):
-            # Numerically-solved cross-section mode: (tag, te?, mode_index).
+            # Numerically-solved cross-section mode:
+            # (tag, te?, mode_index, k0). k0 = 2π f0 / c in 1/m (the mesh
+            # is in metres); k0 <= 0 (f0 None) selects the scalar TE/TM
+            # solve, k0 > 0 the inhomogeneous vector solve.
+            k0 = (
+                2.0 * math.pi * phys.f0 / 299_792_458.0
+                if phys.f0 is not None
+                else -1.0
+            )
             wave_out.append(
-                (int(tag), bool(phys.te), int(phys.mode_index))
+                (int(tag), bool(phys.te), int(phys.mode_index), float(k0))
             )
         elif isinstance(phys, LumpedPort):
             # The time-domain backend has no lumped port. A lumped
