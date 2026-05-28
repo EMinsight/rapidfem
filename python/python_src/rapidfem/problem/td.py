@@ -162,12 +162,12 @@ def _collect_dispersive(geometry):
 
 def _collect_ports(geometry):
     """Walk the geometry's port physics — :class:`RectWaveguidePort`,
-    :class:`LumpedPort`, :class:`CoaxPort` and :class:`FloquetPort`.
+    :class:`CoaxPort` and :class:`FloquetPort`.
 
     Returns ``(rect_ports, coax_ports, floquet_ports)``:
 
-    - ``rect_ports`` is ``[(face_tag, mode_m, mode_n, direction)]`` for the
-      native TD operator's rectangular / lumped ports
+    - ``rect_ports`` is ``[(face_tag, mode_m, mode_n, direction, z0)]`` for
+      the native TD operator's rectangular ``TE_mn`` ports
     - ``coax_ports`` is ``[(face_tag, center)]`` for its coaxial TEM ports
     - ``floquet_ports`` is ``[(face_tag, pol_mode, scan_theta, scan_phi)]``
       for its Floquet plane-wave ports — ``pol_mode`` is ``1`` (TE) or
@@ -175,28 +175,26 @@ def _collect_ports(geometry):
       are radians.
 
     Operator port indices follow the geometry declaration order, with
-    rectangular / lumped ports first, coax ports next, and Floquet ports
-    appended after — matching the native ``TdOperator.from_mesh_bytes``
-    layout.
+    rectangular ports first, coax ports next, and Floquet ports appended
+    after — matching the native ``TdOperator.from_mesh_bytes`` layout.
 
-    A lumped port maps to the ``(0, 0)`` sentinel mode — the operator's
-    uniform-profile / TEM port (zero cutoff, flat impedance) — and forwards
-    its voltage-integration ``direction`` as the port's transverse field
-    axis. A waveguide port has ``direction`` ``None`` — its frame is
-    auto-fit from the face. A coax port carries the analytic TEM ``E_ρ ∝
-    ρ̂/ρ`` annular mode and forwards its optional axis ``origin`` to the
-    native ``center`` override. A Floquet port carries a uniform plane
-    wave with the TE / TM polarisation and the scan angles
-    (``scan_theta_deg``, ``scan_phi_deg``) converted to radians; at
-    oblique scan the transverse phase factor is dropped (documented
-    approximation, see :class:`FloquetPort`).
+    A waveguide port has ``direction`` ``None`` — its frame is auto-fit
+    from the face. A coax port carries the analytic TEM ``E_ρ ∝ ρ̂/ρ``
+    annular mode and forwards its optional axis ``origin`` to the native
+    ``center`` override. A Floquet port carries a uniform plane wave with
+    the TE / TM polarisation and the scan angles (``scan_theta_deg``,
+    ``scan_phi_deg``) converted to radians; at oblique scan the
+    transverse phase factor is dropped (documented approximation, see
+    :class:`FloquetPort`).
+
+    :class:`LumpedPort` is rejected — the time-domain backend has no
+    lumped port (a uniform delta-gap profile only works on a genuine
+    parallel-plate gap, not on concentrated quasi-TEM lines). Use a
+    modal or wave port instead.
     """
     import math
     from ..physics import CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort
 
-    # Free-space wave impedance (operator's normalised Z = 1). User
-    # Z0 in ohm becomes z0_op = Z0 / Z_FREE for the lumped (0,0) port.
-    Z_FREE = 376.7303135
     rect_out = []
     coax_out = []
     floquet_out = []
@@ -206,13 +204,25 @@ def _collect_ports(geometry):
             continue
         if isinstance(phys, RectWaveguidePort):
             mode = (int(phys.mode[0]), int(phys.mode[1]))
-            # z0 ignored for TE_mn (mode != (0,0)); pass 1.0 placeholder.
             rect_out.append((int(tag), mode[0], mode[1], None, 1.0))
         elif isinstance(phys, LumpedPort):
-            d = phys.direction
-            direction = (float(d[0]), float(d[1]), float(d[2]))
-            z0_op = float(phys.z0) / Z_FREE
-            rect_out.append((int(tag), 0, 0, direction, z0_op))
+            # The time-domain backend has no lumped port. A lumped
+            # (delta-gap, uniform-profile) source only carries a clean
+            # mode on a genuine parallel-plate gap; on a concentrated
+            # quasi-TEM line (microstrip, CPW, patch feed, spiral) the
+            # uniform profile excites spurious evanescent modes and the
+            # transmitted power is undercounted (see the abandoned
+            # Thevenin experiments on feature/td-lumped-thevenin-v2).
+            # The correct TD path for such lines is a wave port whose
+            # mode profile is computed by a 2D cross-section eigensolve.
+            raise NotImplementedError(
+                "LumpedPort is not supported by the time-domain backend. "
+                "Use a modal port (RectWaveguidePort, CoaxPort) for "
+                "waveguide / TEM geometries, or a WavePort (2D "
+                "cross-section eigensolve) for microstrip-class lines. "
+                "The frequency-domain backend (ProblemFD) still supports "
+                "LumpedPort via its Robin boundary condition."
+            )
         elif isinstance(phys, CoaxPort):
             center = (
                 None
@@ -1210,7 +1220,7 @@ class ProblemTD:
         if n_ports == 0:
             raise RuntimeError(
                 "ProblemTD has no modal ports — attach "
-                "RectWaveguidePort(s) or LumpedPort(s) to the "
+                "RectWaveguidePort(s) or CoaxPort(s) to the "
                 "geometry before constructing it; ABC faces alone do "
                 "not carry a mode for extraction"
             )

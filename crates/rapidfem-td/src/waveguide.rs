@@ -47,18 +47,20 @@ pub struct RectPort {
     /// Cross-section height.
     pub b: Field,
     /// `TE` mode indices `(m, n)`.
-    pub mode: (usize, usize),
-    /// Reference impedance for the lumped `(0, 0)` mode, in the
-    /// operator's normalised units (`Z = 1` is free-space 377 ohm).
-    /// A user-specified `Z0 = 50 ohm` becomes `z0 = 50.0 / 377.0`.
-    /// Ignored for true waveguide modes `TE_mn` with `(m, n) != (0, 0)`,
-    /// whose impedance is dispersive and set by the cutoff.
     ///
-    /// The lumped port's `h_profile` is `(w_hat x v_hat) / z0`, so the
-    /// ratio `|E| / |H|` of the port-mode profile equals `z0`. Any
-    /// forward / backward modal split `A, B = (P_e +- z0 * P_h) / 2`
-    /// referenced from this port (e.g. inside `ProblemTD.sparams`) is
-    /// then normalised to this Z0.
+    /// The `(0, 0)` sentinel is **internal-only**: it carries a uniform
+    /// transverse field and was the old lumped-port mode, which has been
+    /// removed from the public time-domain API (a uniform delta-gap
+    /// profile cannot represent a concentrated quasi-TEM line). It now
+    /// survives solely so [`FloquetPort::from_face`] can borrow
+    /// [`RectPort::from_face`]'s frame-fitting; no user-facing port
+    /// resolves to `(0, 0)`.
+    pub mode: (usize, usize),
+    /// Reference impedance for the `(0, 0)` sentinel mode, in the
+    /// operator's normalised units (`Z = 1` is free-space 377 ohm).
+    /// Vestigial — only the internal `(0, 0)` frame-fit path touches it;
+    /// `TE_mn` modes ignore it (their impedance is dispersive, set by
+    /// the cutoff). Kept to avoid churn until the wave-port work lands.
     pub z0: Field,
 }
 
