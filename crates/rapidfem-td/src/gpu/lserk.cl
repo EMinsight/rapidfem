@@ -25,3 +25,16 @@ kernel void add_source(global float* k, const int dof, const float val) {
     if (get_global_id(0) == 0)
         k[dof] += val;
 }
+
+// Add a held full-vector source to the matvec result `k`: k[i] += g*b[i].
+// The driven system is dy/dt = A.y + b(t), with `b = src * g` — the path
+// for modal-port injection, where the spatial pattern `src` spreads over
+// every port-face DOF and `g` is the scalar waveform held across the step.
+kernel void add_source_vec(global float* k,
+                           global const float* src,
+                           const float g,
+                           const int n) {
+    const int i = get_global_id(0);
+    if (i >= n) return;
+    k[i] += g * src[i];
+}

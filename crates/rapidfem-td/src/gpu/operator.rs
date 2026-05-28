@@ -80,19 +80,34 @@ pub struct GpuOperator {
     _lserk_program: Program,
     lserk_kernel: Kernel,
     source_kernel: Kernel,
-    // Krylov exponential propagator (P3).
+    /// Full-vector held source `k[i] += g*src[i]` (modal-port injection).
+    source_vec_kernel: Kernel,
+    /// Device-resident source spatial pattern `b`, uploaded once per drive.
+    src: Buffer<cl_float>,
+    // Krylov exponential propagator (P3). The f64 kernels are created
+    // lazily on the first `expmv`: a device without `cl_khr_fp64` (Apple
+    // Silicon, many integrated GPUs) cannot instantiate them, but the f32
+    // explicit (LSERK4) path does not need them — building them eagerly in
+    // `new` would wrongly make the whole operator unconstructible there.
     _expmv_program: Program,
-    k_cast_d2f: Kernel,
-    k_cast_f2d: Kernel,
-    k_dot_rows: Kernel,
-    k_axpy_basis: Kernel,
-    k_norm2: Kernel,
-    k_store_h_col: Kernel,
-    k_finish_norm: Kernel,
-    k_scale_recip: Kernel,
-    k_lincomb: Kernel,
+    /// Lazily-built f64 Krylov kernels; `None` until the first `expmv`.
+    expmv_kernels: Option<ExpmvKernels>,
     /// Lazily-allocated f64 Krylov buffers, sized on the first `expmv`.
     krylov: Option<Krylov>,
+}
+
+/// The f64 Krylov kernels for the exponential propagator, built lazily so
+/// the f32 explicit path stays available on fp64-less devices.
+struct ExpmvKernels {
+    cast_d2f: Kernel,
+    cast_f2d: Kernel,
+    dot_rows: Kernel,
+    axpy_basis: Kernel,
+    norm2: Kernel,
+    store_h_col: Kernel,
+    finish_norm: Kernel,
+    scale_recip: Kernel,
+    lincomb: Kernel,
 }
 
 /// f64 Arnoldi buffers for the Krylov exponential propagator. The basis
@@ -232,25 +247,19 @@ impl GpuOperator {
             .map_err(|e| format!("lserk kernel create failed: {e}"))?;
         let source_kernel = Kernel::create(&lserk_program, "add_source")
             .map_err(|e| format!("source kernel create failed: {e}"))?;
+        let source_vec_kernel =
+            Kernel::create(&lserk_program, "add_source_vec")
+                .map_err(|e| format!("source_vec kernel create failed: {e}"))?;
 
+        // Build the program (this succeeds even without fp64), but defer
+        // creating the f64 kernels themselves to the first `expmv` — see
+        // the `expmv_kernels` field note.
         let expmv_program = gpu.build_program(EXPMV_SRC)?;
-        let kern = |name: &str| {
-            Kernel::create(&expmv_program, name)
-                .map_err(|e| format!("{name} kernel create failed: {e}"))
-        };
-        let k_cast_d2f = kern("cast_d2f")?;
-        let k_cast_f2d = kern("cast_f2d")?;
-        let k_dot_rows = kern("dot_rows")?;
-        let k_axpy_basis = kern("axpy_basis")?;
-        let k_norm2 = kern("partial_norm2")?;
-        let k_store_h_col = kern("store_h_col")?;
-        let k_finish_norm = kern("finish_norm")?;
-        let k_scale_recip = kern("scale_recip")?;
-        let k_lincomb = kern("lincomb")?;
 
         let y = gpu.alloc(n_dof)?;
         let dy = gpu.alloc(n_dof)?;
         let p = gpu.alloc(n_dof)?;
+        let src = gpu.alloc(n_dof)?;
 
         Ok(GpuOperator {
             n_elem,
@@ -282,18 +291,42 @@ impl GpuOperator {
             _lserk_program: lserk_program,
             lserk_kernel,
             source_kernel,
+            source_vec_kernel,
+            src,
             _expmv_program: expmv_program,
-            k_cast_d2f,
-            k_cast_f2d,
-            k_dot_rows,
-            k_axpy_basis,
-            k_norm2,
-            k_store_h_col,
-            k_finish_norm,
-            k_scale_recip,
-            k_lincomb,
+            expmv_kernels: None,
             krylov: None,
         })
+    }
+
+    /// Build the f64 Krylov kernels on first use. Fails with a clear error
+    /// on a device without `cl_khr_fp64` (e.g. Apple Silicon), where the
+    /// exponential propagator is unavailable but the explicit path is not.
+    fn ensure_expmv_kernels(&mut self) -> Result<(), String> {
+        if self.expmv_kernels.is_some() {
+            return Ok(());
+        }
+        let kern = |name: &str| {
+            Kernel::create(&self._expmv_program, name).map_err(|e| {
+                format!(
+                    "{name} kernel create failed: {e} — the GPU exponential \
+                     propagator needs f64 (cl_khr_fp64), unavailable on this \
+                     device; use the explicit stepper or the CPU path"
+                )
+            })
+        };
+        self.expmv_kernels = Some(ExpmvKernels {
+            cast_d2f: kern("cast_d2f")?,
+            cast_f2d: kern("cast_f2d")?,
+            dot_rows: kern("dot_rows")?,
+            axpy_basis: kern("axpy_basis")?,
+            norm2: kern("partial_norm2")?,
+            store_h_col: kern("store_h_col")?,
+            finish_norm: kern("finish_norm")?,
+            scale_recip: kern("scale_recip")?,
+            lincomb: kern("lincomb")?,
+        });
+        Ok(())
     }
 
     /// State-vector length the operator expects.
@@ -423,6 +456,28 @@ impl GpuOperator {
                 .enqueue_nd_range(gpu.queue())
         }
         .map_err(|e| format!("source kernel launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Enqueue the full-vector held source add: `dy[i] += g * src[i]` over
+    /// every DOF. The device-resident `self.src` buffer holds the spatial
+    /// pattern `b`, uploaded once per drive; `g` is the per-step waveform.
+    fn enqueue_add_source_vec(
+        &self,
+        gpu: &GpuContext,
+        g: f32,
+    ) -> Result<(), String> {
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.source_vec_kernel)
+                .set_arg(&self.dy)
+                .set_arg(&self.src)
+                .set_arg(&g)
+                .set_arg(&n)
+                .set_global_work_size(self.n_dof)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("source_vec kernel launch failed: {e}"))?;
         Ok(())
     }
 
@@ -627,6 +682,128 @@ impl GpuOperator {
         Ok(traj)
     }
 
+    /// Upload the source spatial pattern `b` to the device-resident `src`
+    /// buffer. Call once before a vector-source drive; the per-step
+    /// waveform is then applied by [`enqueue_add_source_vec`].
+    fn upload_source(
+        &mut self,
+        gpu: &GpuContext,
+        source: &[f32],
+    ) -> Result<(), String> {
+        assert_eq!(source.len(), self.n_dof, "source length mismatch");
+        unsafe {
+            gpu.queue().enqueue_write_buffer(
+                &mut self.src, CL_BLOCKING, 0, source, &[],
+            )
+        }
+        .map_err(|e| format!("source upload failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Vector-source driven transient: `dy/dt = A.y + b·g(t)`, with `b` the
+    /// full spatial source pattern (modal-port injection) held constant
+    /// across each step. `source` is `b` (length `n_dof`); `source_values`
+    /// holds one waveform amplitude `g` per step. Returns the final state.
+    pub fn transient_driven_vec(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        source: &[f32],
+        source_values: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        self.upload_source(gpu, source)?;
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        let zeros = vec![0.0_f32; self.n_dof];
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.p, CL_BLOCKING, 0, &zeros, &[])
+        }
+        .map_err(|e| format!("register init failed: {e}"))?;
+
+        for &g in source_values {
+            for stage in 0..LSERK4_STAGES {
+                self.enqueue_apply(gpu)?;
+                self.enqueue_add_source_vec(gpu, g)?;
+                self.enqueue_lserk(
+                    gpu,
+                    LSERK4_A[stage] as f32,
+                    LSERK4_B[stage] as f32,
+                    dt,
+                )?;
+            }
+        }
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("driven transient sync failed: {e}"))?;
+        gpu.download(&self.y, self.n_dof)
+    }
+
+    /// Vector-source driven transient returning the full trajectory, flat
+    /// `[(steps+1) * n_dof]` with row 0 the initial state. The GPU
+    /// counterpart of the CPU
+    /// [`LserkWorkspace::step_with_source_into`](crate::explicit::LserkWorkspace::step_with_source_into)
+    /// loop. `source` is the spatial pattern `b`; `source_values` holds one
+    /// amplitude per substep (length `steps * substeps`).
+    pub fn transient_driven_vec_traj(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        substeps: usize,
+        source: &[f32],
+        source_values: &[f32],
+    ) -> Result<Vec<f32>, String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        let substeps = substeps.max(1);
+        assert_eq!(
+            source_values.len(),
+            steps * substeps,
+            "source values must have steps*substeps entries",
+        );
+        let n = self.n_dof;
+        let h = dt / substeps as f32;
+        self.upload_source(gpu, source)?;
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+        let zeros = vec![0.0_f32; n];
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.p, CL_BLOCKING, 0, &zeros, &[])
+        }
+        .map_err(|e| format!("register init failed: {e}"))?;
+
+        let mut traj = Vec::with_capacity((steps + 1) * n);
+        traj.extend_from_slice(y0);
+        for k in 0..steps {
+            for j in 0..substeps {
+                let g = source_values[k * substeps + j];
+                for stage in 0..LSERK4_STAGES {
+                    self.enqueue_apply(gpu)?;
+                    self.enqueue_add_source_vec(gpu, g)?;
+                    self.enqueue_lserk(
+                        gpu,
+                        LSERK4_A[stage] as f32,
+                        LSERK4_B[stage] as f32,
+                        h,
+                    )?;
+                }
+            }
+            let row = gpu.download(&self.y, n)?;
+            traj.extend_from_slice(&row);
+        }
+        Ok(traj)
+    }
+
     /// Ensure the f64 Krylov buffers are allocated for dimension `m`.
     fn ensure_krylov(
         &mut self,
@@ -679,12 +856,16 @@ impl GpuOperator {
         let elem_global = n.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
         let norm_global =
             n.div_ceil(NORM_WORK_GROUP) * NORM_WORK_GROUP;
+        let ek = self
+            .expmv_kernels
+            .as_ref()
+            .expect("expmv kernels built before arnoldi");
 
         for j in 0..m {
             // matvec w = A*basis[j]: cast basis[j] down, apply, cast up.
             let off = (j * n) as cl_int;
             unsafe {
-                ExecuteKernel::new(&self.k_cast_d2f)
+                ExecuteKernel::new(&ek.cast_d2f)
                     .set_arg(basis)
                     .set_arg(&off)
                     .set_arg(&self.y)
@@ -696,7 +877,7 @@ impl GpuOperator {
             .map_err(|e| format!("cast_d2f launch failed: {e}"))?;
             self.enqueue_apply(gpu)?;
             unsafe {
-                ExecuteKernel::new(&self.k_cast_f2d)
+                ExecuteKernel::new(&ek.cast_f2d)
                     .set_arg(&self.dy)
                     .set_arg(w)
                     .set_arg(&n_i)
@@ -715,7 +896,7 @@ impl GpuOperator {
                 cols.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
             for _pass in 0..2 {
                 unsafe {
-                    ExecuteKernel::new(&self.k_dot_rows)
+                    ExecuteKernel::new(&ek.dot_rows)
                         .set_arg(basis)
                         .set_arg(w)
                         .set_arg(proj)
@@ -728,7 +909,7 @@ impl GpuOperator {
                 }
                 .map_err(|e| format!("dot_rows launch failed: {e}"))?;
                 unsafe {
-                    ExecuteKernel::new(&self.k_store_h_col)
+                    ExecuteKernel::new(&ek.store_h_col)
                         .set_arg(h_dev)
                         .set_arg(proj)
                         .set_arg(&col_i)
@@ -740,7 +921,7 @@ impl GpuOperator {
                 }
                 .map_err(|e| format!("store_h_col launch failed: {e}"))?;
                 unsafe {
-                    ExecuteKernel::new(&self.k_axpy_basis)
+                    ExecuteKernel::new(&ek.axpy_basis)
                         .set_arg(w)
                         .set_arg(basis)
                         .set_arg(proj)
@@ -761,7 +942,7 @@ impl GpuOperator {
             // hnext = ||w||, finished device-side into `hnext_buf` and the
             // subdiagonal H[(j+1), j]; then basis[j+1] = w / hnext.
             unsafe {
-                ExecuteKernel::new(&self.k_norm2)
+                ExecuteKernel::new(&ek.norm2)
                     .set_arg(w)
                     .set_arg(partials)
                     .set_arg(&n_i)
@@ -772,7 +953,7 @@ impl GpuOperator {
             }
             .map_err(|e| format!("partial_norm2 launch failed: {e}"))?;
             unsafe {
-                ExecuteKernel::new(&self.k_finish_norm)
+                ExecuteKernel::new(&ek.finish_norm)
                     .set_arg(partials)
                     .set_arg(&ng_i)
                     .set_arg(hnext_buf)
@@ -785,7 +966,7 @@ impl GpuOperator {
             .map_err(|e| format!("finish_norm launch failed: {e}"))?;
             let dst_off = ((j + 1) * n) as cl_int;
             unsafe {
-                ExecuteKernel::new(&self.k_scale_recip)
+                ExecuteKernel::new(&ek.scale_recip)
                     .set_arg(w)
                     .set_arg(basis)
                     .set_arg(&dst_off)
@@ -815,8 +996,12 @@ impl GpuOperator {
         let elem_global =
             self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
         let coef_buf = gpu.upload_f64(coef)?;
+        let ek = self
+            .expmv_kernels
+            .as_ref()
+            .expect("expmv kernels built before lincomb");
         unsafe {
-            ExecuteKernel::new(&self.k_lincomb)
+            ExecuteKernel::new(&ek.lincomb)
                 .set_arg(basis)
                 .set_arg(&coef_buf)
                 .set_arg(out)
@@ -828,34 +1013,6 @@ impl GpuOperator {
         }
         .map_err(|e| format!("lincomb launch failed: {e}"))?;
         Ok(())
-    }
-
-    /// Project a device vector onto the basis: `basis^T · vec`, returning
-    /// the `dim` coefficients to the host.
-    fn project(
-        &self,
-        gpu: &GpuContext,
-        basis: &Buffer<cl_double>,
-        vec: &Buffer<cl_double>,
-        proj: &Buffer<cl_double>,
-        dim: usize,
-    ) -> Result<Vec<f64>, String> {
-        let n_i = self.n_dof as cl_int;
-        let dim_i = dim as cl_int;
-        unsafe {
-            ExecuteKernel::new(&self.k_dot_rows)
-                .set_arg(basis)
-                .set_arg(vec)
-                .set_arg(proj)
-                .set_arg(&n_i)
-                .set_arg(&dim_i)
-                .set_arg_local_buffer(DOF_WORK_GROUP * 8)
-                .set_global_work_size(dim * DOF_WORK_GROUP)
-                .set_local_work_size(DOF_WORK_GROUP)
-                .enqueue_nd_range(gpu.queue())
-        }
-        .map_err(|e| format!("dot_rows launch failed: {e}"))?;
-        gpu.download_f64(proj, dim)
     }
 
     /// Matrix-free `exp(t*A)*v` via an `m`-step Krylov projection — the GPU
@@ -876,6 +1033,7 @@ impl GpuOperator {
     ) -> Result<Vec<f64>, String> {
         assert_eq!(v.len(), self.n_dof, "state length mismatch");
         assert!(m >= 1, "Krylov dimension must be >= 1");
+        self.ensure_expmv_kernels()?;
         let k = m.div_ceil(KRYLOV_CHUNK).max(1);
         let chunk = m.div_ceil(k);
         if k == 1 {
@@ -964,104 +1122,6 @@ impl GpuOperator {
         self.transient(gpu, &y32, dt, steps - warmup)
     }
 
-    /// Build a Krylov model-order-reduced model around `start` — an
-    /// `r`-step Arnoldi projection. The GPU counterpart of
-    /// [`crate::mor::ReducedModel`]; the reduced model propagates states
-    /// inside that subspace cheaply.
-    pub fn reduce(
-        &mut self,
-        gpu: &GpuContext,
-        start: &[f64],
-        r: usize,
-    ) -> Result<GpuReducedModel, String> {
-        let n = self.n_dof;
-        assert_eq!(start.len(), n, "state length mismatch");
-        assert!(r >= 1, "reduced dimension must be >= 1");
-        let beta: f64 = start.iter().map(|x| x * x).sum::<f64>().sqrt();
-        assert!(beta > 0.0, "start vector must be nonzero");
-
-        let mut basis = gpu.alloc_f64((r + 1) * n)?;
-        let proj = gpu.alloc_f64(r + 1)?;
-        let out = gpu.alloc_f64(n)?;
-        let w = gpu.alloc_f64(n)?;
-        let n_groups = n.div_ceil(NORM_WORK_GROUP);
-        let partials = gpu.alloc_f64(n_groups)?;
-        let mut h_dev = gpu.alloc_f64(r * r)?;
-        let hnext = gpu.alloc_f64(1)?;
-
-        let b0: Vec<f64> = start.iter().map(|x| x / beta).collect();
-        gpu.write_f64(&mut basis, &b0)?;
-        gpu.write_f64(&mut h_dev, &vec![0.0_f64; r * r])?;
-        let (h, dim) = self.arnoldi(
-            gpu, &basis, &w, &proj, &partials, &h_dev, &hnext, n_groups, r,
-        )?;
-        gpu.queue()
-            .finish()
-            .map_err(|e| format!("reduce sync failed: {e}"))?;
-
-        // a_hat = H[0..dim, 0..dim].
-        let mut a_hat = vec![0.0_f64; dim * dim];
-        for i in 0..dim {
-            for j in 0..dim {
-                a_hat[i * dim + j] = h[i * r + j];
-            }
-        }
-        Ok(GpuReducedModel { n, dim, a_hat, basis, proj, out })
-    }
-}
-
-/// A Krylov model-order-reduced model on the GPU. The Arnoldi basis stays
-/// device-resident; [`propagate`](Self::propagate) projects a state into
-/// the subspace, applies the dense reduced exponential on the host, and
-/// lifts the result back.
-pub struct GpuReducedModel {
-    n: usize,
-    dim: usize,
-    /// Reduced operator `A_hat = H[0..dim, 0..dim]`, row-major (host).
-    a_hat: Vec<f64>,
-    basis: Buffer<cl_double>,
-    proj: Buffer<cl_double>,
-    out: Buffer<cl_double>,
-}
-
-impl GpuReducedModel {
-    /// Reduced dimension.
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
-    /// Propagate `y0` by `t` through the reduced model:
-    /// `lift(exp(t*A_hat) * project(y0))`. Takes the operator `op` for its
-    /// projection and linear-combination kernels.
-    pub fn propagate(
-        &self,
-        gpu: &GpuContext,
-        op: &GpuOperator,
-        y0: &[f64],
-        t: f64,
-    ) -> Result<Vec<f64>, String> {
-        assert_eq!(y0.len(), self.n, "state length mismatch");
-        // y_hat = basis^T · y0.
-        let y0_buf = gpu.upload_f64(y0)?;
-        let y_hat =
-            op.project(gpu, &self.basis, &y0_buf, &self.proj, self.dim)?;
-        // y_hat_t = exp(t*A_hat) · y_hat — dense, on the host.
-        let th: Vec<f64> = self.a_hat.iter().map(|x| x * t).collect();
-        let exp_th = expm(&th, self.dim);
-        let coef: Vec<f64> = (0..self.dim)
-            .map(|i| {
-                (0..self.dim)
-                    .map(|j| exp_th[i * self.dim + j] * y_hat[j])
-                    .sum()
-            })
-            .collect();
-        // out = basis · coef.
-        op.lincomb(gpu, &self.basis, &coef, &self.out)?;
-        gpu.queue()
-            .finish()
-            .map_err(|e| format!("reduced propagate sync failed: {e}"))?;
-        gpu.download_f64(&self.out, self.n)
-    }
 }
 
 #[cfg(test)]
@@ -1069,6 +1129,13 @@ mod tests {
     use super::*;
     use crate::constants::GPU_REL_TOL;
     use crate::mesh_gen::structured_box;
+
+    /// True if the error reports the device lacks f64 (`cl_khr_fp64`), so
+    /// the exponential-propagator tests skip on Apple Silicon and similar
+    /// fp64-less GPUs rather than fail — the explicit f32 path is unaffected.
+    fn fp64_unavailable(err: &str) -> bool {
+        err.contains("fp64") || err.contains("f64")
+    }
 
     /// Relative L2 error of the GPU result against the CPU f64 reference.
     fn rel_l2(gpu: &[f32], cpu: &[Field]) -> f64 {
@@ -1255,6 +1322,78 @@ mod tests {
     }
 
     #[test]
+    fn gpu_vector_source_transient_matches_cpu() {
+        // Vector-source parity: the GPU full-vector driven transient (the
+        // modal-port injection path) matches the CPU LSERK4
+        // step_with_source_into within GPU_REL_TOL. The source spreads over
+        // many DOFs, unlike the single-DOF point case above.
+        use crate::explicit::LserkWorkspace;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+
+        let mut v: Vec<Field> =
+            (0..n).map(|i| (0.1 + i as Field * 0.007).sin()).collect();
+        let mut rho = 1.0;
+        for _ in 0..30 {
+            let av = op.apply(&v);
+            rho = av.iter().map(|x| x * x).sum::<Field>().sqrt();
+            let inv = 1.0 / rho;
+            for (vi, &a) in v.iter_mut().zip(&av) {
+                *vi = a * inv;
+            }
+        }
+        let dt = 1.0 / rho;
+        let steps = 150;
+        // A spread-out spatial source pattern, nonzero on many DOFs.
+        let b: Vec<Field> =
+            (0..n).map(|i| 0.5 * (0.09 * i as Field).cos()).collect();
+        let gvals: Vec<Field> =
+            (0..steps).map(|k| (0.3 * k as Field).sin()).collect();
+
+        // CPU reference — driven from rest with the full vector source.
+        let mut y_cpu = vec![0.0; n];
+        let mut ws = LserkWorkspace::new();
+        for &g in &gvals {
+            let bg: Vec<Field> = b.iter().map(|&bi| bi * g).collect();
+            ws.step_with_source_into(
+                |x, ax| op.apply_into(x, ax),
+                &mut y_cpu,
+                dt,
+                &bg,
+            );
+        }
+
+        // GPU — one substep per step, so the loops line up one-to-one.
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0 = vec![0.0_f32; n];
+        let b32: Vec<f32> = b.iter().map(|&v| v as f32).collect();
+        let g32: Vec<f32> = gvals.iter().map(|&v| v as f32).collect();
+        let y_gpu = gop
+            .transient_driven_vec(&gpu, &y0, dt as f32, &b32, &g32)
+            .expect("vector-source transient");
+
+        let rel = rel_l2(&y_gpu, &y_cpu);
+        eprintln!(
+            "GPU vector-source transient vs CPU [{steps} steps]: \
+             rel L2 = {rel:.3e}"
+        );
+        assert!(
+            rel < GPU_REL_TOL,
+            "GPU vector-source transient rel.err {rel:.3e} exceeds \
+             GPU_REL_TOL",
+        );
+    }
+
+    #[test]
     fn gpu_expmv_matches_cpu() {
         // P3 gate: the GPU Krylov exponential propagator matches the CPU
         // expmv within GPU_REL_TOL (the f32 matvec caps the accuracy).
@@ -1278,7 +1417,14 @@ mod tests {
         let cpu = expmv(|x| op.apply(x), &v, t, m);
 
         let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
-        let gpu_out = gop.expmv(&gpu, &v, t, m).expect("gpu expmv");
+        let gpu_out = match gop.expmv(&gpu, &v, t, m) {
+            Ok(o) => o,
+            Err(e) if fp64_unavailable(&e) => {
+                eprintln!("skipping GPU expmv test (no fp64): {e}");
+                return;
+            }
+            Err(e) => panic!("gpu expmv: {e}"),
+        };
 
         let err: f64 = cpu
             .iter()
@@ -1344,9 +1490,16 @@ mod tests {
         // GPU hybrid.
         let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
         let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
-        let y_gpu = gop
+        let y_gpu = match gop
             .transient_hybrid(&gpu, &y0_32, dt as f32, steps, warmup, m)
-            .expect("hybrid transient");
+        {
+            Ok(o) => o,
+            Err(e) if fp64_unavailable(&e) => {
+                eprintln!("skipping GPU hybrid test (no fp64): {e}");
+                return;
+            }
+            Err(e) => panic!("hybrid transient: {e}"),
+        };
 
         let rel = rel_l2(&y_gpu, &y_cpu);
         eprintln!(
@@ -1356,55 +1509,6 @@ mod tests {
         assert!(
             rel < GPU_REL_TOL,
             "GPU hybrid rel.err {rel:.3e} exceeds GPU_REL_TOL",
-        );
-    }
-
-    #[test]
-    fn gpu_reduced_model_matches_cpu() {
-        // P4 gate: the GPU Krylov reduced model matches the CPU
-        // ReducedModel within GPU_REL_TOL.
-        use crate::mor::ReducedModel;
-
-        let gpu = match GpuContext::new() {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("skipping GPU test: {e}");
-                return;
-            }
-        };
-        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
-        let op = MaxwellOperator::new(&mesh, 2, 1.0);
-        let n = op.n_dof();
-        let start: Vec<Field> =
-            (0..n).map(|i| (0.5 + i as Field * 0.021).sin()).collect();
-        let r = 40;
-        let t = 0.03;
-
-        let cpu_rom = ReducedModel::build(|x| op.apply(x), &start, r);
-        let cpu_out = cpu_rom.propagate(&start, t);
-
-        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
-        let gmodel = gop.reduce(&gpu, &start, r).expect("reduce");
-        let gpu_out = gmodel
-            .propagate(&gpu, &gop, &start, t)
-            .expect("reduced propagate");
-
-        let err: f64 = cpu_out
-            .iter()
-            .zip(&gpu_out)
-            .map(|(&c, &g)| (c - g).powi(2))
-            .sum::<f64>()
-            .sqrt();
-        let scale: f64 =
-            cpu_out.iter().map(|&c| c * c).sum::<f64>().sqrt();
-        let rel = err / scale;
-        eprintln!(
-            "GPU reduced model vs CPU [r={}]: rel L2 = {rel:.3e}",
-            gmodel.dim()
-        );
-        assert!(
-            rel < GPU_REL_TOL,
-            "GPU reduced model rel.err {rel:.3e} exceeds GPU_REL_TOL",
         );
     }
 }
