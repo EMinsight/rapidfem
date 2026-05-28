@@ -174,3 +174,61 @@ def test_floquet_unit_cell_transmits_plane_wave():
     assert s21.min() > 0.7, (
         f"Floquet empty-cell transmission too low: {s21.min():.3f}"
     )
+
+
+# -----------------------------------------------------------------------------
+# 4. WavePort - numerically-solved cross-section mode vs the analytic TE10 port.
+# -----------------------------------------------------------------------------
+
+@slow
+def test_wave_port_matches_analytic_te10():
+    """A rectangular WR-90-style guide driven by a numerically-solved
+    WavePort must reproduce the analytic RectWaveguidePort TE10 result:
+    same cutoff and matching S-parameters above cutoff. This validates
+    the 2D cross-section eigensolve end to end (eigenmode -> sampled
+    (e_t, h_t) profile -> injection / extraction)."""
+    a, b, length = 22.86 * MM, 10.16 * MM, 40.0 * MM
+    freqs = np.linspace(8e9, 11e9, 4)  # above the 6.56 GHz TE10 cutoff
+
+    def build(use_wave):
+        g = rf.Geometry(maxh=5 * MM)
+        air = g.box(a, b, length, material=rf.Air())
+        if use_wave:
+            rf.WavePort(air.faces.min(axis="z"), te=True)
+            rf.WavePort(air.faces.max(axis="z"), te=True)
+        else:
+            rf.RectWaveguidePort(air.faces.min(axis="z"))
+            rf.RectWaveguidePort(air.faces.max(axis="z"))
+        g.mesh()
+        return g
+
+    # Cutoff: the eigensolve must land on the analytic TE10 f_c = c/(2a).
+    ptd_w = rf.ProblemTD(build(True), order=2, flux="upwind")
+    fc_analytic = C / (2.0 * a)
+    fc_wave = C * ptd_w._op.port_cutoff(0) / (2.0 * np.pi)
+    print(f"  WavePort f_c = {fc_wave/1e9:.3f} GHz, analytic {fc_analytic/1e9:.3f} GHz")
+    assert abs(fc_wave - fc_analytic) / fc_analytic < 0.03, (
+        f"WavePort cutoff {fc_wave/1e9:.3f} GHz off from "
+        f"analytic {fc_analytic/1e9:.3f} GHz"
+    )
+
+    s_w = ptd_w.sparams(freqs, dt=1.0e-12, steps=600, verbose=False).sparams
+    s_a = rf.ProblemTD(build(False), order=2, flux="upwind").sparams(
+        freqs, dt=1.0e-12, steps=600, verbose=False
+    ).sparams
+
+    s11_w, s21_w = np.abs(s_w[:, 0, 0]), np.abs(s_w[:, 1, 0])
+    s11_a, s21_a = np.abs(s_a[:, 0, 0]), np.abs(s_a[:, 1, 0])
+    for k, f in enumerate(freqs):
+        print(f"  f={f/1e9:4.1f}GHz  |S21| wave={s21_w[k]:.3f} analytic={s21_a[k]:.3f}  "
+              f"|S11| wave={s11_w[k]:.3f} analytic={s11_a[k]:.3f}")
+
+    # The numerical mode must track the analytic mode: |S21| within 0.08
+    # and |S11| within 0.05 across the band (a few percent is the finite
+    # mesh / transient budget, identical for both ports).
+    d21 = float(np.max(np.abs(s21_w - s21_a)))
+    d11 = float(np.max(np.abs(s11_w - s11_a)))
+    print(f"  max |S21| dev wave vs analytic: {d21:.3f}")
+    print(f"  max |S11| dev wave vs analytic: {d11:.3f}")
+    assert d21 < 0.08, f"|S21| wave vs analytic deviates {d21:.3f}"
+    assert d11 < 0.05, f"|S11| wave vs analytic deviates {d11:.3f}"

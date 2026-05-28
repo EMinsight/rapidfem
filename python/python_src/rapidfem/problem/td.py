@@ -164,7 +164,7 @@ def _collect_ports(geometry):
     """Walk the geometry's port physics — :class:`RectWaveguidePort`,
     :class:`CoaxPort` and :class:`FloquetPort`.
 
-    Returns ``(rect_ports, coax_ports, floquet_ports)``:
+    Returns ``(rect_ports, coax_ports, floquet_ports, wave_ports)``:
 
     - ``rect_ports`` is ``[(face_tag, mode_m, mode_n, direction, z0)]`` for
       the native TD operator's rectangular ``TE_mn`` ports
@@ -173,10 +173,14 @@ def _collect_ports(geometry):
       for its Floquet plane-wave ports — ``pol_mode`` is ``1`` (TE) or
       ``2`` (TM), matching the FD ``mode_nr`` convention; scan angles
       are radians.
+    - ``wave_ports`` is ``[(face_tag, te, mode_index)]`` for numerically
+      solved cross-section modes (:class:`WavePort`) — ``te`` selects
+      TE vs TM, ``mode_index`` picks the mode by ascending cutoff.
 
     Operator port indices follow the geometry declaration order, with
-    rectangular ports first, coax ports next, and Floquet ports appended
-    after — matching the native ``TdOperator.from_mesh_bytes`` layout.
+    rectangular ports first, coax ports next, Floquet ports after, and
+    wave ports last — matching the native ``TdOperator.from_mesh_bytes``
+    layout.
 
     A waveguide port has ``direction`` ``None`` — its frame is auto-fit
     from the face. A coax port carries the analytic TEM ``E_ρ ∝ ρ̂/ρ``
@@ -193,11 +197,14 @@ def _collect_ports(geometry):
     modal or wave port instead.
     """
     import math
-    from ..physics import CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort
+    from ..physics import (
+        CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort, WavePort,
+    )
 
     rect_out = []
     coax_out = []
     floquet_out = []
+    wave_out = []
     for phys in getattr(geometry, "_physics", []):
         tag = geometry._physics_tags.get(id(phys))
         if tag is None:
@@ -205,6 +212,11 @@ def _collect_ports(geometry):
         if isinstance(phys, RectWaveguidePort):
             mode = (int(phys.mode[0]), int(phys.mode[1]))
             rect_out.append((int(tag), mode[0], mode[1], None, 1.0))
+        elif isinstance(phys, WavePort):
+            # Numerically-solved cross-section mode: (tag, te?, mode_index).
+            wave_out.append(
+                (int(tag), bool(phys.te), int(phys.mode_index))
+            )
         elif isinstance(phys, LumpedPort):
             # The time-domain backend has no lumped port. A lumped
             # (delta-gap, uniform-profile) source only carries a clean
@@ -237,7 +249,7 @@ def _collect_ports(geometry):
             theta = math.radians(float(phys.scan_theta_deg))
             phi = math.radians(float(phys.scan_phi_deg))
             floquet_out.append((int(tag), pol_mode, theta, phi))
-    return rect_out, coax_out, floquet_out
+    return rect_out, coax_out, floquet_out, wave_out
 
 
 def _collect_pec(geometry):
@@ -716,7 +728,8 @@ class ProblemTD:
         self.c = float(c)
         mesh_bytes = geometry._last_mesh[0]
         tag_materials = _collect_materials(geometry)
-        tag_ports, coax_ports, floquet_ports = _collect_ports(geometry)
+        tag_ports, coax_ports, floquet_ports, wave_ports = \
+            _collect_ports(geometry)
         tag_absorbers = _collect_absorbers(geometry)
         tag_periodic = _collect_periodic(geometry)
         tag_abc = _collect_abc(geometry)
@@ -738,6 +751,7 @@ class ProblemTD:
             floquet_ports or None,
             tag_abc or None,
             tag_pec or None,
+            wave_ports or None,
         )
         self._geometry = geometry
         self.order = order
@@ -745,9 +759,9 @@ class ProblemTD:
         _log(
             f"operator built - {self.n_dof} DOFs, order {order}, "
             f"flux={flux}, {len(tag_materials)} tagged materials, "
-            f"{len(tag_ports) + len(coax_ports) + len(floquet_ports)} ports "
-            f"({len(tag_ports)} rect/lumped, {len(coax_ports)} coax, "
-            f"{len(floquet_ports)} floquet), "
+            f"{len(tag_ports) + len(coax_ports) + len(floquet_ports) + len(wave_ports)} ports "
+            f"({len(tag_ports)} rect, {len(coax_ports)} coax, "
+            f"{len(floquet_ports)} floquet, {len(wave_ports)} wave), "
             f"{len(tag_absorbers)} matched-absorber (PML) regions, "
             f"{len(tag_dispersive)} Debye dispersive regions, "
             f"{len(tag_periodic)} periodic boundary pair(s), "

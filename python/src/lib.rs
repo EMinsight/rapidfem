@@ -500,7 +500,7 @@ impl PyTdOperator {
     /// transverse Floquet phase factor is dropped at oblique scan (a
     /// real-valued port API approximation); normal incidence is exact.
     #[staticmethod]
-    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None, pec_faces = None))]
+    #[pyo3(signature = (mesh_bytes, order, flux_alpha = 1.0, tag_materials = None, ports = None, absorbers = None, dispersive = None, coax_ports = None, periodic_pairs = None, floquet_ports = None, abc_faces = None, pec_faces = None, wave_ports = None))]
     #[allow(clippy::too_many_arguments)]
     fn from_mesh_bytes(
         mesh_bytes: &[u8],
@@ -517,6 +517,7 @@ impl PyTdOperator {
         floquet_ports: Option<Vec<(i32, u32, f64, f64)>>,
         abc_faces: Option<Vec<i32>>,
         pec_faces: Option<Vec<i32>>,
+        wave_ports: Option<Vec<(i32, bool, usize)>>,
     ) -> PyResult<Self> {
         use rapidfem_td::dispersive::DebyeMaterial;
         use rapidfem_td::rhs::{
@@ -650,6 +651,28 @@ impl PyTdOperator {
                 .ok_or_else(|| {
                     PyRuntimeError::new_err(format!(
                         "floquet port face tag {tag} has no triangles"
+                    ))
+                })?;
+                port_specs.push(spec);
+            }
+        }
+        // Numerically-solved wave ports — appended after the rectangular,
+        // coax and Floquet modal ports (and before the absorbing faces),
+        // so the modal-port subset stays contiguous. Each entry is
+        // `(face_tag, te, mode_index)`: a 2D cross-section eigensolve runs
+        // at build time and the sampled profile becomes the port mode.
+        if let Some(wps) = wave_ports {
+            for (tag, te, mode_index) in wps {
+                let spec = PortSpec::wave_from_mesh_tag(
+                    &mesh, tag, te, mode_index,
+                )
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "wave port face tag {tag}: no triangles, or the \
+                         cross-section eigensolve found fewer than \
+                         {} {} mode(s)",
+                        mode_index + 1,
+                        if te { "TE" } else { "TM" },
                     ))
                 })?;
                 port_specs.push(spec);

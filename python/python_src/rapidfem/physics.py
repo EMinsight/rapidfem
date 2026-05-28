@@ -357,6 +357,65 @@ class CoaxPort(_Physics):
         return s
 
 
+class WavePort(_Physics):
+    """Numerically-solved wave port (time-domain backend only).
+
+    Computes the port's transverse mode profile by a 2D eigensolve on
+    the port-face cross-section, instead of assuming an analytic shape.
+    This is the right port for a guide whose mode has no closed form —
+    a ridged or circular waveguide, and (once the inhomogeneous vector
+    solve lands) a microstrip or coplanar line. The solved profile then
+    flows through the same injection / extraction machinery as the
+    analytic :class:`RectWaveguidePort` and :class:`CoaxPort`.
+
+    At this stage the solver handles a **homogeneously filled**
+    cross-section (the scalar Helmholtz :math:`\\mathrm{TE}` / :math:`\\mathrm{TM}`
+    eigenproblem); the dominant mode of an arbitrary hollow guide is
+    captured exactly. Inhomogeneous (dielectric + air) hybrid modes for
+    microstrip-class lines are a follow-up on the same machinery.
+
+    Frequency-domain ``ProblemFD`` does not support :class:`WavePort`.
+
+
+    Example
+    -------
+    Dominant mode of a ridged-waveguide cross-section:
+
+    .. code-block:: python
+
+        rf.WavePort(guide.faces.min(axis="z"))
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        port face(s)
+    te : bool
+        solve a :math:`\\mathrm{TE}` mode (``True``, default) or a
+        :math:`\\mathrm{TM}` mode (``False``)
+    mode_index : int
+        which mode to use, ordered by ascending cutoff (``0`` = dominant)
+    power : float
+        incident power in watts
+    """
+
+    def __init__(self, *targets,
+                 te: bool = True,
+                 mode_index: int = 0,
+                 power: float = 1.0):
+        super().__init__(*targets)
+        self.te = bool(te)
+        self.mode_index = int(mode_index)
+        self.power = float(power)
+
+    def _to_toml(self, tag: int) -> str:
+        raise NotImplementedError(
+            "WavePort is a time-domain feature; the frequency-domain "
+            "backend (ProblemFD) has no wave-port mode solver. Use "
+            "RectWaveguidePort / CoaxPort / LumpedPort with ProblemFD."
+        )
+
+
 class UserDefinedPort(_Physics):
     """Driven port with a user-supplied uniform E-field on the face.
 
@@ -926,7 +985,8 @@ class PeriodicBoundary(_Physics):
 
 
 __all__ = [
-    "RectWaveguidePort", "LumpedPort", "CoaxPort", "UserDefinedPort", "FloquetPort",
+    "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
+    "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
     "PeriodicBoundary",
 ]
