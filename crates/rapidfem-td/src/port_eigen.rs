@@ -296,6 +296,161 @@ pub fn solve_modes(
         .collect()
 }
 
+/// A solved numerical port mode, ready to be sampled as a transverse
+/// `(e_t, h_t)` profile at arbitrary points on the port face — the
+/// drop-in replacement for an analytic [`crate::waveguide::RectPort`]
+/// profile when the cross-section has no closed-form mode.
+///
+/// The transverse fields follow from the scalar potential `ψ` by the
+/// standard waveguide relations. With `ψ` piecewise-linear (P1) its
+/// transverse gradient `∇_t ψ` is constant per triangle, so:
+/// - **TM** (`ψ = E_z`): `E_t ∝ ∇_t ψ`,
+/// - **TE** (`ψ = H_z`): `E_t ∝ ẑ × ∇_t ψ`.
+///
+/// `h_t = ŵ × e_t` (the inward normal `ŵ` plays the role of `ẑ`), and
+/// the modal impedance enters the forward/backward split via
+/// [`te_impedance`](Self::te_impedance). The profile is normalised so
+/// its peak transverse magnitude over the cross-section is unity, to
+/// match the analytic profiles' order-unity convention.
+#[derive(Clone, Debug)]
+pub struct NumericalMode {
+    mesh: PortMesh2D,
+    kind: ModeKind,
+    k_c: Field,
+    /// Per-triangle constant transverse gradient `∇_t ψ` in `(u, v)`.
+    grad: Vec<[Field; 2]>,
+    /// Inverse of the peak `|e_t|` over the cross-section — the unit-peak
+    /// normalisation applied in `e_profile`.
+    inv_peak: Field,
+    /// Inward normal `ŵ = û × v̂` (global), the mode propagation axis.
+    w_hat: [Field; 3],
+}
+
+impl NumericalMode {
+    /// Build a numerical mode from a solved eigenpair on a cross-section.
+    pub fn from_eigenmode(
+        mesh: PortMesh2D,
+        mode: &PortEigenmode,
+        kind: ModeKind,
+    ) -> NumericalMode {
+        // Per-triangle ∇_t ψ (constant for P1): Σ_i ψ_i ∇λ_i.
+        let mut grad = Vec::with_capacity(mesh.tris.len());
+        for &t in &mesh.tris {
+            let (_a, g) = mesh.tri_geom(t);
+            let mut gp = [0.0; 2];
+            for k in 0..3 {
+                gp[0] += mode.psi[t[k]] * g[k][0];
+                gp[1] += mode.psi[t[k]] * g[k][1];
+            }
+            grad.push(gp);
+        }
+        let w_hat = cross3(mesh.u_hat, mesh.v_hat);
+        // Peak transverse-field magnitude. For TM/TE the in-plane |e_t|
+        // equals |∇ψ| (the ẑ× rotation preserves length), so the peak
+        // is just the largest gradient magnitude across the triangles.
+        let peak = grad
+            .iter()
+            .map(|g| (g[0] * g[0] + g[1] * g[1]).sqrt())
+            .fold(0.0_f64, f64::max);
+        let inv_peak = if peak > 0.0 { 1.0 / peak } else { 0.0 };
+        NumericalMode { mesh, kind, k_c: mode.k_c, grad, inv_peak, w_hat }
+    }
+
+    /// Cutoff angular frequency (`= k_c` in operator units, `c = 1`).
+    pub fn cutoff(&self) -> Field {
+        self.k_c
+    }
+
+    /// Modal wave impedance `Z(omega)` in operator units (`η = 1`):
+    /// `Z_TE = 1/√(1−(ω_c/ω)²)`, `Z_TM = √(1−(ω_c/ω)²)`. Valid above
+    /// cutoff; the caller restricts the S-parameter sweep to the
+    /// propagating band.
+    pub fn te_impedance(&self, omega: Field) -> Field {
+        let r = self.k_c / omega;
+        let s = (1.0 - r * r).max(0.0).sqrt();
+        match self.kind {
+            ModeKind::Te => {
+                if s > 0.0 {
+                    1.0 / s
+                } else {
+                    Field::INFINITY
+                }
+            }
+            ModeKind::Tm => s,
+        }
+    }
+
+    /// Locate the triangle containing the in-plane point `(u, v)` and
+    /// return its index, or the nearest triangle's index if the point
+    /// is just outside the meshed cross-section (DG face nodes can sit a
+    /// hair outside due to curved-face / rounding). Barycentric test.
+    fn locate(&self, uv: [Field; 2]) -> usize {
+        let mut best = 0usize;
+        let mut best_slack = Field::NEG_INFINITY;
+        for (ti, &t) in self.mesh.tris.iter().enumerate() {
+            let a = self.mesh.nodes[t[0]];
+            let b = self.mesh.nodes[t[1]];
+            let c = self.mesh.nodes[t[2]];
+            // Signed bary coords via edge cross products.
+            let d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+            if d.abs() < 1e-30 {
+                continue;
+            }
+            let l0 = ((b[1] - c[1]) * (uv[0] - c[0])
+                + (c[0] - b[0]) * (uv[1] - c[1]))
+                / d;
+            let l1 = ((c[1] - a[1]) * (uv[0] - c[0])
+                + (a[0] - c[0]) * (uv[1] - c[1]))
+                / d;
+            let l2 = 1.0 - l0 - l1;
+            let slack = l0.min(l1).min(l2); // ≥ 0 inside
+            if slack >= -1e-9 {
+                return ti;
+            }
+            if slack > best_slack {
+                best_slack = slack;
+                best = ti;
+            }
+        }
+        best
+    }
+
+    /// In-plane `(u, v)` coordinates of a global point on the port face.
+    fn to_uv(&self, x: [Field; 3]) -> [Field; 2] {
+        let o = self.mesh.origin;
+        let d = [x[0] - o[0], x[1] - o[1], x[2] - o[2]];
+        [dot3(d, self.mesh.u_hat), dot3(d, self.mesh.v_hat)]
+    }
+
+    /// Transverse electric-field profile at a global point on the port
+    /// face, in global coordinates, unit-peak normalised.
+    pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        let uv = self.to_uv(x);
+        let ti = self.locate(uv);
+        let g = self.grad[ti];
+        // In-plane e_t vector (u, v components), before lifting to 3D.
+        let (eu, ev) = match self.kind {
+            // TM: E_t ∝ ∇_t ψ.
+            ModeKind::Tm => (g[0], g[1]),
+            // TE: E_t ∝ ẑ × ∇_t ψ = (−∂v, ∂u) in the (û, v̂) plane
+            // (ẑ = ŵ = û × v̂, so ŵ × û = v̂ and ŵ × v̂ = −û).
+            ModeKind::Te => (-g[1], g[0]),
+        };
+        let (eu, ev) = (eu * self.inv_peak, ev * self.inv_peak);
+        [
+            eu * self.mesh.u_hat[0] + ev * self.mesh.v_hat[0],
+            eu * self.mesh.u_hat[1] + ev * self.mesh.v_hat[1],
+            eu * self.mesh.u_hat[2] + ev * self.mesh.v_hat[2],
+        ]
+    }
+
+    /// Transverse magnetic-field profile `h_t = ŵ × e_t` at a global
+    /// point — the inward-propagating partner of `e_t`. Global coords.
+    pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
+        cross3(self.w_hat, self.e_profile(x))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +517,35 @@ mod tests {
         // eigenvalues, lumped mass shifts a touch the other way).
         let rel = (kc - want).abs() / want;
         assert!(rel < 0.04, "TM₁₁ k_c = {kc:.4}, want {want:.4} (rel {rel:.3})");
+    }
+
+    #[test]
+    fn numerical_te10_profile_matches_the_analytic_shape() {
+        // The numerical TE₁₀ mode of a 2×1 guide must reproduce the
+        // analytic transverse-E shape E_y ∝ sin(πx/a): a peak at
+        // mid-width, vanishing at the side walls, purely along v̂ = ŷ.
+        let (nodes, tris) = rect_mesh(2.0, 1.0, 24, 12);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0]);
+        let modes = solve_modes(&pm, ModeKind::Te, 1);
+        let nm = NumericalMode::from_eigenmode(pm, &modes[0], ModeKind::Te);
+        // Mid-width (x = a/2 = 1): |e_t| near the unit peak, along ŷ.
+        let mid = nm.e_profile([1.0, 0.5, 0.0]);
+        let mag = (mid[0] * mid[0] + mid[1] * mid[1] + mid[2] * mid[2]).sqrt();
+        assert!(mag > 0.9, "mid-width |e_t| = {mag:.3}, expected ≈ 1");
+        assert!(
+            mid[1].abs() > 0.9 && mid[0].abs() < 0.15,
+            "TE₁₀ e_t not along ŷ: {mid:?}",
+        );
+        // Near a side wall (x ≈ 0.05): the field should be small.
+        let wall = nm.e_profile([0.05, 0.5, 0.0]);
+        let wmag =
+            (wall[0] * wall[0] + wall[1] * wall[1] + wall[2] * wall[2]).sqrt();
+        assert!(wmag < 0.3, "near-wall |e_t| = {wmag:.3}, expected ≪ 1");
+        // h_t ⟂ e_t and the cutoff matches.
+        let h = nm.h_profile([1.0, 0.5, 0.0]);
+        let ehdot = mid[0] * h[0] + mid[1] * h[1] + mid[2] * h[2];
+        assert!(ehdot.abs() < 1e-9, "e_t·h_t = {ehdot:.3e}");
+        assert!((nm.cutoff() - PI / 2.0).abs() / (PI / 2.0) < 0.04);
     }
 
     #[test]

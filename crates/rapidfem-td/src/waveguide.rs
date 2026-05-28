@@ -572,6 +572,10 @@ pub enum PortMode {
     Coax(CoaxPort),
     /// A Floquet plane-wave mode on a periodic unit-cell face.
     Floquet(FloquetPort),
+    /// A numerically-solved mode from a 2D cross-section eigensolve — the
+    /// wave port for an arbitrary (ridged, circular, ...) cross-section
+    /// whose profile has no closed form. See [`crate::port_eigen`].
+    Numerical(crate::port_eigen::NumericalMode),
 }
 
 impl PortMode {
@@ -581,6 +585,7 @@ impl PortMode {
             PortMode::Rect(p) => p.e_profile(x),
             PortMode::Coax(p) => p.e_profile(x),
             PortMode::Floquet(p) => p.e_profile(x),
+            PortMode::Numerical(p) => p.e_profile(x),
         }
     }
 
@@ -590,6 +595,7 @@ impl PortMode {
             PortMode::Rect(p) => p.h_profile(x),
             PortMode::Coax(p) => p.h_profile(x),
             PortMode::Floquet(p) => p.h_profile(x),
+            PortMode::Numerical(p) => p.h_profile(x),
         }
     }
 
@@ -599,6 +605,7 @@ impl PortMode {
             PortMode::Rect(p) => p.cutoff(),
             PortMode::Coax(p) => p.cutoff(),
             PortMode::Floquet(p) => p.cutoff(),
+            PortMode::Numerical(p) => p.cutoff(),
         }
     }
 
@@ -608,6 +615,7 @@ impl PortMode {
             PortMode::Rect(p) => p.te_impedance(omega),
             PortMode::Coax(p) => p.te_impedance(omega),
             PortMode::Floquet(p) => p.te_impedance(omega),
+            PortMode::Numerical(p) => p.te_impedance(omega),
         }
     }
 }

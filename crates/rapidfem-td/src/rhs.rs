@@ -15,6 +15,7 @@ use crate::constants::{
 use crate::dg_basis::ReferenceElement;
 use crate::dispersive::DebyeMaterial;
 use crate::geom_factors::{GeometricFactors, all_geometric_factors};
+use crate::port_eigen::{ModeKind, NumericalMode, PortMesh2D, solve_modes};
 use crate::waveguide::{
     CoaxPort, FloquetPolarisation, FloquetPort, PortMode, RectPort,
 };
@@ -335,6 +336,77 @@ impl PortSpec {
         }
         let coax = CoaxPort::from_face(&coords, nrm, center);
         Some(PortSpec { tris, mode: Some(PortMode::Coax(coax)) })
+    }
+
+    /// Build a numerically-solved **wave port** from a gmsh face tag — a
+    /// 2D cross-section eigensolve on the port face produces the mode
+    /// profile, for cross-sections with no closed-form mode (ridged /
+    /// circular / arbitrary hollow waveguides). `te` selects `TE`
+    /// (`true`) or `TM` (`false`) modes; `mode_index` picks the mode by
+    /// ascending cutoff (`0` = dominant). Returns `None` if the tag has
+    /// no triangles or the eigensolve finds fewer than `mode_index + 1`
+    /// propagating modes.
+    ///
+    /// Homogeneous-fill only at this stage (the scalar Helmholtz solve);
+    /// an inhomogeneous (per-triangle `ε`) hybrid vector solve for
+    /// microstrip-class lines builds on the same extraction.
+    pub fn wave_from_mesh_tag(
+        mesh: &Mesh,
+        face_tag: i32,
+        te: bool,
+        mode_index: usize,
+    ) -> Option<PortSpec> {
+        let tris = mesh.ftag_to_tri.get(&face_tag)?.clone();
+        if tris.is_empty() {
+            return None;
+        }
+        // Inward normal of a representative face triangle (toward the
+        // adjacent tet centroid) — same construction as the coax port.
+        let t0 = tris[0];
+        let [v0, v1, v2] = mesh.tris[t0];
+        let (p0, p1, p2) = (
+            mesh.nodes[v0].map(|x| x as Field),
+            mesh.nodes[v1].map(|x| x as Field),
+            mesh.nodes[v2].map(|x| x as Field),
+        );
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let mut nrm = cross3(e1, e2);
+        let len =
+            (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        for c in nrm.iter_mut() {
+            *c /= len;
+        }
+        let tet = mesh.tri_to_tet[t0]
+            .iter()
+            .copied()
+            .find(|&x| x != usize::MAX)?;
+        let mut centroid = [0.0; 3];
+        for &nd in &mesh.tets[tet] {
+            for k in 0..3 {
+                centroid[k] += mesh.nodes[nd][k] as Field / 4.0;
+            }
+        }
+        let inward =
+            [centroid[0] - p0[0], centroid[1] - p0[1], centroid[2] - p0[2]];
+        if dot3(nrm, inward) < 0.0 {
+            for c in nrm.iter_mut() {
+                *c = -*c;
+            }
+        }
+        // Build the 2D cross-section: all mesh nodes (as Field) plus the
+        // face triangles' global connectivity; `from_face` remaps to the
+        // local node set and projects into the port plane.
+        let global_nodes: Vec<[Field; 3]> =
+            mesh.nodes.iter().map(|p| p.map(|x| x as Field)).collect();
+        let face_tris: Vec<[usize; 3]> =
+            tris.iter().map(|&t| mesh.tris[t]).collect();
+        let pm = PortMesh2D::from_face(&global_nodes, &face_tris, nrm);
+        let kind = if te { ModeKind::Te } else { ModeKind::Tm };
+        let modes = solve_modes(&pm, kind, mode_index + 1);
+        let mode = modes.get(mode_index)?;
+        let nm = NumericalMode::from_eigenmode(pm, mode, kind);
+        Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) })
     }
 
     /// Build a Floquet plane-wave port from a gmsh face tag — collecting
