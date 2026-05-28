@@ -138,24 +138,42 @@ Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 
 ## Waveguide ports
 
-A `RectWaveguidePort` or `LumpedPort` attached to a geometry face becomes
-a time-domain **modal port**. The port boundary uses a characteristic
-flux with the ghost state set to the incident modal field: it absorbs
-outgoing waves *and* injects the mode. The absorbing part folds into the
-constant operator `A`; the injection is a rank-1 time-dependent source
-`b(t)`. A `RectWaveguidePort` carries the analytic `TE_mn`
-rectangular-waveguide mode; a `LumpedPort` carries the `(0, 0)` sentinel
-mode — a uniform transverse profile with zero cutoff and a flat
-impedance, i.e. a TEM port — with its `direction` setting the transverse
-field axis (as in the frequency-domain backend).
+A modal port attached to a geometry face becomes a time-domain
+**modal port**. The port boundary uses a characteristic flux with the
+ghost state set to the incident modal field: it absorbs outgoing waves
+*and* injects the mode. The absorbing part folds into the constant
+operator `A`; the injection is a rank-1 time-dependent source `b(t)`.
+The port machinery is mode-agnostic — it touches a mode only through its
+`e_profile`, `h_profile`, `cutoff` and `te_impedance`. Four mode
+families are available:
+
+- **`RectWaveguidePort`** — the analytic `TE_mn` rectangular-waveguide
+  mode.
+- **`CoaxPort`** — the analytic coaxial TEM mode (`E_ρ ∝ ρ̂/ρ`).
+- **`FloquetPort`** — a plane-wave mode on a periodic unit-cell face.
+- **`WavePort`** — a **numerically-solved** mode from a 2D
+  cross-section eigensolve (`rapidfem_core::port_eigen`), for guides
+  whose mode has no closed form. The scalar Helmholtz `TE`/`TM` solve
+  handles arbitrary *homogeneously filled* hollow cross-sections
+  (ridged, circular, L-shaped); setting `WavePort(f0=…)` switches to the
+  full-vector hybrid solve (Nédélec-edge `E_t` + nodal `E_z`), which
+  takes a per-element permittivity and so resolves the quasi-TEM mode of
+  an *inhomogeneous* (substrate + air) microstrip-class line.
+
+The lumped port has been **removed from the time-domain backend**: a
+uniform delta-gap profile only carries a clean mode on a genuine
+parallel-plate gap, and undercounts `|S21|` on a concentrated quasi-TEM
+line — the `WavePort` is the correct path for such geometries.
+(`LumpedPort` remains in the frequency-domain backend via its Robin BC.)
 
 `ProblemTD.sparams(freqs, dt, steps)` drives each port in turn with a
 broadband pulse, projects the port-face field onto the mode profile to
 extract the incident / scattered modal amplitudes (the forward/backward
-split uses the dispersive modal impedance `Z(ω)` per frequency), and
-assembles `S_ij(f) = B_i(f)/A_j(f)`. The matched-guide S-matrix is
-validated to ~2 % in the Rust suite, and that the lumped port carries a
-dispersionless `c`-velocity TEM wave is a further Rust gate.
+split uses the modal impedance `Z(ω)` per frequency), and assembles
+`S_ij(f) = B_i(f)/A_j(f)`. Validated in the suite: the matched
+rectangular guide to ~2 %, and the numerical `WavePort` reproduces the
+analytic `TE_mn` transmission `|S21|` (both scalar and vector paths) to
+within a few percent.
 `td_waveguide_sparams.py` cross-checks a WR-90 guide against the
 frequency-domain backend — TD↔FD `|S₂₁|` agrees to ≤ 4 % over the
 9–12 GHz core band (≤ 9 % including the dispersive near-cutoff edge),
@@ -207,11 +225,15 @@ multiply-reflected energy must not return before the run ends.
 
 ## Not yet / out of scope
 
-- **General-cross-section ports** — `sparams` handles rectangular
-  waveguide ports (analytic `TE_mn` modes) and lumped / TEM ports (the
-  uniform `(0, 0)` profile); arbitrary cross-sections would need a 2D
-  modal eigensolve on the port face, and coax ports an annular TEM
-  profile — both a further extension.
+- **Microstrip wave port with an internal conductor** — the `WavePort`
+  vector solve resolves an inhomogeneous (substrate + air) cross-section,
+  but currently imposes the PEC condition only on the *outer* boundary.
+  A microstrip trace is an *internal* PEC strip; constraining the
+  cross-section nodes/edges on internal PEC face tags (tangential E = 0)
+  is the remaining piece for a true microstrip / CPW port. The vector
+  profile is also recovered by area-averaging the edge field to nodes;
+  evaluating the Whitney field directly at sample points would sharpen
+  it (lower residual `|S11|`).
 - **Curvilinear / isoparametric elements** — affine tets with adequate
   refinement is the pragmatic choice.
 - **Nonlinear materials** — the backend stays linear (constant `A`).
