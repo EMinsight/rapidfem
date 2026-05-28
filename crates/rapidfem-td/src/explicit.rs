@@ -128,6 +128,49 @@ impl LserkWorkspace {
                 });
         }
     }
+
+    /// One LSERK4 step of the driven system `dy/dt = A·y + b`, with the
+    /// **full source vector** `b = source` held constant across the step.
+    /// Advances `y` in place by `dt`.
+    ///
+    /// The vector-source generalisation of
+    /// [`step_driven_into`](Self::step_driven_into) — a single-DOF point
+    /// source is the special case `b = e_dof·value`. This is the path for
+    /// modal-port injection, where the source spreads over every port-face
+    /// DOF. The zeroth-order hold mirrors the exponential
+    /// [`crate::propagator::etd_step`], so the explicit and exponential
+    /// integrators drive a port transient identically bar their own
+    /// truncation error. Allocation-free once warmed; conditionally stable.
+    pub fn step_with_source_into<F>(
+        &mut self,
+        matvec: F,
+        y: &mut [Field],
+        dt: Field,
+        source: &[Field],
+    ) where
+        F: Fn(&[Field], &mut [Field]),
+    {
+        let n = y.len();
+        assert_eq!(source.len(), n, "source length must equal state length");
+        self.ensure(n);
+        self.p[..n].fill(0.0);
+
+        for stage in 0..LSERK4_STAGES {
+            matvec(y, &mut self.k[..n]);
+            // dy/dt = A·y + b: the held source enters every stage's RHS,
+            // added per index across the rayon pool like the rest.
+            let (a, b) = (LSERK4_A[stage], LSERK4_B[stage]);
+            self.p[..n]
+                .par_iter_mut()
+                .zip(y[..n].par_iter_mut())
+                .zip(&self.k[..n])
+                .zip(&source[..n])
+                .for_each(|(((pi, yi), ki), si)| {
+                    *pi = a * *pi + dt * (*ki + *si);
+                    *yi += b * *pi;
+                });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -296,6 +339,50 @@ mod tests {
         assert!(
             err < 1e-9 * scale,
             "driven LSERK4 vs ETD step: rel.err {}",
+            err / scale,
+        );
+    }
+
+    #[test]
+    fn lserk4_vector_source_matches_etd_below_cfl() {
+        // The vector-source explicit step against the exponential ETD step
+        // with the same full source vector `b`: a single driven LSERK4 step
+        // well inside the CFL limit agrees with `etd_step` to O(dt^5). This
+        // is the modal-port injection path (b spread over many DOFs), so it
+        // exercises more than the single-DOF point case.
+        use crate::mesh_gen::structured_box;
+        use crate::propagator::etd_step;
+        use crate::rhs::MaxwellOperator;
+
+        let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y0: Vec<Field> =
+            (0..n).map(|i| (0.2 + i as Field * 0.019).sin()).collect();
+
+        // A spread-out source, nonzero on many DOFs (unlike the point case).
+        let b: Vec<Field> =
+            (0..n).map(|i| 0.4 * (0.11 * i as Field).cos()).collect();
+        let dt = 1e-3;
+
+        let mut y_rk = y0.clone();
+        let mut ws = LserkWorkspace::new();
+        ws.step_with_source_into(
+            |x, ax| op.apply_into(x, ax), &mut y_rk, dt, &b,
+        );
+
+        let y_etd = etd_step(|x| op.apply(x), &y0, &b, dt, 40);
+
+        let err: f64 = y_rk
+            .iter()
+            .zip(&y_etd)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale: f64 = y_etd.iter().map(|x| x * x).sum::<f64>().sqrt();
+        assert!(
+            err < 1e-9 * scale,
+            "vector-source LSERK4 vs ETD step: rel.err {}",
             err / scale,
         );
     }
