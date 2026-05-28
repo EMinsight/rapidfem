@@ -1460,6 +1460,7 @@ dependencies = [
 name = "rapidfem-core"
 version = "0.1.0"
 dependencies = [
+ "faer",
  "hashbrown",
  "mshio",
  "num-complex 0.4.6",
