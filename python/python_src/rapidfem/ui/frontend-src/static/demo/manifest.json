@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1780040909,
+  "baked_at": 1780041411,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -464,7 +464,7 @@
           "marker": "# %% Drive the TEM mode at one end and watch the pulse travel",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 2
+          "stream_lines": 13
         },
         {
           "marker": "# %% Visualise: the coaxial TEM pulse running down the line",
@@ -475,7 +475,7 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 8411,
+      "json_bytes": 9471,
       "bin_bytes": 1154900,
       "bake_seconds": 0.0
     },
@@ -519,7 +519,7 @@
           "marker": "# %% Drive TE10 at the input and watch it split at the slab",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 2
+          "stream_lines": 13
         },
         {
           "marker": "# %% Visualise: incident, reflected, and transmitted TE10 pulses",
@@ -530,7 +530,7 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 10282,
+      "json_bytes": 11342,
       "bin_bytes": 1048208,
       "bake_seconds": 0.0
     },
@@ -574,7 +574,7 @@
           "marker": "# %% Drive the TE10 mode at the input port and watch the pulse propagate",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 2
+          "stream_lines": 13
         },
         {
           "marker": "# %% Visualise: the TE10 mode travelling down the guide to the matched port",
@@ -585,7 +585,7 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 8497,
+      "json_bytes": 9557,
       "bin_bytes": 931580,
       "bake_seconds": 0.0
     },
@@ -629,7 +629,7 @@
           "marker": "# %% Drive the numerically-solved TE11 mode and watch it propagate",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 2
+          "stream_lines": 13
         },
         {
           "marker": "# %% Visualise: the solved TE11 mode travelling down the circular guide",
@@ -640,7 +640,7 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 8662,
+      "json_bytes": 9721,
       "bin_bytes": 1198744,
       "bake_seconds": 0.0
     }

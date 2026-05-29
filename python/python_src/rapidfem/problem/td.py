@@ -1438,10 +1438,33 @@ class ProblemTD:
                 if verbose:
                     _log(f"transient(port): GPU vector LSERK4 "
                          f"({self._op.gpu_device()}, {nsub} substeps/step)")
-                flat = self._op.gpu_transient_driven_vec(
-                    y, h_op, int(steps), nsub, b, gvals,
-                )
-                return np.asarray(flat).reshape(steps + 1, n)
+                # Step in chunks so progress reports incrementally. Each
+                # chunk runs device-resident; only the chunk-boundary state
+                # round-trips, so the overhead over one monolithic call is
+                # one state up/download per chunk (negligible vs the solve).
+                traj = np.empty((steps + 1, n))
+                traj[0] = y
+                chunk = max(1, steps // 10)
+                done = 0
+                t0 = time.time()
+                while done < steps:
+                    k = min(chunk, steps - done)
+                    g_slice = gvals[done * nsub:(done + k) * nsub]
+                    flat = self._op.gpu_transient_driven_vec(
+                        traj[done], h_op, int(k), nsub, b, g_slice,
+                    )
+                    traj[done + 1:done + 1 + k] = \
+                        np.asarray(flat).reshape(k + 1, n)[1:]
+                    done += k
+                    if verbose:
+                        el = time.time() - t0
+                        eta = el / done * (steps - done)
+                        _log(f"transient(port) {done}/{steps}  "
+                             f"({el:.1f}s elapsed, ETA {eta:.0f}s)")
+                if verbose:
+                    _log(f"transient(port) complete - {steps} steps "
+                         f"in {time.time() - t0:.1f}s")
+                return traj
             # Exponential on GPU: exact, one augmented-Arnoldi ETD step per
             # snapshot (the source is held across the step).
             if verbose:
@@ -1449,11 +1472,21 @@ class ProblemTD:
                      f"({self._op.gpu_device()})")
             traj = np.empty((steps + 1, n))
             traj[0] = y
+            t0 = time.time()
+            every = max(1, steps // 10)
             for k in range(steps):
                 y = self._op.gpu_step_with_source(
                     y, b * float(waveform(k * dt)), h_op, krylov_dim,
                 )
                 traj[k + 1] = y
+                if verbose and (k + 1) % every == 0:
+                    el = time.time() - t0
+                    eta = el / (k + 1) * (steps - k - 1)
+                    _log(f"transient(port) {k + 1}/{steps}  "
+                         f"({el:.1f}s elapsed, ETA {eta:.0f}s)")
+            if verbose:
+                _log(f"transient(port) complete - {steps} steps "
+                     f"in {time.time() - t0:.1f}s")
             return traj
         if device == "gpu":
             _log("transient(port): no OpenCL GPU available, using CPU")
