@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1779462497,
+  "baked_at": 1780040909,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -425,12 +425,12 @@
       "bake_seconds": 0.0
     },
     {
-      "name": "td_power_divider",
-      "filename": "td_power_divider.py",
-      "json": "td_power_divider.json",
+      "name": "td_coax_line",
+      "filename": "td_coax_line.py",
+      "json": "td_coax_line.json",
       "bin_files": [
-        "td_power_divider.field.bin",
-        "td_power_divider.geo.bin"
+        "td_coax_line.field.bin",
+        "td_coax_line.geo.bin"
       ],
       "n_cells": 6,
       "cells": [
@@ -447,7 +447,7 @@
           "stream_lines": 0
         },
         {
-          "marker": "# %% Geometry: a T-junction air guide, PML-terminated on all three arms.",
+          "marker": "# %% Geometry: an air coax with the inner conductor fragmented out",
           "status": "ok",
           "kinds": [
             "mesh"
@@ -455,147 +455,37 @@
           "stream_lines": 0
         },
         {
-          "marker": "# %% Build the time-domain problem on the T-junction mesh",
+          "marker": "# %% Build the time-domain problem",
           "status": "ok",
           "kinds": [],
           "stream_lines": 3
         },
         {
-          "marker": "# %% Drive a pulse in the stem and watch it split at the junction",
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 3
-        },
-        {
-          "marker": "# %% Visualise: the pulse dividing into the two PML-terminated arms",
-          "status": "ok",
-          "kinds": [
-            "td_trajectory"
-          ],
-          "stream_lines": 0
-        }
-      ],
-      "json_bytes": 10162,
-      "bin_bytes": 1195124,
-      "bake_seconds": 0.0
-    },
-    {
-      "name": "td_ring_resonator",
-      "filename": "td_ring_resonator.py",
-      "json": "td_ring_resonator.json",
-      "bin_files": [
-        "td_ring_resonator.field.bin",
-        "td_ring_resonator.geo.bin"
-      ],
-      "n_cells": 6,
-      "cells": [
-        {
-          "marker": null,
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 0
-        },
-        {
-          "marker": "# %% Parameters",
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 0
-        },
-        {
-          "marker": "# %% Geometry \u2014 a dielectric ring embedded in an air-filled PEC cavity",
-          "status": "ok",
-          "kinds": [
-            "mesh"
-          ],
-          "stream_lines": 0
-        },
-        {
-          "marker": "# %% Build the time-domain problem on the curved unstructured mesh",
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 3
-        },
-        {
-          "marker": "# %% Light up one point on the ring and let the field orbit it",
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 3
-        },
-        {
-          "marker": "# %% Visualise \u2014 the field circulating in the dielectric ring",
-          "status": "ok",
-          "kinds": [
-            "td_trajectory"
-          ],
-          "stream_lines": 0
-        }
-      ],
-      "json_bytes": 8435,
-      "bin_bytes": 1518776,
-      "bake_seconds": 0.0
-    },
-    {
-      "name": "td_transfer_function",
-      "filename": "td_transfer_function.py",
-      "json": "td_transfer_function.json",
-      "bin_files": [
-        "td_transfer_function.geo.bin"
-      ],
-      "n_cells": 6,
-      "cells": [
-        {
-          "marker": null,
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 0
-        },
-        {
-          "marker": "# %% Build a PEC air-cube cavity through the geometry API",
-          "status": "ok",
-          "kinds": [
-            "mesh"
-          ],
-          "stream_lines": 3
-        },
-        {
-          "marker": "# %% Drive a broadband pulse, record the probe signal in time",
-          "status": "ok",
-          "kinds": [
-            "td_timeseries"
-          ],
-          "stream_lines": 1
-        },
-        {
-          "marker": "# %% The same run, deconvolved into the cavity transfer function H(f)",
-          "status": "ok",
-          "kinds": [
-            "td_transfer"
-          ],
-          "stream_lines": 1
-        },
-        {
-          "marker": "# %% Peaks of |H| are the cavity resonances",
+          "marker": "# %% Drive the TEM mode at one end and watch the pulse travel",
           "status": "ok",
           "kinds": [],
           "stream_lines": 2
         },
         {
-          "marker": "# %% Analytic rectangular-cavity resonances  f = c/(2L)*sqrt(m^2+n^2+p^2)",
+          "marker": "# %% Visualise: the coaxial TEM pulse running down the line",
           "status": "ok",
-          "kinds": [],
-          "stream_lines": 3
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 66402,
-      "bin_bytes": 51508,
+      "json_bytes": 8411,
+      "bin_bytes": 1154900,
       "bake_seconds": 0.0
     },
     {
-      "name": "td_waveguide_sparams",
-      "filename": "td_waveguide_sparams.py",
-      "json": "td_waveguide_sparams.json",
+      "name": "td_dielectric_step",
+      "filename": "td_dielectric_step.py",
+      "json": "td_dielectric_step.json",
       "bin_files": [
-        "td_waveguide_sparams.geo.bin"
+        "td_dielectric_step.field.bin",
+        "td_dielectric_step.geo.bin"
       ],
       "n_cells": 6,
       "cells": [
@@ -606,13 +496,13 @@
           "stream_lines": 0
         },
         {
-          "marker": "# %% Parameters \u2014 WR-90 (X-band), straight guide",
+          "marker": "# %% Parameters",
           "status": "ok",
           "kinds": [],
           "stream_lines": 0
         },
         {
-          "marker": "# %% Geometry \u2014 an air-filled guide, waveguide ports on both ends",
+          "marker": "# %% Geometry: air | dielectric slab | air, stacked along z",
           "status": "ok",
           "kinds": [
             "mesh"
@@ -620,28 +510,138 @@
           "stream_lines": 0
         },
         {
-          "marker": "# %% Frequency-domain reference",
+          "marker": "# %% Build the time-domain problem",
           "status": "ok",
           "kinds": [],
-          "stream_lines": 17
+          "stream_lines": 3
         },
         {
-          "marker": "# %% Time-domain S-parameters",
+          "marker": "# %% Drive TE10 at the input and watch it split at the slab",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 2
+        },
+        {
+          "marker": "# %% Visualise: incident, reflected, and transmitted TE10 pulses",
           "status": "ok",
           "kinds": [
-            "td_result"
+            "td_trajectory"
           ],
-          "stream_lines": 13
-        },
-        {
-          "marker": "# %% Compare",
-          "status": "ok",
-          "kinds": [],
-          "stream_lines": 13
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 14115,
-      "bin_bytes": 64756,
+      "json_bytes": 10282,
+      "bin_bytes": 1048208,
+      "bake_seconds": 0.0
+    },
+    {
+      "name": "td_rect_waveguide",
+      "filename": "td_rect_waveguide.py",
+      "json": "td_rect_waveguide.json",
+      "bin_files": [
+        "td_rect_waveguide.field.bin",
+        "td_rect_waveguide.geo.bin"
+      ],
+      "n_cells": 6,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: an air-filled WR-90 guide, modal ports on the two ends",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Build the time-domain problem",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 3
+        },
+        {
+          "marker": "# %% Drive the TE10 mode at the input port and watch the pulse propagate",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 2
+        },
+        {
+          "marker": "# %% Visualise: the TE10 mode travelling down the guide to the matched port",
+          "status": "ok",
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
+        }
+      ],
+      "json_bytes": 8497,
+      "bin_bytes": 931580,
+      "bake_seconds": 0.0
+    },
+    {
+      "name": "td_wave_port",
+      "filename": "td_wave_port.py",
+      "json": "td_wave_port.json",
+      "bin_files": [
+        "td_wave_port.field.bin",
+        "td_wave_port.geo.bin"
+      ],
+      "n_cells": 6,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: a hollow circular waveguide, WavePorts on the two ends",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Build the time-domain problem",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 3
+        },
+        {
+          "marker": "# %% Drive the numerically-solved TE11 mode and watch it propagate",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 2
+        },
+        {
+          "marker": "# %% Visualise: the solved TE11 mode travelling down the circular guide",
+          "status": "ok",
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
+        }
+      ],
+      "json_bytes": 8662,
+      "bin_bytes": 1198744,
       "bake_seconds": 0.0
     }
   ]
