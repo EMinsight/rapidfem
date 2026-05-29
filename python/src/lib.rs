@@ -1136,6 +1136,118 @@ impl PyTdOperator {
         Ok(out.into_pyarray_bound(py))
     }
 
+    /// One source-driven step with the explicit LSERK4 integrator and a
+    /// full source vector `b` — the CPU-RK counterpart of
+    /// [`step_with_source`](Self::step_with_source), for modal-port
+    /// injection on the explicit path. `b` held constant across the step;
+    /// CFL-bound. Zero-copy numpy in/out.
+    fn step_with_source_explicit<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        source: PyReadonlyArray1<'py, f64>,
+        h: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if src.len() != y.len() {
+            return Err(PyRuntimeError::new_err(
+                "source length must equal n_dof",
+            ));
+        }
+        let mut out = y.to_vec();
+        let op = &self.op;
+        self.lserk
+            .step_with_source_into(|x, ax| op.apply_into(x, ax), &mut out, h, src);
+        Ok(out.into_pyarray_bound(py))
+    }
+
+    /// One source-driven exponential (ETD) step on the GPU with a full
+    /// source vector `b` — `dy/dt = A·y + b` held constant across the
+    /// step, via the augmented-Arnoldi propagator. The GPU-Exp counterpart
+    /// of [`step_with_source`](Self::step_with_source); covers modal-port
+    /// injection (point source is the `b = e_dof·val` special case). Errors
+    /// if no fp64 GPU is available.
+    #[pyo3(signature = (y, source, h, krylov_dim = 40))]
+    fn gpu_step_with_source<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        source: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        krylov_dim: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if src.len() != y.len() {
+            return Err(PyRuntimeError::new_err(
+                "source length must equal n_dof",
+            ));
+        }
+        let backend = self.gpu.as_mut().unwrap();
+        let out = backend
+            .op
+            .etd_step(&backend.ctx, y, src, h, krylov_dim)
+            .map_err(PyRuntimeError::new_err)?;
+        Ok(out.into_pyarray_bound(py))
+    }
+
+    /// Vector-source driven explicit LSERK4 transient on the GPU, the state
+    /// device-resident — the GPU-RK counterpart of the modal-port injection
+    /// loop. `source` is the spatial pattern `b` (length `n_dof`);
+    /// `source_values` holds one waveform amplitude per substep
+    /// (`steps * substeps` entries). Returns the flattened trajectory
+    /// `[(steps+1) * n_dof]`; the caller reshapes. Zero-copy numpy in.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_transient_driven_vec<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+        substeps: usize,
+        source: PyReadonlyArray1<'py, f64>,
+        source_values: PyReadonlyArray1<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let b = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source_values
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let b_32: Vec<f32> = b.iter().map(|&v| v as f32).collect();
+        let src_32: Vec<f32> = src.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let traj = backend
+            .op
+            .transient_driven_vec_traj(
+                &backend.ctx,
+                &y0_32,
+                h as f32,
+                steps,
+                substeps,
+                &b_32,
+                &src_32,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok(traj64.into_pyarray_bound(py))
+    }
+
     /// The explicit sparse state-space matrix `A`, as a CSR quadruple
     /// `(n, row_ptr, col_idx, values)` — the index/value arrays come back
     /// as numpy arrays, so they feed straight into `scipy.sparse.csr_matrix`

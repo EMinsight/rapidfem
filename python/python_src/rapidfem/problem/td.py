@@ -1365,8 +1365,136 @@ class ProblemTD:
         return TdScattering(freqs, s_mat)
 
     # -- turnkey: a transient run ------------------------------------------
+    def _modal_ports(self):
+        """The geometry's modal port physics objects in the operator's
+        declaration order: rect, coax, floquet, wave. Matches
+        :func:`_collect_ports` and the native operator port layout, so the
+        k-th entry here is the k-th port for which
+        ``port_has_mode`` is true."""
+        from ..physics import (
+            CoaxPort, FloquetPort, RectWaveguidePort, WavePort,
+        )
+        if self._geometry is None:
+            return []
+        geom = self._geometry
+        phys = [
+            p for p in getattr(geom, "_physics", [])
+            if geom._physics_tags.get(id(p)) is not None
+        ]
+        rect = [p for p in phys if isinstance(p, RectWaveguidePort)]
+        coax = [p for p in phys if isinstance(p, CoaxPort)]
+        floq = [p for p in phys if isinstance(p, FloquetPort)]
+        wave = [p for p in phys if isinstance(p, WavePort)]
+        return rect + coax + floq + wave
+
+    def _port_operator_index(self, port):
+        """Operator port index of a modal port physics object — the index
+        :meth:`port_source` / :meth:`port_projections` take. Resolves the
+        port's position among the modal ports (declaration order) and maps
+        it onto the operator's modal subset (``port_has_mode``), so
+        absorbing-only ABC faces in between are skipped."""
+        modal = self._modal_ports()
+        k = next((i for i, p in enumerate(modal) if p is port), None)
+        if k is None:
+            raise ValueError(
+                "port= is not a modal port of this problem's geometry; pass "
+                "a RectWaveguidePort / CoaxPort / FloquetPort / WavePort "
+                "instance attached to the meshed geometry"
+            )
+        modal_idx = [
+            p for p in range(self._op.n_ports())
+            if self._op.port_has_mode(p)
+        ]
+        if k >= len(modal_idx):
+            raise RuntimeError(
+                "modal-port count mismatch between geometry and operator"
+            )
+        return modal_idx[k]
+
+    def _driven_vector_traj(self, b, waveform, *, y0, dt, steps, method,
+                            device, krylov_dim, verbose):
+        """Field trajectory of ``dy/dt = A·y + b·g(t)`` — the full-vector
+        (modal-port) source path, routed across ``method`` ∈
+        {exponential, explicit} × ``device`` ∈ {cpu, gpu}. The exponential
+        step is exact at any ``dt`` (one step per snapshot); the explicit
+        step is substepped within the CFL limit. Returns the
+        ``[steps+1, n_dof]`` trajectory."""
+        n = self.n_dof
+        b = np.ascontiguousarray(b, dtype=np.float64)
+        y = np.zeros(n) if y0 is None else _arr(y0)
+        h_op = float(self.c * dt)
+
+        # GPU paths, the state device-resident where the stepper allows.
+        if device == "gpu" and self._op.gpu_available():
+            if method == "explicit":
+                cfl = self.cfl_dt()
+                nsub = max(1, int(np.ceil(abs(dt) / cfl)))
+                h_sub = dt / nsub
+                gvals = np.array(
+                    [float(waveform(i * h_sub))
+                     for i in range(steps * nsub)],
+                    dtype=np.float64,
+                )
+                if verbose:
+                    _log(f"transient(port): GPU vector LSERK4 "
+                         f"({self._op.gpu_device()}, {nsub} substeps/step)")
+                flat = self._op.gpu_transient_driven_vec(
+                    y, h_op, int(steps), nsub, b, gvals,
+                )
+                return np.asarray(flat).reshape(steps + 1, n)
+            # Exponential on GPU: exact, one augmented-Arnoldi ETD step per
+            # snapshot (the source is held across the step).
+            if verbose:
+                _log(f"transient(port): GPU vector ETD "
+                     f"({self._op.gpu_device()})")
+            traj = np.empty((steps + 1, n))
+            traj[0] = y
+            for k in range(steps):
+                y = self._op.gpu_step_with_source(
+                    y, b * float(waveform(k * dt)), h_op, krylov_dim,
+                )
+                traj[k + 1] = y
+            return traj
+        if device == "gpu":
+            _log("transient(port): no OpenCL GPU available, using CPU")
+
+        # CPU paths.
+        traj = np.empty((steps + 1, n))
+        traj[0] = y
+        cfl = self.cfl_dt() if method == "explicit" else None
+        nsub = max(1, int(np.ceil(abs(dt) / cfl))) if cfl else 1
+        if verbose and method == "explicit":
+            _log(f"transient(port): CPU vector LSERK4 "
+                 f"({nsub} substeps/step)")
+        t0 = time.time()
+        every = max(1, steps // 10)
+        for k in range(steps):
+            if method == "exponential":
+                y = self._op.step_with_source(
+                    _arr(y), b * float(waveform(k * dt)), h_op, krylov_dim,
+                )
+            else:
+                h_sub_op = h_op / nsub
+                h_sub = dt / nsub
+                for j in range(nsub):
+                    y = self._op.step_with_source_explicit(
+                        _arr(y),
+                        b * float(waveform(k * dt + j * h_sub)),
+                        h_sub_op,
+                    )
+            traj[k + 1] = y
+            if verbose and (k + 1) % every == 0:
+                el = time.time() - t0
+                eta = el / (k + 1) * (steps - k - 1)
+                _log(f"transient(port) {k + 1}/{steps}  "
+                     f"({el:.1f}s elapsed, ETA {eta:.0f}s)")
+        if verbose:
+            _log(f"transient(port) complete - {steps} steps "
+                 f"in {time.time() - t0:.1f}s")
+        return traj
+
     def transient(self, y0=None, *, dt, steps, source=None, waveform=None,
-                  krylov_dim=40, method="exponential", warmup=0,
+                  port=None, krylov_dim=40, method="exponential", warmup=0,
                   device="cpu", verbose=True):
         """Propagate the field for ``steps`` steps of size ``dt``.
 
@@ -1388,6 +1516,12 @@ class ProblemTD:
         source : (point, field, component), optional
             Soft-source location and field component. Driving needs both
             ``source`` and ``waveform``.
+        port : RectWaveguidePort | CoaxPort | FloquetPort | WavePort, optional
+            A modal port attached to the geometry, driven by its spatial
+            mode pattern ``b`` (``dy/dt = A·y + b·g(t)``) instead of a point
+            source. Mutually exclusive with ``source``; needs ``waveform``.
+            Routed across ``method`` × ``device`` like the rest, so the
+            exponential/explicit and CPU/GPU paths all inject the same mode.
         waveform : callable, optional
             Excitation ``g(t)``, e.g. a :class:`~rapidfem.GaussianPulse`.
         method : {"exponential", "explicit"}
@@ -1419,6 +1553,30 @@ class ProblemTD:
             raise ValueError("method must be 'exponential' or 'explicit'")
         if device not in ("cpu", "gpu"):
             raise ValueError("device must be 'cpu' or 'gpu'")
+
+        # Modal-port injection: drive dy/dt = A·y + b·g(t) with b the port's
+        # spatial mode pattern. Returns the field trajectory for animation.
+        if port is not None:
+            if source is not None:
+                raise ValueError(
+                    "pass either source= (point) or port= (modal port), "
+                    "not both"
+                )
+            if waveform is None:
+                raise ValueError(
+                    "driving a port needs a waveform= (a callable g(t))"
+                )
+            if warmup:
+                raise ValueError(
+                    "warmup is not supported with port= injection"
+                )
+            b = self._op.port_source(self._port_operator_index(port))
+            traj = self._driven_vector_traj(
+                b, waveform, y0=y0, dt=dt, steps=steps, method=method,
+                device=device, krylov_dim=krylov_dim, verbose=verbose,
+            )
+            return TdTrajectory(traj, problem=self, dt=dt)
+
         n = self.n_dof
         y = np.zeros(n) if y0 is None else _arr(y0)
         driven = source is not None and waveform is not None
