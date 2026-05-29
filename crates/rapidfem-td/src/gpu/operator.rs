@@ -108,6 +108,9 @@ struct ExpmvKernels {
     finish_norm: Kernel,
     scale_recip: Kernel,
     lincomb: Kernel,
+    /// `w[i] += g*src[i]`: the source-column axpy of the augmented driven
+    /// Arnoldi (ETD step). See [`GpuOperator::etd_step`].
+    axpy_src: Kernel,
 }
 
 /// f64 Arnoldi buffers for the Krylov exponential propagator. The basis
@@ -131,6 +134,9 @@ struct Krylov {
     h: Buffer<cl_double>,
     /// One-element scalar holding the current Arnoldi `hnext = ||w||`.
     hnext: Buffer<cl_double>,
+    /// f64 source pattern `b` for the augmented driven Arnoldi (ETD step);
+    /// length `n`, uploaded once per [`GpuOperator::etd_step`] call.
+    src64: Buffer<cl_double>,
     /// Number of work-groups in the norm reduction.
     n_groups: usize,
 }
@@ -325,6 +331,7 @@ impl GpuOperator {
             finish_norm: kern("finish_norm")?,
             scale_recip: kern("scale_recip")?,
             lincomb: kern("lincomb")?,
+            axpy_src: kern("axpy_src")?,
         });
         Ok(())
     }
@@ -824,6 +831,7 @@ impl GpuOperator {
                 partials: gpu.alloc_f64(n_groups)?,
                 h: gpu.alloc_f64(m * m)?,
                 hnext: gpu.alloc_f64(1)?,
+                src64: gpu.alloc_f64(n)?,
                 n_groups,
             });
         }
@@ -1093,6 +1101,242 @@ impl GpuOperator {
         gpu.queue()
             .finish()
             .map_err(|e| format!("expmv sync failed: {e}"))?;
+        let result = gpu.download_f64(&kry.out, n)?;
+        self.krylov = Some(kry);
+        Ok(result)
+    }
+
+    /// One exponential-time-differencing step of `dy/dt = A·y + b` on the
+    /// GPU, with the source `b` held constant across the step:
+    /// `y ← exp(hA)·y + h·φ₁(hA)·b`. The GPU counterpart of
+    /// [`crate::propagator::etd_step`].
+    ///
+    /// Uses the same augmented-matrix identity
+    /// `exp(h·[[A, b],[0, 0]])·[y; 1] = [exp(hA)y + h·φ₁(hA)b ; 1]`: the
+    /// `n`-vector Arnoldi basis stays device-resident, while the `(n+1)`th
+    /// augmented ξ-component is carried host-side as a per-basis scalar
+    /// (`s`) and the source column `b` is injected into the working vector
+    /// by the f64 `axpy_src` device kernel. `b` may be a single-DOF point
+    /// source (`b = e_dof·val`) or a full spatial pattern (modal-port
+    /// injection) — the path is identical.
+    ///
+    /// `m` caps the Krylov dimension; above [`KRYLOV_CHUNK`] the augmented
+    /// propagation is sub-stepped just as [`expmv`](Self::expmv), the
+    /// augmented scalar reset to 1 between sub-steps (the augmented
+    /// operator's zero last row preserves it).
+    pub fn etd_step(
+        &mut self,
+        gpu: &GpuContext,
+        y: &[f64],
+        b: &[f64],
+        h: f64,
+        m: usize,
+    ) -> Result<Vec<f64>, String> {
+        assert_eq!(y.len(), self.n_dof, "state length mismatch");
+        assert_eq!(b.len(), self.n_dof, "source length mismatch");
+        assert!(m >= 1, "Krylov dimension must be >= 1");
+        self.ensure_expmv_kernels()?;
+        self.ensure_krylov(gpu, m)?;
+        // Upload the source pattern once; every sub-step reuses it.
+        {
+            let mut kry = self.krylov.take().expect("krylov allocated");
+            gpu.write_f64(&mut kry.src64, b)?;
+            self.krylov = Some(kry);
+        }
+        let k = m.div_ceil(KRYLOV_CHUNK).max(1);
+        let chunk = m.div_ceil(k);
+        let tau = h / k as f64;
+        let mut state = y.to_vec();
+        for _ in 0..k {
+            state = self.etd_expmv_chunk(gpu, &state, tau, chunk)?;
+        }
+        Ok(state)
+    }
+
+    /// One augmented-Arnoldi sub-step of the ETD propagator: returns the
+    /// first `n` components of `exp(tau·[[A,b],[0,0]])·[v; 1]`, i.e.
+    /// `exp(tau·A)·v + tau·φ₁(tau·A)·b`. The source `b` is the
+    /// device-resident `krylov.src64`, uploaded by [`etd_step`](Self::etd_step).
+    ///
+    /// Unlike the unforced [`arnoldi`](Self::arnoldi), this cannot run
+    /// purely device-side: the augmented inner product carries the scalar
+    /// term `s[i]·w_scalar`, so each CGS2 projection is corrected and each
+    /// subtraction updates `w_scalar` host-side. The Hessenberg therefore
+    /// also lives host-side here (the projections already round-trip).
+    fn etd_expmv_chunk(
+        &mut self,
+        gpu: &GpuContext,
+        v: &[f64],
+        tau: f64,
+        m: usize,
+    ) -> Result<Vec<f64>, String> {
+        let n = self.n_dof;
+        assert_eq!(v.len(), n, "state length mismatch");
+        assert!(m >= 1, "Krylov dimension must be >= 1");
+
+        // Augmented start z0 = [v; 1]; beta = ||z0|| includes the unit scalar.
+        let beta = (v.iter().map(|x| x * x).sum::<f64>() + 1.0).sqrt();
+        let inv_beta = 1.0 / beta;
+
+        let mut kry = self.krylov.take().expect("krylov allocated");
+        // basis[0].vec = v/beta on the device; the augmented scalar parts
+        // live host-side in `s`, with s[0] = (1)/beta.
+        let b0: Vec<f64> = v.iter().map(|x| x * inv_beta).collect();
+        gpu.write_f64(&mut kry.basis, &b0)?;
+        let mut s = vec![0.0_f64; m + 1];
+        s[0] = inv_beta;
+        let mut h_host = vec![0.0_f64; m * m];
+
+        let n_i = n as cl_int;
+        let elem_global = n.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let norm_global = n.div_ceil(NORM_WORK_GROUP) * NORM_WORK_GROUP;
+        let ek = self
+            .expmv_kernels
+            .as_ref()
+            .expect("expmv kernels built before etd_expmv_chunk");
+
+        for j in 0..m {
+            // Augmented matvec: w_vec = A·basis_vec[j] + s[j]·b; w_scalar = 0.
+            let off = (j * n) as cl_int;
+            unsafe {
+                ExecuteKernel::new(&ek.cast_d2f)
+                    .set_arg(&kry.basis)
+                    .set_arg(&off)
+                    .set_arg(&self.y)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("cast_d2f launch failed: {e}"))?;
+            self.enqueue_apply(gpu)?;
+            unsafe {
+                ExecuteKernel::new(&ek.cast_f2d)
+                    .set_arg(&self.dy)
+                    .set_arg(&kry.w)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("cast_f2d launch failed: {e}"))?;
+            let sj = s[j];
+            unsafe {
+                ExecuteKernel::new(&ek.axpy_src)
+                    .set_arg(&kry.w)
+                    .set_arg(&kry.src64)
+                    .set_arg(&sj)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("axpy_src launch failed: {e}"))?;
+            let mut w_scalar = 0.0_f64;
+
+            // CGS2: two passes. Each pass's projections take the augmented
+            // scalar term s[i]·w_scalar (host correction); the subtraction
+            // updates w_scalar -= Σ proj[i]·s[i]. H column j accumulates
+            // both passes, exactly as the CPU `expmv_into`.
+            let cols = j + 1;
+            let cols_i = cols as cl_int;
+            for _pass in 0..2 {
+                unsafe {
+                    ExecuteKernel::new(&ek.dot_rows)
+                        .set_arg(&kry.basis)
+                        .set_arg(&kry.w)
+                        .set_arg(&kry.proj)
+                        .set_arg(&n_i)
+                        .set_arg(&cols_i)
+                        .set_arg_local_buffer(DOF_WORK_GROUP * 8)
+                        .set_global_work_size(cols * DOF_WORK_GROUP)
+                        .set_local_work_size(DOF_WORK_GROUP)
+                        .enqueue_nd_range(gpu.queue())
+                }
+                .map_err(|e| format!("dot_rows launch failed: {e}"))?;
+                // Blocking read serialises behind dot_rows on the in-order
+                // queue.
+                let mut proj_host = gpu.download_f64(&kry.proj, cols)?;
+                for i in 0..cols {
+                    proj_host[i] += s[i] * w_scalar;
+                    h_host[i * m + j] += proj_host[i];
+                }
+                let dscalar: f64 =
+                    (0..cols).map(|i| proj_host[i] * s[i]).sum();
+                gpu.write_f64(&mut kry.proj, &proj_host)?;
+                unsafe {
+                    ExecuteKernel::new(&ek.axpy_basis)
+                        .set_arg(&kry.w)
+                        .set_arg(&kry.basis)
+                        .set_arg(&kry.proj)
+                        .set_arg(&n_i)
+                        .set_arg(&cols_i)
+                        .set_global_work_size(elem_global)
+                        .set_local_work_size(DOF_WORK_GROUP)
+                        .enqueue_nd_range(gpu.queue())
+                }
+                .map_err(|e| format!("axpy_basis launch failed: {e}"))?;
+                w_scalar -= dscalar;
+            }
+
+            // The last basis vector needs no successor.
+            if j + 1 == m {
+                break;
+            }
+
+            // hnext = ||w_aug|| = sqrt(||w_vec||² + w_scalar²): the vector
+            // norm is reduced on the device, the scalar added host-side.
+            unsafe {
+                ExecuteKernel::new(&ek.norm2)
+                    .set_arg(&kry.w)
+                    .set_arg(&kry.partials)
+                    .set_arg(&n_i)
+                    .set_arg_local_buffer(NORM_WORK_GROUP * 8)
+                    .set_global_work_size(norm_global)
+                    .set_local_work_size(NORM_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("partial_norm2 launch failed: {e}"))?;
+            let partials = gpu.download_f64(&kry.partials, kry.n_groups)?;
+            let wvec_n2: f64 = partials.iter().sum();
+            let hnext = (wvec_n2 + w_scalar * w_scalar).sqrt();
+            h_host[(j + 1) * m + j] = hnext;
+
+            // basis[j+1].vec = w_vec / hnext (device); s[j+1] = w_scalar / hnext.
+            gpu.write_f64(&mut kry.hnext, &[hnext])?;
+            let dst_off = ((j + 1) * n) as cl_int;
+            unsafe {
+                ExecuteKernel::new(&ek.scale_recip)
+                    .set_arg(&kry.w)
+                    .set_arg(&kry.basis)
+                    .set_arg(&dst_off)
+                    .set_arg(&kry.hnext)
+                    .set_arg(&n_i)
+                    .set_global_work_size(elem_global)
+                    .set_local_work_size(DOF_WORK_GROUP)
+                    .enqueue_nd_range(gpu.queue())
+            }
+            .map_err(|e| format!("scale_recip launch failed: {e}"))?;
+            s[j + 1] = w_scalar / hnext;
+        }
+
+        // exp(tau·H) on the host; out_vec = beta·Σ_i basis_vec[i]·exp[i,0]
+        // — the first n components of the augmented result. The augmented
+        // scalar component is preserved at 1 and discarded.
+        let dim = m;
+        let mut th = vec![0.0_f64; dim * dim];
+        for a in 0..dim {
+            for b in 0..dim {
+                th[a * dim + b] = tau * h_host[a * m + b];
+            }
+        }
+        let exp_th = expm(&th, dim);
+        let coef: Vec<f64> =
+            (0..dim).map(|i| beta * exp_th[i * dim]).collect();
+        self.lincomb(gpu, &kry.basis, &coef, &kry.out)?;
+        gpu.queue()
+            .finish()
+            .map_err(|e| format!("etd expmv sync failed: {e}"))?;
         let result = gpu.download_f64(&kry.out, n)?;
         self.krylov = Some(kry);
         Ok(result)
@@ -1510,5 +1754,67 @@ mod tests {
             rel < GPU_REL_TOL,
             "GPU hybrid rel.err {rel:.3e} exceeds GPU_REL_TOL",
         );
+    }
+
+    #[test]
+    fn gpu_etd_step_matches_cpu() {
+        // WP3 gate: the GPU augmented-Arnoldi ETD step (driven exponential
+        // propagator) matches the CPU `etd_step` within GPU_REL_TOL, for
+        // both a single-DOF point source (b = e_dof·val) and a spread-out
+        // vector source (modal-port injection). Skips on fp64-less devices.
+        use crate::propagator::etd_step;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y: Vec<Field> =
+            (0..n).map(|i| (0.25 + i as Field * 0.013).sin()).collect();
+        let h = 0.02;
+        let m = 40;
+
+        // Point source: a single DOF, the b = e_dof·val special case.
+        let mut b_point = vec![0.0_f64; n];
+        b_point[n / 3] = 1.7;
+        // Vector source: a spread spatial pattern over many DOFs.
+        let b_vec: Vec<f64> =
+            (0..n).map(|i| 0.4 * (0.07 * i as Field).cos()).collect();
+
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+
+        for (label, b) in [("point", &b_point), ("vector", &b_vec)] {
+            let cpu = etd_step(|x| op.apply(x), &y, b, h, m);
+            let gpu_out = match gop.etd_step(&gpu, &y, b, h, m) {
+                Ok(o) => o,
+                Err(e) if fp64_unavailable(&e) => {
+                    eprintln!("skipping GPU etd_step test (no fp64): {e}");
+                    return;
+                }
+                Err(e) => panic!("gpu etd_step [{label}]: {e}"),
+            };
+            let err: f64 = cpu
+                .iter()
+                .zip(&gpu_out)
+                .map(|(&c, &g)| (c - g).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let scale: f64 =
+                cpu.iter().map(|&c| c * c).sum::<f64>().sqrt();
+            let rel = err / scale;
+            eprintln!(
+                "GPU etd_step vs CPU [{label}, m={m}]: rel L2 = {rel:.3e} \
+                 (GPU_REL_TOL {GPU_REL_TOL:.1e})"
+            );
+            assert!(
+                rel < GPU_REL_TOL,
+                "GPU etd_step [{label}] rel.err {rel:.3e} exceeds GPU_REL_TOL",
+            );
+        }
     }
 }

@@ -72,6 +72,19 @@ kernel void axpy_basis(global double* w,
     w[k] = acc;
 }
 
+// w[i] += g * src[i], one work-item per DOF — the f64 axpy that injects
+// the source column of the augmented operator [[A, b],[0, 0]] into the
+// Arnoldi working vector: the augmented matvec is
+// `w_vec = A*basis_vec + xi*b`, with `g = xi` the held augmented scalar.
+kernel void axpy_src(global double* w,
+                     global const double* src,
+                     const double g,
+                     const int n) {
+    const int i = get_global_id(0);
+    if (i < n)
+        w[i] += g * src[i];
+}
+
 // Per-work-group partial sums of <w,w>; the host finishes the reduction.
 kernel void partial_norm2(global const double* w,
                           global double* partials,
