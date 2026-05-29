@@ -60,11 +60,15 @@ DEMO_EXAMPLES = frozenset({
     "fd_dielectric_resonator",
     # RFIC layout import
     "fd_rfic_spiral_from_json",
-    # time-domain — one driven modal-port family per demo, field animation
+    # time-domain — driven modal-port families + complex structures, each a
+    # field animation plus a transient port/probe plot
     "td_rect_waveguide",
     "td_coax_line",
     "td_wave_port",
     "td_dielectric_step",
+    "td_power_divider",
+    "td_horn_radiation",
+    "td_ring_resonator",
 })
 
 # Windows console defaults to cp1252 — print() falls over on the unicode

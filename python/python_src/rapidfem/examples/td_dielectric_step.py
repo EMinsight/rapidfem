@@ -65,3 +65,7 @@ print(f"dielectric-step transient - {traj.shape[0]} snapshots, "
 
 # %% Visualise: incident, reflected, and transmitted TE10 pulses
 rf.show(traj)
+
+# %% Port modal amplitudes: incident/reflected at input, transmitted at output
+rf.show(ptd.port_signals(traj, [p_in, p_out], dt=3e-12,
+                         labels=["input port", "output port"]))

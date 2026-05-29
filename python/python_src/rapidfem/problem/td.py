@@ -1411,6 +1411,37 @@ class ProblemTD:
             )
         return modal_idx[k]
 
+    def port_signals(self, traj, ports, *, dt=None, labels=None):
+        """Modal wave amplitude ``P_e(t)`` at each port over a trajectory,
+        as a :class:`TdResponse` for :func:`rapidfem.show` — a time-domain
+        line plot of the modal port signals next to the field animation.
+
+        Parameters
+        ----------
+        traj : ndarray
+            A ``[n_snapshot, n_dof]`` field trajectory, e.g. the return of
+            :meth:`transient`.
+        ports : list
+            Modal port physics objects (RectWaveguidePort / CoaxPort /
+            WavePort) whose modal amplitude to read out.
+        dt : float, optional
+            Snapshot spacing for the time axis. Defaults to the
+            trajectory's own ``dt`` when it is a :class:`TdTrajectory`.
+        labels : list of str, optional
+            Curve labels; default ``port 0, port 1, ...``.
+        """
+        if dt is None:
+            dt = getattr(traj, "dt", None) or 1.0
+        traj = np.asarray(traj)
+        n_snap = traj.shape[0]
+        idxs = [self._port_operator_index(p) for p in ports]
+        rows = np.empty((len(idxs), n_snap))
+        for s in range(n_snap):
+            for k, idx in enumerate(idxs):
+                rows[k, s] = self._op.port_projections(traj[s], idx)[0]
+        labs = list(labels) if labels else [f"port {k}" for k in range(len(idxs))]
+        return TdResponse(np.arange(n_snap) * dt, rows, probe_labels=labs)
+
     def _driven_vector_traj(self, b, waveform, *, y0, dt, steps, method,
                             device, krylov_dim, verbose):
         """Field trajectory of ``dy/dt = A·y + b·g(t)`` — the full-vector

@@ -52,3 +52,7 @@ print(f"TEM transient - {traj.shape[0]} snapshots, "
 
 # %% Visualise: the coaxial TEM pulse running down the line
 rf.show(traj)
+
+# %% Port modal amplitudes over time (TEM wave at input and output)
+rf.show(ptd.port_signals(traj, [p_in, p_out], dt=2e-12,
+                         labels=["input port", "output port"]))

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "baked_at": 1780041411,
+  "baked_at": 1780043787,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -432,7 +432,7 @@
         "td_coax_line.field.bin",
         "td_coax_line.geo.bin"
       ],
-      "n_cells": 6,
+      "n_cells": 7,
       "cells": [
         {
           "marker": null,
@@ -473,9 +473,17 @@
             "td_trajectory"
           ],
           "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitudes over time (TEM wave at input and output)",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 9471,
+      "json_bytes": 21525,
       "bin_bytes": 1154900,
       "bake_seconds": 0.0
     },
@@ -487,7 +495,7 @@
         "td_dielectric_step.field.bin",
         "td_dielectric_step.geo.bin"
       ],
-      "n_cells": 6,
+      "n_cells": 7,
       "cells": [
         {
           "marker": null,
@@ -528,10 +536,144 @@
             "td_trajectory"
           ],
           "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitudes: incident/reflected at input, transmitted at output",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 11342,
+      "json_bytes": 25959,
       "bin_bytes": 1048208,
+      "bake_seconds": 0.0
+    },
+    {
+      "name": "td_horn_radiation",
+      "filename": "td_horn_radiation.py",
+      "json": "td_horn_radiation.json",
+      "bin_files": [
+        "td_horn_radiation.field.bin",
+        "td_horn_radiation.geo.bin"
+      ],
+      "n_cells": 7,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: feed + lofted horn flare in a PML/ABC-terminated air box",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Build the time-domain problem",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 3
+        },
+        {
+          "marker": "# %% Drive the feed and watch the pulse radiate out of the aperture",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 13
+        },
+        {
+          "marker": "# %% Visualise: the wavefront leaving the aperture into the PML/ABC box",
+          "status": "ok",
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitude: incident pulse and the small aperture reflection",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
+        }
+      ],
+      "json_bytes": 21476,
+      "bin_bytes": 3821744,
+      "bake_seconds": 0.0
+    },
+    {
+      "name": "td_power_divider",
+      "filename": "td_power_divider.py",
+      "json": "td_power_divider.json",
+      "bin_files": [
+        "td_power_divider.field.bin",
+        "td_power_divider.geo.bin"
+      ],
+      "n_cells": 7,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: an H-plane tee tiled from face-adjacent boxes",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Build the time-domain problem",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 3
+        },
+        {
+          "marker": "# %% Drive the stem port and watch the pulse split into the two arms",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 13
+        },
+        {
+          "marker": "# %% Visualise: the pulse dividing at the junction into the two arms",
+          "status": "ok",
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitudes: one input pulse, two equal (3 dB) output pulses",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
+        }
+      ],
+      "json_bytes": 32041,
+      "bin_bytes": 2067692,
       "bake_seconds": 0.0
     },
     {
@@ -542,7 +684,7 @@
         "td_rect_waveguide.field.bin",
         "td_rect_waveguide.geo.bin"
       ],
-      "n_cells": 6,
+      "n_cells": 7,
       "cells": [
         {
           "marker": null,
@@ -583,10 +725,81 @@
             "td_trajectory"
           ],
           "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitudes over time (incident at input, transmitted at output)",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 9557,
+      "json_bytes": 23054,
       "bin_bytes": 931580,
+      "bake_seconds": 0.0
+    },
+    {
+      "name": "td_ring_resonator",
+      "filename": "td_ring_resonator.py",
+      "json": "td_ring_resonator.json",
+      "bin_files": [
+        "td_ring_resonator.field.bin",
+        "td_ring_resonator.geo.bin"
+      ],
+      "n_cells": 7,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry: a dielectric ring embedded in an air-filled PEC cavity",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Build the time-domain problem",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 4
+        },
+        {
+          "marker": "# %% Drive a narrowband sinusoid in the ring hole; the field couples in",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 3
+        },
+        {
+          "marker": "# %% Visualise: the field circulating in the dielectric ring",
+          "status": "ok",
+          "kinds": [
+            "td_trajectory"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Probe on the ring tube: the resonant buildup of the circulating field",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
+        }
+      ],
+      "json_bytes": 23944,
+      "bin_bytes": 1518776,
       "bake_seconds": 0.0
     },
     {
@@ -597,7 +810,7 @@
         "td_wave_port.field.bin",
         "td_wave_port.geo.bin"
       ],
-      "n_cells": 6,
+      "n_cells": 7,
       "cells": [
         {
           "marker": null,
@@ -638,9 +851,17 @@
             "td_trajectory"
           ],
           "stream_lines": 0
+        },
+        {
+          "marker": "# %% Port modal amplitudes over time (numerically-solved TE11 at both ports)",
+          "status": "ok",
+          "kinds": [
+            "td_timeseries"
+          ],
+          "stream_lines": 0
         }
       ],
-      "json_bytes": 9721,
+      "json_bytes": 22418,
       "bin_bytes": 1198744,
       "bake_seconds": 0.0
     }

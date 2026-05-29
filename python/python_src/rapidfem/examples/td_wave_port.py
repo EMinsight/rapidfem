@@ -52,3 +52,7 @@ print(f"WavePort TE11 transient - {traj.shape[0]} snapshots, "
 
 # %% Visualise: the solved TE11 mode travelling down the circular guide
 rf.show(traj)
+
+# %% Port modal amplitudes over time (numerically-solved TE11 at both ports)
+rf.show(ptd.port_signals(traj, [p_in, p_out], dt=2.5e-12,
+                         labels=["input port", "output port"]))

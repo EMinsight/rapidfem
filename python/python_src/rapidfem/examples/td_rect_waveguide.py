@@ -51,3 +51,7 @@ print(f"TE10 transient - {traj.shape[0]} snapshots, "
 
 # %% Visualise: the TE10 mode travelling down the guide to the matched port
 rf.show(traj)
+
+# %% Port modal amplitudes over time (incident at input, transmitted at output)
+rf.show(ptd.port_signals(traj, [p_in, p_out], dt=3e-12,
+                         labels=["input port", "output port"]))
