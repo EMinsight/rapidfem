@@ -64,11 +64,18 @@ _ABSORBER_LOSS_BUDGET = 24.0
 # known-unstable value, each candidate probed by a short explicit run from
 # a delta excitation.
 _CFL_POWER_ITERS = 40       # power-iteration count for the spectral radius
-_CFL_PROBE_STEPS = 16       # explicit steps run per stability probe
+_CFL_PROBE_STEPS = 64       # explicit steps run per stability probe — long
+                            # enough to see slow non-normal growth rates that
+                            # the original 16-step probe missed.
 _CFL_BISECT_ITERS = 7       # bisection steps bracketing the stability limit
 _CFL_Z_STABLE = 3.0         # z = h_solver·ρ known stable for LSERK4 + DG Maxwell
 _CFL_Z_UNSTABLE = 15.0      # z known to diverge
-_CFL_GROWTH_FACTOR = 10.0   # norm growth over a probe that flags divergence
+_CFL_GROWTH_FACTOR = 10.0   # absolute norm growth that fails a probe outright
+_CFL_GROWTH_RATE_TOL = 1e-3 # max per-step geometric-mean amplification above
+                            # 1.0 for a probe to count as stable: an upwind-DG
+                            # operator is non-normal, so a mode bounded over a
+                            # short probe can still drift to NaN over a long
+                            # run; a strict per-step rate catches that drift.
 _CFL_SAFETY = 0.8           # margin applied to the bracketed stability limit
 
 
@@ -951,18 +958,29 @@ class ProblemTD:
             rho = float(np.linalg.norm(av))
             v = av / rho
 
-        # Probe: a short explicit run from a unit delta at z = h_solver*rho
-        # is stable iff it stays finite and bounded.
-        probe = np.zeros(n)
-        probe[0] = 1.0
+        # Probe at z = h_solver·ρ. Excite the *dominant* eigenvector (the
+        # power-iteration leftover `v`, which is the most-unstable mode), so
+        # the probe directly tests the binding mode rather than whichever
+        # modes a delta happens to project onto. A stable z must keep the
+        # geometric-mean per-step amplification at most slightly above 1 —
+        # an upwind-DG operator is non-normal, so a probe that just stays
+        # "bounded after a few steps" can hide a slow drift that NaNs the
+        # real run over thousands of substeps.
+        probe = v
 
         def stable(z):
             h = z / (self.c * rho)
+            n0 = float(np.linalg.norm(probe))
             y = probe
             for _ in range(_CFL_PROBE_STEPS):
                 y = self.step_explicit(y, h)
-            return bool(np.all(np.isfinite(y))
-                        and np.linalg.norm(y) < _CFL_GROWTH_FACTOR)
+            if not np.all(np.isfinite(y)):
+                return False
+            nf = float(np.linalg.norm(y))
+            if nf > _CFL_GROWTH_FACTOR * n0:
+                return False
+            rate = (nf / n0) ** (1.0 / _CFL_PROBE_STEPS) if nf > 0.0 else 0.0
+            return rate <= 1.0 + _CFL_GROWTH_RATE_TOL
 
         lo, hi = _CFL_Z_STABLE, _CFL_Z_UNSTABLE
         while not stable(lo) and lo > 0.1:

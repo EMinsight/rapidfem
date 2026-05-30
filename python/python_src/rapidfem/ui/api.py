@@ -205,7 +205,7 @@ def _td_timeseries_payload(obj) -> dict[str, Any]:
 
 
 def _td_trajectory_payload(
-    traj, *, max_frames: int = 72,
+    traj, *, max_frames: int = 180,
 ) -> dict[str, Any]:
     """``TdTrajectory`` → a self-contained DG-corner mesh + per-node field.
 

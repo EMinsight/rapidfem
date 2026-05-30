@@ -500,13 +500,24 @@
 		// A TD trajectory keeps its own point cloud (owned by the per-frame
 		// $effect) and gets a faint bounding-box frame; only a stale FD
 		// cloud is cleared here.
-		if (td_trajectory) {
+		if (td_trajectory && show_field) {
+			// Only frame the field cloud in field mode (same as FD); in the
+			// geometry / mesh modes the faces and wireframe are the reference.
 			addLineMesh(
 				gl_state,
 				Float32Array.from(bbox_edges(td_trajectory.bbox.min, td_trajectory.bbox.max)),
 				hex('#3a3a44'), -1,
 			);
-		} else if (!useField) {
+		} else if (useField) {
+			// FD field mode: the geometry faces are dropped to a faint
+			// silhouette or off entirely, so render the domain bounding box
+			// as a stable spatial frame for the field cloud (same as TD).
+			addLineMesh(
+				gl_state,
+				Float32Array.from(bbox_edges(mesh.bbox.min, mesh.bbox.max)),
+				hex('#3a3a44'), -1,
+			);
+		} else {
 			setPointCloud(gl_state, EMPTY_F32, EMPTY_F32);
 			field_range = null;
 		}
@@ -866,7 +877,10 @@
 			if (my_token !== td_sample_token) return;
 			td_sample = r;
 			needs_rebuild = true;
-			if (mounted) camera = fitCamera(traj.bbox.min, traj.bbox.max);
+			// Do NOT refit the camera here: this effect re-runs on every
+			// density-slider change, and refitting would reset the viewport
+			// mid-interaction. The initial fit is handled by the payload-change
+			// effect above (same as the FD field path).
 			schedule_render();
 		}).catch((e) => console.error('viz_sample_static', e));
 	});
