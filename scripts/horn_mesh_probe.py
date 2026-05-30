@@ -21,15 +21,16 @@ def main():
     Lfeed = 15.0 * mm
     Lhorn = 50.0 * mm
     WH, HH = 30.0 * mm, 22.0 * mm
-    LPAD = 66.0 * mm
+    LPAD_BEAM = 88.0 * mm
+    LPAD_SIDE = 30.0 * mm
     PML_T = 15.0 * mm
     F0 = 10.0e9
     MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)
-    MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=3)
+    MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)
 
-    AIR_X0, AIR_X1 = -Lfeed, Lhorn + LPAD
-    AIR_Y0, AIR_Y1 = -WH / 2 - LPAD, WH / 2 + LPAD
-    AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
+    AIR_X0, AIR_X1 = -Lfeed, Lhorn + LPAD_BEAM
+    AIR_Y0, AIR_Y1 = -WH / 2 - LPAD_SIDE, WH / 2 + LPAD_SIDE
+    AIR_Z0, AIR_Z1 = -HH / 2 - LPAD_SIDE, HH / 2 + LPAD_SIDE
 
     g = rf.Geometry(maxh=MAXH_AIR)
     air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
@@ -54,7 +55,7 @@ def main():
     rf.PEC(feed.faces.min(axis="y"), feed.faces.max(axis="y"),
            feed.faces.min(axis="z"), feed.faces.max(axis="z"))
     rf.PEC(*horn.faces.where(lambda c, b: 1e-6 < c[0] < Lhorn - 1e-6))
-    rf.PML(pml_xp, direction=(1, 0, 0), inner_face=Lhorn + LPAD,
+    rf.PML(pml_xp, direction=(1, 0, 0), inner_face=Lhorn + LPAD_BEAM,
            thickness=PML_T)
     rf.PEC(*pml_xp.faces.outer)
     rf.ABC(*air.faces.outer.unassigned, order=1)
@@ -71,7 +72,8 @@ def main():
 
     print(f"BOX volume:  ({AIR_X1 - AIR_X0:.3f}, "
           f"{AIR_Y1 - AIR_Y0:.3f}, {AIR_Z1 - AIR_Z0:.3f}) m")
-    print(f"LPAD:        {LPAD * 1000:.0f} mm")
+    print(f"LPAD_BEAM:   {LPAD_BEAM * 1000:.0f} mm  (+x for PML)")
+    print(f"LPAD_SIDE:   {LPAD_SIDE * 1000:.0f} mm  (y/z for ABC)")
     print(f"MAXH:        {MAXH * 1000:.2f} mm  (horn / feed)")
     print(f"MAXH_AIR:    {MAXH_AIR * 1000:.2f} mm  (outer air)")
     print(f"n_tets:      {n_tets:,}")

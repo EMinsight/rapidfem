@@ -17,7 +17,8 @@ Lfeed = 15.0 * mm
 Lhorn = 50.0 * mm
 WH, HH = 30.0 * mm, 22.0 * mm
 
-LPAD = 88.0 * mm
+LPAD_BEAM = 88.0 * mm   # +x pad: roomy for the diverging beam before the PML
+LPAD_SIDE = 30.0 * mm   # y/z pad: tighter, the side ABC just terminates near-field leakage
 PML_T = 15.0 * mm
 
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)
@@ -28,9 +29,9 @@ MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)    # outer air padding
 
 
 # %% Geometry + Materials
-AIR_X0, AIR_X1 = -Lfeed,        Lhorn + LPAD
-AIR_Y0, AIR_Y1 = -WH / 2 - LPAD, WH / 2 + LPAD
-AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
+AIR_X0, AIR_X1 = -Lfeed,             Lhorn + LPAD_BEAM
+AIR_Y0, AIR_Y1 = -WH / 2 - LPAD_SIDE, WH / 2 + LPAD_SIDE
+AIR_Z0, AIR_Z1 = -HH / 2 - LPAD_SIDE, HH / 2 + LPAD_SIDE
 
 # Global cap is the *coarse* outer-air size; the horn flare and feed are
 # refined locally below.
@@ -70,7 +71,8 @@ rf.PEC(feed.faces.min(axis="y"), feed.faces.max(axis="y"),
 # Four trapezoidal flares of the horn (excluding the throat and aperture caps).
 rf.PEC(*horn.faces.where(lambda c, b: 1e-6 < c[0] < Lhorn - 1e-6))
 
-rf.PML(pml_xp, direction=(1, 0, 0), inner_face=Lhorn + LPAD, thickness=PML_T)
+rf.PML(pml_xp, direction=(1, 0, 0), inner_face=Lhorn + LPAD_BEAM,
+       thickness=PML_T)
 
 # PML outer hull faces → PEC (terminate the absorber).
 rf.PEC(*pml_xp.faces.outer)
