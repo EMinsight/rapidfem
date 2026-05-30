@@ -28,7 +28,7 @@ PML_T = 15.0 * mm                   # PML slab thickness (beam direction)
 F0 = 10.0e9                         # drive frequency
 
 MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)        # horn / feed metals
-MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)    # outer air padding
+MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=3)    # outer air padding
 
 # %% Geometry: feed + lofted horn flare in a PML/ABC-terminated air box
 AIR_X0, AIR_X1 = -LFEED, LHORN + LPAD_BEAM

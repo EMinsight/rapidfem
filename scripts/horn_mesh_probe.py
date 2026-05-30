@@ -26,7 +26,7 @@ def main():
     PML_T = 15.0 * mm
     F0 = 10.0e9
     MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)
-    MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)
+    MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=3)
 
     AIR_X0, AIR_X1 = -Lfeed, Lhorn + LPAD_BEAM
     AIR_Y0, AIR_Y1 = -WH / 2 - LPAD_SIDE, WH / 2 + LPAD_SIDE

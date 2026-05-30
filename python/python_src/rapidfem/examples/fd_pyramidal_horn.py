@@ -25,7 +25,7 @@ FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)
 F0 = 10.0e9
 
 MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)        # horn / feed metals
-MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)    # outer air padding
+MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=3)    # outer air padding
 
 
 # %% Geometry + Materials
