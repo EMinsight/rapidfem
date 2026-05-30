@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import tempfile
 import warnings
 from dataclasses import dataclass, field
@@ -2370,12 +2371,36 @@ class Geometry:
         # Sliver-killing post-pass. Gmsh's built-in "Netgen" optimizer runs
         # edge-swap + node-smoothing sweeps targeting low-quality tets;
         # cheap (a few seconds even on million-DoF meshes) and zero risk of
-        # breaking topology. We do this BEFORE writing the .msh so every
-        # downstream consumer sees the optimised mesh.
-        # Off via ``optimize=False`` for benchmarking or debugging a
-        # raw-mesher symptom.
+        # breaking topology when it succeeds. We do this BEFORE writing the
+        # .msh so every downstream consumer sees the optimised mesh.
+        #
+        # On a Netgen crash the mesh state is poisoned (boundary-face
+        # physical groups silently lose elements — verified on the patch
+        # antenna's five-PML-slab + substrate + plate stack, where the
+        # post-crash mesh kept its volume tets but dropped every port and
+        # PEC triangle). A bare try/except is not enough; we re-generate
+        # the mesh so downstream code sees a coherent mesh with port faces
+        # intact. The trade is one extra ``mesh.generate(3)`` call and
+        # losing the slivers we'd have liked to remove — both acceptable.
+        # Off entirely via ``optimize=False`` for benchmarking or
+        # debugging a raw-mesher symptom.
         if optimize:
-            gmsh.model.mesh.optimize("Netgen")
+            try:
+                gmsh.model.mesh.optimize("Netgen")
+            except Exception as e:
+                print(
+                    f"warning: gmsh.optimize('Netgen') crashed "
+                    f"({type(e).__name__}); regenerating the mesh "
+                    f"without optimisation to keep port / PEC physical "
+                    f"groups intact",
+                    file=sys.stderr,
+                )
+                # Wipe + re-mesh. The size fields and Algorithm3D are
+                # still set from above, so the second pass is parameter-
+                # identical to the first, just without the failed
+                # post-pass.
+                gmsh.model.mesh.clear()
+                gmsh.model.mesh.generate(3)
 
         # Write to a temp file, read bytes back
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
