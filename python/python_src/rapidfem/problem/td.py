@@ -1617,9 +1617,39 @@ class ProblemTD:
         y = np.zeros(n) if y0 is None else _arr(y0)
         h_op = float(self.c * dt)
 
-        # GPU paths, the state device-resident where the stepper allows —
-        # adaptive is CPU-only and falls through to the CPU loop below.
-        if device == "gpu" and method != "adaptive" and self._op.gpu_available():
+        # GPU paths, the state device-resident where the stepper allows.
+        if device == "gpu" and self._op.gpu_available():
+            if method == "adaptive":
+                # Adaptive: PI controller on the device, only the scalar
+                # err_norm per substep and the per-frame state snapshot
+                # cross the bus. One waveform sample per output frame
+                # (zeroth-order hold), like the LSERK4 GPU driven path.
+                g_vals = np.array(
+                    [float(waveform(k * dt)) for k in range(steps)],
+                    dtype=np.float64,
+                )
+                if verbose:
+                    _log(f"transient(port): GPU vector KCL adaptive "
+                         f"({self._op.gpu_device()}, "
+                         f"atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})")
+                t0 = time.time()
+                flat, n_acc, n_rej, h_min, h_max = \
+                    self._op.gpu_transient_kcl_driven_vec(
+                        _arr(y), h_op, int(steps), b, g_vals,
+                        _RK_ATOL, _RK_RTOL, _RK_SAFETY,
+                        _RK_GROWTH_LIMIT, _RK_SHRINK_LIMIT,
+                        _RK_PI_ALPHA, _RK_PI_BETA, _RK_MIN_STEP_FACTOR,
+                    )
+                traj = np.asarray(flat).reshape(steps + 1, n)
+                if verbose:
+                    _log(f"transient(port) complete - {steps} steps "
+                         f"in {time.time() - t0:.1f}s")
+                    _log(
+                        f"  KCL controller: {n_acc} accepted, "
+                        f"{n_rej} rejected; h ∈ "
+                        f"[{h_min / self.c:.3g}, {h_max / self.c:.3g}] s"
+                    )
+                return traj
             if method == "explicit":
                 cfl = self.cfl_dt()
                 nsub = max(1, int(np.ceil(abs(dt) / cfl)))
@@ -1807,9 +1837,6 @@ class ProblemTD:
             )
         if device not in ("cpu", "gpu"):
             raise ValueError("device must be 'cpu' or 'gpu'")
-        if method == "adaptive" and device == "gpu":
-            _log("transient: method='adaptive' is CPU-only, using CPU")
-            device = "cpu"
 
         # Modal-port injection: drive dy/dt = A·y + b·g(t) with b the port's
         # spatial mode pattern. Returns the field trajectory for animation.
@@ -1847,6 +1874,48 @@ class ProblemTD:
         if device == "gpu":
             if not self._op.gpu_available():
                 _log("transient: no OpenCL GPU available, using CPU")
+            elif method == "adaptive":
+                # KCL adaptive on the GPU: controller on the device-resident
+                # error vector, no cfl_dt call. One waveform sample per
+                # output frame for the driven point case (zeroth-order hold).
+                t0 = time.time()
+                if verbose:
+                    _log(f"transient: GPU KCL adaptive "
+                         f"({self._op.gpu_device()}, "
+                         f"atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})")
+                h_op = float(self.c * dt)
+                if driven:
+                    g_vals = np.array(
+                        [float(waveform(k * dt)) for k in range(steps)],
+                        dtype=np.float64,
+                    )
+                    flat, n_acc, n_rej, h_min, h_max = \
+                        self._op.gpu_transient_kcl_driven(
+                            _arr(y), h_op, int(steps), int(sdof), g_vals,
+                            _RK_ATOL, _RK_RTOL, _RK_SAFETY,
+                            _RK_GROWTH_LIMIT, _RK_SHRINK_LIMIT,
+                            _RK_PI_ALPHA, _RK_PI_BETA,
+                            _RK_MIN_STEP_FACTOR,
+                        )
+                else:
+                    flat, n_acc, n_rej, h_min, h_max = \
+                        self._op.gpu_transient_kcl(
+                            _arr(y), h_op, int(steps),
+                            _RK_ATOL, _RK_RTOL, _RK_SAFETY,
+                            _RK_GROWTH_LIMIT, _RK_SHRINK_LIMIT,
+                            _RK_PI_ALPHA, _RK_PI_BETA,
+                            _RK_MIN_STEP_FACTOR,
+                        )
+                traj = np.asarray(flat).reshape(steps + 1, n)
+                if verbose:
+                    _log(f"transient complete - {steps} GPU steps "
+                         f"in {time.time() - t0:.2f}s")
+                    _log(
+                        f"  KCL controller: {n_acc} accepted, "
+                        f"{n_rej} rejected; h ∈ "
+                        f"[{h_min / self.c:.3g}, {h_max / self.c:.3g}] s"
+                    )
+                return TdTrajectory(traj, problem=self, dt=dt)
             else:
                 # Substep so each LSERK4 substep stays within the CFL
                 # limit, exactly as the CPU explicit path does.

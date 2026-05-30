@@ -1348,6 +1348,173 @@ impl PyTdOperator {
         Ok(traj64.into_pyarray_bound(py))
     }
 
+    /// Device-resident KCL RK4(3)5[2R+]C adaptive transient for the free
+    /// system `dy/dt = A·y`. Returns `(traj_flat, n_accepted, n_rejected,
+    /// h_min, h_max)` — the caller reshapes `traj_flat` to
+    /// `[steps+1, n_dof]`. The Rust-side PI controller runs on top of a
+    /// per-substep device error reduction, so only the scalar `err_norm`
+    /// (per substep) and the state snapshot (per accepted frame) cross
+    /// the bus.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_transient_kcl<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+        atol: f64,
+        rtol: f64,
+        safety: f64,
+        growth_limit: f64,
+        shrink_limit: f64,
+        pi_alpha: f64,
+        pi_beta: f64,
+        min_step_factor: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, usize, usize, f64, f64)> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let (traj, n_acc, n_rej, h_min, h_max) = backend
+            .op
+            .transient_kcl_traj(
+                &backend.ctx, &y0_32, h as f32, steps,
+                atol as f32, rtol as f32, safety as f32,
+                growth_limit as f32, shrink_limit as f32,
+                pi_alpha as f32, pi_beta as f32, min_step_factor as f32,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok((
+            traj64.into_pyarray_bound(py),
+            n_acc,
+            n_rej,
+            h_min as f64,
+            h_max as f64,
+        ))
+    }
+
+    /// Device-resident KCL adaptive transient with a single-DOF soft
+    /// source held constant across each output frame. `g_values[k]` is the
+    /// waveform sampled at frame `k*dt`, length `steps`.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_transient_kcl_driven<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+        source_dof: usize,
+        g_values: PyReadonlyArray1<'py, f64>,
+        atol: f64,
+        rtol: f64,
+        safety: f64,
+        growth_limit: f64,
+        shrink_limit: f64,
+        pi_alpha: f64,
+        pi_beta: f64,
+        min_step_factor: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, usize, usize, f64, f64)> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let gvals = g_values
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if gvals.len() != steps {
+            return Err(PyRuntimeError::new_err(
+                "g_values length must equal steps",
+            ));
+        }
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let g_32: Vec<f32> = gvals.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let (traj, n_acc, n_rej, h_min, h_max) = backend
+            .op
+            .transient_kcl_traj_driven(
+                &backend.ctx, &y0_32, h as f32, steps, source_dof, &g_32,
+                atol as f32, rtol as f32, safety as f32,
+                growth_limit as f32, shrink_limit as f32,
+                pi_alpha as f32, pi_beta as f32, min_step_factor as f32,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok((
+            traj64.into_pyarray_bound(py),
+            n_acc,
+            n_rej,
+            h_min as f64,
+            h_max as f64,
+        ))
+    }
+
+    /// Device-resident KCL adaptive transient with the **full source
+    /// vector** `b = source` and waveform `g_values[k]` held across frame
+    /// `k` — the modal-port injection path.
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_transient_kcl_driven_vec<'py>(
+        &mut self,
+        py: Python<'py>,
+        y0: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        steps: usize,
+        source: PyReadonlyArray1<'py, f64>,
+        g_values: PyReadonlyArray1<'py, f64>,
+        atol: f64,
+        rtol: f64,
+        safety: f64,
+        growth_limit: f64,
+        shrink_limit: f64,
+        pi_alpha: f64,
+        pi_beta: f64,
+        min_step_factor: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, usize, usize, f64, f64)> {
+        self.ensure_gpu().map_err(PyRuntimeError::new_err)?;
+        let y0 = y0
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let b = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let gvals = g_values
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if b.len() != y0.len() {
+            return Err(PyRuntimeError::new_err(
+                "source length must equal n_dof",
+            ));
+        }
+        if gvals.len() != steps {
+            return Err(PyRuntimeError::new_err(
+                "g_values length must equal steps",
+            ));
+        }
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let b_32: Vec<f32> = b.iter().map(|&v| v as f32).collect();
+        let g_32: Vec<f32> = gvals.iter().map(|&v| v as f32).collect();
+        let backend = self.gpu.as_mut().unwrap();
+        let (traj, n_acc, n_rej, h_min, h_max) = backend
+            .op
+            .transient_kcl_traj_driven_vec(
+                &backend.ctx, &y0_32, h as f32, steps, &b_32, &g_32,
+                atol as f32, rtol as f32, safety as f32,
+                growth_limit as f32, shrink_limit as f32,
+                pi_alpha as f32, pi_beta as f32, min_step_factor as f32,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let traj64: Vec<f64> = traj.iter().map(|&v| v as f64).collect();
+        Ok((
+            traj64.into_pyarray_bound(py),
+            n_acc,
+            n_rej,
+            h_min as f64,
+            h_max as f64,
+        ))
+    }
+
     /// The explicit sparse state-space matrix `A`, as a CSR quadruple
     /// `(n, row_ptr, col_idx, values)` — the index/value arrays come back
     /// as numpy arrays, so they feed straight into `scipy.sparse.csr_matrix`

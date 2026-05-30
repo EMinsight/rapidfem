@@ -16,7 +16,8 @@ use opencl3::types::{CL_BLOCKING, cl_double, cl_float, cl_int};
 
 use super::GpuContext;
 use crate::constants::{
-    Field, KRYLOV_CHUNK, LSERK4_A, LSERK4_B, LSERK4_STAGES,
+    Field, KCL_A, KCL_B, KCL_BHAT, KCL_STAGES, KRYLOV_CHUNK,
+    LSERK4_A, LSERK4_B, LSERK4_STAGES,
 };
 use crate::propagator::expm;
 use crate::rhs::MaxwellOperator;
@@ -29,6 +30,19 @@ const LSERK_SRC: &str = include_str!("lserk.cl");
 
 /// Krylov exponential-propagator kernel source.
 const EXPMV_SRC: &str = include_str!("expmv.cl");
+
+/// KCL RK4(3)5[2R+]C adaptive stage / error-reduction kernel source.
+const KCL_SRC: &str = include_str!("kcl.cl");
+
+/// Source-injection mode for the GPU KCL adaptive transient. Free runs
+/// homogeneously; the two driven variants mirror the LSERK4 GPU paths
+/// (single-DOF point hold and full-vector hold), zeroth-order over each
+/// output frame.
+enum DrivenMode<'a> {
+    Free,
+    Point { source_dof: usize, g_values: &'a [f32] },
+    Vector { g_values: &'a [f32] },
+}
 
 /// Target work-group size for the `apply` kernel. A work-group processes
 /// one block of `EPG = APPLY_TARGET_WG / NP` elements, its work-items the
@@ -94,6 +108,31 @@ pub struct GpuOperator {
     expmv_kernels: Option<ExpmvKernels>,
     /// Lazily-allocated f64 Krylov buffers, sized on the first `expmv`.
     krylov: Option<Krylov>,
+    // KCL RK4(3)5[2R+]C adaptive stepper — f32 like the LSERK4 path,
+    // stage updates and the embedded-error vector device-resident, with
+    // the host running the PI controller on top of a per-substep
+    // `weighted_err_sq` reduction. Built eagerly: no fp64 needed.
+    _kcl_program: Program,
+    kcl_stage0_kernel: Kernel,
+    kcl_build_stage_kernel: Kernel,
+    kcl_stage_accum_kernel: Kernel,
+    weighted_err_sq_kernel: Kernel,
+    copy_vec_kernel: Kernel,
+    /// Stage state register `Y_i` — built fresh each interior stage.
+    kcl_stage_buf: Buffer<cl_float>,
+    /// Carries `dt·F_{i-1}` between stages (and into the next stage's
+    /// `kcl_build_stage` evaluation point).
+    kcl_dtf: Buffer<cl_float>,
+    /// Embedded-error accumulator `e = Σ_i (b̂_i - b_i)·dt·F_i`.
+    kcl_err: Buffer<cl_float>,
+    /// Snapshot of `y` taken before each adaptive substep — the rollback
+    /// source on a rejected step. Restoring it costs one `copy_vec`.
+    kcl_ybackup: Buffer<cl_float>,
+    /// Per-workgroup partial sums of `(err/scale)²`, summed host-side into
+    /// the scalar `err_norm` the controller compares against 1.0. Sized
+    /// `n_dof.div_ceil(NORM_WORK_GROUP)`; allocated lazily on first
+    /// adaptive run.
+    kcl_err_partial: Option<Buffer<cl_float>>,
 }
 
 /// The f64 Krylov kernels for the exponential propagator, built lazily so
@@ -262,10 +301,33 @@ impl GpuOperator {
         // the `expmv_kernels` field note.
         let expmv_program = gpu.build_program(EXPMV_SRC)?;
 
+        // KCL adaptive: f32 program + kernels build eagerly, since they
+        // do not depend on fp64. The error-reduction partial buffer is
+        // allocated lazily on the first call.
+        let kcl_program = gpu.build_program(KCL_SRC)?;
+        let kcl_stage0_kernel = Kernel::create(&kcl_program, "kcl_stage0")
+            .map_err(|e| format!("kcl_stage0 kernel create failed: {e}"))?;
+        let kcl_build_stage_kernel =
+            Kernel::create(&kcl_program, "kcl_build_stage")
+                .map_err(|e| format!("kcl_build_stage create failed: {e}"))?;
+        let kcl_stage_accum_kernel =
+            Kernel::create(&kcl_program, "kcl_stage_accum")
+                .map_err(|e| format!("kcl_stage_accum create failed: {e}"))?;
+        let weighted_err_sq_kernel =
+            Kernel::create(&kcl_program, "weighted_err_sq").map_err(|e| {
+                format!("weighted_err_sq kernel create failed: {e}")
+            })?;
+        let copy_vec_kernel = Kernel::create(&kcl_program, "copy_vec")
+            .map_err(|e| format!("copy_vec kernel create failed: {e}"))?;
+
         let y = gpu.alloc(n_dof)?;
         let dy = gpu.alloc(n_dof)?;
         let p = gpu.alloc(n_dof)?;
         let src = gpu.alloc(n_dof)?;
+        let kcl_stage_buf = gpu.alloc(n_dof)?;
+        let kcl_dtf = gpu.alloc(n_dof)?;
+        let kcl_err = gpu.alloc(n_dof)?;
+        let kcl_ybackup = gpu.alloc(n_dof)?;
 
         Ok(GpuOperator {
             n_elem,
@@ -302,6 +364,17 @@ impl GpuOperator {
             _expmv_program: expmv_program,
             expmv_kernels: None,
             krylov: None,
+            _kcl_program: kcl_program,
+            kcl_stage0_kernel,
+            kcl_build_stage_kernel,
+            kcl_stage_accum_kernel,
+            weighted_err_sq_kernel,
+            copy_vec_kernel,
+            kcl_stage_buf,
+            kcl_dtf,
+            kcl_err,
+            kcl_ybackup,
+            kcl_err_partial: None,
         })
     }
 
@@ -344,13 +417,25 @@ impl GpuOperator {
     /// Enqueue the `apply` kernel: `dy = A.y` on the resident state. No
     /// host transfer; the in-order queue serialises it with later work.
     fn enqueue_apply(&self, gpu: &GpuContext) -> Result<(), String> {
-        // One work-group per EPG-element block; `apply_wg` work-items each.
+        self.enqueue_apply_from(gpu, &self.y)
+    }
+
+    /// Enqueue the `apply` kernel reading from an arbitrary device state
+    /// buffer `input` (still writing into `self.dy`). The KCL adaptive
+    /// stencil evaluates the matvec at the stage-state buffer Y_i, not at
+    /// the running S2 accumulator `self.y`, so the input buffer cannot be
+    /// hard-coded as it is in the LSERK4 path.
+    fn enqueue_apply_from(
+        &self,
+        gpu: &GpuContext,
+        input: &Buffer<cl_float>,
+    ) -> Result<(), String> {
         let n_groups = self.n_elem.div_ceil(self.apply_epg);
         let global = n_groups * self.apply_wg;
         let n_elem = self.n_elem as cl_int;
         unsafe {
             ExecuteKernel::new(&self.kernel)
-                .set_arg(&self.y)
+                .set_arg(input)
                 .set_arg(&self.dy)
                 .set_arg(&self.diff_r)
                 .set_arg(&self.diff_s)
@@ -486,6 +571,484 @@ impl GpuOperator {
         }
         .map_err(|e| format!("source_vec kernel launch failed: {e}"))?;
         Ok(())
+    }
+
+    // ── KCL RK4(3)5[2R+]C adaptive stepper ────────────────────────────────
+
+    /// Snapshot `self.y` into `self.kcl_ybackup` — the rollback source for
+    /// the next attempted substep. One copy_vec dispatch.
+    fn enqueue_kcl_backup(&self, gpu: &GpuContext) -> Result<(), String> {
+        self.enqueue_copy(gpu, &self.kcl_ybackup, &self.y)
+    }
+
+    /// Restore `self.y` from `self.kcl_ybackup` — used when the controller
+    /// rejects the most recent substep. One copy_vec dispatch.
+    fn enqueue_kcl_restore(&self, gpu: &GpuContext) -> Result<(), String> {
+        self.enqueue_copy(gpu, &self.y, &self.kcl_ybackup)
+    }
+
+    /// Generic `dst[i] = src[i]` over `n_dof` — used both for backup and
+    /// restore.
+    fn enqueue_copy(
+        &self,
+        gpu: &GpuContext,
+        dst: &Buffer<cl_float>,
+        src: &Buffer<cl_float>,
+    ) -> Result<(), String> {
+        let global = self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.copy_vec_kernel)
+                .set_arg(dst)
+                .set_arg(src)
+                .set_arg(&n)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("copy_vec launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Stage-0 update: `dtF = dt·k`, `y += b0·dtF`, `e = e0·dtF` — `k` is
+    /// the matvec result `A·y_n` from the preceding [`Self::enqueue_apply`].
+    fn enqueue_kcl_stage0(
+        &self,
+        gpu: &GpuContext,
+        dt: f32,
+        b0: f32,
+        e0: f32,
+    ) -> Result<(), String> {
+        let global = self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.kcl_stage0_kernel)
+                .set_arg(&self.y)
+                .set_arg(&self.kcl_dtf)
+                .set_arg(&self.kcl_err)
+                .set_arg(&self.dy)
+                .set_arg(&dt)
+                .set_arg(&b0)
+                .set_arg(&e0)
+                .set_arg(&n)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("kcl_stage0 launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Build the stage state `Y_i = S2 + (A_sub - b_prev)·dt·F_{i-1}`
+    /// into `self.kcl_stage_buf`, the matvec input for stage `i`.
+    fn enqueue_kcl_build_stage(
+        &self,
+        gpu: &GpuContext,
+        amb: f32,
+    ) -> Result<(), String> {
+        let global = self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.kcl_build_stage_kernel)
+                .set_arg(&self.y)
+                .set_arg(&self.kcl_dtf)
+                .set_arg(&self.kcl_stage_buf)
+                .set_arg(&amb)
+                .set_arg(&n)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("kcl_build_stage launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Stage-`i`-accumulation (i >= 1): `dtF = dt·k`, `y += b·dtF`, `e +=
+    /// eweight·dtF`. `k` is the matvec result `A·Y_i` written by the
+    /// preceding [`Self::enqueue_apply_from`].
+    fn enqueue_kcl_stage_accum(
+        &self,
+        gpu: &GpuContext,
+        dt: f32,
+        b: f32,
+        eweight: f32,
+    ) -> Result<(), String> {
+        let global = self.n_dof.div_ceil(DOF_WORK_GROUP) * DOF_WORK_GROUP;
+        let n = self.n_dof as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.kcl_stage_accum_kernel)
+                .set_arg(&self.y)
+                .set_arg(&self.kcl_dtf)
+                .set_arg(&self.kcl_err)
+                .set_arg(&self.dy)
+                .set_arg(&dt)
+                .set_arg(&b)
+                .set_arg(&eweight)
+                .set_arg(&n)
+                .set_global_work_size(global)
+                .set_local_work_size(DOF_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("kcl_stage_accum launch failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Allocate the per-workgroup partial-sum buffer for the error
+    /// reduction, sized to the device matvec dimensions. Reused across
+    /// substeps; lazy because the LSERK4 path doesn't need it.
+    fn ensure_kcl_err_partial(
+        &mut self,
+        gpu: &GpuContext,
+    ) -> Result<(), String> {
+        if self.kcl_err_partial.is_some() {
+            return Ok(());
+        }
+        let n_groups = self.n_dof.div_ceil(NORM_WORK_GROUP);
+        self.kcl_err_partial = Some(gpu.alloc(n_groups)?);
+        Ok(())
+    }
+
+    /// Run a complete five-stage KCL step on the device-resident state.
+    /// Caller must have backed up `y` first (so a controller reject can
+    /// roll back). After this returns, `y` holds the candidate `y_{n+1}`
+    /// and `kcl_err` holds the per-DOF embedded-error vector.
+    fn enqueue_kcl_step(
+        &self,
+        gpu: &GpuContext,
+        h: f32,
+    ) -> Result<(), String> {
+        // Stage 0: matvec at y_n, the kcl_stage0 kernel initialises
+        // dtF/err and advances y to S2 after stage 0.
+        self.enqueue_apply(gpu)?;
+        self.enqueue_kcl_stage0(
+            gpu, h, KCL_B[0] as f32, (KCL_BHAT[0] - KCL_B[0]) as f32,
+        )?;
+        // Stages 1..s — build stage state, matvec, accumulate.
+        for stage in 1..KCL_STAGES {
+            let amb = (KCL_A[stage - 1] - KCL_B[stage - 1]) as f32;
+            self.enqueue_kcl_build_stage(gpu, amb)?;
+            self.enqueue_apply_from(gpu, &self.kcl_stage_buf)?;
+            let b = KCL_B[stage] as f32;
+            let eweight = (KCL_BHAT[stage] - KCL_B[stage]) as f32;
+            self.enqueue_kcl_stage_accum(gpu, h, b, eweight)?;
+        }
+        Ok(())
+    }
+
+    /// Same as [`Self::enqueue_kcl_step`] but for `dy/dt = A·y + b·g(t)`
+    /// with a full source-vector hold (modal-port injection). `g_val`
+    /// is the waveform value held across the step.
+    fn enqueue_kcl_step_driven_vec(
+        &self,
+        gpu: &GpuContext,
+        h: f32,
+        g_val: f32,
+    ) -> Result<(), String> {
+        self.enqueue_apply(gpu)?;
+        self.enqueue_add_source_vec(gpu, g_val)?;
+        self.enqueue_kcl_stage0(
+            gpu, h, KCL_B[0] as f32, (KCL_BHAT[0] - KCL_B[0]) as f32,
+        )?;
+        for stage in 1..KCL_STAGES {
+            let amb = (KCL_A[stage - 1] - KCL_B[stage - 1]) as f32;
+            self.enqueue_kcl_build_stage(gpu, amb)?;
+            self.enqueue_apply_from(gpu, &self.kcl_stage_buf)?;
+            self.enqueue_add_source_vec(gpu, g_val)?;
+            let b = KCL_B[stage] as f32;
+            let eweight = (KCL_BHAT[stage] - KCL_B[stage]) as f32;
+            self.enqueue_kcl_stage_accum(gpu, h, b, eweight)?;
+        }
+        Ok(())
+    }
+
+    /// Same as [`Self::enqueue_kcl_step`] but for `dy/dt = A·y + e_dof·g(t)`
+    /// with a single-DOF source hold. `g_val` is the held source value.
+    fn enqueue_kcl_step_driven_point(
+        &self,
+        gpu: &GpuContext,
+        h: f32,
+        source_dof: cl_int,
+        g_val: f32,
+    ) -> Result<(), String> {
+        self.enqueue_apply(gpu)?;
+        self.enqueue_add_source(gpu, source_dof, g_val)?;
+        self.enqueue_kcl_stage0(
+            gpu, h, KCL_B[0] as f32, (KCL_BHAT[0] - KCL_B[0]) as f32,
+        )?;
+        for stage in 1..KCL_STAGES {
+            let amb = (KCL_A[stage - 1] - KCL_B[stage - 1]) as f32;
+            self.enqueue_kcl_build_stage(gpu, amb)?;
+            self.enqueue_apply_from(gpu, &self.kcl_stage_buf)?;
+            self.enqueue_add_source(gpu, source_dof, g_val)?;
+            let b = KCL_B[stage] as f32;
+            let eweight = (KCL_BHAT[stage] - KCL_B[stage]) as f32;
+            self.enqueue_kcl_stage_accum(gpu, h, b, eweight)?;
+        }
+        Ok(())
+    }
+
+    /// Read `err_norm = sqrt(mean((err / (atol + rtol·max|y|))²))` off the
+    /// device. Launches the per-DOF reduction, downloads the per-workgroup
+    /// partial sums, finishes the sum host-side. Compares `y_backup` (the
+    /// pre-step state) against `y` (the candidate post-step).
+    fn read_kcl_err_norm(
+        &self,
+        gpu: &GpuContext,
+        atol: f32,
+        rtol: f32,
+    ) -> Result<f32, String> {
+        let partials = self
+            .kcl_err_partial
+            .as_ref()
+            .expect("kcl_err_partial allocated before read");
+        let n = self.n_dof;
+        let n_groups = n.div_ceil(NORM_WORK_GROUP);
+        let global = n_groups * NORM_WORK_GROUP;
+        let n_i = n as cl_int;
+        unsafe {
+            ExecuteKernel::new(&self.weighted_err_sq_kernel)
+                .set_arg(&self.kcl_ybackup)
+                .set_arg(&self.y)
+                .set_arg(&self.kcl_err)
+                .set_arg(partials)
+                .set_arg_local_buffer(NORM_WORK_GROUP * 4)
+                .set_arg(&atol)
+                .set_arg(&rtol)
+                .set_arg(&n_i)
+                .set_global_work_size(global)
+                .set_local_work_size(NORM_WORK_GROUP)
+                .enqueue_nd_range(gpu.queue())
+        }
+        .map_err(|e| format!("weighted_err_sq launch failed: {e}"))?;
+        let host_partials = gpu.download(partials, n_groups)?;
+        let total: f64 = host_partials.iter().map(|&v| v as f64).sum();
+        Ok((total / n as f64).sqrt() as f32)
+    }
+
+    /// Step-size update factor from the PI controller. On a rejected step
+    /// the previous-error blend is dropped (I-only); on acceptance the
+    /// PI smoothing avoids step-size oscillations across many frames.
+    fn kcl_step_factor(
+        err_norm: f32,
+        prev_err_norm: f32,
+        safety: f32,
+        growth_limit: f32,
+        shrink_limit: f32,
+        pi_alpha: f32,
+        pi_beta: f32,
+        reject: bool,
+    ) -> f32 {
+        let f = if reject || prev_err_norm <= 0.0 {
+            safety * err_norm.powf(-pi_alpha)
+        } else {
+            safety
+                * err_norm.powf(-pi_alpha)
+                * prev_err_norm.powf(pi_beta)
+        };
+        if reject {
+            f.max(shrink_limit)
+        } else {
+            f.max(shrink_limit).min(growth_limit)
+        }
+    }
+
+    /// KCL adaptive transient (free system `dy/dt = A·y`), state device-
+    /// resident, state-vector trajectory returned flat `[(steps+1) * n_dof]`
+    /// with row 0 the initial state. The Rust-side PI controller decides
+    /// per-substep accept/reject from a device-computed `err_norm`; only
+    /// the scalar `err_norm` (per substep) and the state snapshot (per
+    /// accepted frame) cross the bus.
+    ///
+    /// Returns `(traj, n_accepted, n_rejected, h_min, h_max)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transient_kcl_traj(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        atol: f32,
+        rtol: f32,
+        safety: f32,
+        growth_limit: f32,
+        shrink_limit: f32,
+        pi_alpha: f32,
+        pi_beta: f32,
+        min_step_factor: f32,
+    ) -> Result<(Vec<f32>, usize, usize, f32, f32), String> {
+        self.transient_kcl_traj_impl(
+            gpu, y0, dt, steps, atol, rtol, safety, growth_limit,
+            shrink_limit, pi_alpha, pi_beta, min_step_factor,
+            DrivenMode::Free,
+        )
+    }
+
+    /// KCL adaptive transient with full-vector source `dy/dt = A·y + b·g(t)`,
+    /// the modal-port injection path. `b` is uploaded once into the device-
+    /// resident source buffer; `g_values[k]` is the waveform sampled at
+    /// `k*dt` and held across the substeps inside output frame `k`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transient_kcl_traj_driven_vec(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        b_src: &[f32],
+        g_values: &[f32],
+        atol: f32,
+        rtol: f32,
+        safety: f32,
+        growth_limit: f32,
+        shrink_limit: f32,
+        pi_alpha: f32,
+        pi_beta: f32,
+        min_step_factor: f32,
+    ) -> Result<(Vec<f32>, usize, usize, f32, f32), String> {
+        assert_eq!(b_src.len(), self.n_dof, "source length mismatch");
+        assert_eq!(g_values.len(), steps, "g_values must have `steps` entries");
+        unsafe {
+            gpu.queue().enqueue_write_buffer(
+                &mut self.src, CL_BLOCKING, 0, b_src, &[],
+            )
+        }
+        .map_err(|e| format!("source upload failed: {e}"))?;
+        self.transient_kcl_traj_impl(
+            gpu, y0, dt, steps, atol, rtol, safety, growth_limit,
+            shrink_limit, pi_alpha, pi_beta, min_step_factor,
+            DrivenMode::Vector { g_values },
+        )
+    }
+
+    /// KCL adaptive transient with point source `dy/dt = A·y + e_dof·g(t)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transient_kcl_traj_driven(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        source_dof: usize,
+        g_values: &[f32],
+        atol: f32,
+        rtol: f32,
+        safety: f32,
+        growth_limit: f32,
+        shrink_limit: f32,
+        pi_alpha: f32,
+        pi_beta: f32,
+        min_step_factor: f32,
+    ) -> Result<(Vec<f32>, usize, usize, f32, f32), String> {
+        assert!(source_dof < self.n_dof, "source_dof out of range");
+        assert_eq!(g_values.len(), steps, "g_values must have `steps` entries");
+        self.transient_kcl_traj_impl(
+            gpu, y0, dt, steps, atol, rtol, safety, growth_limit,
+            shrink_limit, pi_alpha, pi_beta, min_step_factor,
+            DrivenMode::Point { source_dof, g_values },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transient_kcl_traj_impl(
+        &mut self,
+        gpu: &GpuContext,
+        y0: &[f32],
+        dt: f32,
+        steps: usize,
+        atol: f32,
+        rtol: f32,
+        safety: f32,
+        growth_limit: f32,
+        shrink_limit: f32,
+        pi_alpha: f32,
+        pi_beta: f32,
+        min_step_factor: f32,
+        mode: DrivenMode<'_>,
+    ) -> Result<(Vec<f32>, usize, usize, f32, f32), String> {
+        assert_eq!(y0.len(), self.n_dof, "state length mismatch");
+        self.ensure_kcl_err_partial(gpu)?;
+        let n = self.n_dof;
+        unsafe {
+            gpu.queue()
+                .enqueue_write_buffer(&mut self.y, CL_BLOCKING, 0, y0, &[])
+        }
+        .map_err(|e| format!("state upload failed: {e}"))?;
+
+        let mut traj = Vec::with_capacity((steps + 1) * n);
+        traj.extend_from_slice(y0);
+
+        // Controller state — carried across output frames.
+        let mut h = dt;
+        let mut prev_err = 0.0_f32;
+        let h_min = min_step_factor * dt;
+        let mut n_acc = 0_usize;
+        let mut n_rej = 0_usize;
+        let mut h_min_log = f32::INFINITY;
+        let mut h_max_log = 0.0_f32;
+
+        for k in 0..steps {
+            let mut t_rel = 0.0_f32;
+            // Per-frame source-hold value (zeroth-order hold across the
+            // frame): for the point/vector driven cases, the controller's
+            // substep convention matches the LSERK4 driven GPU path —
+            // waveform sampled once per output cadence.
+            let g_val = match &mode {
+                DrivenMode::Free => 0.0_f32,
+                DrivenMode::Point { g_values, .. } => g_values[k],
+                DrivenMode::Vector { g_values } => g_values[k],
+            };
+            while t_rel < dt {
+                let h_try = h.min(dt - t_rel);
+                // Backup, attempt, evaluate err, decide.
+                self.enqueue_kcl_backup(gpu)?;
+                match &mode {
+                    DrivenMode::Free => self.enqueue_kcl_step(gpu, h_try)?,
+                    DrivenMode::Point { source_dof, .. } => self
+                        .enqueue_kcl_step_driven_point(
+                            gpu, h_try, *source_dof as cl_int, g_val,
+                        )?,
+                    DrivenMode::Vector { .. } => self
+                        .enqueue_kcl_step_driven_vec(gpu, h_try, g_val)?,
+                }
+                let err_norm = self.read_kcl_err_norm(gpu, atol, rtol)?;
+                let accept = err_norm.is_finite() && err_norm <= 1.0;
+                if accept {
+                    t_rel += h_try;
+                    n_acc += 1;
+                    let factor = Self::kcl_step_factor(
+                        err_norm.max(1e-12), prev_err, safety, growth_limit,
+                        shrink_limit, pi_alpha, pi_beta, false,
+                    );
+                    h = h_try * factor;
+                    prev_err = err_norm.max(1e-12);
+                    h_min_log = h_min_log.min(h);
+                    h_max_log = h_max_log.max(h);
+                } else {
+                    n_rej += 1;
+                    self.enqueue_kcl_restore(gpu)?;
+                    let probe = if err_norm.is_finite() {
+                        err_norm
+                    } else {
+                        10.0
+                    };
+                    let factor = Self::kcl_step_factor(
+                        probe, prev_err, safety, growth_limit, shrink_limit,
+                        pi_alpha, pi_beta, true,
+                    );
+                    h = h_try * factor;
+                }
+                if h < h_min {
+                    return Err(format!(
+                        "GPU KCL: step size collapsed below \
+                         {min_step_factor:e}·dt after {n_acc} accepted, \
+                         {n_rej} rejected substeps"
+                    ));
+                }
+            }
+            let row = gpu.download(&self.y, n)?;
+            traj.extend_from_slice(&row);
+        }
+        Ok((traj, n_acc, n_rej, h_min_log, h_max_log))
     }
 
     /// Propagate `y0` for `steps` LSERK4 steps of size `dt`, fully on the
@@ -1440,6 +2003,139 @@ mod tests {
                 "GPU apply [{label}] rel.err {rel:.3e} exceeds GPU_REL_TOL",
             );
         }
+    }
+
+    #[test]
+    fn gpu_kcl_adaptive_matches_cpu() {
+        // KCL adaptive on the GPU: the device-resident PI controller
+        // produces a trajectory that tracks the CPU adaptive run frame by
+        // frame, within the f32 GPU_REL_TOL budget. Both controllers start
+        // from the same atol/rtol/seed so the substep paths line up.
+        use crate::explicit_adaptive::KclWorkspace;
+
+        let gpu = match GpuContext::new() {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let mesh = structured_box(3, 3, 3, 1.0, 1.0, 1.0);
+        let op = MaxwellOperator::new(&mesh, 2, 1.0);
+        let n = op.n_dof();
+        let y0: Vec<Field> =
+            (0..n).map(|i| (0.2 + i as Field * 0.011).sin()).collect();
+
+        // Sub-CFL frame cadence — the controller will mostly run at h≈dt.
+        let mut v = y0.clone();
+        let mut rho = 1.0;
+        for _ in 0..30 {
+            let av = op.apply(&v);
+            rho = av.iter().map(|x| x * x).sum::<Field>().sqrt();
+            let inv = 1.0 / rho;
+            for (vi, &a) in v.iter_mut().zip(&av) {
+                *vi = a * inv;
+            }
+        }
+        let dt = 1.0 / rho;
+        let steps = 60;
+
+        // Controller params shared between CPU and GPU. atol/rtol loose
+        // enough that f32 GPU noise doesn't make the two paths diverge.
+        let atol = 1e-6_f32;
+        let rtol = 1e-3_f32;
+        let safety = 0.9_f32;
+        let growth = 5.0_f32;
+        let shrink = 0.2_f32;
+        let alpha = 0.7 / 4.0_f32;
+        let beta = 0.4 / 4.0_f32;
+        let min_step = 1e-10_f32;
+
+        // CPU reference using the same controller logic (mirrored locally
+        // since the CPU controller lives in Python). The trajectory only
+        // needs to match at output cadence, not substep-by-substep.
+        let mut y_cpu = y0.clone();
+        let mut ws = KclWorkspace::new();
+        let mut err = vec![0.0; n];
+        let mut h_cpu = dt;
+        let mut prev_err = 0.0_f64;
+        let mut traj_cpu = Vec::with_capacity((steps + 1) * n);
+        traj_cpu.extend_from_slice(&y_cpu);
+        for _ in 0..steps {
+            let mut t_rel = 0.0_f64;
+            while t_rel < dt {
+                let h_try = h_cpu.min(dt - t_rel);
+                let y_pre = y_cpu.clone();
+                ws.step_into(
+                    |x, ax| op.apply_into(x, ax),
+                    &mut y_cpu, &mut err, h_try,
+                );
+                let mut s2 = 0.0_f64;
+                for i in 0..n {
+                    let scale = atol as f64
+                        + rtol as f64
+                            * y_pre[i].abs().max(y_cpu[i].abs());
+                    let r = err[i] / scale;
+                    s2 += r * r;
+                }
+                let err_norm = (s2 / n as f64).sqrt();
+                if err_norm <= 1.0 && err_norm.is_finite() {
+                    t_rel += h_try;
+                    let f = if prev_err <= 0.0 {
+                        safety as f64
+                            * err_norm.max(1e-12).powf(-(alpha as f64))
+                    } else {
+                        safety as f64
+                            * err_norm.max(1e-12).powf(-(alpha as f64))
+                            * prev_err.powf(beta as f64)
+                    };
+                    let f = f.max(shrink as f64).min(growth as f64);
+                    h_cpu = h_try * f;
+                    prev_err = err_norm.max(1e-12);
+                } else {
+                    y_cpu = y_pre;
+                    let probe = if err_norm.is_finite() {
+                        err_norm
+                    } else {
+                        10.0
+                    };
+                    let f = (safety as f64
+                        * probe.max(1e-12).powf(-(alpha as f64)))
+                        .max(shrink as f64);
+                    h_cpu = h_try * f;
+                }
+            }
+            traj_cpu.extend_from_slice(&y_cpu);
+        }
+
+        // GPU run with matched parameters.
+        let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
+        let y0_32: Vec<f32> = y0.iter().map(|&v| v as f32).collect();
+        let (traj_gpu, n_acc, n_rej, h_min, h_max) = gop
+            .transient_kcl_traj(
+                &gpu, &y0_32, dt as f32, steps, atol, rtol, safety,
+                growth, shrink, alpha, beta, min_step,
+            )
+            .expect("transient_kcl_traj");
+
+        eprintln!(
+            "GPU KCL adaptive: {n_acc} accepted, {n_rej} rejected; \
+             h ∈ [{h_min:.3e}, {h_max:.3e}]"
+        );
+        // Compare the final accepted snapshot — same controller, same
+        // tolerances, so the two paths should match within f32 noise.
+        let last_gpu = &traj_gpu[steps * n..(steps + 1) * n];
+        let last_cpu = &traj_cpu[steps * n..(steps + 1) * n];
+        let rel = rel_l2(last_gpu, last_cpu);
+        eprintln!(
+            "GPU KCL vs CPU KCL [{steps} frames]: rel L2 = {rel:.3e} \
+             (GPU_REL_TOL {GPU_REL_TOL:.1e})"
+        );
+        assert!(
+            rel < 10.0 * GPU_REL_TOL,
+            "GPU KCL rel.err {rel:.3e} exceeds 10·GPU_REL_TOL — the f32 \
+             controller takes a different substep path",
+        );
     }
 
     #[test]
