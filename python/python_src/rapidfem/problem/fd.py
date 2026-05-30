@@ -22,6 +22,60 @@ from ..physics import PEC, PML
 # HELPERS ===============================================================================
 
 
+# ERROR INDICATOR =======================================================================
+
+class ErrorIndicator:
+    """Per-tetrahedron residual error indicator from :meth:`ProblemFD.element_errors`.
+
+    Holds the Monk-style a-posteriori η values for one
+    ``(frequency, port)`` combination, plus the Dörfler-marked subset
+    that an AMR loop would refine.
+
+
+    Note
+    ----
+    The indicator is purely diagnostic — calling
+    :meth:`ProblemFD.element_errors` does **not** re-mesh or re-solve.
+    For an end-to-end adaptive sweep that consumes the indicator, pass
+    an :class:`Adaptive` to :meth:`ProblemFD.sweep`.
+
+
+    Attributes
+    ----------
+    eta : np.ndarray
+        per-tet error indicator η, shape ``(n_tets,)``, float64
+    total : float
+        global L² error :math:`\\sqrt{\\sum_K \\eta_K^2}`
+    marked : np.ndarray
+        int64 tet indices selected by Dörfler marking at ``theta``
+    volume_residuals : np.ndarray
+        volume-residual contribution per tet, shape ``(n_tets,)``
+    face_jumps : np.ndarray
+        face-jump contribution per tet (accumulated over its 4 faces)
+    freq_hz : float
+        frequency at which the indicator was computed
+    theta : float
+        Dörfler fraction used for marking
+    """
+
+    def __init__(self, *, eta, total, marked, volume_residuals, face_jumps,
+                 tet_centroids, freq_hz: float, theta: float):
+        self.eta = eta
+        self.total = float(total)
+        self.marked = marked
+        self.volume_residuals = volume_residuals
+        self.face_jumps = face_jumps
+        self.tet_centroids = tet_centroids
+        self.freq_hz = float(freq_hz)
+        self.theta = float(theta)
+
+    def __repr__(self) -> str:
+        n = len(self.eta)
+        return (f"ErrorIndicator(n_tets={n}, total={self.total:.4e}, "
+                f"marked={len(self.marked)} ({100*len(self.marked)/max(n,1):.1f}%), "
+                f"freq={self.freq_hz/1e9:.3f} GHz)")
+
+
 # ADAPTIVE REFINEMENT ===================================================================
 
 class Adaptive:
@@ -279,6 +333,69 @@ class ProblemFD:
                 "call .sweep(...) before .farfield(...) — far-field needs a solved problem")
         return self._native.compute_farfield(result, freq_idx, port_idx, n_theta, n_phi)
 
+    def element_errors(self, result, *, freq_idx: int = 0, port_idx: int = 0,
+                       theta: float = 0.5) -> ErrorIndicator:
+        """per-tet residual error indicator for one ``(freq, port)`` slice
+
+        Evaluates the Monk-style a-posteriori error estimator on the
+        FEM solution stored in ``result``. Returns an
+        :class:`ErrorIndicator` with the η values, the Dörfler-marked
+        subset, and the tet centroids needed for visualisation. No
+        re-mesh or re-solve.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            result = prob.sweep(np.linspace(2e9, 3e9, 11))
+            errs = prob.element_errors(result, freq_idx=5, theta=0.3)
+            print(errs)         # ErrorIndicator(n_tets=..., marked=...)
+            rf.show(errs)       # 3-D field of η over the mesh
+
+
+        Parameters
+        ----------
+        result : SweepResult
+            return value of a prior :meth:`sweep` call
+        freq_idx : int
+            frequency index into ``result.frequencies``
+        port_idx : int
+            driven-port index into ``result.sparams``
+        theta : float
+            Dörfler-marking fraction (top η pool that accumulates to
+            ``theta · total²`` gets marked)
+
+        Returns
+        -------
+        ErrorIndicator
+            diagnostic container with ``eta``, ``total``, ``marked``,
+            ``volume_residuals``, ``face_jumps``, ``tet_centroids``
+        """
+        if self._native is None:
+            raise ValueError(
+                "call .sweep(...) before .element_errors(...) — needs a solved problem")
+        d = self._native.element_errors(result, freq_idx, port_idx, theta)
+        if d is None:
+            raise IndexError(
+                f"no solution for (freq_idx={freq_idx}, port_idx={port_idx})")
+        nodes = np.asarray(self._native.mesh_nodes)
+        tets = np.asarray(self._native.mesh_tets)
+        # Per-tet centroid (n_tets, 3) — handy for sanity printing /
+        # 3-D point-cloud rendering of the indicator.
+        centroids = nodes[tets].mean(axis=1)
+        freq_hz = float(np.asarray(result.frequencies)[freq_idx])
+        return ErrorIndicator(
+            eta=np.asarray(d["eta"]),
+            total=float(d["total"]),
+            marked=np.asarray(d["marked"]),
+            volume_residuals=np.asarray(d["volume_residuals"]),
+            face_jumps=np.asarray(d["face_jumps"]),
+            tet_centroids=centroids,
+            freq_hz=freq_hz,
+            theta=theta,
+        )
+
     # ── Introspection ─────────────────────────────────────────────────────
 
     @property
@@ -418,4 +535,4 @@ class ProblemFD:
         return "\n".join(parts)
 
 
-__all__ = ["ProblemFD", "Adaptive"]
+__all__ = ["ProblemFD", "Adaptive", "ErrorIndicator"]

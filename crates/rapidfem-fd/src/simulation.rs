@@ -308,6 +308,37 @@ impl Simulation {
         Some((1.0 - s11_sum_sq).clamp(0.0, 1.0))
     }
 
+    /// Monk-style residual a-posteriori error indicator per tet for a given
+    /// `(freq_idx, port_idx)` solution. Returns the full estimate (η per tet,
+    /// volume and face contributions, total, marked subset from Dörfler at
+    /// `theta`). Intended for diagnostics — the same indicator drives the
+    /// adaptive loop in `--adaptive` sweeps.
+    pub fn element_errors_at(
+        &self,
+        result: &SweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+        theta: f64,
+    ) -> Option<crate::error_estimator::ErrorEstimate> {
+        let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
+        let freq = *result.frequencies.get(freq_idx)?;
+        let k0 = 2.0 * PI * freq / C0;
+        let n_tets = self.mesh.n_tets();
+        let (er_tensors, _) = if self.materials.is_empty() {
+            let id: [[C64; 3]; 3] = [
+                [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
+                [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
+                [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
+            ];
+            (vec![id; n_tets], vec![id; n_tets])
+        } else {
+            materials::build_material_tensors(n_tets, &self.materials, freq)
+        };
+        Some(crate::error_estimator::estimate_error(
+            &self.mesh, &self.basis, solution, k0, &er_tensors, theta,
+        ))
+    }
+
     /// Interpolate the FEM E-field at each mesh node for a given (freq_idx, port_idx).
     /// Returns a flat `Vec<C64>` of length `3 * n_nodes` (interleaved Ex, Ey, Ez per node).
     /// Used by the Python pyvista exporter.

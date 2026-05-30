@@ -4,11 +4,11 @@
 drives the time-domain DGTD solver. `Problem` is retained as an alias of
 `ProblemFD` so existing code keeps working unchanged.
 """
-from .fd import Adaptive, ProblemFD
+from .fd import Adaptive, ErrorIndicator, ProblemFD
 from .td import ProblemTD
 
 # Backward-compatible alias — `rf.Problem` continues to mean the
 # frequency-domain problem.
 Problem = ProblemFD
 
-__all__ = ["Problem", "ProblemFD", "ProblemTD", "Adaptive"]
+__all__ = ["Problem", "ProblemFD", "ProblemTD", "Adaptive", "ErrorIndicator"]

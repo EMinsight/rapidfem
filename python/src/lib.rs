@@ -206,6 +206,36 @@ impl PySimulation {
         Some(arr.into_pyarray_bound(py))
     }
 
+    /// Monk-style residual error indicator η per tetrahedron at
+    /// ``(freq_idx, port_idx)``. Returns a dict ``{eta, total, marked,
+    /// volume_residuals, face_jumps}`` with ``eta`` shape ``(n_tets,)``
+    /// float64, ``marked`` an int64 array of Dörfler-selected tet
+    /// indices at fraction ``theta``. Diagnostic only — does not
+    /// re-mesh.
+    #[pyo3(signature = (result, freq_idx=0, port_idx=0, theta=0.5))]
+    fn element_errors<'py>(
+        &self,
+        py: Python<'py>,
+        result: &PySweepResult,
+        freq_idx: usize,
+        port_idx: usize,
+        theta: f64,
+    ) -> Option<Bound<'py, pyo3::types::PyDict>> {
+        let est = self.inner.element_errors_at(&result.inner, freq_idx, port_idx, theta)?;
+        let dict = pyo3::types::PyDict::new_bound(py);
+        let eta = est.element_errors.clone().into_pyarray_bound(py);
+        let volr = est.volume_residuals.clone().into_pyarray_bound(py);
+        let fj = est.face_jumps.clone().into_pyarray_bound(py);
+        let marked: Vec<i64> = est.marked_elements.iter().map(|&i| i as i64).collect();
+        let marked_arr = marked.into_pyarray_bound(py);
+        dict.set_item("eta", eta).ok()?;
+        dict.set_item("volume_residuals", volr).ok()?;
+        dict.set_item("face_jumps", fj).ok()?;
+        dict.set_item("total", est.total_error).ok()?;
+        dict.set_item("marked", marked_arr).ok()?;
+        Some(dict)
+    }
+
     /// Compute the far-field radiation pattern at (freq_idx, port_idx) on a (theta, phi) grid.
     /// Returns None if the NFFT surface is empty or out-of-bounds indices.
     #[pyo3(signature = (result, freq_idx=0, port_idx=0, n_theta=91, n_phi=72))]
