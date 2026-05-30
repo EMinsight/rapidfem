@@ -23,7 +23,8 @@ PML_T = 15.0 * mm
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)
 F0 = 10.0e9
 
-MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)
+MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)        # horn / feed metals
+MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)    # outer air padding
 
 
 # %% Geometry + Materials
@@ -31,11 +32,13 @@ AIR_X0, AIR_X1 = -Lfeed,        Lhorn + LPAD
 AIR_Y0, AIR_Y1 = -WH / 2 - LPAD, WH / 2 + LPAD
 AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
 
-g = rf.Geometry(maxh=MAXH)
+# Global cap is the *coarse* outer-air size; the horn flare and feed are
+# refined locally below.
+g = rf.Geometry(maxh=MAXH_AIR)
 
 air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
             position=(AIR_X0, AIR_Y0, AIR_Z0),
-            material=rf.Air(), maxh=2 * MAXH)
+            material=rf.Air())
 
 pml_xp = g.box(PML_T, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
                position=(AIR_X1, AIR_Y0, AIR_Z0),

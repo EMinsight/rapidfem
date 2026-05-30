@@ -26,17 +26,21 @@ LPAD = 88.0 * mm                    # air padding around the aperture (roomy box
 PML_T = 15.0 * mm                   # PML slab thickness (beam direction)
 F0 = 10.0e9                         # drive frequency
 
-MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)
+MAXH = rf.lambda_maxh(f_max=11.0e9, per_lambda=8)        # horn / feed metals
+MAXH_AIR = rf.lambda_maxh(f_max=11.0e9, per_lambda=2)    # outer air padding
 
 # %% Geometry: feed + lofted horn flare in a PML/ABC-terminated air box
 AIR_X0, AIR_X1 = -LFEED, LHORN + LPAD
 AIR_Y0, AIR_Y1 = -WH / 2 - LPAD, WH / 2 + LPAD
 AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
 
-g = rf.Geometry(maxh=MAXH)
+# Global cap is the *coarse* outer-air size; the horn flare and feed are
+# refined locally below. That keeps the LPAD=88mm pad cheap (it only has
+# to swallow the radiated wave into the ABC/PML) while the radiating
+# structure itself stays well-resolved.
+g = rf.Geometry(maxh=MAXH_AIR)
 air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
-            position=(AIR_X0, AIR_Y0, AIR_Z0), material=rf.Air(),
-            maxh=2 * MAXH)
+            position=(AIR_X0, AIR_Y0, AIR_Z0), material=rf.Air())
 pml_xp = g.box(PML_T, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
                position=(AIR_X1, AIR_Y0, AIR_Z0), material=rf.Air(),
                maxh=2 * MAXH)
