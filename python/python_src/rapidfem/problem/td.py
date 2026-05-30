@@ -78,6 +78,35 @@ _CFL_GROWTH_RATE_TOL = 1e-3 # max per-step geometric-mean amplification above
                             # run; a strict per-step rate catches that drift.
 _CFL_SAFETY = 0.8           # margin applied to the bracketed stability limit
 
+# Adaptive embedded RK (Kennedy-Carpenter-Lewis RK4(3)5[2R+]C). The
+# integrator delivers a per-step embedded-error vector; this controller
+# weights it against `_RK_ATOL + _RK_RTOL·|y|`, builds a scalar `err_norm`,
+# and grows or shrinks the next step with a PI rule (Söderlind /
+# Gustafsson). The whole point of running this instead of the LSERK4 path
+# is to drop the dependence on `cfl_dt`: a non-normal upwind-DG operator
+# that slipped past a fixed CFL probe still shows up here, and the step
+# gets cut before the trajectory diverges.
+_RK_ATOL = 1e-8             # absolute error floor — the noise level a quiet
+                            # DOF is allowed without contributing to err_norm.
+_RK_RTOL = 1e-4             # relative tolerance — solution-fraction budget
+                            # per DOF. 1e-4 keeps phase error well under one
+                            # wavelength over a typical TD run while sitting
+                            # near LSERK4's CFL on a near-uniform mesh.
+_RK_SAFETY = 0.9            # safety factor in the step-size update —
+                            # Hairer-Wanner standard.
+_RK_GROWTH_LIMIT = 5.0      # max step-size growth between accepted steps.
+_RK_SHRINK_LIMIT = 0.2      # min step-size factor per failure (lower bound).
+# PI controller exponents (Söderlind / Gustafsson). The controller blends
+# the current and previous error to smooth the step-size trajectory; the
+# exponents are scaled by `1/p_hat` with `p_hat = min(p, p_emb)+1 = 4` for
+# KCL 4(3)5.
+_RK_PI_ALPHA = 0.7 / 4.0
+_RK_PI_BETA = 0.4 / 4.0
+# Bail-out for runaway shrinkage: the stepper aborts rather than spinning
+# forever if the controller can't keep the step above this fraction of the
+# requested output cadence.
+_RK_MIN_STEP_FACTOR = 1e-10
+
 
 def _log(msg):
     """Progress logging for long TD runs — to stderr, like the FD solver."""
@@ -929,6 +958,24 @@ class ProblemTD:
         set by the output cadence rather than by stability."""
         return self._op.step_explicit(_arr(y), float(self.c * h))
 
+    def step_adaptive(self, y, h):
+        """Advance the state by ``h`` with the embedded KCL RK4(3)5[2R+]C
+        stepper. Returns ``(y_new, err)`` — the advanced state and the
+        per-DOF embedded-error vector (the fourth-order minus third-order
+        difference). Same five-matvec cost as :meth:`step_explicit`; the
+        extra return is what an adaptive controller reads to grow or shrink
+        the next step.
+
+        Conditionally stable like :meth:`step_explicit` — an ``h`` past the
+        operator's CFL limit diverges. The controller in
+        :meth:`transient` (with ``method="adaptive"``) keeps ``h`` safe by
+        normalising ``err`` against ``atol + rtol·|y|`` and rejecting any
+        step whose error exceeds 1; call the raw stepper here only if you
+        want to drive the controller yourself."""
+        h_solver = float(self.c * h)
+        y_new, err = self._op.step_kcl(_arr(y), h_solver)
+        return y_new, err
+
     def cfl_dt(self, *, recompute=False):
         """Largest stable time step for the explicit LSERK4 integrator, in
         physical time units.
@@ -1027,6 +1074,103 @@ class ProblemTD:
             g = float(waveform(t_n + j * h))
             y = self._op.step_driven_explicit(_arr(y), h_op, sdof, g)
         return y
+
+    def _kcl_err_norm(self, y_old, y_new, err):
+        """Weighted L2 error norm `sqrt(mean((err / (atol+rtol·max|y|))²))`
+        the controller compares against 1.0 — the standard Hairer-Wanner
+        mixed-tolerance criterion (each DOF scaled by its own magnitude).
+        """
+        scale = _RK_ATOL + _RK_RTOL * np.maximum(np.abs(y_old), np.abs(y_new))
+        return float(np.sqrt(np.mean((err / scale) ** 2)))
+
+    def _kcl_factor(self, err_norm, prev_err_norm, *, reject):
+        """Step-size multiplier from the PI controller. On a rejected step
+        the previous-error term is dropped (I-only) so a bad step's history
+        is not propagated; on an accepted step the PI blend smooths the
+        step trajectory across many frames."""
+        if reject or prev_err_norm <= 0.0:
+            f = _RK_SAFETY * err_norm ** (-_RK_PI_ALPHA)
+        else:
+            f = (
+                _RK_SAFETY
+                * err_norm ** (-_RK_PI_ALPHA)
+                * prev_err_norm ** _RK_PI_BETA
+            )
+        if reject:
+            f = max(f, _RK_SHRINK_LIMIT)
+        else:
+            f = max(min(f, _RK_GROWTH_LIMIT), _RK_SHRINK_LIMIT)
+        return f
+
+    def _advance_adaptive(self, y, dt, *, h, prev_err_norm, t_offset=0.0,
+                          source=None, sdof=None, waveform=None):
+        """Advance ``y`` by one output step ``dt`` with the KCL adaptive
+        stepper. The internal PI controller takes as many sub-steps as it
+        needs to land on ``t_offset + dt`` within tolerance; ``h`` carries
+        the controller's current step size across frames so a long quiet
+        phase doesn't re-acquire it from scratch.
+
+        Three driving modes via the kwargs: ``source=None, sdof=None`` —
+        free system (`dy/dt = A·y`); ``sdof, waveform`` — single-DOF soft
+        source with zeroth-order hold; ``source, waveform`` — full source
+        vector ``b`` driven by ``g(t) = waveform``, the modal-port path.
+
+        Returns ``(y, h_next, prev_err_norm, n_acc, n_rej)``.
+        """
+        n_acc = 0
+        n_rej = 0
+        t_rel = 0.0
+        h_min = _RK_MIN_STEP_FACTOR * dt
+        # The KCL step is CFL-bounded like LSERK4: an h that lands the
+        # solution at NaN cannot be rescued by the controller's err_norm
+        # (Inf rejects, but the next attempt will retry from the same start
+        # with a shrunk h). The accept/reject loop converges on a stable h.
+        while t_rel < dt:
+            h_try = min(h, dt - t_rel)
+            t_now = t_offset + t_rel
+            if source is not None:
+                g = float(waveform(t_now))
+                y_try, err = self._op.step_with_source_kcl(
+                    _arr(y), source * g, float(self.c * h_try),
+                )
+            elif sdof is not None:
+                g = float(waveform(t_now))
+                y_try, err = self._op.step_driven_kcl(
+                    _arr(y), float(self.c * h_try), int(sdof), g,
+                )
+            else:
+                y_try, err = self._op.step_kcl(
+                    _arr(y), float(self.c * h_try),
+                )
+            # A NaN err_norm rejects too — non-finite means the step blew
+            # the CFL limit, the controller must shrink and retry.
+            if not np.all(np.isfinite(y_try)):
+                err_norm = np.inf
+            else:
+                err_norm = self._kcl_err_norm(y, y_try, err)
+            if err_norm <= 1.0 and np.isfinite(err_norm):
+                y = y_try
+                t_rel += h_try
+                n_acc += 1
+                h = h_try * self._kcl_factor(
+                    err_norm, prev_err_norm, reject=False,
+                )
+                prev_err_norm = max(err_norm, 1e-12)
+            else:
+                n_rej += 1
+                h = h_try * self._kcl_factor(
+                    err_norm if np.isfinite(err_norm) else 10.0,
+                    prev_err_norm, reject=True,
+                )
+            if h < h_min:
+                raise RuntimeError(
+                    f"adaptive stepper: step size collapsed below "
+                    f"{_RK_MIN_STEP_FACTOR:g}·dt after {n_acc} accepted, "
+                    f"{n_rej} rejected substeps. The operator is likely "
+                    f"too stiff for the chosen tolerances "
+                    f"(atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})."
+                )
+        return y, h, prev_err_norm, n_acc, n_rej
 
     def stepper(self, dt, *, krylov_dim=40, method="exponential"):
         """A reusable one-step propagator bound to a fixed ``dt``.
@@ -1473,8 +1617,9 @@ class ProblemTD:
         y = np.zeros(n) if y0 is None else _arr(y0)
         h_op = float(self.c * dt)
 
-        # GPU paths, the state device-resident where the stepper allows.
-        if device == "gpu" and self._op.gpu_available():
+        # GPU paths, the state device-resident where the stepper allows —
+        # adaptive is CPU-only and falls through to the CPU loop below.
+        if device == "gpu" and method != "adaptive" and self._op.gpu_available():
             if method == "explicit":
                 cfl = self.cfl_dt()
                 nsub = max(1, int(np.ceil(abs(dt) / cfl)))
@@ -1548,6 +1693,16 @@ class ProblemTD:
         if verbose and method == "explicit":
             _log(f"transient(port): CPU vector LSERK4 "
                  f"({nsub} substeps/step)")
+        if verbose and method == "adaptive":
+            _log(f"transient(port): CPU vector KCL adaptive "
+                 f"(atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})")
+        # Adaptive controller state — carried across frames as in the
+        # source-less path. The vector-source variant of the KCL stepper
+        # receives `b·g(t_now)` as its full source, zeroth-order hold.
+        h_ad = dt
+        prev_err = 0.0
+        total_acc, total_rej = 0, 0
+        h_min_log, h_max_log = float("inf"), 0.0
         t0 = time.time()
         every = max(1, steps // 10)
         for k in range(steps):
@@ -1555,6 +1710,15 @@ class ProblemTD:
                 y = self._op.step_with_source(
                     _arr(y), b * float(waveform(k * dt)), h_op, krylov_dim,
                 )
+            elif method == "adaptive":
+                y, h_ad, prev_err, n_acc, n_rej = self._advance_adaptive(
+                    y, dt, h=h_ad, prev_err_norm=prev_err,
+                    t_offset=k * dt, source=b, waveform=waveform,
+                )
+                total_acc += n_acc
+                total_rej += n_rej
+                h_min_log = min(h_min_log, h_ad)
+                h_max_log = max(h_max_log, h_ad)
             else:
                 h_sub_op = h_op / nsub
                 h_sub = dt / nsub
@@ -1573,6 +1737,12 @@ class ProblemTD:
         if verbose:
             _log(f"transient(port) complete - {steps} steps "
                  f"in {time.time() - t0:.1f}s")
+            if method == "adaptive":
+                _log(
+                    f"  KCL controller: {total_acc} accepted, "
+                    f"{total_rej} rejected; h ∈ "
+                    f"[{h_min_log:.3g}, {h_max_log:.3g}] s"
+                )
         return traj
 
     def transient(self, y0=None, *, dt, steps, source=None, waveform=None,
@@ -1631,10 +1801,15 @@ class ProblemTD:
             :func:`rapidfem.show` plays it back as a 3-D field animation
             in the UI.
         """
-        if method not in ("exponential", "explicit"):
-            raise ValueError("method must be 'exponential' or 'explicit'")
+        if method not in ("exponential", "explicit", "adaptive"):
+            raise ValueError(
+                "method must be 'exponential', 'explicit', or 'adaptive'"
+            )
         if device not in ("cpu", "gpu"):
             raise ValueError("device must be 'cpu' or 'gpu'")
+        if method == "adaptive" and device == "gpu":
+            _log("transient: method='adaptive' is CPU-only, using CPU")
+            device = "cpu"
 
         # Modal-port injection: drive dy/dt = A·y + b·g(t) with b the port's
         # spatial mode pattern. Returns the field trajectory for animation.
@@ -1710,6 +1885,11 @@ class ProblemTD:
                 return TdTrajectory(traj, problem=self, dt=dt)
 
         warmup = min(max(int(warmup), 0), steps)
+        if method == "adaptive" and warmup:
+            raise ValueError(
+                "warmup is not supported with method='adaptive' (the "
+                "controller stabilises itself in the first few frames)"
+            )
         # The explicit integrator is CFL-bound; resolve the limit once so
         # the post-warmup phase can substep within it.
         cfl = self.cfl_dt() if method == "explicit" else None
@@ -1717,14 +1897,40 @@ class ProblemTD:
             nsub = max(1, int(np.ceil(abs(dt) / cfl)))
             _log(f"transient: {warmup} exponential warmup step(s), then "
                  f"explicit LSERK4 ({nsub} substeps/step)")
+        if verbose and method == "adaptive":
+            _log(f"transient: CPU KCL adaptive "
+                 f"(atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})")
         traj = np.empty((steps + 1, n))
         traj[0] = y
         t0 = time.time()
         every = max(1, steps // 10)
         label = "driven transient" if driven else "transient"
+        # Adaptive controller state — carried across frames so a long quiet
+        # phase doesn't reacquire its step from scratch. Initial guess:
+        # one full output cadence; first frame will get cut quickly by the
+        # PI controller if the operator is stiffer than that.
+        h_ad = dt
+        prev_err = 0.0
+        total_acc, total_rej = 0, 0
+        h_min_log, h_max_log = float("inf"), 0.0
         for k in range(steps):
             phase = "exponential" if k < warmup else method
-            if driven:
+            if phase == "adaptive":
+                if driven:
+                    y, h_ad, prev_err, n_acc, n_rej = self._advance_adaptive(
+                        y, dt, h=h_ad, prev_err_norm=prev_err,
+                        t_offset=k * dt, sdof=sdof, waveform=waveform,
+                    )
+                else:
+                    y, h_ad, prev_err, n_acc, n_rej = self._advance_adaptive(
+                        y, dt, h=h_ad, prev_err_norm=prev_err,
+                        t_offset=k * dt,
+                    )
+                total_acc += n_acc
+                total_rej += n_rej
+                h_min_log = min(h_min_log, h_ad)
+                h_max_log = max(h_max_log, h_ad)
+            elif driven:
                 y = self._advance_driven(y, k * dt, dt, phase, sdof,
                                          waveform, krylov_dim, cfl)
             else:
@@ -1740,6 +1946,12 @@ class ProblemTD:
         if verbose:
             _log(f"{label} complete - {steps} steps "
                  f"in {time.time() - t0:.1f}s")
+            if method == "adaptive":
+                _log(
+                    f"  KCL controller: {total_acc} accepted, "
+                    f"{total_rej} rejected; h ∈ "
+                    f"[{h_min_log:.3g}, {h_max_log:.3g}] s"
+                )
         return TdTrajectory(traj, problem=self, dt=dt)
 
     # -- field export ------------------------------------------------------

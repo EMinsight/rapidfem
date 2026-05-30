@@ -9,6 +9,7 @@ pub mod constants;
 pub mod dg_basis;
 pub mod dispersive;
 pub mod explicit;
+pub mod explicit_adaptive;
 pub mod geom_factors;
 #[cfg(feature = "gpu")]
 pub mod gpu;

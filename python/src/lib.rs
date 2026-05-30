@@ -387,6 +387,9 @@ struct PyTdOperator {
     /// Reused LSERK4 workspace — keeps the explicit `step_explicit` stepper
     /// allocation-free across a transient loop.
     lserk: rapidfem_td::explicit::LserkWorkspace,
+    /// Reused KCL RK4(3)5[2R+]C workspace — keeps the adaptive `step_kcl`
+    /// family allocation-free across the controller's accept/reject loop.
+    kcl: rapidfem_td::explicit_adaptive::KclWorkspace,
     /// Lazily-built OpenCL GPU backend; `None` until first requested, and
     /// stays `None` if no GPU / OpenCL runtime is present.
     gpu: Option<GpuBackend>,
@@ -444,6 +447,7 @@ impl PyTdOperator {
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
             lserk: rapidfem_td::explicit::LserkWorkspace::new(),
+            kcl: rapidfem_td::explicit_adaptive::KclWorkspace::new(),
             gpu: None,
         }
     }
@@ -760,6 +764,7 @@ impl PyTdOperator {
             krylov: rapidfem_td::propagator::KrylovWorkspace::new(),
             driven_b: Vec::new(),
             lserk: rapidfem_td::explicit::LserkWorkspace::new(),
+            kcl: rapidfem_td::explicit_adaptive::KclWorkspace::new(),
             gpu: None,
         })
     }
@@ -1164,6 +1169,101 @@ impl PyTdOperator {
         self.lserk
             .step_with_source_into(|x, ax| op.apply_into(x, ax), &mut out, h, src);
         Ok(out.into_pyarray_bound(py))
+    }
+
+    /// One KCL RK4(3)5[2R+]C adaptive step of `dy/dt = A·y`. Returns
+    /// `(y_new, err)` — the advanced state and the per-DOF embedded-error
+    /// vector. Per step the matvec count is identical to `step_explicit`
+    /// (five); the embedded estimate is the price an adaptive controller
+    /// pays to drop the dependence on `cfl_dt`. Zero-copy numpy in; the
+    /// KCL workspace is reused, so an adaptive transient loop allocates
+    /// only the two returned arrays per accepted step.
+    fn step_kcl<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        h: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let n = y.len();
+        let mut out = y.to_vec();
+        let mut err = vec![0.0; n];
+        let op = &self.op;
+        self.kcl
+            .step_into(|x, ax| op.apply_into(x, ax), &mut out, &mut err, h);
+        Ok((out.into_pyarray_bound(py), err.into_pyarray_bound(py)))
+    }
+
+    /// One KCL adaptive step of the driven system `dy/dt = A·y + b` with a
+    /// single-DOF soft source held constant across the step. Returns
+    /// `(y_new, err)` — the advanced state and the embedded-error vector
+    /// for the controller. The driven counterpart of [`step_kcl`](Self::step_kcl);
+    /// zeroth-order source hold, like the LSERK4 and ETD driven paths.
+    fn step_driven_kcl<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        h: f64,
+        source_dof: usize,
+        source_value: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let n = y.len();
+        if source_dof >= n {
+            return Err(PyRuntimeError::new_err("source_dof out of range"));
+        }
+        let mut out = y.to_vec();
+        let mut err = vec![0.0; n];
+        let op = &self.op;
+        self.kcl.step_driven_into(
+            |x, ax| op.apply_into(x, ax),
+            &mut out,
+            &mut err,
+            h,
+            source_dof,
+            source_value,
+        );
+        Ok((out.into_pyarray_bound(py), err.into_pyarray_bound(py)))
+    }
+
+    /// One KCL adaptive step of `dy/dt = A·y + b` with the **full source
+    /// vector** `b = source` held constant across the step — the modal-port
+    /// injection path. Returns `(y_new, err)`. Vector-source counterpart of
+    /// [`step_driven_kcl`](Self::step_driven_kcl).
+    fn step_with_source_kcl<'py>(
+        &mut self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        source: PyReadonlyArray1<'py, f64>,
+        h: f64,
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>)> {
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let src = source
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let n = y.len();
+        if src.len() != n {
+            return Err(PyRuntimeError::new_err(
+                "source length must equal n_dof",
+            ));
+        }
+        let mut out = y.to_vec();
+        let mut err = vec![0.0; n];
+        let op = &self.op;
+        self.kcl.step_with_source_into(
+            |x, ax| op.apply_into(x, ax),
+            &mut out,
+            &mut err,
+            h,
+            src,
+        );
+        Ok((out.into_pyarray_bound(py), err.into_pyarray_bound(py)))
     }
 
     /// One source-driven exponential (ETD) step on the GPU with a full

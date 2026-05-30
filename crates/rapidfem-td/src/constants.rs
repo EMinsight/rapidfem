@@ -121,6 +121,63 @@ pub const LSERK4_B: [Field; 5] = [
 /// LSERK4 stage count — five stages reaching fourth order.
 pub const LSERK4_STAGES: usize = 5;
 
+// ── Embedded adaptive RK: Kennedy-Carpenter-Lewis RK4(3)5[2R+]C ────────────
+//
+// Kennedy, Carpenter & Lewis 2000, "Low-storage, explicit Runge-Kutta
+// schemes for the compressible Navier-Stokes equations" (Appl. Num. Math.
+// 35, 177-219). The "2R+" form needs two state-shaped registers like
+// [`LSERK4_A`] plus one extra accumulator for the embedded error vector —
+// the third register goes to nothing else, only the adaptive controller. A
+// step is five matvecs (same as LSERK4) but yields a fourth-order solution
+// *and* a third-order embedded estimate, so the step-size controller can
+// detect non-normal growth and cut the step without consulting `cfl_dt`.
+//
+// Coefficients are the exact rationals from the KCL 2000 paper, Table 1
+// (RK4(3)5[2R+]C variant), as tabulated in NodePy's `low_storage_rk.py`
+// (https://github.com/ketch/nodepy, file `low_storage_rk.py`, identifier
+// `RK4(3)5[2R+]C`). Storing `B_HAT` directly — and computing the embedded
+// error weight `e_i = B_HAT_i - B_i` at use — keeps the table verifiable
+// against the paper at a glance.
+
+/// `â_i = A_{i+1,i} - b_i` for KCL RK4(3)5[2R+]C — the four post-stage
+/// updates that march the stage register `S2` to the next evaluation point
+/// in Ketcheson's van-der-Houwen 2R form (Ketcheson 2010, JCP 229, Alg. 2).
+/// Only `s - 1 = 4` values: the final stage closes the step without
+/// updating `S2`. Sourced verbatim from NodePy's `a` array for
+/// `RK4(3)5[2R+]C`.
+pub const KCL_A: [Field; 4] = [
+    970286171893.0 / 4311952581923.0,
+    6584761158862.0 / 12103376702013.0,
+    2251764453980.0 / 15575788980749.0,
+    26877169314380.0 / 34165994151039.0,
+];
+
+/// `b_i` coefficients of KCL RK4(3)5[2R+]C — the per-stage main-solution
+/// update weights (fourth-order accurate). Paired with [`KCL_A`].
+pub const KCL_B: [Field; 5] = [
+    1153189308089.0 / 22510343858157.0,
+    1772645290293.0 / 4653164025191.0,
+    -1672844663538.0 / 4480602732383.0,
+    2114624349019.0 / 3568978502595.0,
+    5198255086312.0 / 14908931495163.0,
+];
+
+/// `b̂_i` coefficients of KCL RK4(3)5[2R+]C — the per-stage *embedded*
+/// (third-order) solution weights. The step-size controller never needs
+/// `y_emb` itself, only its difference `y_emb - y_main = sum_i (b̂_i - b_i)
+/// q_i`, accumulated into the embedded-error register at each stage.
+pub const KCL_BHAT: [Field; 5] = [
+    1016888040809.0 / 7410784769900.0,
+    11231460423587.0 / 58533540763752.0,
+    -1563879915014.0 / 6823010717585.0,
+    606302364029.0 / 971179775848.0,
+    1097981568119.0 / 3980877426909.0,
+];
+
+/// KCL RK4(3)5[2R+]C stage count — five stages, fourth-order main,
+/// third-order embedded.
+pub const KCL_STAGES: usize = 5;
+
 // ── Waveguide ports ───────────────────────────────────────────────────────
 
 /// In-plane radius below which a coaxial-port TEM profile is taken as zero.
