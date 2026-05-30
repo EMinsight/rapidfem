@@ -22,7 +22,7 @@ WGA, WGB = 22.86 * mm, 10.16 * mm   # WR-90 feed cross-section
 LFEED = 15.0 * mm                   # feed waveguide length
 LHORN = 50.0 * mm                   # horn flare length
 WH, HH = 30.0 * mm, 22.0 * mm       # aperture width / height
-LPAD = 44.0 * mm                    # air padding around the aperture (roomy box)
+LPAD = 88.0 * mm                    # air padding around the aperture (roomy box)
 PML_T = 15.0 * mm                   # PML slab thickness (beam direction)
 F0 = 10.0e9                         # drive frequency
 
@@ -35,7 +35,8 @@ AIR_Z0, AIR_Z1 = -HH / 2 - LPAD, HH / 2 + LPAD
 
 g = rf.Geometry(maxh=MAXH)
 air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
-            position=(AIR_X0, AIR_Y0, AIR_Z0), material=rf.Air())
+            position=(AIR_X0, AIR_Y0, AIR_Z0), material=rf.Air(),
+            maxh=2 * MAXH)
 pml_xp = g.box(PML_T, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
                position=(AIR_X1, AIR_Y0, AIR_Z0), material=rf.Air(),
                maxh=2 * MAXH)

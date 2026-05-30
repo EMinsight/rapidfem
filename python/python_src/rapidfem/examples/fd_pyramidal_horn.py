@@ -17,7 +17,7 @@ Lfeed = 15.0 * mm
 Lhorn = 50.0 * mm
 WH, HH = 30.0 * mm, 22.0 * mm
 
-LPAD = 44.0 * mm
+LPAD = 88.0 * mm
 PML_T = 15.0 * mm
 
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)
@@ -35,7 +35,7 @@ g = rf.Geometry(maxh=MAXH)
 
 air = g.box(AIR_X1 - AIR_X0, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
             position=(AIR_X0, AIR_Y0, AIR_Z0),
-            material=rf.Air())
+            material=rf.Air(), maxh=2 * MAXH)
 
 pml_xp = g.box(PML_T, AIR_Y1 - AIR_Y0, AIR_Z1 - AIR_Z0,
                position=(AIR_X1, AIR_Y0, AIR_Z0),
