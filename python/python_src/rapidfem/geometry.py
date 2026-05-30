@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 import gmsh
+import numpy as np
 
 
 # TOLERANCES ============================================================================
@@ -681,6 +682,11 @@ class Geometry:
         self._material_tags: dict[int, int] = {}  # id(Material) -> phys group tag
         self._physics_tags: dict[int, int] = {}   # id(physics_obj) -> phys group tag
         self._last_mesh = None              # (mesh_bytes, name_to_tag) after .mesh()
+        # Refinement requests added via refine_near_points(). Each entry
+        # is {points: (N, 3) np.ndarray, h: float, distance: float}.
+        # Consumed in mesh() as extra Distance + Threshold background
+        # fields, merged into the per-entity Min combiner.
+        self._refinements: list[dict] = []
 
     # ── Scale helpers ──────────────────────────────────────────────────────
     # Every coord that goes INTO gmsh is divided by self._scale; every coord
@@ -2054,6 +2060,60 @@ class Geometry:
             assigned[desc] = h
         return assigned
 
+    def refine_near_points(self, points, h: float,
+                           distance: float | None = None) -> None:
+        """register a local mesh-size refinement around a point cloud
+
+        On the next :meth:`mesh` call, gmsh's ``Distance`` + ``Threshold``
+        background fields will enforce element size ``h`` within
+        ``distance`` of any point in ``points``, smoothly relaxing back
+        to the global cap further out. Multiple calls are additive —
+        each request becomes its own field and merges with the others
+        via ``Min``.
+
+        Designed to consume the output of
+        :meth:`rapidfem.ProblemFD.element_errors`: the user marks high-η
+        tets, picks a target size relative to their current ``h_k``,
+        and re-meshes. The loop is explicit (user drives it); no
+        automatic AMR.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            errs = prob.element_errors(result, freq_idx=res_idx,
+                                       theta=0.3)
+            hot = errs.tet_centroids[errs.marked]
+            h_target = errs.h_k[errs.marked].mean() * 0.5
+            g.refine_near_points(hot, h=h_target)
+            g.mesh()                # picks up the new field
+            prob2 = rf.Problem(g)   # fresh problem on the refined mesh
+
+
+        Parameters
+        ----------
+        points : array_like
+            ``(N, 3)`` coordinates of refinement centres in metres
+        h : float
+            target tet size at the points (m)
+        distance : float, optional
+            transition radius; defaults to ``5 * h`` (smooth ramp back
+            to the global cap)
+        """
+        pts = np.asarray(points, dtype=float)
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            raise ValueError(
+                f"refine_near_points expects (N, 3) array, got shape {pts.shape}"
+            )
+        if h <= 0:
+            raise ValueError(f"h must be positive, got {h}")
+        self._refinements.append({
+            "points": pts,
+            "h": float(h),
+            "distance": (float(distance) if distance is not None else 5.0 * float(h)),
+        })
+
     def mesh(
         self,
         maxh: float | None = None,
@@ -2196,17 +2256,125 @@ class Geometry:
             )
             threshold_field_ids.append(thr_id)
 
-        if threshold_field_ids:
+        # ── refine_near_points() requests ─────────────────────────────────────
+        # Each registered refinement becomes an OCC point cloud + a
+        # Distance + Threshold field. The OCC points must exist on the
+        # synced model before the Distance field can reference them.
+        # Each refinement request becomes a cloud of OCC points with a
+        # ``meshSize`` attribute, embedded into the volumes that
+        # contain them, plus a Distance + Threshold field that smooths
+        # the transition out to ``distance``. Three pieces together —
+        # ``meshSize`` + ``embed`` + ``MeshSizeFromPoints=1`` — are
+        # required to get HXT to actually honour the local size; the
+        # field alone is too soft (HXT-Delaunay treats it as a hint,
+        # not a constraint). Empirically: bare-field gives ~0%
+        # refinement; full recipe gives +200% local tets.
+        refinement_field_ids: list[int] = []
+        refinement_has_embed = False
+        # Cache the volume list once — typically a handful, and
+        # ``isInside`` is cheap. After-fragment we have the final
+        # volume set.
+        post_frag_vols = [t for d, t in gmsh.model.getEntities(dim=3)]
+        _refdbg = os.environ.get("RAPIDFEM_REFINE_DEBUG")
+        if _refdbg:
+            print(f"[refine] {len(self._refinements)} requests in queue",
+                  file=sys.stderr)
+        for req in self._refinements:
+            pts = req["points"]
+            h = req["h"]
+            dist_radius = req["distance"]
+            tags: list[int] = []
+            for p in pts:
+                # ``meshSize`` on the OCC point ties the local size to
+                # the point — picked up when MeshSizeFromPoints=1.
+                tag = gmsh.model.occ.addPoint(
+                    self._s(float(p[0])), self._s(float(p[1])),
+                    self._s(float(p[2])),
+                    meshSize=self._s(h),
+                )
+                tags.append(tag)
+            if not tags:
+                continue
+            gmsh.model.occ.synchronize()
+            # Dilate the newly-added points if the geometry was dilated
+            # earlier (scale != 1) — keep them in user units.
+            if self._scale != 1.0 and getattr(self, "_dilated", False):
+                s = self._scale
+                gmsh.model.occ.dilate(
+                    [(0, t) for t in tags], 0, 0, 0, s, s, s,
+                )
+                gmsh.model.occ.synchronize()
+
+            # Embed each point into the volume that contains it (the
+            # mesher only treats embedded points as size constraints;
+            # free OCC points get ignored).
+            for tag, p in zip(tags, pts):
+                coords = [self._s(float(p[0])), self._s(float(p[1])),
+                          self._s(float(p[2]))]
+                if self._scale != 1.0 and getattr(self, "_dilated", False):
+                    # Post-dilate, coords are user-meters; gmsh's
+                    # isInside expects model coords (= user-meters
+                    # too, post-dilate).
+                    coords = [float(p[0]), float(p[1]), float(p[2])]
+                for vol_tag in post_frag_vols:
+                    try:
+                        if gmsh.model.isInside(3, vol_tag, coords) > 0:
+                            gmsh.model.mesh.embed(0, [tag], 3, vol_tag)
+                            refinement_has_embed = True
+                            break
+                    except Exception:
+                        continue
+
+            dist_id = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist_id, "PointsList", tags)
+            thr_id = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thr_id, "InField", dist_id)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMin", h)
+            gmsh.model.mesh.field.setNumber(thr_id, "SizeMax", maxh)
+            gmsh.model.mesh.field.setNumber(thr_id, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thr_id, "DistMax", dist_radius)
+            refinement_field_ids.append(thr_id)
+            if _refdbg:
+                print(f"[refine] added Distance #{dist_id} + Threshold #{thr_id} "
+                      f"(N_pts={len(tags)}, h={h:.3e}, dist={dist_radius:.3e})",
+                      file=sys.stderr)
+
+        all_field_ids = threshold_field_ids + refinement_field_ids
+        if _refdbg:
+            print(f"[refine] all_field_ids={all_field_ids}, "
+                  f"fields_list={list(gmsh.model.mesh.field.list())}",
+                  file=sys.stderr)
+        if all_field_ids:
             min_id = gmsh.model.mesh.field.add("Min")
-            gmsh.model.mesh.field.setNumbers(min_id, "FieldsList", threshold_field_ids)
+            gmsh.model.mesh.field.setNumbers(min_id, "FieldsList", all_field_ids)
             gmsh.model.mesh.field.setAsBackgroundMesh(min_id)
-            # When threshold fields are active the user explicitly cares about
-            # local size — keep `ExtendFromBoundary` off so global Max applies
-            # away from refined regions, but leave Curvature on (combined via
-            # Min) so curved features get resolved cleanly even if the user
-            # only set per-volume sizes.
-            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+            if _refdbg:
+                print(f"[refine] Min combiner = field #{min_id}",
+                      file=sys.stderr)
+            # When threshold fields are active the user explicitly cares
+            # about local size. Keep ``ExtendFromBoundary`` off so the
+            # global Max applies away from refined regions, but leave
+            # Curvature on (combined via Min) so curved features get
+            # resolved cleanly even if the user only set per-volume
+            # sizes. ``MeshSizeFromPoints`` stays ON when there are
+            # refinement points so their ``meshSize`` attribute kicks
+            # in (HXT-Delaunay needs both the field AND the per-point
+            # size to actually refine — field alone is too soft).
+            gmsh.option.setNumber(
+                "Mesh.MeshSizeFromPoints",
+                1 if refinement_has_embed else 0,
+            )
+            # Without ExtendFromBoundary, HXT-Delaunay treats the
+            # background field as a soft hint and barely refines the
+            # interior. For point-driven refinement the boundary sizes
+            # (= field values near the embedded points) must propagate
+            # inward, so leave it ON. For pure per-entity threshold
+            # refinement (no embeds) keep the old behaviour to avoid
+            # regressing existing demos.
+            gmsh.option.setNumber(
+                "Mesh.MeshSizeExtendFromBoundary",
+                1 if refinement_has_embed else 0,
+            )
 
         # Curvature-based sizing: gmsh disables this by default. Turning it
         # on gives curved primitives (cylinder, sphere, cone, torus) a

@@ -52,6 +52,11 @@ class ErrorIndicator:
         volume-residual contribution per tet, shape ``(n_tets,)``
     face_jumps : np.ndarray
         face-jump contribution per tet (accumulated over its 4 faces)
+    h_k : np.ndarray
+        per-tet element diameter (max edge length) — useful for
+        choosing a refinement target relative to current local size
+    tet_centroids : np.ndarray
+        per-tet centroid coordinates, shape ``(n_tets, 3)``, m
     freq_hz : float
         frequency at which the indicator was computed
     theta : float
@@ -59,12 +64,13 @@ class ErrorIndicator:
     """
 
     def __init__(self, *, eta, total, marked, volume_residuals, face_jumps,
-                 tet_centroids, freq_hz: float, theta: float):
+                 h_k, tet_centroids, freq_hz: float, theta: float):
         self.eta = eta
         self.total = float(total)
         self.marked = marked
         self.volume_residuals = volume_residuals
         self.face_jumps = face_jumps
+        self.h_k = h_k
         self.tet_centroids = tet_centroids
         self.freq_hz = float(freq_hz)
         self.theta = float(theta)
@@ -391,6 +397,7 @@ class ProblemFD:
             marked=np.asarray(d["marked"]),
             volume_residuals=np.asarray(d["volume_residuals"]),
             face_jumps=np.asarray(d["face_jumps"]),
+            h_k=np.asarray(d["h_k"]),
             tet_centroids=centroids,
             freq_hz=freq_hz,
             theta=theta,

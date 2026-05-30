@@ -14,6 +14,11 @@ pub struct ErrorEstimate {
     pub element_errors: Vec<f64>,
     pub volume_residuals: Vec<f64>,
     pub face_jumps: Vec<f64>,
+    /// Per-tet element diameter (max edge length). Same h_K the
+    /// estimator scales the residual by — exposed so downstream
+    /// refinement code can pick a target size relative to the current
+    /// local mesh resolution.
+    pub h_k: Vec<f64>,
     pub total_error: f64,
     pub marked_elements: Vec<usize>,
 }
@@ -231,6 +236,7 @@ pub fn estimate_error(
         element_errors,
         volume_residuals,
         face_jumps: face_jumps_accum,
+        h_k,
         total_error,
         marked_elements: marked,
     }
