@@ -54,7 +54,7 @@ print(f"DGTD dielectric step - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive TE10 at the input and watch it split at the slab
 pulse = rf.GaussianPulse(t0=90e-12, tau=22e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=3e-12, steps=340,
+    port=p_in, waveform=pulse, dt=3e-12, steps=170,
     method="explicit", device="gpu",
 )
 
