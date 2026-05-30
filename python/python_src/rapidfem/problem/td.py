@@ -942,7 +942,11 @@ class ProblemTD:
         ``tol`` is the Krylov a-posteriori error tolerance; ``None`` keeps
         the solver default. A converged step uses far fewer than
         ``krylov_dim`` matvecs; ``tol=0`` forces the full ``krylov_dim``
-        (the fixed-dimension worst case)."""
+        (the fixed-dimension worst case).
+
+        See also :meth:`step_explicit` (the cheaper CFL-bound LSERK4) and
+        :meth:`step_adaptive` (embedded KCL 4(3)5 with self-tuned step),
+        plus :meth:`transient` for the high-level loop."""
         h_solver = float(self.c * h)
         if tol is None:
             return self._op.step(_arr(y), h_solver, int(krylov_dim))
@@ -955,23 +959,53 @@ class ProblemTD:
         Cheaper per step than :meth:`step`, but only conditionally stable:
         an ``h`` past the operator's CFL limit diverges. Prefer :meth:`step`
         (the exponential propagator) when the mesh is stiff or the step is
-        set by the output cadence rather than by stability."""
+        set by the output cadence rather than by stability. See
+        :meth:`step_adaptive` for an embedded variant that drives its own
+        step size, and :meth:`transient` (``method="explicit"`` or
+        ``"adaptive"``) for the higher-level loop that uses these."""
         return self._op.step_explicit(_arr(y), float(self.c * h))
 
     def step_adaptive(self, y, h):
-        """Advance the state by ``h`` with the embedded KCL RK4(3)5[2R+]C
-        stepper. Returns ``(y_new, err)`` — the advanced state and the
-        per-DOF embedded-error vector (the fourth-order minus third-order
-        difference). Same five-matvec cost as :meth:`step_explicit`; the
-        extra return is what an adaptive controller reads to grow or shrink
-        the next step.
+        """Advance the state by ``h`` with the embedded Kennedy-Carpenter-
+        Lewis RK4(3)5[2R+]C low-storage Runge-Kutta stepper.
 
-        Conditionally stable like :meth:`step_explicit` — an ``h`` past the
-        operator's CFL limit diverges. The controller in
-        :meth:`transient` (with ``method="adaptive"``) keeps ``h`` safe by
-        normalising ``err`` against ``atol + rtol·|y|`` and rejecting any
-        step whose error exceeds 1; call the raw stepper here only if you
-        want to drive the controller yourself."""
+        Same five-matvec cost as :meth:`step_explicit`, but the scheme
+        carries a third-order embedded solution alongside its fourth-order
+        main; the per-DOF difference between the two is returned as
+        ``err`` so an adaptive controller can decide whether to accept
+        the step and how to size the next one. The :meth:`transient`
+        loop (with ``method="adaptive"``) is the high-level entry that
+        drives this stepper with a PI controller (Söderlind / Gustafsson)
+        normalising ``err`` against ``atol + rtol·|y|``; you only call
+        the raw stepper here if you are writing your own controller.
+
+        Parameters
+        ----------
+        y : array_like
+            Current state, shape ``[n_dof]``.
+        h : float
+            Proposed step size in physical time units.
+
+        Returns
+        -------
+        y_new : ndarray
+            The advanced state, shape ``[n_dof]`` — the fourth-order main
+            solution.
+        err : ndarray
+            Per-DOF embedded-error vector ``y_4 − y_3``, shape
+            ``[n_dof]``. A controller compares its weighted L2 norm
+            against 1: smaller means the step was easy and the next one
+            can grow, above 1 means the step must be rejected and shrunk.
+            See the ``_RK_*`` module constants for the calibration this
+            module uses.
+
+        Notes
+        -----
+        Conditionally stable like :meth:`step_explicit` — an ``h`` past
+        the operator's CFL limit eventually NaNs. The controller in
+        :meth:`transient` rejects any infinite ``err`` and shrinks ``h``,
+        so the high-level loop survives a bad initial-guess step; the raw
+        stepper here does not."""
         h_solver = float(self.c * h)
         y_new, err = self._op.step_kcl(_arr(y), h_solver)
         return y_new, err
@@ -1806,21 +1840,34 @@ class ProblemTD:
             exponential/explicit and CPU/GPU paths all inject the same mode.
         waveform : callable, optional
             Excitation ``g(t)``, e.g. a :class:`~rapidfem.GaussianPulse`.
-        method : {"exponential", "explicit"}
+        method : {"exponential", "explicit", "adaptive"}
             Time integrator. ``"exponential"`` is exact at any ``dt``;
             ``"explicit"`` is the cheaper LSERK4 stepper, substepped to
-            respect its CFL limit (see :meth:`cfl_dt`). Both drive a soft
-            source; the explicit integrator re-samples the waveform each
-            substep.
+            respect its CFL limit (see :meth:`cfl_dt`); ``"adaptive"`` is
+            the Kennedy-Carpenter-Lewis RK4(3)5[2R+]C embedded stepper
+            with PI step-size control, which drops the :meth:`cfl_dt`
+            dependence and shrinks its step on its own when the operator
+            is stiff. All three drive a soft source; explicit re-samples
+            the waveform each substep, adaptive samples it once per
+            output frame (zeroth-order hold).
+
+            *Adaptive vs the frequency-domain* :class:`~rapidfem.Adaptive`
+            *class*: unrelated — :class:`~rapidfem.Adaptive` drives mesh /
+            order h-p refinement in :meth:`ProblemFD.sweep`; here the
+            argument selects a *time integrator*.
         warmup : int
             Output steps to run with the exponential integrator before
             handing off to ``method``. With ``method="explicit"`` this
             covers the opening transient with the exact integrator, then
-            continues on the cheaper explicit stepper.
+            continues on the cheaper explicit stepper. Not supported with
+            ``method="adaptive"`` (the PI controller stabilises itself in
+            the first few frames).
         device : {"cpu", "gpu"}
-            ``"gpu"`` runs the explicit LSERK4 transient on an OpenCL GPU,
-            the state device-resident. Falls back to the CPU path for a
-            driven run or when no GPU is present.
+            ``"gpu"`` runs the chosen integrator on an OpenCL GPU, the
+            state device-resident. Adaptive runs ~20-50× faster on a
+            stiff mesh on GPU than the explicit LSERK4 path, since it
+            does not pay the ``cfl_dt`` substep penalty. Falls back to
+            the CPU path when no GPU is present.
 
         Returns
         -------
