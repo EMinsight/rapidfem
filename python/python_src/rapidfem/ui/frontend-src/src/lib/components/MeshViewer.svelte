@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import {
 		initGL, disposeGL, clearMeshes, addMesh, addLineMesh, setBBox,
 		setPointCloud, setPointPhase, setPointRange, setPointScaleMode,
@@ -37,8 +37,9 @@
 		// to render (the notebook page owns the slider / play loop), and the
 		// E/H channel switch.
 		td_trajectory = null as TdTrajectoryPayload | null,
-		td_frame = 0,
-		td_channel = $bindable('E' as 'E' | 'H')
+		td_frame = $bindable(0),
+		td_channel = $bindable('E' as 'E' | 'H'),
+		td_playing = $bindable(true)
 	}: {
 		mesh?: MeshData | null;
 		wireframe?: { entities: Array<{ name: string; color: [number, number, number]; lines?: number[]; tag: number }>; bbox: { min: [number, number, number]; max: [number, number, number] } } | null;
@@ -55,6 +56,7 @@
 		td_trajectory?: TdTrajectoryPayload | null;
 		td_frame?: number;
 		td_channel?: 'E' | 'H';
+		td_playing?: boolean;
 	} = $props();
 
 	// Channel metadata for the colourbar — title + SI unit per channel.
@@ -158,6 +160,99 @@
 			a.click();
 			URL.revokeObjectURL(url);
 		}, 'image/png');
+	}
+
+	// ── MP4 / WebM export of a time-domain animation ──────────────────────
+	// Recording progress; `null` when idle. While recording the export
+	// button shows the percent done and stays disabled so the user can't
+	// re-fire it mid-recording.
+	let td_recording = $state<{ done: number; total: number } | null>(null);
+
+	/** Record the current `td_trajectory` animation to a video file (MP4
+	 *  where the browser's MediaRecorder supports H.264, WebM otherwise —
+	 *  both Twitter / LinkedIn / Instagram-compatible). Pauses
+	 *  `td_playing`, walks `td_frame` through every snapshot at a fixed
+	 *  cadence, captures each rendered frame via `canvas.captureStream`,
+	 *  and downloads the resulting blob. */
+	export async function record_td_video() {
+		if (td_recording != null) return;
+		if (!canvas || !td_trajectory) return;
+		const n = td_trajectory.n_snapshots;
+		if (n <= 1) return;
+
+		// H.264 MP4 first (universal for social upload), then VP9 WebM,
+		// then plain WebM. 2026 Chromium / Edge / Safari speak MP4 from
+		// MediaRecorder; Firefox still emits WebM here — both fine.
+		const candidates = [
+			'video/mp4;codecs=avc1',
+			'video/mp4',
+			'video/webm;codecs=vp9',
+			'video/webm',
+		];
+		const mime = candidates.find(
+			(m) => typeof MediaRecorder !== 'undefined'
+				&& MediaRecorder.isTypeSupported(m),
+		) ?? '';
+		if (typeof MediaRecorder === 'undefined' || !mime) {
+			alert('Video recording is not supported in this browser.');
+			return;
+		}
+
+		const fps = 30;
+		const wasPlaying = td_playing;
+		td_playing = false;
+		td_frame = 0;
+		td_recording = { done: 0, total: n };
+
+		const stream = canvas.captureStream(fps);
+		const chunks: Blob[] = [];
+		const recorder = new MediaRecorder(stream, {
+			mimeType: mime,
+			videoBitsPerSecond: 6_000_000,
+		});
+		recorder.ondataavailable = (ev) => {
+			if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+		};
+		const done = new Promise<Blob>((resolve) => {
+			recorder.onstop = () => resolve(new Blob(chunks, { type: mime }));
+		});
+		recorder.start();
+
+		try {
+			const frameMs = 1000 / fps;
+			for (let i = 0; i < n; i++) {
+				td_frame = i;
+				// Drain Svelte's reactive frame update, then force a render
+				// so the new field lands on the canvas before the recorder
+				// samples it on the next interval — without the explicit
+				// render the rAF-batched draw can be merged with the next
+				// frame's update and the recorder skips a beat.
+				await tick();
+				render_frame();
+				await new Promise((r) => setTimeout(r, frameMs));
+				td_recording = { done: i + 1, total: n };
+			}
+			// One padding interval so the recorder picks up the last frame.
+			await new Promise((r) => setTimeout(r, frameMs));
+		} finally {
+			recorder.stop();
+		}
+
+		const blob = await done;
+		const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+		const ts = new Date()
+			.toISOString()
+			.replace(/[:.]/g, '-')
+			.slice(0, 19);
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `rapidfem-td-${ts}.${ext}`;
+		a.click();
+		URL.revokeObjectURL(url);
+
+		td_recording = null;
+		td_playing = wasPlaying;
 	}
 
 	// ── Mesh classification & coloring ──────────────────────────────────
@@ -1094,6 +1189,25 @@
 				<path d="M2 10v3h12v-3" /><path d="M8 2v8" /><path d="M5 7l3 3 3-3" />
 			</svg>
 		</button>
+		{#if td_trajectory}
+			<button
+				class="tb"
+				disabled={td_recording != null}
+				onclick={() => void record_td_video()}
+			>
+				<span class="tip">{td_recording
+					? `Recording ${td_recording.done}/${td_recording.total}`
+					: 'Save video (MP4 / WebM)'}</span>
+				{#if td_recording}
+					<span class="record-pct">{Math.round(100 * td_recording.done / td_recording.total)}%</span>
+				{:else}
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+						<rect x="1.5" y="3" width="9" height="10" rx="1" />
+						<path d="M10.5 6.5L14.5 4v8l-4-2.5z" fill="currentColor" stroke="none" />
+					</svg>
+				{/if}
+			</button>
+		{/if}
 		{#if show_field && !td_trajectory}
 			<span class="tb-sep" aria-hidden="true"></span>
 			{#each (['E', 'J', 'H'] as const) as ch}
@@ -1277,6 +1391,8 @@
 		transition: background var(--transition), border-color var(--transition), color var(--transition);
 	}
 	.tb:hover { background: var(--bg-panel); border-color: var(--accent); color: var(--text); }
+	.tb:disabled { opacity: 0.6; cursor: progress; }
+	.record-pct { font-size: 10px; line-height: 1; font-weight: 600; }
 	.tb .tip {
 		display: none;
 		position: absolute;

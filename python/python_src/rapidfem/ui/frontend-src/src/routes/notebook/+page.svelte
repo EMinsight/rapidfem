@@ -945,7 +945,8 @@
 								point_density={field_density}
 								bind:scale_mode={field_scale_mode}
 								td_trajectory={td_trajectory_payload}
-								{td_frame}
+								bind:td_frame
+								bind:td_playing
 								bind:td_channel
 							/>
 						{:else if display === 'timeseries'}
