@@ -41,7 +41,7 @@ print(f"DGTD circular guide - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive the numerically-solved TE11 mode and watch it propagate
 pulse = rf.GaussianPulse(t0=80e-12, tau=20e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=2.5e-12, steps=200,
+    port=p_in, waveform=pulse, dt=2.5e-12, steps=280,
     method="explicit", device="gpu",
 )
 

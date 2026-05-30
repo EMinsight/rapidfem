@@ -68,7 +68,7 @@ DEMO_EXAMPLES = frozenset({
     "td_dielectric_step",
     "td_power_divider",
     "td_horn_radiation",
-    "td_ring_resonator",
+    "td_coax_open",
 })
 
 # Windows console defaults to cp1252 — print() falls over on the unicode

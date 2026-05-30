@@ -41,7 +41,7 @@ print(f"DGTD 50 ohm coax - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive the TEM mode at one end and watch the pulse travel
 pulse = rf.GaussianPulse(t0=70e-12, tau=18e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=2e-12, steps=200,
+    port=p_in, waveform=pulse, dt=2e-12, steps=300,
     method="explicit", device="gpu",
 )
 

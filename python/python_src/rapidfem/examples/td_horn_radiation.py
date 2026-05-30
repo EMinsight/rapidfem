@@ -22,7 +22,7 @@ WGA, WGB = 22.86 * mm, 10.16 * mm   # WR-90 feed cross-section
 LFEED = 15.0 * mm                   # feed waveguide length
 LHORN = 50.0 * mm                   # horn flare length
 WH, HH = 30.0 * mm, 22.0 * mm       # aperture width / height
-LPAD = 15.0 * mm                    # air padding around the aperture
+LPAD = 22.0 * mm                    # air padding around the aperture (roomy box)
 PML_T = 15.0 * mm                   # PML slab thickness (beam direction)
 F0 = 10.0e9                         # drive frequency
 
@@ -70,7 +70,7 @@ print(f"DGTD pyramidal horn - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive the feed and watch the pulse radiate out of the aperture
 pulse = rf.GaussianPulse(t0=80e-12, tau=20e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=2e-12, steps=260,
+    port=p_in, waveform=pulse, dt=2e-12, steps=340,
     method="explicit", device="gpu",
 )
 

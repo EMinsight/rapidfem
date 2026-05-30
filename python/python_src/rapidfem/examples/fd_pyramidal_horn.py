@@ -17,7 +17,7 @@ Lfeed = 15.0 * mm
 Lhorn = 50.0 * mm
 WH, HH = 30.0 * mm, 22.0 * mm
 
-LPAD = 15.0 * mm
+LPAD = 22.0 * mm
 PML_T = 15.0 * mm
 
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 15)

@@ -53,7 +53,7 @@ print(f"DGTD H-plane tee - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive the stem port and watch the pulse split into the two arms
 pulse = rf.GaussianPulse(t0=90e-12, tau=22e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=3e-12, steps=260,
+    port=p_in, waveform=pulse, dt=3e-12, steps=360,
     method="explicit", device="gpu",
 )
 

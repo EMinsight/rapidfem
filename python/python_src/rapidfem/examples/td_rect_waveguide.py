@@ -40,7 +40,7 @@ print(f"DGTD WR-90 guide - {ptd.n_dof // 60} tets, {ptd.n_dof} state DOFs, "
 # %% Drive the TE10 mode at the input port and watch the pulse propagate
 pulse = rf.GaussianPulse(t0=90e-12, tau=22e-12, f0=F0)
 traj = ptd.transient(
-    port=p_in, waveform=pulse, dt=3e-12, steps=220,
+    port=p_in, waveform=pulse, dt=3e-12, steps=320,
     method="explicit", device="gpu",
 )
 
