@@ -2053,13 +2053,23 @@ class Geometry:
             assigned[desc] = h
         return assigned
 
-    def mesh(self, maxh: float | None = None, transition_distance: float | None = None) -> tuple[bytes, dict[str, int]]:
+    def mesh(
+        self,
+        maxh: float | None = None,
+        transition_distance: float | None = None,
+        algorithm: str = "hxt",
+        optimize: bool = True,
+    ) -> tuple[bytes, dict[str, int]]:
         """generate the 3-D tet mesh of the current geometry
 
         Calls gmsh's OCC mesher with the configured per-entity sizes
         and global cap. Per-entity ``obj.maxh = h`` is honoured via
         gmsh ``Distance + Threshold`` background fields so refinement
         transitions are smooth, not abrupt.
+
+        The 3-D mesher and a post-pass sliver fixer are configured by the
+        ``algorithm`` and ``optimize`` kwargs (defaults give the highest-
+        quality mesh; the per-call overrides are escape hatches).
 
 
         Note
@@ -2334,7 +2344,38 @@ class Geometry:
         # Post-dilate, gmsh is in user units → no further scaling needed.
         gmsh.option.setNumber("Mesh.MeshSizeMax", maxh)
         gmsh.option.setNumber("Mesh.SaveAll", 1)
+
+        # 3-D mesher choice. HXT (algorithm 10) is gmsh's parallel Delaunay:
+        # it scales across cores, and on curved bodies its tet population
+        # carries fewer near-degenerate slivers than the serial Delaunay
+        # (1) or Frontal (4). The original Delaunay default predates HXT
+        # in gmsh and is kept only as an escape hatch — pick the relevant
+        # algorithm explicitly so the mesh is reproducible across users.
+        algo_codes = {
+            "hxt":      10,    # parallel Delaunay (recommended default)
+            "delaunay": 1,     # serial Delaunay (gmsh's historical default)
+            "frontal":  4,     # frontal-Delaunay (occasionally cleaner on thin shells)
+            "mmg3d":    7,     # MMG3D (anisotropic remesher; rarely needed)
+        }
+        algo_lc = algorithm.lower()
+        if algo_lc not in algo_codes:
+            raise ValueError(
+                f"algorithm must be one of {sorted(algo_codes)}, got "
+                f"{algorithm!r}"
+            )
+        gmsh.option.setNumber("Mesh.Algorithm3D", algo_codes[algo_lc])
+
         gmsh.model.mesh.generate(3)
+
+        # Sliver-killing post-pass. Gmsh's built-in "Netgen" optimizer runs
+        # edge-swap + node-smoothing sweeps targeting low-quality tets;
+        # cheap (a few seconds even on million-DoF meshes) and zero risk of
+        # breaking topology. We do this BEFORE writing the .msh so every
+        # downstream consumer sees the optimised mesh.
+        # Off via ``optimize=False`` for benchmarking or debugging a
+        # raw-mesher symptom.
+        if optimize:
+            gmsh.model.mesh.optimize("Netgen")
 
         # Write to a temp file, read bytes back
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
