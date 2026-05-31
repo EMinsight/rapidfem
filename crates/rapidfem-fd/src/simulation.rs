@@ -985,6 +985,24 @@ fn build_wave_numerical(
 
     let k0 = 2.0 * PI * f0 / C0;
 
+    // Per-face εr (size = face_tris.len()) is always needed: the vector
+    // path uses it as the eigensolve weight, and the unified amplitude
+    // normalisation in NumericalWavePort uses it for the Poynting-flux
+    // integral. Scalar paths get a uniform-1.0 vector — they sit on
+    // homogeneous-fill cross-sections by construction.
+    let eps_per_tet = per_tet_eps_scalar(materials, mesh.n_tets());
+    let eps_face: Vec<f64> = tri_ids
+        .iter()
+        .map(|&t| {
+            mesh.tri_to_tet[t]
+                .iter()
+                .copied()
+                .find(|&x| x != usize::MAX)
+                .map(|e| eps_per_tet[e])
+                .unwrap_or(1.0)
+        })
+        .collect();
+
     let kind_lc = mode_kind.to_lowercase();
     let (nm, n_eff, is_vector): (NumericalMode, f64, bool) = match kind_lc.as_str() {
         "te" => {
@@ -1004,18 +1022,6 @@ fn build_wave_numerical(
             (NumericalMode::from_scalar(pm, mode, ModeKind::Tm), n_eff, false)
         }
         "auto" | "vector" | "hybrid" => {
-            let eps_per_tet = per_tet_eps_scalar(materials, mesh.n_tets());
-            let eps_face: Vec<f64> = tri_ids
-                .iter()
-                .map(|&t| {
-                    mesh.tri_to_tet[t]
-                        .iter()
-                        .copied()
-                        .find(|&x| x != usize::MAX)
-                        .map(|e| eps_per_tet[e])
-                        .unwrap_or(1.0)
-                })
-                .collect();
             let n_pec_nodes = pm.on_pec.iter().filter(|&&b| b).count();
             let n_boundary_nodes = pm.on_boundary.iter().filter(|&&b| b).count();
             eprintln!(

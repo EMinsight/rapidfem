@@ -756,36 +756,43 @@ impl NumericalWavePort {
         C64::new(0.0, self.get_beta(k0))
     }
 
-    /// Modal wave impedance in SI ohms.
-    ///
-    /// Scalar TE/TM path: `NumericalMode::te_impedance(ω)` follows the
-    /// frequency-dependent `Z = Z_0 / √(1−(k_c/ω)²)` formula for TE
-    /// (`Z_0·√(1−(k_c/ω)²)` for TM) — physically correct for hollow guides.
-    /// We scale by `Z_0 = √(μ_0/ε_0)` to land in SI ohms.
-    ///
-    /// Vector hybrid (quasi-TEM) path: the per-mode `Flat { z: 1/n_eff }`
-    /// is the operator-unit wave impedance. For amplitude normalisation
-    /// against the FD assembly machinery we use `Z_0` directly (matches
-    /// `RectWaveguide::get_amplitude`'s `power · 4·Z_0 / area` convention,
-    /// which is what `sparam_waveport`'s mode projection is calibrated to);
-    /// using `Z_0/n_eff` instead leaves the mode-projection ratio mis-scaled
-    /// by `√n_eff` and S-parameters blow past the passivity bound.
+    /// Modal wave impedance in SI ohms — the field-ratio `|E_t|/|H_t|` of
+    /// the propagating mode. Scalar TE: `Z_0/√(1−(k_c/ω)²)`; scalar TM:
+    /// `Z_0·√(1−(k_c/ω)²)`; vector hybrid (quasi-TEM): `Z_0/n_eff`. Used
+    /// only by power-flux-based S-param paths (`sparam_field_power`,
+    /// `sparam_mode_power`); the mode-projection path (`sparam_waveport`)
+    /// is amplitude-invariant.
     pub fn z_mode(&self, k0: f64) -> f64 {
-        if self.is_vector {
-            Z0
-        } else {
-            let omega = k0 * C0;
-            let z_op = self.mode.te_impedance(omega);
-            z_op * Z0
-        }
+        let omega = k0 * C0;
+        self.mode.te_impedance(omega) * Z0
     }
 
     /// Power-normalised amplitude scaling for the unit-peak mode profile.
+    ///
+    /// The eigenmode's transverse power flux (Poynting integral) is, for
+    /// any propagating mode written as `exp(-jβz)`:
+    ///
+    /// ``S_z = (β / 2ωμ_0) · |E_t|²  =  (n_eff / 2 Z_0) · |E_t|²``
+    ///
+    /// independent of TE / TM / hybrid character, homogeneous or
+    /// inhomogeneous fill. Setting the unit-peak-normalised mode to
+    /// carry the user's `power` watts gives
+    ///
+    /// ``amp = √(2 Z_0 · power / n_eff(k0)) / mode_l2_norm``
+    ///
+    /// where `mode_l2_norm² = ∫ |E_t^unit|² dA`. Frequency dependence
+    /// enters only via `n_eff(k0)` (scalar TE/TM dispersion); the vector
+    /// path freezes `n_eff` at the eigensolve frequency `f_0`.
     fn amplitude(&self, k0: f64) -> f64 {
         if self.mode_l2_norm <= 0.0 {
             return 0.0;
         }
-        (2.0 * self.z_mode(k0) * self.power).sqrt() / self.mode_l2_norm
+        let beta = self.get_beta(k0);
+        if beta <= 0.0 {
+            return 0.0;
+        }
+        let n_eff_now = beta / k0;
+        (2.0 * Z0 * self.power / n_eff_now).sqrt() / self.mode_l2_norm
     }
 
     /// Mode profile at a global point, scaled so the incident wave carries
@@ -804,10 +811,13 @@ impl NumericalWavePort {
         [factor * C64::from(ex), factor * C64::from(ey), factor * C64::from(ez)]
     }
 
-    /// Construct from an already-solved `NumericalMode`. `face_nodes` and
-    /// `face_tris` describe the port-face triangulation in SI coordinates;
-    /// they're used to integrate `|e_t^unit|^2` over the port face for
-    /// power-normalised amplitude scaling.
+    /// Construct from an already-solved `NumericalMode`.
+    ///
+    /// Pre-computes `mode_l2_norm = √(∫ |E_t^unit|² dA)` over the port
+    /// face. Combined with the eigenmode's `n_eff` it gives the
+    /// Poynting-flux-per-unit-amplitude `S_z = (n_eff/2 Z_0) · |E_t|²`
+    /// that `amplitude(k0)` inverts to land the unit-peak mode at the
+    /// user-requested `power`.
     pub fn new(
         port_number: usize,
         power: f64,
@@ -817,9 +827,6 @@ impl NumericalWavePort {
         face_nodes: &[[f64; 3]],
         face_tris: &[[usize; 3]],
     ) -> Self {
-        // P1 quadrature, order 4 — same default as `sparam::surface_integral`
-        // call sites in simulation.rs. Hardcoded triangle rule here to avoid
-        // pulling in the full gaus_quad_tri dispatch just for one call.
         let dpts: Vec<Tri4Tuple> = crate::quadrature::gaus_quad_tri(4)
             .into_iter()
             .map(|q| (q[0], q[1], q[2], q[3]))
