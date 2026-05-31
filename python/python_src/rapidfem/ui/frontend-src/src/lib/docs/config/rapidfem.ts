@@ -119,27 +119,29 @@ print(result.frequencies.shape, result.sparams.shape)`
 	{
 		title: 'Time domain',
 		description:
-			'The same geometry compiles into a DGTD time-domain problem. Seed a field, watch the full transient evolve in 3D, advanced by exact CFL-free exponential time stepping.',
-		code: `import numpy as np
-import rapidfem as rf
+			'The same geometry compiles into a DGTD time-domain problem. Drive a port with a band-limited pulse, watch the full transient evolve in 3D, advanced by exact CFL-free exponential time stepping.',
+		code: `import rapidfem as rf
 
 # The same geometry / material / physics API as the FD backend
 g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
 air = g.box(22.86e-3, 10.16e-3, 30e-3, position=(-11.43e-3, -5.08e-3, 0),
             material=rf.Air())
-rf.PEC(*air.faces.unassigned)            # closed cavity, six PEC walls
+
+p_in  = rf.RectWaveguidePort(air.faces.min(axis="z"))
+p_out = rf.RectWaveguidePort(air.faces.max(axis="z"))
+rf.PEC(*air.faces.unassigned)
 
 g.mesh()
 
-# The same geometry compiles into a discontinuous-Galerkin TD problem
+# Discontinuous-Galerkin TD problem; CFL-free exponential time stepping
 ptd = rf.ProblemTD(g, order=2, flux="upwind")
 
-# Seed a field pulse, then propagate it through the cavity in time
-y0 = np.zeros(ptd.n_dof)
-y0[ptd.probe_dof((0, 0, 15e-3), field="E", component="y")] = 1.0
-traj = ptd.transient(y0, dt=3e-12, steps=400)   # exact, CFL-free stepping
+# Drive the input port with a band-limited TE10 pulse and propagate
+pulse = rf.GaussianPulse(t0=90e-12, tau=22e-12, f0=10e9)
+traj = ptd.transient(port=p_in, waveform=pulse, dt=3e-12, steps=320)
 
-rf.show(traj)                                   # 3D field animation in time`
+rf.show(traj)                                            # 3D field animation
+rf.show(ptd.port_signals(traj, [p_in, p_out], dt=3e-12)) # port waveforms`
 	}
 ];
 
