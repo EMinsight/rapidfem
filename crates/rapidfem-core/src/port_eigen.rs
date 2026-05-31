@@ -349,17 +349,16 @@ pub struct NumericalMode {
     /// Transverse electric field `E_t` at each cross-section node, in the
     /// port-plane `(u, v)` components — the **scalar**-path profile
     /// (`from_scalar`); `e_profile` barycentric-interpolates it. Empty
-    /// when the Whitney representation is used.
+    /// when the Ned-2 representation is used.
     e_uv_node: Vec<[f64; 2]>,
-    /// The **vector**-path profile (`from_vector`): the raw Nédélec edge
-    /// solution `e_edge` (one coefficient per global cross-section edge)
-    /// plus the per-triangle edge data, so `e_profile` evaluates the
-    /// Whitney field *directly* at each query point. This preserves the
-    /// concentrated quasi-TEM shape that area-averaging to nodes smears
-    /// away — the smearing makes the wave port degenerate to a uniform
-    /// (lumped-like) profile and undercount `|S21|`, so the direct eval
-    /// is essential for microstrip-class lines. `None` for scalar modes.
-    whitney: Option<(Vec<f64>, Vec<TriEdges>)>,
+    /// The **vector**-path profile (`from_vector`): the full Nédélec-2
+    /// second-kind edge + face coefficient set plus the per-triangle edge
+    /// data, so `e_profile` evaluates the degree-2 vector field *directly*
+    /// at each query point. This matches the basis the 3-D `Nedelec2Basis`
+    /// carries on a port face, so the mode projection in `sparam_waveport`
+    /// is exact (modulo Galerkin error) rather than the `O(h)` lossy
+    /// projection a Nédélec-1 / P1 hybrid would produce. `None` for scalar.
+    ned2: Option<Ned2ModeData>,
     /// Inverse peak `|E_t|` over the cross-section — the unit-peak
     /// normalisation.
     inv_peak: f64,
@@ -369,6 +368,18 @@ pub struct NumericalMode {
     cutoff: f64,
     /// Modal-impedance model for the forward/backward split.
     z_model: ImpedanceModel,
+}
+
+/// Per-mode Ned-2 coefficient bundle and per-triangle edge data needed for
+/// direct basis-function evaluation in `e_profile`.
+#[derive(Clone, Debug)]
+struct Ned2ModeData {
+    /// Ned-2 edge coefficients (2 per global edge).
+    e_edge: Vec<[f64; 2]>,
+    /// Ned-2 face (bubble) coefficients (2 per triangle, interior DOFs).
+    e_face: Vec<[f64; 2]>,
+    /// Per-triangle edge orientation / sign / length data.
+    tri_edges: Vec<TriEdges>,
 }
 
 /// How a numerical mode's wave impedance varies with frequency.
@@ -437,7 +448,7 @@ impl NumericalMode {
         NumericalMode {
             mesh,
             e_uv_node,
-            whitney: None,
+            ned2: None,
             inv_peak,
             w_hat,
             cutoff: mode.k_c,
@@ -446,22 +457,30 @@ impl NumericalMode {
     }
 
     /// Build a numerical mode from a full-vector hybrid solve. Stores the
-    /// raw edge solution and evaluates the Whitney field **directly** at
-    /// query points (no nodal averaging), preserving the concentrated
-    /// quasi-TEM shape. Zero cutoff, flat impedance `1/n_eff`.
+    /// Ned-2 second-kind edge + face coefficients and evaluates the
+    /// degree-2 vector field **directly** at query points (no nodal
+    /// averaging), so the mode projection in the FD `sparam_waveport`
+    /// matches the 3-D `Nedelec2Basis` representation exactly. Zero
+    /// cutoff, flat impedance `1/n_eff`.
     pub fn from_vector(mesh: PortMesh2D, mode: &VectorMode) -> NumericalMode {
         let z = if mode.n_eff > 0.0 { 1.0 / mode.n_eff } else { 1.0 };
         let (_n_edge, tri_edges, _use) = build_edges(&mesh);
-        let e_edge = mode.e_edge.clone();
+        let e_edge = mode.e_edge_ned2.clone();
+        let e_face = mode.e_face_ned2.clone();
         // Unit-peak normalisation: sample |E_t| at every triangle's three
-        // vertices via the direct Whitney sum and take the max.
+        // vertices via the full Ned-2 evaluation and take the max. Two
+        // edges of the triangle meet at each corner so this catches the
+        // dominant edge-driven peaks; bubble (face) DOFs vanish there but
+        // also produce no extra peak above the nodal sum.
         let mut peak = 0.0_f64;
         for (ti, &t) in mesh.tris.iter().enumerate() {
             let (_a, g) = mesh.tri_geom(t);
             for vloc in 0..3 {
                 let mut l = [0.0; 3];
                 l[vloc] = 1.0;
-                let e = whitney_at(&tri_edges[ti], &g, &e_edge, l);
+                let e = ned2_et_at(
+                    &tri_edges[ti], &g, &e_edge, &e_face[ti], ti, l,
+                );
                 peak = peak.max((e[0] * e[0] + e[1] * e[1]).sqrt());
             }
         }
@@ -470,7 +489,7 @@ impl NumericalMode {
         NumericalMode {
             mesh,
             e_uv_node: Vec::new(),
-            whitney: Some((e_edge, tri_edges)),
+            ned2: Some(Ned2ModeData { e_edge, e_face, tri_edges }),
             inv_peak,
             w_hat,
             cutoff: 0.0,
@@ -545,11 +564,11 @@ impl NumericalMode {
     pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
         let uv = self.to_uv(x);
         let (ti, l) = self.locate(uv);
-        let e: [f64; 2] = match &self.whitney {
-            Some((e_edge, tri_edges)) => {
+        let e: [f64; 2] = match &self.ned2 {
+            Some(nd) => {
                 let t = self.mesh.tris[ti];
                 let (_a, g) = self.mesh.tri_geom(t);
-                whitney_at(&tri_edges[ti], &g, e_edge, l)
+                ned2_et_at(&nd.tri_edges[ti], &g, &nd.e_edge, &nd.e_face[ti], ti, l)
             }
             None => {
                 let t = self.mesh.tris[ti];
@@ -587,12 +606,22 @@ pub struct VectorMode {
     /// Transverse electric field `E_t` at each cross-section node, in the
     /// port-plane `(u, v)` components — recovered (area-averaged) from the
     /// edge-element solution. Convenience for inspection; the sharp profile
-    /// uses `e_edge` directly.
+    /// uses the Ned-2 / face / P2 coefficient arrays directly.
     pub e_uv_node: Vec<[f64; 2]>,
-    /// Raw Nédélec edge solution — one coefficient per global cross-section
-    /// edge (zero on constrained PEC edges). Feeds the direct Whitney-field
-    /// evaluation in [`NumericalMode::from_vector`].
-    pub e_edge: Vec<f64>,
+    /// Nédélec-2 second-kind edge solution — 2 coefficients per global
+    /// cross-section edge `[mode0, mode1]`. Mode 0 is "λ_a-weighted", mode
+    /// 1 is "λ_b-weighted" where (a, b) is the edge's canonical endpoint
+    /// ordering. Zero on PEC-constrained edges.
+    pub e_edge_ned2: Vec<[f64; 2]>,
+    /// Nédélec-2 face (bubble) coefficients — 2 per triangle. These are
+    /// interior degrees of freedom not shared with neighbours.
+    pub e_face_ned2: Vec<[f64; 2]>,
+    /// Longitudinal field `E_z` coefficients on the P2 vertex DOFs (one
+    /// per global cross-section node). Zero on PEC nodes.
+    pub e_z_node: Vec<f64>,
+    /// Longitudinal `E_z` coefficients on the P2 edge-midpoint DOFs (one
+    /// per global edge). Zero on PEC edges.
+    pub e_z_edge: Vec<f64>,
 }
 
 /// Per-triangle edge data for the Whitney (Nédélec) assembly: the global
@@ -882,16 +911,41 @@ pub fn solve_vector_modes(
             }
         }
     }
+    // DOF numbering for the Ned-2 + P2 hybrid eigenproblem.
+    //
+    // Block 1 — transverse Et (Ned-2 second-kind, degree 2):
+    //   2 coefs per cross-section edge (PEC-constrained edges drop both)
+    //   2 coefs per triangle (interior face bubbles, never PEC)
+    // Block 2 — longitudinal Ez (P2 Lagrange):
+    //   1 coef per cross-section node (PEC nodes drop)
+    //   1 coef per edge midpoint (PEC edges drop)
+    //
+    // Reduced numbering compresses the free DOFs into a contiguous range
+    // 0..ndof; constrained DOFs map to `usize::MAX`.
+
     let edge_free: Vec<usize> =
         (0..n_edge).filter(|&e| !edge_pec[e]).collect();
     let node_free: Vec<usize> =
         (0..n_node).filter(|&i| !node_pec[i]).collect();
     let ne = edge_free.len();
     let nn = node_free.len();
-    let ndof = ne + nn;
+    let n_tri = mesh.tris.len();
+    // Block sizes in the reduced system.
+    let n_et_edge = 2 * ne;             // Et edge DOFs
+    let n_et_face = 2 * n_tri;          // Et face bubble DOFs
+    let n_ez_node = nn;                 // Ez vertex DOFs
+    let n_ez_edge = ne;                 // Ez edge-midpoint DOFs
+    let n_et = n_et_edge + n_et_face;
+    let n_ez = n_ez_node + n_ez_edge;
+    let ndof = n_et + n_ez;
     if ndof == 0 {
         return Vec::new();
     }
+    // Offset helpers for the reduced index of each DOF kind.
+    let off_et_edge = 0usize;
+    let off_et_face = off_et_edge + n_et_edge;
+    let off_ez_node = off_et_face + n_et_face;
+    let off_ez_edge = off_ez_node + n_ez_node;
     let mut edge_red = vec![usize::MAX; n_edge];
     for (r, &g) in edge_free.iter().enumerate() {
         edge_red[g] = r;
@@ -901,98 +955,170 @@ pub fn solve_vector_modes(
         node_red[g] = r;
     }
 
+    // Per-triangle 14-DOF local layout (matches the basis-evaluator comment
+    // above): [0..6]=edge·mode, [6..8]=face·mode, [8..11]=P2 vertex,
+    // [11..14]=P2 edge-midpoint. Returns the reduced global DOF index for
+    // a local DOF (or `MAX` when constrained out).
+    let local_to_reduced = |t: [usize; 3], te: &TriEdges, k: usize| -> usize {
+        match k {
+            0..=5 => {
+                // edge DOFs: edge = k/2, mode = k%2
+                let e_loc = k / 2;
+                let m = k % 2;
+                let r = edge_red[te.gidx[e_loc]];
+                if r == usize::MAX { usize::MAX } else { off_et_edge + 2 * r + m }
+            }
+            6..=7 => {
+                // face DOFs: never PEC; private per triangle.
+                let m = k - 6;
+                let ti_local = mesh.tris.iter().position(|tt| tt == &t).unwrap();
+                off_et_face + 2 * ti_local + m
+            }
+            8..=10 => {
+                // P2 vertex DOFs: dof = k − 8 → local vertex index.
+                let v_loc = k - 8;
+                let r = node_red[t[v_loc]];
+                if r == usize::MAX { usize::MAX } else { off_ez_node + r }
+            }
+            11..=13 => {
+                // P2 edge-midpoint DOFs: dof = k − 11 → local edge index.
+                let e_loc = k - 11;
+                let r = edge_red[te.gidx[e_loc]];
+                if r == usize::MAX { usize::MAX } else { off_ez_edge + r }
+            }
+            _ => unreachable!(),
+        }
+    };
+
     let mut a = vec![0.0f64; ndof * ndof];
     let mut b = vec![0.0f64; ndof * ndof];
     let inv_k0sq = 1.0 / (k0 * k0);
-    const QP: [[f64; 3]; 3] = [
-        [2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0],
-        [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
-        [1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0],
-    ];
+
+    // Per-tri evaluation. For each quadrature point we collect:
+    //   - tan[k]    = transverse basis value at the QP, k in 0..8
+    //   - curl[k]   = scalar curl_z at the QP, k in 0..8 (linear in l)
+    //   - p2[k]     = scalar P2 value at the QP, k in 0..6
+    //   - p2grad[k] = ∇P2 value at the QP, k in 0..6
     for (ti, &t) in mesh.tris.iter().enumerate() {
         let (area, g) = mesh.tri_geom(t);
         let er = eps_r[ti];
         let te = &tri_edges[ti];
-        let ab = |e: usize| ((e + 1) % 3, (e + 2) % 3);
-        let curl = |e: usize| -> f64 {
-            let (a, b) = ab(e);
-            let cz = g[a][0] * g[b][1] - g[a][1] * g[b][0];
-            te.sign[e] * te.len[e] * 2.0 * cz
-        };
-        let w_at = |e: usize, l: [f64; 3]| -> [f64; 2] {
-            let (a, b) = ab(e);
-            let s = te.sign[e] * te.len[e];
-            [
-                s * (l[a] * g[b][0] - l[b] * g[a][0]),
-                s * (l[a] * g[b][1] - l[b] * g[a][1]),
-            ]
-        };
-        let edof = |e: usize| edge_red[te.gidx[e]];
-        let ndof_of = |n: usize| {
-            let r = node_red[t[n]];
-            if r == usize::MAX { usize::MAX } else { ne + r }
-        };
 
-        for i in 0..3 {
-            let di = edof(i);
-            if di == usize::MAX {
-                continue;
+        // Resolve all 14 local DOFs once per element.
+        let mut dofs = [usize::MAX; 14];
+        for k in 0..6 {
+            // edges
+            let e_loc = k / 2;
+            let m = k % 2;
+            let r = edge_red[te.gidx[e_loc]];
+            dofs[k] = if r == usize::MAX { usize::MAX } else { off_et_edge + 2 * r + m };
+        }
+        for m in 0..2 {
+            dofs[6 + m] = off_et_face + 2 * ti + m;
+        }
+        for v_loc in 0..3 {
+            let r = node_red[t[v_loc]];
+            dofs[8 + v_loc] = if r == usize::MAX { usize::MAX } else { off_ez_node + r };
+        }
+        for e_loc in 0..3 {
+            let r = edge_red[te.gidx[e_loc]];
+            dofs[11 + e_loc] = if r == usize::MAX { usize::MAX } else { off_ez_edge + r };
+        }
+
+        // Precompute basis function values at all 7 quadrature points.
+        let nqp = NED2_QPTS_DEG5.len();
+        let mut tan_qp = vec![[[0.0f64; 2]; 8]; nqp];
+        let mut curl_qp = vec![[0.0f64; 8]; nqp];
+        let mut p2_qp = vec![[0.0f64; 6]; nqp];
+        let mut p2grad_qp = vec![[[0.0f64; 2]; 6]; nqp];
+        for (qi, &(_w, l1, l2, l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+            let l = [l1, l2, l3];
+            // Et basis: 6 edge + 2 face = 8 functions.
+            for e in 0..3 {
+                tan_qp[qi][2 * e]     = ned2_edge_basis(e, 0, te, &g, l);
+                tan_qp[qi][2 * e + 1] = ned2_edge_basis(e, 1, te, &g, l);
+                curl_qp[qi][2 * e]     = ned2_edge_curl(e, 0, te, &g, l);
+                curl_qp[qi][2 * e + 1] = ned2_edge_curl(e, 1, te, &g, l);
             }
-            let ci = curl(i);
-            for j in 0..3 {
-                let dj = edof(j);
-                if dj == usize::MAX {
-                    continue;
+            tan_qp[qi][6] = ned2_face_basis(0, te, &g, l);
+            tan_qp[qi][7] = ned2_face_basis(1, te, &g, l);
+            curl_qp[qi][6] = ned2_face_curl(0, te, &g, l);
+            curl_qp[qi][7] = ned2_face_curl(1, te, &g, l);
+            // E_z basis: 6 P2 functions.
+            for k in 0..6 {
+                p2_qp[qi][k]     = p2_basis(k, l);
+                p2grad_qp[qi][k] = p2_grad(k, &g, l);
+            }
+        }
+
+        // Block 1: Et × Et (8 × 8). For each i, j ∈ 0..8:
+        //   mass_ij  = ∫ φ_i · φ_j dA
+        //   stiff_ij = ∫ (∇×φ_i) · (∇×φ_j) dA
+        //   A += stiff/k0² − er·mass
+        //   B += −mass/k0²
+        for i in 0..8 {
+            let di = dofs[i];
+            if di == usize::MAX { continue; }
+            for j in 0..8 {
+                let dj = dofs[j];
+                if dj == usize::MAX { continue; }
+                let mut mass = 0.0;
+                let mut stiff = 0.0;
+                for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+                    let wi = tan_qp[qi][i];
+                    let wj = tan_qp[qi][j];
+                    mass  += w * (wi[0] * wj[0] + wi[1] * wj[1]);
+                    stiff += w * curl_qp[qi][i] * curl_qp[qi][j];
                 }
-                let cj = curl(j);
-                let mut wdot = 0.0;
-                for q in QP {
-                    let wi = w_at(i, q);
-                    let wj = w_at(j, q);
-                    wdot += (wi[0] * wj[0] + wi[1] * wj[1]) / 3.0;
-                }
-                let mass = area * wdot;
-                let stiff = area * ci * cj;
+                mass  *= area;
+                stiff *= area;
                 a[di * ndof + dj] += stiff * inv_k0sq - er * mass;
                 b[di * ndof + dj] += -mass * inv_k0sq;
             }
         }
-        for i in 0..3 {
-            for jn in 0..3 {
-                let di = edof(i);
-                let dj = ndof_of(jn);
+
+        // Block 2a: Et (rows) × Ez (cols), via ∫ φ_i · ∇N_j dA  (A-only).
+        // Block 2b: Ez (rows) × Et (cols), via er · ∫ ∇N_i · φ_j dA  (A-only).
+        for i in 0..8 {
+            let di = dofs[i];
+            for jn in 0..6 {
+                let dj = dofs[8 + jn];
                 if di != usize::MAX && dj != usize::MAX {
                     let mut val = 0.0;
-                    for q in QP {
-                        let wi = w_at(i, q);
-                        val += (g[jn][0] * wi[0] + g[jn][1] * wi[1]) / 3.0;
+                    for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+                        let wi = tan_qp[qi][i];
+                        let pg = p2grad_qp[qi][jn];
+                        val += w * (wi[0] * pg[0] + wi[1] * pg[1]);
                     }
                     a[di * ndof + dj] += area * val;
                 }
-                let dii = ndof_of(i);
-                let djj = edof(jn);
+                let dii = dofs[8 + jn];   // re-use jn as i in transpose
+                let djj = dofs[i];
                 if dii != usize::MAX && djj != usize::MAX {
                     let mut val = 0.0;
-                    for q in QP {
-                        let wj = w_at(jn, q);
-                        val += (wj[0] * g[i][0] + wj[1] * g[i][1]) / 3.0;
+                    for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+                        let wj = tan_qp[qi][i];
+                        let pg = p2grad_qp[qi][jn];
+                        val += w * (pg[0] * wj[0] + pg[1] * wj[1]);
                     }
                     a[dii * ndof + djj] += area * er * val;
                 }
             }
         }
-        for i in 0..3 {
-            let di = ndof_of(i);
-            if di == usize::MAX {
-                continue;
-            }
-            for j in 0..3 {
-                let dj = ndof_of(j);
-                if dj == usize::MAX {
-                    continue;
+
+        // Block 3: Ez × Ez (6 × 6). A += −er·k0²·∫ N_i·N_j dA.
+        for i in 0..6 {
+            let di = dofs[8 + i];
+            if di == usize::MAX { continue; }
+            for j in 0..6 {
+                let dj = dofs[8 + j];
+                if dj == usize::MAX { continue; }
+                let mut mass = 0.0;
+                for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+                    mass += w * p2_qp[qi][i] * p2_qp[qi][j];
                 }
-                let mij = area / 12.0 * if i == j { 2.0 } else { 1.0 };
-                a[di * ndof + dj] += -er * k0 * k0 * mij;
+                mass *= area;
+                a[di * ndof + dj] += -er * k0 * k0 * mass;
             }
         }
     }
@@ -1025,7 +1151,7 @@ pub fn solve_vector_modes(
     // fastest local plane wave). Negative λ are evanescent / non-physical.
     let eps_max = eps_r.iter().cloned().fold(1.0_f64, f64::max);
     let k0sq = k0 * k0;
-    let mut found: Vec<(f64, usize)> = Vec::new();
+    let mut found: Vec<(f64, usize, f64)> = Vec::new();
     for k in 0..ndof {
         let nu = evals[k];
         if nu.im.abs() > 1e-6 * (nu.re.abs() + 1e-30) {
@@ -1036,42 +1162,120 @@ pub fn solve_vector_modes(
         }
         let lam = sigma + 1.0 / nu.re; // = β²
         let neff2 = lam / k0sq;
+        if !(neff2 > 1e-6 && neff2 <= eps_max + 1e-3) {
+            continue;
+        }
+
+        // Spurious-mode filter. The Ned-2 + P2 basis has a large discrete
+        // gradient null space (Et = ∇φ for φ ∈ P2 is exactly representable
+        // in the Et space, with curl ≡ 0). These curl-free modes pick up
+        // numerical eigenvalues near ε_r·k0² and pollute the spectrum
+        // above the dominant TE/TEM mode. We reject candidates whose
+        // curl-to-mass ratio is below `CURL_FLOOR` — a real propagating
+        // mode is well above 0.1, a spurious one sits at machine epsilon.
+        let mut curl2 = 0.0_f64;
+        let mut mass = 0.0_f64;
+        for (ti, &t) in mesh.tris.iter().enumerate() {
+            let (area, g) = mesh.tri_geom(t);
+            let te = &tri_edges[ti];
+            // Local DOF mapping (same as in assembly).
+            let mut dofs_loc = [usize::MAX; 14];
+            for kk in 0..6 {
+                let e_loc = kk / 2;
+                let m = kk % 2;
+                let r = edge_red[te.gidx[e_loc]];
+                dofs_loc[kk] = if r == usize::MAX { usize::MAX } else { off_et_edge + 2 * r + m };
+            }
+            for m in 0..2 {
+                dofs_loc[6 + m] = off_et_face + 2 * ti + m;
+            }
+            // Sample at the barycentre (cheap, sufficient for a quality flag).
+            let l = [1.0 / 3.0; 3];
+            let mut tan = [0.0f64; 2];
+            let mut cz = 0.0_f64;
+            for ii in 0..8 {
+                let di = dofs_loc[ii];
+                if di == usize::MAX { continue; }
+                let coef = evecs[(di, k)].re;
+                let mode = ii % 2;
+                if ii < 6 {
+                    let e_loc = ii / 2;
+                    let phi = ned2_edge_basis(e_loc, mode, te, &g, l);
+                    tan[0] += coef * phi[0];
+                    tan[1] += coef * phi[1];
+                    cz += coef * ned2_edge_curl(e_loc, mode, te, &g, l);
+                } else {
+                    let phi = ned2_face_basis(mode, te, &g, l);
+                    tan[0] += coef * phi[0];
+                    tan[1] += coef * phi[1];
+                    cz += coef * ned2_face_curl(mode, te, &g, l);
+                }
+            }
+            curl2 += area * cz * cz;
+            mass  += area * (tan[0] * tan[0] + tan[1] * tan[1]);
+        }
+        // Normalised curl energy. For a real propagating mode this is
+        // bounded below by k_c² (the cutoff wavenumber squared); for the
+        // spurious gradient modes it sits at 1e-12 or smaller after the
+        // shift-invert solve.
+        const CURL_FLOOR: f64 = 1e-3;
+        let curl_ratio = if mass > 0.0 { curl2 / mass } else { 0.0 };
         if std::env::var("PORT_EIGEN_DEBUG").is_ok() {
-            eprintln!("  ν={:.4e}  β²={:.4}  n_eff²={:.4}", nu.re, lam, neff2);
+            eprintln!("  ν={:.4e}  β²={:.4}  n_eff²={:.4}  curl_ratio={:.3e}",
+                nu.re, lam, neff2, curl_ratio);
         }
-        if neff2 > 1e-6 && neff2 <= eps_max + 1e-3 {
-            found.push((neff2, k));
+        if curl_ratio < CURL_FLOOR * k0sq {
+            continue;
         }
+        found.push((neff2, k, curl_ratio));
     }
     found.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
     found
         .into_iter()
         .take(n_modes)
-        .map(|(neff2, k)| {
+        .map(|(neff2, k, _curl_ratio)| {
+            // Scatter the reduced eigenvector back into per-DOF-kind arrays.
+            // Constrained DOFs stay at zero (PEC condition).
+            let mut e_edge_ned2 = vec![[0.0f64; 2]; n_edge];
+            for (gi, &r) in edge_red.iter().enumerate() {
+                if r != usize::MAX {
+                    e_edge_ned2[gi][0] = evecs[(off_et_edge + 2 * r,     k)].re;
+                    e_edge_ned2[gi][1] = evecs[(off_et_edge + 2 * r + 1, k)].re;
+                }
+            }
+            let mut e_face_ned2 = vec![[0.0f64; 2]; n_tri];
+            for ti in 0..n_tri {
+                e_face_ned2[ti][0] = evecs[(off_et_face + 2 * ti,     k)].re;
+                e_face_ned2[ti][1] = evecs[(off_et_face + 2 * ti + 1, k)].re;
+            }
+            let mut e_z_node = vec![0.0f64; n_node];
+            for (gi, &r) in node_red.iter().enumerate() {
+                if r != usize::MAX {
+                    e_z_node[gi] = evecs[(off_ez_node + r, k)].re;
+                }
+            }
+            let mut e_z_edge = vec![0.0f64; n_edge];
+            for (gi, &r) in edge_red.iter().enumerate() {
+                if r != usize::MAX {
+                    e_z_edge[gi] = evecs[(off_ez_edge + r, k)].re;
+                }
+            }
+
+            // Convenience nodal Et profile (area-weighted average of the
+            // Ned-2 evaluation at each triangle's corners) — kept for the
+            // diagnostics/inspection path used by some tests.
             let mut acc = vec![[0.0f64; 2]; n_node];
             let mut wsum = vec![0.0f64; n_node];
             for (ti, &t) in mesh.tris.iter().enumerate() {
                 let (area, g) = mesh.tri_geom(t);
                 let te = &tri_edges[ti];
-                let ab = |e: usize| ((e + 1) % 3, (e + 2) % 3);
                 for vloc in 0..3 {
                     let mut l = [0.0; 3];
                     l[vloc] = 1.0;
-                    let mut et = [0.0f64; 2];
-                    for e in 0..3 {
-                        let dr = edge_red[te.gidx[e]];
-                        if dr == usize::MAX {
-                            continue;
-                        }
-                        let coeff = evecs[(dr, k)].re;
-                        let (a2, b2) = ab(e);
-                        let s = te.sign[e] * te.len[e];
-                        et[0] +=
-                            coeff * s * (l[a2] * g[b2][0] - l[b2] * g[a2][0]);
-                        et[1] +=
-                            coeff * s * (l[a2] * g[b2][1] - l[b2] * g[a2][1]);
-                    }
+                    let et = ned2_et_at(
+                        te, &g, &e_edge_ned2, &e_face_ned2[ti], ti, l,
+                    );
                     acc[t[vloc]][0] += area * et[0];
                     acc[t[vloc]][1] += area * et[1];
                     wsum[t[vloc]] += area;
@@ -1086,17 +1290,47 @@ pub fn solve_vector_modes(
                     }
                 })
                 .collect();
-            // Raw edge solution scattered to global edges (0 on PEC edges),
-            // for the sharp direct-Whitney profile evaluation downstream.
-            let mut e_edge = vec![0.0f64; n_edge];
-            for (g, &r) in edge_red.iter().enumerate() {
-                if r != usize::MAX {
-                    e_edge[g] = evecs[(r, k)].re;
-                }
+
+            VectorMode {
+                n_eff: neff2.sqrt(),
+                k0,
+                e_uv_node,
+                e_edge_ned2,
+                e_face_ned2,
+                e_z_node,
+                e_z_edge,
             }
-            VectorMode { n_eff: neff2.sqrt(), k0, e_uv_node, e_edge }
         })
         .collect()
+}
+
+/// Evaluate the full Ned-2 transverse field `E_t` at barycentric `l` inside
+/// triangle `ti`. Sums all 6 edge + 2 face contributions using the per-edge
+/// and per-face coefficient arrays.
+#[inline]
+fn ned2_et_at(
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    e_edge_ned2: &[[f64; 2]],
+    e_face_ned2_tri: &[f64; 2],
+    _ti: usize,
+    l: [f64; 3],
+) -> [f64; 2] {
+    let mut e = [0.0f64; 2];
+    for el in 0..3 {
+        let coef = &e_edge_ned2[te.gidx[el]];
+        for m in 0..2 {
+            let phi = ned2_edge_basis(el, m, te, g, l);
+            e[0] += coef[m] * phi[0];
+            e[1] += coef[m] * phi[1];
+        }
+    }
+    for m in 0..2 {
+        let phi = ned2_face_basis(m, te, g, l);
+        e[0] += e_face_ned2_tri[m] * phi[0];
+        e[1] += e_face_ned2_tri[m] * phi[1];
+    }
+    e
 }
 
 #[cfg(test)]
