@@ -605,6 +605,186 @@ struct TriEdges {
     len: [f64; 3],
 }
 
+// =====================================================================
+// Nédélec-2 (second-kind) 2-D basis on a triangle — basis evaluators.
+//
+// Per-triangle local DOF layout (8 transverse + 6 P2-nodal for E_z = 14):
+//   [0..6]   = edge DOFs (3 edges x 2 modes per edge)
+//              local index 2*e + m where e in 0..3, m in 0..2
+//              edge e joins local vertices ((e+1)%3, (e+2)%3); mode 0 is
+//              "λ_a-weighted", mode 1 is "λ_b-weighted".
+//   [6..8]   = face DOFs (2 interior bubble modes; per-triangle, not shared)
+//   [8..11]  = P2 vertex DOFs for E_z (one per local vertex 0,1,2)
+//   [11..14] = P2 edge-midpoint DOFs for E_z (one per local edge 0,1,2)
+//
+// Edge sign and length come from `TriEdges`. Face DOFs are private to the
+// triangle (no orientation/sign tracking needed). P2 vertex DOFs alias the
+// PortMesh2D node index; P2 edge midpoints alias the global edge index.
+//
+// The Ned-2 transverse basis functions are degree-2 vector polynomials:
+//   edge mode 0:   φ_e^(0)(l) = sign·len · l[a] · W_e(l)
+//   edge mode 1:   φ_e^(1)(l) = sign·len · l[b] · W_e(l)
+//   face mode 0:   φ_f^(0)(l) = |edge_1| · l[1] · W_(edge_1)(l)
+//   face mode 1:   φ_f^(1)(l) = |edge_2| · l[2] · W_(edge_2)(l)
+// where W_e(l) = l[a] · g[b] - l[b] · g[a] is the unsigned Whitney basis
+// for local edge e (endpoints a, b), g[k] = ∇λ_k.
+//
+// The curl in 2D is the scalar z-component, ∇×φ_z = ∂φ_y/∂x − ∂φ_x/∂y:
+//   ∇×W_e (z)            = 2·c_ab               (constant, c_ab = (g[a]×g[b])_z)
+//   ∇×(λ_a · W_e) (z)   = 3·λ_a · c_ab          (linear in λ_a)
+//   ∇×(λ_b · W_e) (z)   = 3·λ_b · c_ab          (linear in λ_b)
+// =====================================================================
+
+/// 2-D wedge (z-component of the 3-D cross product) of two in-plane
+/// vectors `a` and `b`, i.e. `a_x · b_y − a_y · b_x`.
+#[inline]
+fn wedge2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[1] - a[1] * b[0]
+}
+
+/// Evaluate the Ned-2 second-kind transverse basis function for one of the
+/// triangle's 6 edge DOFs at barycentric coordinates `l`.
+///
+/// `te.sign[e] · te.len[e]` is the orientation-corrected Whitney scaling
+/// (kept identical to the existing Whitney path in `whitney_at`). `mode`
+/// is 0 ("λ_a-weighted") or 1 ("λ_b-weighted"); `a = (e+1)%3`,
+/// `b = (e+2)%3`.
+#[inline]
+fn ned2_edge_basis(
+    e: usize,
+    mode: usize,
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    l: [f64; 3],
+) -> [f64; 2] {
+    let a = (e + 1) % 3;
+    let b = (e + 2) % 3;
+    let weight = if mode == 0 { l[a] } else { l[b] };
+    let s = te.sign[e] * te.len[e] * weight;
+    [
+        s * (l[a] * g[b][0] - l[b] * g[a][0]),
+        s * (l[a] * g[b][1] - l[b] * g[a][1]),
+    ]
+}
+
+/// Scalar curl (z-component) of the Ned-2 edge basis function at
+/// barycentric `l`. Linear in `l` since the basis is quadratic.
+#[inline]
+fn ned2_edge_curl(
+    e: usize,
+    mode: usize,
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    l: [f64; 3],
+) -> f64 {
+    let a = (e + 1) % 3;
+    let b = (e + 2) % 3;
+    let c_ab = wedge2(g[a], g[b]);
+    let weight = if mode == 0 { l[a] } else { l[b] };
+    3.0 * te.sign[e] * te.len[e] * weight * c_ab
+}
+
+/// Evaluate one of the 2 face (bubble) basis functions at barycentric `l`.
+/// `mode` is 0 ("|edge_1|·λ_1·W_(edge_1)") or 1 ("|edge_2|·λ_2·W_(edge_2)").
+/// These bubbles vanish on the triangle's boundary and live only inside.
+#[inline]
+fn ned2_face_basis(
+    mode: usize,
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    l: [f64; 3],
+) -> [f64; 2] {
+    // Face mode 0 uses local edge 1 (endpoints 2, 0), weighted by λ_1.
+    // Face mode 1 uses local edge 2 (endpoints 0, 1), weighted by λ_2.
+    let (e, weight_node) = if mode == 0 { (1usize, 1usize) } else { (2usize, 2usize) };
+    let a = (e + 1) % 3;
+    let b = (e + 2) % 3;
+    // Face DOFs are interior bubbles, so no orientation sign — just length.
+    let s = te.len[e] * l[weight_node];
+    [
+        s * (l[a] * g[b][0] - l[b] * g[a][0]),
+        s * (l[a] * g[b][1] - l[b] * g[a][1]),
+    ]
+}
+
+#[inline]
+fn ned2_face_curl(
+    mode: usize,
+    te: &TriEdges,
+    g: &[[f64; 2]; 3],
+    l: [f64; 3],
+) -> f64 {
+    let (e, weight_node) = if mode == 0 { (1usize, 1usize) } else { (2usize, 2usize) };
+    let a = (e + 1) % 3;
+    let b = (e + 2) % 3;
+    let c_ab = wedge2(g[a], g[b]);
+    3.0 * te.len[e] * l[weight_node] * c_ab
+}
+
+// =====================================================================
+// P2 Lagrange nodal basis for the longitudinal E_z component.
+//
+// Per-triangle local DOF layout (6 nodal DOFs):
+//   [0..3] = vertex values at local vertices 0, 1, 2:
+//              N_v(l) = λ_v · (2λ_v − 1)
+//   [3..6] = edge-midpoint values at midpoints of local edges 0, 1, 2:
+//              N_e(l) = 4 · λ_a · λ_b   where (a,b) are edge e's endpoints
+//
+// Gradients are linear in λ, so the curl-like contribution stays in the
+// degree-2 mass / degree-1 stiffness range that a 5-point Gauss quadrature
+// integrates exactly.
+// =====================================================================
+
+/// Evaluate one of the 6 P2 Lagrange basis functions at barycentric `l`.
+/// Index 0..3 = vertex DOFs (vertex 0, 1, 2). Index 3..6 = edge-midpoint
+/// DOFs (edge 0, 1, 2).
+#[inline]
+fn p2_basis(dof: usize, l: [f64; 3]) -> f64 {
+    if dof < 3 {
+        let v = dof;
+        l[v] * (2.0 * l[v] - 1.0)
+    } else {
+        let e = dof - 3;
+        let a = (e + 1) % 3;
+        let b = (e + 2) % 3;
+        4.0 * l[a] * l[b]
+    }
+}
+
+/// Gradient of the P2 Lagrange basis function with respect to (x, y).
+#[inline]
+fn p2_grad(dof: usize, g: &[[f64; 2]; 3], l: [f64; 3]) -> [f64; 2] {
+    if dof < 3 {
+        // ∇(λ_v · (2λ_v − 1)) = (4λ_v − 1) · ∇λ_v
+        let v = dof;
+        let s = 4.0 * l[v] - 1.0;
+        [s * g[v][0], s * g[v][1]]
+    } else {
+        // ∇(4 λ_a λ_b) = 4 (λ_a · ∇λ_b + λ_b · ∇λ_a)
+        let e = dof - 3;
+        let a = (e + 1) % 3;
+        let b = (e + 2) % 3;
+        [
+            4.0 * (l[a] * g[b][0] + l[b] * g[a][0]),
+            4.0 * (l[a] * g[b][1] + l[b] * g[a][1]),
+        ]
+    }
+}
+
+/// Strang's 7-point Gauss-Dunavant quadrature on the reference triangle —
+/// exact for polynomials up to degree 5. Each entry is `(weight, l0, l1, l2)`
+/// with weights summing to 1 (multiply integrand by triangle area to get the
+/// actual surface integral). Used by the Ned-2 + P2 element-matrix assembly.
+const NED2_QPTS_DEG5: [(f64, f64, f64, f64); 7] = [
+    (0.225,                  1.0/3.0,            1.0/3.0,            1.0/3.0),
+    (0.13239415278850618,    0.05971587178976982, 0.4701420641051151,  0.4701420641051151),
+    (0.13239415278850618,    0.4701420641051151,  0.05971587178976982, 0.4701420641051151),
+    (0.13239415278850618,    0.4701420641051151,  0.4701420641051151,  0.05971587178976982),
+    (0.12593918054482717,    0.7974269853530873,  0.10128650732345633, 0.10128650732345633),
+    (0.12593918054482717,    0.10128650732345633, 0.7974269853530873,  0.10128650732345633),
+    (0.12593918054482717,    0.10128650732345633, 0.10128650732345633, 0.7974269853530873),
+];
+
 /// Evaluate the transverse Whitney (edge-element) field `E_t = Σ_e e_edge[e]
 /// · W_e` at barycentric coordinates `l` inside one triangle, given its
 /// edge data and constant P1 gradients `g`. Returns the `(u, v)` components.
@@ -1193,6 +1373,95 @@ mod tests {
         let n_eff = modes[0].n_eff;
         assert!(n_eff > 1.0 && n_eff < 3.55_f64.sqrt(),
             "n_eff = {n_eff:.3} not bracketed (1, 1.884)");
+    }
+
+    /// Reference triangle for basis-evaluator tests: v0=(0,0), v1=(1,0),
+    /// v2=(0,1). Returns the per-edge TriEdges (all `sign = 1`, edge lengths
+    /// √2, 1, 1 in the (0,1,2) local-edge ordering) and the P1 gradients.
+    fn ref_tri() -> (TriEdges, [[f64; 2]; 3]) {
+        let te = TriEdges {
+            gidx: [0, 1, 2],
+            sign: [1.0, 1.0, 1.0],
+            len:  [(2.0_f64).sqrt(), 1.0, 1.0],
+        };
+        // ∇λ_0 = (−1,−1), ∇λ_1 = (1, 0), ∇λ_2 = (0, 1)
+        let g = [[-1.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+        (te, g)
+    }
+
+    #[test]
+    fn ned2_edge_basis_matches_analytic() {
+        let (te, g) = ref_tri();
+        // Barycentre l = (1/3, 1/3, 1/3) → physical point (1/3, 1/3).
+        let l = [1.0 / 3.0; 3];
+        // Edge 0 (a=1, b=2), mode 0 ("λ_a-weighted"):
+        //   W_0(l) = l[1]·∇λ_2 − l[2]·∇λ_1 = (1/3)·(0,1) − (1/3)·(1,0)
+        //         = (−1/3, 1/3)
+        //   φ_0^(0) = sign · len · l[1] · W_0 = 1 · √2 · (1/3) · (−1/3, 1/3)
+        //           = (√2/9) · (−1, 1)
+        let want_e0m0 = [-(2.0_f64).sqrt() / 9.0, (2.0_f64).sqrt() / 9.0];
+        let got = ned2_edge_basis(0, 0, &te, &g, l);
+        assert!((got[0] - want_e0m0[0]).abs() < 1e-12 && (got[1] - want_e0m0[1]).abs() < 1e-12,
+            "edge0 mode0: got {got:?}, want {want_e0m0:?}");
+
+        // Curl_z at barycentre: 3 · sign · len · l[1] · c_12 where
+        // c_12 = (∇λ_1 × ∇λ_2)_z = 1·1 − 0·0 = 1.
+        // So curl = 3·1·√2·(1/3)·1 = √2.
+        let curl = ned2_edge_curl(0, 0, &te, &g, l);
+        assert!((curl - (2.0_f64).sqrt()).abs() < 1e-12,
+            "edge0 mode0 curl: got {curl}, want √2 ≈ 1.414");
+    }
+
+    #[test]
+    fn p2_basis_is_kronecker_at_nodes() {
+        // P2 vertex basis at vertex 0 (l = (1,0,0)) should be 1; at other
+        // vertices and edge midpoints, 0.
+        let v0 = [1.0, 0.0, 0.0];
+        let v1 = [0.0, 1.0, 0.0];
+        let v2 = [0.0, 0.0, 1.0];
+        let m0 = [0.0, 0.5, 0.5]; // midpoint of edge 0 (between v1, v2)
+        let m1 = [0.5, 0.0, 0.5]; // midpoint of edge 1 (between v2, v0)
+        let m2 = [0.5, 0.5, 0.0]; // midpoint of edge 2 (between v0, v1)
+        let nodes = [v0, v1, v2, m0, m1, m2];
+        for i in 0..6 {
+            for (j, l) in nodes.iter().enumerate() {
+                let v = p2_basis(i, *l);
+                if i == j {
+                    assert!((v - 1.0).abs() < 1e-12, "N_{i}({j}) = {v}, want 1");
+                } else {
+                    assert!(v.abs() < 1e-12, "N_{i}({j}) = {v}, want 0");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn p2_partition_of_unity() {
+        // Σ_i N_i(l) ≡ 1 everywhere on the triangle (degree-2 polynomial
+        // identity). Check at the barycentre and at a handful of random pts.
+        let pts = [
+            [1.0 / 3.0; 3],
+            [0.7, 0.2, 0.1],
+            [0.1, 0.3, 0.6],
+            [0.25, 0.25, 0.5],
+        ];
+        for l in &pts {
+            let s: f64 = (0..6).map(|i| p2_basis(i, *l)).sum();
+            assert!((s - 1.0).abs() < 1e-12, "Σ N_i({l:?}) = {s}, want 1");
+        }
+    }
+
+    #[test]
+    fn ned2_quad_rule_sums_to_one() {
+        let sum: f64 = NED2_QPTS_DEG5.iter().map(|q| q.0).sum();
+        assert!((sum - 1.0).abs() < 1e-12, "quad weights sum to {sum}");
+        // Each quadrature point is a valid barycentric triple.
+        for q in &NED2_QPTS_DEG5 {
+            let s = q.1 + q.2 + q.3;
+            assert!((s - 1.0).abs() < 1e-12, "barycentric sum = {s}");
+            assert!(q.1 >= 0.0 && q.2 >= 0.0 && q.3 >= 0.0,
+                "negative bary at {q:?}");
+        }
     }
 
     #[test]
