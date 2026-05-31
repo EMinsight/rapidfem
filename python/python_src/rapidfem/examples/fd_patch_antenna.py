@@ -101,7 +101,12 @@ rf.show(g)
 
 # %% Mesh
 g.auto_refine_features(base_maxh=MAXH)
-g.mesh()
+# Netgen-optimize crashes deterministically under bake's fd-captured
+# stderr on this geometry (5 PML slabs + substrate + thin plate stack),
+# triggering heap corruption that the Python-level OSError handler
+# cannot catch. Disabling the post-pass optimiser keeps the mesh slightly
+# slivery but lets the bake subprocess complete cleanly.
+g.mesh(optimize=False)
 rf.show(g)
 
 
