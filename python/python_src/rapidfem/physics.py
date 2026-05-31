@@ -413,18 +413,56 @@ class WavePort(_Physics):
                  te: bool = True,
                  mode_index: int = 0,
                  f0: float | None = None,
-                 power: float = 1.0):
+                 power: float = 1.0,
+                 mode_kind: str | None = None,
+                 pec: "Iterable | None" = None):
         super().__init__(*targets)
         self.te = bool(te)
         self.mode_index = int(mode_index)
         self.f0 = None if f0 is None else float(f0)
         self.power = float(power)
+        # mode_kind: "auto"/"vector"/"hybrid" → full vector hybrid (default for
+        # FD), "te"/"tm" → scalar Helmholtz. If omitted, "te"/"tm" inferred
+        # from the legacy `te` flag for backwards compat with the homogeneous
+        # path. `auto` is the right choice for microstrip / inhomogeneous
+        # cross-sections — the only mode actually useful in FD today.
+        if mode_kind is not None:
+            self.mode_kind = str(mode_kind).lower()
+        else:
+            self.mode_kind = "auto"
+        # PEC objects (a microstrip trace cutting the port face). The
+        # frequency-domain wave-port path uses these to mark internal-conductor
+        # nodes inside the cross-section eigensolve. Stored as a list of physics
+        # objects; resolved to physical-group tags at TOML-emit time.
+        self.pec = list(pec) if pec is not None else []
 
     def _to_toml(self, tag: int) -> str:
-        raise NotImplementedError(
-            "WavePort is a time-domain feature; the frequency-domain "
-            "backend (ProblemFD) has no wave-port mode solver. Use "
-            "RectWaveguidePort / CoaxPort / LumpedPort with ProblemFD."
+        # FD path: emit a `wave_numerical` block. The TD backend has its own
+        # parser and currently does not see this block (matches the previous
+        # NotImplementedError behaviour for TD).
+        if self.f0 is None:
+            raise ValueError(
+                "WavePort requires f0= for the FD frequency-domain backend "
+                "(the operating frequency of the 2-D mode eigensolve)."
+            )
+        # PEC tags: walk attached PEC physics objects, pull their physical-
+        # group tags out of the geometry's `_physics_tags` registry. Resolved
+        # by the Problem layer (which knows `geometry._physics_tags`); for now
+        # we emit a numeric list directly from the bound geometry if present.
+        pec_tags: list[int] = []
+        geom = self._geometry
+        for phys in self.pec:
+            phys_tag = geom._physics_tags.get(id(phys))
+            if isinstance(phys_tag, int):
+                pec_tags.append(phys_tag)
+        pec_list = "[" + ", ".join(str(t) for t in pec_tags) + "]"
+        return (
+            f'[[ports]]\ntype = "wave_numerical"\ntag = {tag}\n'
+            f'f0 = {_f64(self.f0)}\n'
+            f'mode_index = {self.mode_index}\n'
+            f'mode_kind = "{self.mode_kind}"\n'
+            f'pec_tags = {pec_list}\n'
+            f'power = {_f64(self.power)}\n'
         )
 
 

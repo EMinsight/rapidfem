@@ -1143,6 +1143,44 @@ mod tests {
     }
 
     #[test]
+    fn microstrip_quasi_tem_natural_scale() {
+        // Dimensionless microstrip-like cross-section: width 2, height 1.
+        // Substrate band y < 0.1 with eps=3.55, air above with eps=1.
+        // Trace as internal-PEC line at y=0.1, x in [0.9, 1.1]. k0=3 — well
+        // below the homogeneous TE10 cutoff (k_c = pi/2 = 1.571), so the
+        // ONLY propagating mode is the conductor-supported quasi-TEM.
+        let (nodes, tris) = rect_mesh(2.0, 1.0, 60, 40);
+        let mut pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
+        let eps: Vec<f64> = pm.tris.iter().map(|&t| {
+            let yc = (pm.nodes[t[0]][1] + pm.nodes[t[1]][1] + pm.nodes[t[2]][1]) / 3.0;
+            if yc < 0.1 { 3.55 } else { 1.0 }
+        }).collect();
+        // Mark trace nodes on internal PEC.
+        let mut on_pec = vec![false; pm.nodes.len()];
+        for (i, n) in pm.nodes.iter().enumerate() {
+            if (n[1] - 0.1).abs() < 1e-6 && (n[0] - 1.0).abs() < 0.1 + 1e-6 {
+                on_pec[i] = true;
+            }
+        }
+        pm.on_pec = on_pec;
+        let n_pec = pm.on_pec.iter().filter(|&&b| b).count();
+        assert!(n_pec >= 2, "trace PEC nodes = {n_pec}, expected at least 2");
+
+        let k0 = 3.0;
+        let modes = solve_vector_modes(&pm, &eps, k0, 3);
+        eprintln!("[microstrip natural-scale] k0={k0}, eps_max=3.55, {} modes:", modes.len());
+        for (i, m) in modes.iter().enumerate() {
+            eprintln!("  mode[{i}] n_eff = {:.4}", m.n_eff);
+        }
+        assert!(!modes.is_empty(), "no microstrip quasi-TEM mode");
+        // Quasi-TEM n_eff is bracketed by sqrt(eff_eps) where eff_eps lies
+        // between 1 (no substrate) and 3.55 (full substrate fill).
+        let n_eff = modes[0].n_eff;
+        assert!(n_eff > 1.0 && n_eff < 3.55_f64.sqrt(),
+            "n_eff = {n_eff:.3} not bracketed (1, 1.884)");
+    }
+
+    #[test]
     fn te_modes_of_a_rectangular_guide_match_analytic() {
         // TE_mn cutoff of an a×b guide: k_c = π·√((m/a)² + (n/b)²).
         // Dominant TE₁₀ of a 2×1 guide → k_c = π/2.

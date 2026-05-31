@@ -20,7 +20,11 @@ use crate::port::Port;
 use crate::sparam::{sparam_voltage_line, sparam_waveport};
 use crate::waveguide::{
     cs_from_origin_zaxis, detect_rect_port, lumped_port_dims, AbsorbingBoundary, CoaxPort,
-    FloquetPort, LumpedElement, LumpedPort, RectWaveguide, SurfaceImpedance, UserDefinedPort,
+    FloquetPort, LumpedElement, LumpedPort, NumericalWavePort, RectWaveguide, SurfaceImpedance,
+    UserDefinedPort,
+};
+use rapidfem_core::port_eigen::{
+    solve_modes, solve_vector_modes, ModeKind, NumericalMode, PortMesh2D,
 };
 
 /// Result of a frequency sweep.
@@ -69,9 +73,11 @@ impl Simulation {
             basis.n_field
         );
 
-        let (ports, port_tris) = build_ports(&mesh, &config);
-        let pec_tris = build_pec_tris(&mesh, &config);
+        // Materials before ports so `wave_numerical` can consult per-tet ε_r
+        // when running the vector-hybrid mode solve on the port face.
         let materials = build_materials(&mesh, &config);
+        let (ports, port_tris) = build_ports(&mesh, &config, &materials);
+        let pec_tris = build_pec_tris(&mesh, &config);
         let pml_regions = build_pml_regions(&mesh, &config);
         let lumped_lines = build_lumped_lines(&mesh, &ports, &port_tris);
 
@@ -554,7 +560,11 @@ impl Simulation {
 // Construction helpers — extracted from main.rs's prior orchestration
 // ============================================================================
 
-fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usize>>) {
+fn build_ports(
+    mesh: &Mesh,
+    config: &Config,
+    materials: &[Material],
+) -> (Vec<Box<dyn Port>>, Vec<Vec<usize>>) {
     let mut ports: Vec<Box<dyn Port>> = Vec::new();
     let mut port_tris: Vec<Vec<usize>> = Vec::new();
 
@@ -715,6 +725,31 @@ fn build_ports(mesh: &Mesh, config: &Config) -> (Vec<Box<dyn Port>>, Vec<Vec<usi
                 port_tris.push(tri_ids);
                 ports.push(Box::new(abc));
             }
+            PortConfig::WaveNumerical { tag, f0, mode_index, mode_kind, pec_tags, power } => {
+                let tri_ids = mesh.tris_for_tag(*tag).to_vec();
+                if tri_ids.is_empty() {
+                    eprintln!("  WARNING: tag {} has no triangles, skipping WaveNumerical", tag);
+                    continue;
+                }
+                let port_num = ports.len() + 1;
+                let pn = build_wave_numerical(
+                    mesh, materials, &tri_ids, *f0, *mode_index, mode_kind,
+                    pec_tags, *power, port_num,
+                );
+                match pn {
+                    Some(port) => {
+                        eprintln!(
+                            "  Port {}: wave_numerical, tag={}, f0={:.3}GHz, kind={}, mode_idx={}, n_eff={:.3}",
+                            port_num, tag, f0 * 1e-9, mode_kind, mode_index, port.n_eff,
+                        );
+                        port_tris.push(tri_ids);
+                        ports.push(Box::new(port));
+                    }
+                    None => {
+                        eprintln!("  WARNING: tag {}: wave_numerical eigensolve failed, skipping", tag);
+                    }
+                }
+            }
         }
     }
 
@@ -856,4 +891,204 @@ fn build_lumped_lines(
         lines_map.insert(pi, lines);
     }
     lines_map
+}
+
+/// Build a per-tet scalar relative permittivity from the materials list. Used
+/// by `build_wave_numerical` to feed the vector eigensolver. Anisotropic
+/// materials collapse to the mean of their diagonal — sufficient for the
+/// shift-invert pivot in `solve_vector_modes`.
+fn per_tet_eps_scalar(materials: &[Material], n_tets: usize) -> Vec<f64> {
+    let mut eps = vec![1.0_f64; n_tets];
+    for mat in materials {
+        let er_scalar = match mat.er_diag {
+            Some([a, b, c]) => (a + b + c) / 3.0,
+            None => mat.er,
+        };
+        for &ti in &mat.tet_indices {
+            eps[ti] = er_scalar;
+        }
+    }
+    eps
+}
+
+/// Inward face normal toward the adjacent tet centroid (same construction as
+/// CoaxPort / TD's wave_from_mesh_tag). Returns `None` if the face has no
+/// adjacent tet (which would mean a boundary tri with no interior side).
+fn face_inward_normal(mesh: &Mesh, t0: usize) -> Option<[f64; 3]> {
+    let [v0, v1, v2] = mesh.tris[t0];
+    let p0 = mesh.nodes[v0];
+    let p1 = mesh.nodes[v1];
+    let p2 = mesh.nodes[v2];
+    let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+    let mut nrm = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    let len = (nrm[0].powi(2) + nrm[1].powi(2) + nrm[2].powi(2)).sqrt();
+    if len < 1e-30 {
+        return None;
+    }
+    for c in nrm.iter_mut() { *c /= len; }
+    let tet = mesh.tri_to_tet[t0].iter().copied().find(|&x| x != usize::MAX)?;
+    let mut centroid = [0.0_f64; 3];
+    for &nd in &mesh.tets[tet] {
+        for k in 0..3 { centroid[k] += mesh.nodes[nd][k] / 4.0; }
+    }
+    let inward = [centroid[0] - p0[0], centroid[1] - p0[1], centroid[2] - p0[2]];
+    let dot = nrm[0] * inward[0] + nrm[1] * inward[1] + nrm[2] * inward[2];
+    if dot < 0.0 {
+        for c in nrm.iter_mut() { *c = -*c; }
+    }
+    Some(nrm)
+}
+
+/// Build a per-global-node boolean mask: `true` for nodes that lie on any of
+/// the listed PEC physical groups. Used by `PortMesh2D::from_face` to mark
+/// internal-conductor (e.g. microstrip trace) nodes as PEC inside the
+/// cross-section eigensolve.
+fn build_internal_pec_mask(mesh: &Mesh, pec_tags: &[i32]) -> Vec<bool> {
+    let mut mask = vec![false; mesh.nodes.len()];
+    for &tag in pec_tags {
+        for &ti in mesh.tris_for_tag(tag) {
+            for &v in &mesh.tris[ti] {
+                mask[v] = true;
+            }
+        }
+    }
+    mask
+}
+
+/// Run the 2D port-face eigensolve and wrap the dominant mode as a
+/// `NumericalWavePort`. Picks scalar TE/TM or full-vector hybrid based on
+/// `mode_kind`. Returns `None` if the solve fails or yields fewer than
+/// `mode_index + 1` modes.
+fn build_wave_numerical(
+    mesh: &Mesh,
+    materials: &[Material],
+    tri_ids: &[usize],
+    f0: f64,
+    mode_index: usize,
+    mode_kind: &str,
+    pec_tags: &[i32],
+    power: f64,
+    port_num: usize,
+) -> Option<NumericalWavePort> {
+    let t0 = *tri_ids.first()?;
+    let nrm = face_inward_normal(mesh, t0)?;
+    let pec_mask = build_internal_pec_mask(mesh, pec_tags);
+    let pec_opt = if pec_tags.is_empty() { None } else { Some(pec_mask.as_slice()) };
+
+    let face_tris: Vec<[usize; 3]> = tri_ids.iter().map(|&t| mesh.tris[t]).collect();
+    let pm = PortMesh2D::from_face(&mesh.nodes, &face_tris, nrm, pec_opt);
+
+    let k0 = 2.0 * PI * f0 / C0;
+
+    let kind_lc = mode_kind.to_lowercase();
+    let (nm, n_eff, is_vector, coord_scale): (NumericalMode, f64, bool, f64) = match kind_lc.as_str() {
+        "te" => {
+            let modes = solve_modes(&pm, ModeKind::Te, mode_index + 1);
+            let mode = modes.get(mode_index)?;
+            let kc = mode.k_c;
+            let beta = (k0 * k0 - kc * kc).max(0.0).sqrt();
+            let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
+            (NumericalMode::from_scalar(pm, mode, ModeKind::Te), n_eff, false, 1.0_f64)
+        }
+        "tm" => {
+            let modes = solve_modes(&pm, ModeKind::Tm, mode_index + 1);
+            let mode = modes.get(mode_index)?;
+            let kc = mode.k_c;
+            let beta = (k0 * k0 - kc * kc).max(0.0).sqrt();
+            let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
+            (NumericalMode::from_scalar(pm, mode, ModeKind::Tm), n_eff, false, 1.0_f64)
+        }
+        "auto" | "vector" | "hybrid" => {
+            let eps_per_tet = per_tet_eps_scalar(materials, mesh.n_tets());
+            let eps_face: Vec<f64> = tri_ids
+                .iter()
+                .map(|&t| {
+                    mesh.tri_to_tet[t]
+                        .iter()
+                        .copied()
+                        .find(|&x| x != usize::MAX)
+                        .map(|e| eps_per_tet[e])
+                        .unwrap_or(1.0)
+                })
+                .collect();
+            // Length-scale normalisation: the eigenproblem's stiffness and
+            // mass terms scale with different powers of the cross-section's
+            // length unit. Real SI coordinates (~ 1e-3 m) and SI `k0`
+            // (~ 100 1/m) put 8+ orders of magnitude between matrix entries
+            // and the partial-piv-LU shift-invert loses every meaningful
+            // digit. Solve in O(1) coordinates with `k0_scaled = k0 · L`.
+            // `n_eff` is dimensionless so it comes back unchanged; mode
+            // amplitudes get reshaped by unit-peak normalisation downstream.
+            let mut extent: f64 = 0.0;
+            for n in &pm.nodes {
+                let r = (n[0] * n[0] + n[1] * n[1]).sqrt();
+                if r > extent { extent = r; }
+            }
+            let scale = if extent > 0.0 { extent } else { 1.0 };
+            let scaled_pm = {
+                let mut s = pm.clone();
+                for n in s.nodes.iter_mut() {
+                    n[0] /= scale;
+                    n[1] /= scale;
+                }
+                s
+            };
+            let k0_scaled = k0 * scale;
+            let n_pec_nodes = pm.on_pec.iter().filter(|&&b| b).count();
+            let n_boundary_nodes = pm.on_boundary.iter().filter(|&&b| b).count();
+            eprintln!(
+                "  wave_numerical[vector] tag={}: {} face tris, {} nodes, \
+                 {} boundary + {} internal PEC, eps=[{:.2},{:.2}], \
+                 k0={:.3}/m, scale={:.4}m → k0_scaled={:.3}",
+                tri_ids.len(), pm.tris.len(), pm.nodes.len(),
+                n_boundary_nodes, n_pec_nodes,
+                eps_face.iter().cloned().fold(f64::INFINITY, f64::min),
+                eps_face.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                k0, scale, k0_scaled,
+            );
+            let modes = solve_vector_modes(&scaled_pm, &eps_face, k0_scaled, mode_index + 1);
+            if modes.is_empty() {
+                eprintln!("    -> solve_vector_modes returned 0 modes");
+                return None;
+            }
+            eprintln!("    -> got {} mode(s), n_eff = {:?}",
+                modes.len(),
+                modes.iter().map(|m| m.n_eff).collect::<Vec<_>>(),
+            );
+            let mode = modes.get(mode_index)?;
+            let n_eff = mode.n_eff;
+            // Wrap with the SCALED mesh so e_profile's barycentric lookup is
+            // consistent with the e_edge coefficients. The amplitude
+            // mismatch (Whitney basis values differ by `scale` between
+            // frames) is absorbed by the unit-peak normalisation in
+            // `from_vector`, so the resulting profile is shape-correct.
+            // `coord_scale` is carried into NumericalWavePort so SI inputs
+            // to `port_mode_3d_global` get translated into the scaled frame.
+            (NumericalMode::from_vector(scaled_pm, mode), n_eff, true, scale)
+        }
+        other => {
+            eprintln!(
+                "  WARNING: wave_numerical: unknown mode_kind {:?}, expected one of \
+                 'auto'/'vector'/'hybrid'/'te'/'tm'",
+                other,
+            );
+            return None;
+        }
+    };
+
+    Some(NumericalWavePort::new(
+        port_num,
+        power,
+        nm,
+        n_eff,
+        is_vector,
+        coord_scale,
+        &mesh.nodes,
+        &face_tris,
+    ))
 }
