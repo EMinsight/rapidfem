@@ -992,13 +992,28 @@ pub fn solve_vector_modes(
 
     let mut a = vec![0.0f64; ndof * ndof];
     let mut b = vec![0.0f64; ndof * ndof];
-    let inv_k0sq = 1.0 / (k0 * k0);
+    // Symmetric eigenproblem A·x = λ·B·x (cf. EMerge `generalized_eigen_hb.py`).
+    //
+    //   A = [ Att − k0²·Btt          0         ]
+    //       [        0                0         ]
+    //
+    //   B = [ Dtt              Dzt^T            ]
+    //       [ Dzt        Dzz1 − k0²·Dzz2       ]
+    //
+    // with
+    //   Att[i,j] = ∫ (∇×φ_i)(∇×φ_j) dA              (curl-curl, μ=1)
+    //   Btt[i,j] = ∫ ε_r · φ_i · φ_j dA              (ε-weighted Et mass)
+    //   Dtt[i,j] = ∫ φ_i · φ_j dA                    (Et plain mass)
+    //   Dzt[i,j] = ∫ ∇N_i · φ_j dA                   (Et-Ez coupling)
+    //   Dzz1[i,j]= ∫ ∇N_i · ∇N_j dA                  (P2 Laplacian)
+    //   Dzz2[i,j]= ∫ ε_r · N_i · N_j dA              (P2 mass)
+    //
+    // The block-diagonal A naturally pushes the discrete gradient null space
+    // (Et = ∇φ in P2) to λ = −k0² < 0; the `neff² > 0` filter then rejects
+    // those modes automatically. The earlier "asymmetric A with Ez-Ez
+    // ε·k0² block" formulation had the same gradient modes at λ ≈ ε·k0²
+    // and polluted the spectrum at the upper end of the physical range.
 
-    // Per-tri evaluation. For each quadrature point we collect:
-    //   - tan[k]    = transverse basis value at the QP, k in 0..8
-    //   - curl[k]   = scalar curl_z at the QP, k in 0..8 (linear in l)
-    //   - p2[k]     = scalar P2 value at the QP, k in 0..6
-    //   - p2grad[k] = ∇P2 value at the QP, k in 0..6
     for (ti, &t) in mesh.tris.iter().enumerate() {
         let (area, g) = mesh.tri_geom(t);
         let er = eps_r[ti];
@@ -1051,11 +1066,7 @@ pub fn solve_vector_modes(
             }
         }
 
-        // Block 1: Et × Et (8 × 8). For each i, j ∈ 0..8:
-        //   mass_ij  = ∫ φ_i · φ_j dA
-        //   stiff_ij = ∫ (∇×φ_i) · (∇×φ_j) dA
-        //   A += stiff/k0² − er·mass
-        //   B += −mass/k0²
+        // Et–Et block: A[di,dj] += Att − k0²·Btt,  B[di,dj] += Dtt.
         for i in 0..8 {
             let di = dofs[i];
             if di == usize::MAX { continue; }
@@ -1072,53 +1083,57 @@ pub fn solve_vector_modes(
                 }
                 mass  *= area;
                 stiff *= area;
-                a[di * ndof + dj] += stiff * inv_k0sq - er * mass;
-                b[di * ndof + dj] += -mass * inv_k0sq;
+                // Sign convention: we negate (Att − k0²·Btt) so the
+                // generalized eigenvalue `λ` comes out as `β² > 0` for a
+                // propagating mode (cf. EMerge's `F = -1` post-multiply).
+                // Gradient modes land at λ ≤ 0 and are filtered out.
+                a[di * ndof + dj] += -(stiff) + er * k0 * k0 * mass;  // −(Att − k0²·Btt)
+                b[di * ndof + dj] += mass;                              // Dtt
             }
         }
 
-        // Block 2a: Et (rows) × Ez (cols), via ∫ φ_i · ∇N_j dA  (A-only).
-        // Block 2b: Ez (rows) × Et (cols), via er · ∫ ∇N_i · φ_j dA  (A-only).
+        // Et–Ez cross blocks in B (symmetric):
+        //   B[Et_i, Ez_j] = Dzt^T[i,j] = ∫ φ_i · ∇N_j dA
+        //   B[Ez_i, Et_j] = Dzt[i,j]   = ∫ ∇N_i · φ_j dA
+        // (These are the same scalar integral, written in transposed slots.)
         for i in 0..8 {
-            let di = dofs[i];
+            let di_et = dofs[i];
+            if di_et == usize::MAX { continue; }
             for jn in 0..6 {
-                let dj = dofs[8 + jn];
-                if di != usize::MAX && dj != usize::MAX {
-                    let mut val = 0.0;
-                    for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
-                        let wi = tan_qp[qi][i];
-                        let pg = p2grad_qp[qi][jn];
-                        val += w * (wi[0] * pg[0] + wi[1] * pg[1]);
-                    }
-                    a[di * ndof + dj] += area * val;
+                let dj_ez = dofs[8 + jn];
+                if dj_ez == usize::MAX { continue; }
+                let mut val = 0.0;
+                for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
+                    let wi = tan_qp[qi][i];
+                    let pg = p2grad_qp[qi][jn];
+                    val += w * (wi[0] * pg[0] + wi[1] * pg[1]);
                 }
-                let dii = dofs[8 + jn];   // re-use jn as i in transpose
-                let djj = dofs[i];
-                if dii != usize::MAX && djj != usize::MAX {
-                    let mut val = 0.0;
-                    for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
-                        let wj = tan_qp[qi][i];
-                        let pg = p2grad_qp[qi][jn];
-                        val += w * (pg[0] * wj[0] + pg[1] * wj[1]);
-                    }
-                    a[dii * ndof + djj] += area * er * val;
-                }
+                val *= area;
+                b[di_et * ndof + dj_ez] += val;
+                b[dj_ez * ndof + di_et] += val;
             }
         }
 
-        // Block 3: Ez × Ez (6 × 6). A += −er·k0²·∫ N_i·N_j dA.
+        // Ez–Ez block: B[di,dj] += Dzz1 − k0²·Dzz2 with
+        //   Dzz1 = ∫ ∇N_i · ∇N_j dA           (P2 Laplacian)
+        //   Dzz2 = ∫ ε_r · N_i · N_j dA       (P2 mass with ε_r)
         for i in 0..6 {
             let di = dofs[8 + i];
             if di == usize::MAX { continue; }
             for j in 0..6 {
                 let dj = dofs[8 + j];
                 if dj == usize::MAX { continue; }
-                let mut mass = 0.0;
+                let mut grad_ij = 0.0;
+                let mut mass_ij = 0.0;
                 for (qi, &(w, _l1, _l2, _l3)) in NED2_QPTS_DEG5.iter().enumerate() {
-                    mass += w * p2_qp[qi][i] * p2_qp[qi][j];
+                    let gi = p2grad_qp[qi][i];
+                    let gj = p2grad_qp[qi][j];
+                    grad_ij += w * (gi[0] * gj[0] + gi[1] * gj[1]);
+                    mass_ij += w * p2_qp[qi][i] * p2_qp[qi][j];
                 }
-                mass *= area;
-                a[di * ndof + dj] += -er * k0 * k0 * mass;
+                grad_ij *= area;
+                mass_ij *= area;
+                b[di * ndof + dj] += grad_ij - er * k0 * k0 * mass_ij;
             }
         }
     }
