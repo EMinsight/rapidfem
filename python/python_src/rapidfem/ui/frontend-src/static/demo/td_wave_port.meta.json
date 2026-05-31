@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_wave_port",
+  "filename": "td_wave_port.py",
+  "src_hash": "7a25ac938f3f3074199639caf2836ec7fd27cfa1e5ba61568b12d556ca5b3d05",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: a hollow circular waveguide, WavePorts on the two ends",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the numerically-solved TE11 mode and watch it propagate",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the solved TE11 mode travelling down the circular guide",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitudes over time (numerically-solved TE11 at both ports)",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_wave_port.field.bin",
+    "td_wave_port.geo.bin"
+  ],
+  "json_bytes": 28791,
+  "bin_bytes": 2114020
+}

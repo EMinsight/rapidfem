@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "name": "fd_inverted_f_antenna",
+  "filename": "fd_inverted_f_antenna.py",
+  "src_hash": "855101f18048c5b0e91739c963b71372286dfc1096d2de91718962e0b0112385",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 6,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry + Materials (no per-trace TRACE_MAXH, no auto_refine_features \u2014",
+      "status": "ok",
+      "kinds": [
+        "geometry"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Initial mesh \u2014 coarse on purpose; trace edges are barely resolved.",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% AMR loop \u2014 print iter, n_tets, |S11|_min, f_res, deltas",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 103
+    },
+    {
+      "marker": "# %% Final result + far-field at F0",
+      "status": "ok",
+      "kinds": [
+        "mesh",
+        "result"
+      ],
+      "stream_lines": 5
+    }
+  ],
+  "bin_files": [
+    "fd_inverted_f_antenna.field.bin",
+    "fd_inverted_f_antenna.geo.bin"
+  ],
+  "json_bytes": 35323,
+  "bin_bytes": 4876872
+}

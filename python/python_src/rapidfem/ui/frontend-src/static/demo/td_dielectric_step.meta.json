@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_dielectric_step",
+  "filename": "td_dielectric_step.py",
+  "src_hash": "f7b5c6872ab8f8cdd7f05ef00e9dac9f9f4182edeccd655e17f7e912c7e369ad",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: air | dielectric slab | air, stacked along z",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive TE10 at the input and watch it split at the slab",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: incident, reflected, and transmitted TE10 pulses",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitudes: incident/reflected at input, transmitted at output",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_dielectric_step.field.bin",
+    "td_dielectric_step.geo.bin"
+  ],
+  "json_bytes": 23381,
+  "bin_bytes": 2014690
+}

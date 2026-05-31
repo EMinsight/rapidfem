@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "baked_at": 1780138610,
+  "version": 2,
+  "baked_at": 1780237485,
   "examples": [
     {
       "name": "fd_coax_step",
@@ -50,9 +50,10 @@
           "stream_lines": 44
         }
       ],
-      "json_bytes": 18993,
+      "json_bytes": 19008,
       "bin_bytes": 3110928,
-      "bake_seconds": 8.2
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_dielectric_resonator",
@@ -102,9 +103,69 @@
           "stream_lines": 18
         }
       ],
-      "json_bytes": 12021,
-      "bin_bytes": 682084,
-      "bake_seconds": 4.81
+      "json_bytes": 12038,
+      "bin_bytes": 1652128,
+      "bake_seconds": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "fd_inverted_f_antenna",
+      "filename": "fd_inverted_f_antenna.py",
+      "json": "fd_inverted_f_antenna.json",
+      "bin_files": [
+        "fd_inverted_f_antenna.field.bin",
+        "fd_inverted_f_antenna.geo.bin"
+      ],
+      "n_cells": 6,
+      "cells": [
+        {
+          "marker": null,
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Parameters",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Geometry + Materials (no per-trace TRACE_MAXH, no auto_refine_features \u2014",
+          "status": "ok",
+          "kinds": [
+            "geometry"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% Initial mesh \u2014 coarse on purpose; trace edges are barely resolved.",
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 0
+        },
+        {
+          "marker": "# %% AMR loop \u2014 print iter, n_tets, |S11|_min, f_res, deltas",
+          "status": "ok",
+          "kinds": [],
+          "stream_lines": 103
+        },
+        {
+          "marker": "# %% Final result + far-field at F0",
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 5
+        }
+      ],
+      "json_bytes": 35323,
+      "bin_bytes": 4876872,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_iris_filter",
@@ -154,9 +215,10 @@
           "stream_lines": 57
         }
       ],
-      "json_bytes": 31771,
+      "json_bytes": 31764,
       "bin_bytes": 8885760,
-      "bake_seconds": 20.85
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_microstrip_line",
@@ -206,9 +268,10 @@
           "stream_lines": 36
         }
       ],
-      "json_bytes": 19967,
-      "bin_bytes": 3950280,
-      "bake_seconds": 11.22
+      "json_bytes": 20018,
+      "bin_bytes": 29285816,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_patch_antenna",
@@ -242,20 +305,26 @@
         },
         {
           "marker": "# %% Mesh",
-          "status": "error",
-          "kinds": [],
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
           "stream_lines": 0
         },
         {
           "marker": "# %% Problem + Sweep",
-          "status": "error",
-          "kinds": [],
-          "stream_lines": 0
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 37
         }
       ],
-      "json_bytes": 21239,
-      "bin_bytes": 4399504,
-      "bake_seconds": 3.2
+      "json_bytes": 28281,
+      "bin_bytes": 44130260,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_pyramidal_horn",
@@ -305,9 +374,10 @@
           "stream_lines": 31
         }
       ],
-      "json_bytes": 19919,
-      "bin_bytes": 5035476,
-      "bake_seconds": 106.02
+      "json_bytes": 20374,
+      "bin_bytes": 3991980,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_rfic_spiral_from_json",
@@ -341,26 +411,32 @@
         },
         {
           "marker": "# %% Mesh",
-          "status": "error",
-          "kinds": [],
-          "stream_lines": 0
+          "status": "ok",
+          "kinds": [
+            "mesh"
+          ],
+          "stream_lines": 1
         },
         {
           "marker": "# %% Sweep across the RF band",
-          "status": "error",
-          "kinds": [],
-          "stream_lines": 0
+          "status": "ok",
+          "kinds": [
+            "mesh",
+            "result"
+          ],
+          "stream_lines": 33
         },
         {
           "marker": "# %% Series-L extraction (de-embedded from common-mode shunt)",
-          "status": "error",
+          "status": "ok",
           "kinds": [],
-          "stream_lines": 0
+          "stream_lines": 22
         }
       ],
-      "json_bytes": 12501,
-      "bin_bytes": 12312592,
-      "bake_seconds": 21.0
+      "json_bytes": 22693,
+      "bin_bytes": 35819496,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "fd_wr90",
@@ -410,9 +486,10 @@
           "stream_lines": 32
         }
       ],
-      "json_bytes": 14550,
+      "json_bytes": 14551,
       "bin_bytes": 1829040,
-      "bake_seconds": 4.46
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_coax_line",
@@ -475,7 +552,8 @@
       ],
       "json_bytes": 19396,
       "bin_bytes": 1801706,
-      "bake_seconds": 12.33
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_coax_open",
@@ -536,9 +614,10 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 17472,
-      "bin_bytes": 5802560,
-      "bake_seconds": 26.91
+      "json_bytes": 17499,
+      "bin_bytes": 9823422,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_dielectric_step",
@@ -601,7 +680,8 @@
       ],
       "json_bytes": 23381,
       "bin_bytes": 2014690,
-      "bake_seconds": 8.83
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_horn_radiation",
@@ -662,9 +742,10 @@
           "stream_lines": 0
         }
       ],
-      "json_bytes": 26110,
-      "bin_bytes": 5810852,
-      "bake_seconds": 34.09
+      "json_bytes": 26513,
+      "bin_bytes": 4589220,
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_power_divider",
@@ -727,7 +808,8 @@
       ],
       "json_bytes": 41752,
       "bin_bytes": 4053632,
-      "bake_seconds": 22.69
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_rect_waveguide",
@@ -790,7 +872,8 @@
       ],
       "json_bytes": 30376,
       "bin_bytes": 1792280,
-      "bake_seconds": 9.17
+      "bake_seconds": 0.0,
+      "status": "ok"
     },
     {
       "name": "td_wave_port",
@@ -853,7 +936,8 @@
       ],
       "json_bytes": 28791,
       "bin_bytes": 2114020,
-      "bake_seconds": 9.24
+      "bake_seconds": 0.0,
+      "status": "ok"
     }
   ]
 }

@@ -1,0 +1,57 @@
+{
+  "schema": 2,
+  "name": "fd_dielectric_resonator",
+  "filename": "fd_dielectric_resonator.py",
+  "src_hash": "ab9eff22793ccd80908330c30343a1c0a2f79dc7d0e045aaeda64c2e6757beb7",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 5,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry + Materials",
+      "status": "ok",
+      "kinds": [
+        "geometry"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Mesh",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Eigenmode",
+      "status": "ok",
+      "kinds": [
+        "mesh",
+        "result"
+      ],
+      "stream_lines": 18
+    }
+  ],
+  "bin_files": [
+    "fd_dielectric_resonator.field.bin",
+    "fd_dielectric_resonator.geo.bin"
+  ],
+  "json_bytes": 12038,
+  "bin_bytes": 1652128
+}

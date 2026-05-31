@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_coax_line",
+  "filename": "td_coax_line.py",
+  "src_hash": "de247a31a650e48e305e9b82d8d8419c8e55916102548a3306f48d6270dd0d49",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: an air coax with the inner conductor fragmented out",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the TEM mode at one end and watch the pulse travel",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the coaxial TEM pulse running down the line",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitudes over time (TEM wave at input and output)",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_coax_line.field.bin",
+    "td_coax_line.geo.bin"
+  ],
+  "json_bytes": 19396,
+  "bin_bytes": 1801706
+}

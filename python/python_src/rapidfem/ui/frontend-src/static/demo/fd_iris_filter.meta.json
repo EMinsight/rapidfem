@@ -1,0 +1,57 @@
+{
+  "schema": 2,
+  "name": "fd_iris_filter",
+  "filename": "fd_iris_filter.py",
+  "src_hash": "8fb0a3acf0c0a53766c1fa4cf803e7d1817a5c61998bc671cd1e760787feccda",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 5,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry + Materials",
+      "status": "ok",
+      "kinds": [
+        "geometry"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Mesh",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Problem + Sweep",
+      "status": "ok",
+      "kinds": [
+        "mesh",
+        "result"
+      ],
+      "stream_lines": 57
+    }
+  ],
+  "bin_files": [
+    "fd_iris_filter.field.bin",
+    "fd_iris_filter.geo.bin"
+  ],
+  "json_bytes": 31764,
+  "bin_bytes": 8885760
+}

@@ -1,0 +1,63 @@
+{
+  "schema": 2,
+  "name": "fd_rfic_spiral_from_json",
+  "filename": "fd_rfic_spiral_from_json.py",
+  "src_hash": "ab5c93a76b0c6127dd47c37ca5e12255bfdace7a32951c31665a0cea9f9c3f73",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 6,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Load + build the geometry from JSON",
+      "status": "ok",
+      "kinds": [
+        "geometry"
+      ],
+      "stream_lines": 7
+    },
+    {
+      "marker": "# %% Wire BCs: every conductor surface PEC, ports lumped, outer air ABC",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Mesh",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 1
+    },
+    {
+      "marker": "# %% Sweep across the RF band",
+      "status": "ok",
+      "kinds": [
+        "mesh",
+        "result"
+      ],
+      "stream_lines": 33
+    },
+    {
+      "marker": "# %% Series-L extraction (de-embedded from common-mode shunt)",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 22
+    }
+  ],
+  "bin_files": [
+    "fd_rfic_spiral_from_json.field.bin",
+    "fd_rfic_spiral_from_json.geo.bin"
+  ],
+  "json_bytes": 22693,
+  "bin_bytes": 35819496
+}

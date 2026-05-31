@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_power_divider",
+  "filename": "td_power_divider.py",
+  "src_hash": "7d33ef0dc67cbcc3ac0c7086ec13a316fb60f0b776eb04a61e84fab9c7a8e575",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: an H-plane tee tiled from face-adjacent boxes",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the stem port and watch the pulse split into the two arms",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the pulse dividing at the junction into the two arms",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitudes: one input pulse, two equal (3 dB) output pulses",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_power_divider.field.bin",
+    "td_power_divider.geo.bin"
+  ],
+  "json_bytes": 41752,
+  "bin_bytes": 4053632
+}

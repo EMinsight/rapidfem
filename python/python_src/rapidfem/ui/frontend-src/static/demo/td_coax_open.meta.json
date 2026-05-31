@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_coax_open",
+  "filename": "td_coax_open.py",
+  "src_hash": "4e543cc2b51ededdef1d123211bcc44ca5c156ef1d72f7b652e7f4107b975296",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: air coax poking in, inner conductor extended into a monopole",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the TEM mode and watch the pulse radiate from the open tip",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the TEM pulse launching off the protruding monopole",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitude: incident pulse and the open-tip reflection",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_coax_open.field.bin",
+    "td_coax_open.geo.bin"
+  ],
+  "json_bytes": 17499,
+  "bin_bytes": 9823422
+}

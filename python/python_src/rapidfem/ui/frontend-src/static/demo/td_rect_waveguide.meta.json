@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_rect_waveguide",
+  "filename": "td_rect_waveguide.py",
+  "src_hash": "185db7b60418508c7b0f5ebab2e04336c9fd1ac68400defcc89b731df779ec9b",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: an air-filled WR-90 guide, modal ports on the two ends",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the TE10 mode at the input port and watch the pulse propagate",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the TE10 mode travelling down the guide to the matched port",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitudes over time (incident at input, transmitted at output)",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_rect_waveguide.field.bin",
+    "td_rect_waveguide.geo.bin"
+  ],
+  "json_bytes": 30376,
+  "bin_bytes": 1792280
+}

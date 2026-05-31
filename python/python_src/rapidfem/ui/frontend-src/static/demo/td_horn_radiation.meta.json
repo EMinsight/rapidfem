@@ -1,0 +1,68 @@
+{
+  "schema": 2,
+  "name": "td_horn_radiation",
+  "filename": "td_horn_radiation.py",
+  "src_hash": "1d6e3a8906f0e3346d2b01f01097a544f5a5c962b2e6affdca18139e011a20fd",
+  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
+  "baked_at": 1780236417,
+  "bake_seconds": 0.0,
+  "status": "ok",
+  "exit_code": 0,
+  "n_cells": 7,
+  "cells": [
+    {
+      "marker": null,
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Parameters",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Geometry: feed + lofted horn flare in a PML/ABC-terminated air box",
+      "status": "ok",
+      "kinds": [
+        "mesh"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Build the time-domain problem",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 3
+    },
+    {
+      "marker": "# %% Drive the feed and watch the pulse radiate out of the aperture",
+      "status": "ok",
+      "kinds": [],
+      "stream_lines": 13
+    },
+    {
+      "marker": "# %% Visualise: the wavefront leaving the aperture into the PML/ABC box",
+      "status": "ok",
+      "kinds": [
+        "td_trajectory"
+      ],
+      "stream_lines": 0
+    },
+    {
+      "marker": "# %% Port modal amplitude: incident pulse and the small aperture reflection",
+      "status": "ok",
+      "kinds": [
+        "td_timeseries"
+      ],
+      "stream_lines": 0
+    }
+  ],
+  "bin_files": [
+    "td_horn_radiation.field.bin",
+    "td_horn_radiation.geo.bin"
+  ],
+  "json_bytes": 26513,
+  "bin_bytes": 4589220
+}
