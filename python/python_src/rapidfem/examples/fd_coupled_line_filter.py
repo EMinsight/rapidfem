@@ -51,10 +51,16 @@ GS = [v * mil for v in (9.63, 24.84, 41.499, 41.499, 24.84, 9.63)]     # section
 FREQUENCIES = np.linspace(5.2e9, 6.2e9, 21)
 MAXH = rf.lambda_maxh(f_max=6.2e9, er_max=ER_SUB)
 
-# Air/substrate envelope: leave generous margins so ABC doesn't see near-field
-# of the coupled sections.
-PAD_X_MIL = 100
-PAD_Y_MIL = 200
+# Air/substrate envelope: no x-pad — the substrate's x-min and x-max faces
+# ARE the wave-port cross-sections at the trace entry / exit (the trace
+# starts exactly at x = 0 and ends at the rightmost segment). Tight y-pad
+# (40 mil ≈ 1 mm) keeps the substrate width narrow enough that the lowest
+# transverse-resonance mode of the 20 mm × 0.5 mm slab sits above the
+# 6.2 GHz top of the sweep — without that, the wave-port single-mode
+# projection misses energy carried by higher-order transverse modes and
+# |S11|² + |S21|² runs over unity inside the pass-band.
+PAD_X_MIL = 0
+PAD_Y_MIL = 40
 AIR_H_FACTOR = 4   # height = 4 * substrate thickness above and below
 
 
@@ -190,7 +196,10 @@ y_min, y_max = min(all_y_lo), max(all_y_hi)
 # %% Geometry + Materials
 g = rf.Geometry(maxh=MAXH)
 
-fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=1.5 * SUB_H)
+# Substrate maxh must be a fraction of SUB_H — at the wave-port cross-section,
+# a 1-element-thick FR4 slab is too coarse for the vector eigensolve to see
+# the inhomogeneous quasi-TEM mode (returns 0 propagating modes).
+fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=SUB_H / 3)
 
 pad_x = PAD_X_MIL * mil
 pad_y = PAD_Y_MIL * mil
@@ -250,40 +259,32 @@ for piece in _pieces:
     plate = g.polygon(pts_3d, maxh=TRACE_MAXH)
     trace_plates.append(plate)
 
-# Lumped-port vertical plates at p1 and p2, sitting between the ground
-# plane (substrate bottom) and the trace level (substrate top).
-p1_xy = tb._anchors["p1"]
-p2_xy = tb._anchors["p2"]
-port_w_p1 = strips[0].width   # feed line width at p1
-port_w_p2 = strips[-1].width  # feed line width at p2
+g.fragment(sub, air, *trace_plates)
 
-PORT_MAXH = SUB_H / 3   # ~3 elements through the substrate at the port
-# Port plate spans 5× the trace width: lumped-port voltage is V = ∫ E·dz across
-# the substrate, and capturing 5×w of the TEM fringing field gets the
-# port impedance close enough to 50 ohms that |S11|^2+|S21|^2 stays passive
-# (a tight 1× plate sees a heavily distorted near-feed mode).
-PORT_W_MULT = 5
-port_in_w = port_w_p1 * PORT_W_MULT
-port_out_w = port_w_p2 * PORT_W_MULT
-port_in = g.plate(
-    p0=(p1_xy[0], p1_xy[1] - port_in_w / 2, 0),
-    width=(0, port_in_w, 0),
-    height=(0, 0, SUB_H),
-    maxh=PORT_MAXH,
-)
-port_out = g.plate(
-    p0=(p2_xy[0], p2_xy[1] - port_out_w / 2, 0),
-    width=(0, port_out_w, 0),
-    height=(0, 0, SUB_H),
-    maxh=PORT_MAXH,
-)
+# The trace + ground plane are the cross-section's internal conductor +
+# outer PEC; we capture both on one PEC object so the wave-port
+# eigensolve can mark the right nodes via `pec=[pec_microstrip]`.
+pec_microstrip = rf.PEC(*trace_plates, sub.faces.min(axis="z"))
 
-g.fragment(sub, air, *trace_plates, port_in, port_out)
-
-rf.LumpedPort(port_in,  direction=(0, 0, 1), z0=50.0)
-rf.LumpedPort(port_out, direction=(0, 0, 1), z0=50.0)
-rf.PEC(*trace_plates, sub.faces.min(axis="z"))
-rf.ABC(*air.faces.outer, order=2)
+# Wave ports at x = 0 (trace entry) and x = sub_w (trace exit). The
+# port face is the union of the substrate's and air's x-extreme faces,
+# i.e. the full microstrip cross-section at that end. f0 picked at the
+# pass-band centre so the eigenmode's β = n_eff · k0 stays accurate.
+F0 = 0.5 * (FREQUENCIES[0] + FREQUENCIES[-1])
+rf.WavePort(sub.faces.min(axis="x"), air.faces.min(axis="x"),
+            f0=F0, mode_kind="auto", pec=[pec_microstrip])
+rf.WavePort(sub.faces.max(axis="x"), air.faces.max(axis="x"),
+            f0=F0, mode_kind="auto", pec=[pec_microstrip])
+# Close the lateral box: PEC on the substrate and air y-side walls forms
+# a parallel-plate-bounded enclosure that pins the propagating mode set
+# down to the single quasi-TEM the wave port projects onto. ABC stays
+# on the air top so the radiated component above the trace still leaves
+# cleanly. Without this, the y-walls' open BCs let energy couple into
+# higher-order transverse-substrate modes (cutoff ≈ c/(2·sub_y_width·√εr)
+# slightly above the sweep) that show up as |S|² > 1 around the band.
+rf.PEC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
+       air.faces.min(axis="y"), air.faces.max(axis="y"))
+rf.ABC(air.faces.max(axis="z"), order=2)
 
 rf.show(g)
 
