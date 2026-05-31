@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! Near-field to far-field transformation (NFFT) for radiation patterns.
 //!
 //! Uses the equivalence principle on a closed surface (typically the ABC boundary):

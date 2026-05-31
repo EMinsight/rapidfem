@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! 2D wave-port mode solver: transverse eigenmodes at a port cross-section.
 //!
 //! A modal port injects and extracts a known transverse field profile

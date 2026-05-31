@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! Analytic waveguide port modes.
 //!
 //! A rectangular waveguide of width `a` and height `b` supports `TE_mn`

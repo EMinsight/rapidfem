@@ -1,3 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+// Copyright (C) Robert Fennis (original EMerge source)
+//
+// This file is part of rapidfem and contains code ported from EMerge
+// (https://github.com/FennisRobert/EMerge), originally licensed under
+// GPL-2.0-or-later with the Gmsh additional permission; redistributed
+// here under GPL-3.0-or-later with that permission preserved.
+// See LICENSE and NOTICE for the full terms.
+
 //! Precomputed barycentric integration coefficients.
 //! Mirrors curlcurl.py: volume_coeff, VOLUME_COEFF_CACHE_BASE
 //! and robinbc.py: area_coeff, AREA_COEFF_CACHE_BASE.

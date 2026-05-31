@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! PyO3 bindings for rapidfem. Exposes `Simulation`, `SweepResult` to Python.
 //!
 //! Build via `maturin develop` (dev) or `maturin build --release` (wheel).

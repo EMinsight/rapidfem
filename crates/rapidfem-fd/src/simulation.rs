@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! High-level Simulation API — owns a mesh + parsed config and exposes callable
 //! methods for sweep, eigenmode, and far-field. The single entry point used by
 //! both the CLI (main.rs), the Python bindings (PyO3), and the WASM wrapper.
