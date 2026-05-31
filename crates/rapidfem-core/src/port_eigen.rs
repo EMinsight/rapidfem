@@ -810,7 +810,15 @@ pub fn solve_vector_modes(
         }
     }
 
-    let sigma = eps_r.iter().cloned().fold(1.0_f64, f64::max) + 0.05;
+    // Shift target σ. The eigenvalue λ = β² has units of 1/m² (same as
+    // k0²), so the dimensionless n_eff² target must be multiplied by k0²
+    // for the shift to land near the physical β² band. Earlier code used
+    // a bare dimensionless σ which only happened to work when k0 ≈ 1 (the
+    // natural-scale unit tests); for SI inputs (`k0 ≈ 100` 1/m and lengths
+    // in metres) the shift lived 4+ orders of magnitude away from any
+    // propagating mode and the solver returned only spurious eigenvalues.
+    let n_eff_target = eps_r.iter().cloned().fold(1.0_f64, f64::max) + 0.05;
+    let sigma = n_eff_target * k0 * k0;
     let c = Mat::<f64>::from_fn(ndof, ndof, |i, j| {
         a[i * ndof + j] - sigma * b[i * ndof + j]
     });

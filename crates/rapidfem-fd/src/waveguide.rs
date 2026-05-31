@@ -737,13 +737,6 @@ pub struct NumericalWavePort {
     /// `true` if `mode` came from `solve_vector_modes` (β = n_eff·k0); `false`
     /// if from `solve_modes` (β = sqrt(k0² − k_c²)).
     pub is_vector: bool,
-    /// Length-scale rescaling applied to the cross-section before the
-    /// eigensolve, in metres. The stored `NumericalMode` works in scaled
-    /// coordinates (`x_scaled = x_SI / coord_scale`); SI inputs to
-    /// `port_mode_3d_global` are divided by `coord_scale` before being
-    /// handed to `mode.e_profile`. `1.0` ⇒ no rescaling (used for the
-    /// scalar TE/TM path).
-    pub coord_scale: f64,
 }
 
 impl NumericalWavePort {
@@ -798,12 +791,7 @@ impl NumericalWavePort {
     /// Mode profile at a global point, scaled so the incident wave carries
     /// `self.power` watts through the port face.
     pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
-        // The cached NumericalMode references a cross-section mesh whose
-        // coords were divided by `coord_scale` for eigensolve conditioning;
-        // pre-divide the SI input by the same factor so `to_uv` lands inside
-        // the scaled-mesh frame.
-        let s = self.coord_scale;
-        let e = self.mode.e_profile([x / s, y / s, z / s]);
+        let e = self.mode.e_profile([x, y, z]);
         let a = self.amplitude(k0);
         (a * e[0], a * e[1], a * e[2])
     }
@@ -817,22 +805,15 @@ impl NumericalWavePort {
     }
 
     /// Construct from an already-solved `NumericalMode`. `face_nodes` and
-    /// `face_tris` describe the port-face triangulation in SI (global)
-    /// coordinates; we use them to integrate `|e_t^unit|^2` over the port
-    /// face in SI units so the resulting `mode_l2_norm` matches the unit
-    /// system the sweep machinery quadratures in.
-    ///
-    /// `coord_scale` is the rescaling factor applied to the cross-section
-    /// before the vector eigensolve (≡ 1.0 for the scalar TE/TM path) —
-    /// `port_mode_3d_global` uses it to translate SI inputs into the
-    /// scaled-mesh frame the cached `NumericalMode` lives in.
+    /// `face_tris` describe the port-face triangulation in SI coordinates;
+    /// they're used to integrate `|e_t^unit|^2` over the port face for
+    /// power-normalised amplitude scaling.
     pub fn new(
         port_number: usize,
         power: f64,
         mode: NumericalMode,
         n_eff: f64,
         is_vector: bool,
-        coord_scale: f64,
         face_nodes: &[[f64; 3]],
         face_tris: &[[usize; 3]],
     ) -> Self {
@@ -843,9 +824,8 @@ impl NumericalWavePort {
             .into_iter()
             .map(|q| (q[0], q[1], q[2], q[3]))
             .collect();
-        let s = coord_scale;
         let l2_sq = integrate_scalar_over_tris(face_nodes, face_tris, &dpts, &|x, y, z| {
-            let e = mode.e_profile([x / s, y / s, z / s]);
+            let e = mode.e_profile([x, y, z]);
             e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
         });
         let mode_l2_norm = l2_sq.max(0.0).sqrt();
@@ -856,7 +836,6 @@ impl NumericalWavePort {
             mode_l2_norm,
             n_eff,
             is_vector,
-            coord_scale,
         }
     }
 }

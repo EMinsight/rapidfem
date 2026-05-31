@@ -986,14 +986,14 @@ fn build_wave_numerical(
     let k0 = 2.0 * PI * f0 / C0;
 
     let kind_lc = mode_kind.to_lowercase();
-    let (nm, n_eff, is_vector, coord_scale): (NumericalMode, f64, bool, f64) = match kind_lc.as_str() {
+    let (nm, n_eff, is_vector): (NumericalMode, f64, bool) = match kind_lc.as_str() {
         "te" => {
             let modes = solve_modes(&pm, ModeKind::Te, mode_index + 1);
             let mode = modes.get(mode_index)?;
             let kc = mode.k_c;
             let beta = (k0 * k0 - kc * kc).max(0.0).sqrt();
             let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
-            (NumericalMode::from_scalar(pm, mode, ModeKind::Te), n_eff, false, 1.0_f64)
+            (NumericalMode::from_scalar(pm, mode, ModeKind::Te), n_eff, false)
         }
         "tm" => {
             let modes = solve_modes(&pm, ModeKind::Tm, mode_index + 1);
@@ -1001,7 +1001,7 @@ fn build_wave_numerical(
             let kc = mode.k_c;
             let beta = (k0 * k0 - kc * kc).max(0.0).sqrt();
             let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
-            (NumericalMode::from_scalar(pm, mode, ModeKind::Tm), n_eff, false, 1.0_f64)
+            (NumericalMode::from_scalar(pm, mode, ModeKind::Tm), n_eff, false)
         }
         "auto" | "vector" | "hybrid" => {
             let eps_per_tet = per_tet_eps_scalar(materials, mesh.n_tets());
@@ -1016,42 +1016,18 @@ fn build_wave_numerical(
                         .unwrap_or(1.0)
                 })
                 .collect();
-            // Length-scale normalisation: the eigenproblem's stiffness and
-            // mass terms scale with different powers of the cross-section's
-            // length unit. Real SI coordinates (~ 1e-3 m) and SI `k0`
-            // (~ 100 1/m) put 8+ orders of magnitude between matrix entries
-            // and the partial-piv-LU shift-invert loses every meaningful
-            // digit. Solve in O(1) coordinates with `k0_scaled = k0 · L`.
-            // `n_eff` is dimensionless so it comes back unchanged; mode
-            // amplitudes get reshaped by unit-peak normalisation downstream.
-            let mut extent: f64 = 0.0;
-            for n in &pm.nodes {
-                let r = (n[0] * n[0] + n[1] * n[1]).sqrt();
-                if r > extent { extent = r; }
-            }
-            let scale = if extent > 0.0 { extent } else { 1.0 };
-            let scaled_pm = {
-                let mut s = pm.clone();
-                for n in s.nodes.iter_mut() {
-                    n[0] /= scale;
-                    n[1] /= scale;
-                }
-                s
-            };
-            let k0_scaled = k0 * scale;
             let n_pec_nodes = pm.on_pec.iter().filter(|&&b| b).count();
             let n_boundary_nodes = pm.on_boundary.iter().filter(|&&b| b).count();
             eprintln!(
                 "  wave_numerical[vector] tag={}: {} face tris, {} nodes, \
-                 {} boundary + {} internal PEC, eps=[{:.2},{:.2}], \
-                 k0={:.3}/m, scale={:.4}m → k0_scaled={:.3}",
+                 {} boundary + {} internal PEC, eps=[{:.2},{:.2}], k0={:.3}/m",
                 tri_ids.len(), pm.tris.len(), pm.nodes.len(),
                 n_boundary_nodes, n_pec_nodes,
                 eps_face.iter().cloned().fold(f64::INFINITY, f64::min),
                 eps_face.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-                k0, scale, k0_scaled,
+                k0,
             );
-            let modes = solve_vector_modes(&scaled_pm, &eps_face, k0_scaled, mode_index + 1);
+            let modes = solve_vector_modes(&pm, &eps_face, k0, mode_index + 1);
             if modes.is_empty() {
                 eprintln!("    -> solve_vector_modes returned 0 modes");
                 return None;
@@ -1062,14 +1038,7 @@ fn build_wave_numerical(
             );
             let mode = modes.get(mode_index)?;
             let n_eff = mode.n_eff;
-            // Wrap with the SCALED mesh so e_profile's barycentric lookup is
-            // consistent with the e_edge coefficients. The amplitude
-            // mismatch (Whitney basis values differ by `scale` between
-            // frames) is absorbed by the unit-peak normalisation in
-            // `from_vector`, so the resulting profile is shape-correct.
-            // `coord_scale` is carried into NumericalWavePort so SI inputs
-            // to `port_mode_3d_global` get translated into the scaled frame.
-            (NumericalMode::from_vector(scaled_pm, mode), n_eff, true, scale)
+            (NumericalMode::from_vector(pm, mode), n_eff, true)
         }
         other => {
             eprintln!(
@@ -1087,7 +1056,6 @@ fn build_wave_numerical(
         nm,
         n_eff,
         is_vector,
-        coord_scale,
         &mesh.nodes,
         &face_tris,
     ))
