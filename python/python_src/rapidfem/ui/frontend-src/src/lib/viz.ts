@@ -2,23 +2,26 @@
  * Volumetric field point-cloud sampling.
  *
  * N random points drawn across the mesh volume with (A, B, C) phasor
- * coefficients interpolated by barycentric weights. Target sample density
- * per unit volume is the linear-interpolated weight
- *     w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x)/e_global_max,
- * where e(x) = 0.5·(A(x)+B(x)) is the time-averaged |E|².
+ * coefficients interpolated by barycentric weights. Per-node density driver
+ *     w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x) / e_ref,
+ * with e(x) = 0.5·(A(x)+B(x)) the time-averaged |E|² and e_ref the
+ * percentile-clipped energy max (top-1% outliers don't squash the bias).
  *
- * Two-stage draw to make the density piecewise-LINEAR across the volume
- * (not piecewise-constant as in the old per-tet-mean weighting):
- *   1. Pick tet ∝ vol[t] · w_max[t]  with  w_max[t] = max over the 4 corners.
+ * Two-stage draw:
+ *   1. Pick tet ∝ vol[t]^VOL_ALPHA · w_max[t], w_max = max of w over corners.
  *   2. Inside the tet: uniform barycentric proposal, accept with
  *      prob = w(x) / w_max[t].
- * Marginal density per unit volume reduces to w(x) exactly.
  *
- * Why this matters: with the old per-tet-mean weight, the point count per
- * tet was piecewise-constant → visible density jumps at shared faces (the
- * "tet edges" artifact). Rejection inside the tet gives a density that
- * agrees on both sides of a shared face because the 3 face nodes evaluate
- * to the same linear value from either tet.
+ * With VOL_ALPHA = 1 the marginal density per unit volume reduces to
+ * exactly ρ(x) = w(x), so there is no leak of tet-size variation into
+ * visible brightness. Small-tet starvation in big-air-dominated meshes
+ * (Microstrip, Coax, Inductor) is handled by the energy bias instead:
+ * with ENERGY_FLOOR = 0.2 and percentile-clipped e_ref, hot tets get a
+ * 5× per-volume sample-count uplift regardless of their size.
+ *
+ * Rejection inside the tet keeps density piecewise-LINEAR across faces
+ * (vs piecewise-CONSTANT per-tet mean), so visible "tet edge" density
+ * jumps stay killed.
  *
  * Because the weighting depends on the field, the CDF is built per
  * `viz_sample` call — `viz_load_mesh` only caches the field-independent
@@ -30,15 +33,37 @@
 import type { MeshData } from './msh';
 
 /** Mixing weight between uniform spatial coverage and energy-following
- *  density. Final per-unit-volume density is
- *      w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x) / e_global_max.
+ *  density. Effective per-unit-volume density is
+ *      w(x) = ENERGY_FLOOR + (1 − ENERGY_FLOOR) · e(x) / e_ref,
+ *  where e_ref is the percentile-clipped energy max (see ENERGY_PERCENTILE).
  *  Floor 1.0 = perfectly uniform; floor 0.0 = vacuum gets zero samples
- *  (strong bias). The current default sits high so the cloud "fills the
- *  geometry" first and only nudges a fraction of extra samples toward
- *  hot regions — peak-to-floor density ratio is 1/floor (≈ 1.11× at 0.9).
+ *  (strong bias). Default sits low (strong energy following) so structure-
+ *  bearing tets dominate sample count over big empty air tets.
  *  Caveat: in non-radiating channels like J, vacuum samples carry e = 0
  *  and show up as the lowest colormap value (visible but dim). */
-const ENERGY_FLOOR = 0.7;
+const ENERGY_FLOOR = 0.2;
+
+/** Volume exponent in the tet-pick CDF. Tet probability ∝ vol[t]^α · w_max[t].
+ *  Kept at 1.0 because the marginal density per unit volume then reduces to
+ *  w(x) exactly — perfectly smooth across the mesh, no leak of tet-size
+ *  variation into visible brightness. α<1 (an earlier attempt to equalise
+ *  sample COUNT across tets) inverted into the opposite artifact: small
+ *  tets at grading boundaries ended up with higher density per volume than
+ *  their neighbours and lit up as bright "pockets" along otherwise smooth
+ *  fields. Small-tet starvation in big-air-dominated meshes is fixed by the
+ *  energy bias instead (low ENERGY_FLOOR + percentile-clipped reference),
+ *  which gives hot tets ~1/ENERGY_FLOOR × the per-volume sample count
+ *  regardless of their size. */
+const VOL_ALPHA = 1.0;
+
+/** Reference for normalising e(x) in the density weight. Using the true max
+ *  squashes the bias signal across the whole mesh: a single port-edge node
+ *  is typically 1000× stronger than the structure-following bulk, so
+ *  e/e_max ≈ 0 everywhere except the port and the bias goes flat. Clipping
+ *  e_ref to a percentile (here 99%) sets the reference at the body of the
+ *  high-energy distribution, not the single outlier, so the conductor /
+ *  microstrip line sits in the bias-active range. */
+const ENERGY_PERCENTILE = 0.99;
 
 /** Colormap upper percentile. The auto-range is dominated by a handful of
  *  outlier nodes — typically the driven-port edges where the imposed E (and
@@ -84,6 +109,40 @@ export async function viz_load_mesh(m: MeshData): Promise<void> {
 		vols[t] = Math.abs(det) / 6;
 	}
 	cache = { nodes: m.nodes, tets: m.tets, vols };
+}
+
+/** Percentile of the positive entries of `arr`, computed via a single-pass
+ *  bit-pattern histogram on IEEE 754 floats (the top 11 bits of a positive
+ *  float are monotonic with its value, so binning them is a free log-bin).
+ *  O(n) instead of O(n log n) sort — matters at 100k+ nodes. */
+function positive_percentile(arr: Float64Array, p: number): number {
+	const N_BINS = 2048;
+	const counts = new Uint32Array(N_BINS);
+	const view_f32 = new Float32Array(1);
+	const view_u32 = new Uint32Array(view_f32.buffer);
+	let n_pos = 0;
+	let max_val = 0;
+	for (let i = 0; i < arr.length; i++) {
+		const v = arr[i];
+		if (v <= 0) continue;
+		n_pos++;
+		if (v > max_val) max_val = v;
+		view_f32[0] = v;
+		const bin = (view_u32[0] >>> 20) & (N_BINS - 1);
+		counts[bin]++;
+	}
+	if (n_pos === 0) return 0;
+	const target = Math.ceil(n_pos * p);
+	let cum = 0;
+	for (let b = 0; b < N_BINS; b++) {
+		cum += counts[b];
+		if (cum >= target) {
+			// Lower edge of bin: reconstruct the float whose top bits give `b`.
+			view_u32[0] = b << 20;
+			return Math.min(view_f32[0], max_val);
+		}
+	}
+	return max_val;
 }
 
 /** Binary search for the smallest index `i` with cdf[i] >= u. */
@@ -141,21 +200,32 @@ export async function viz_sample(
 	const n_nodes = field_abc.length / 3;
 
 	// ── Per-node time-averaged energy e_i = 0.5·(A_i + B_i) ─────────────
+	// Clipped HERE at the percentile, not just normalised against it. The
+	// P1 edge-element projection produces node-level energy spikes at
+	// sliver-tet corners (the projection is one-sided and not smooth across
+	// fine-coarse interfaces), and an unclipped corner spike pins ONE tet
+	// to w_max = 1 in the CDF — that tet then collects a disproportionate
+	// pile of samples, visible as "pockets" of bright noise inside an
+	// otherwise smoothly-decaying coax field. Clipping the per-node values
+	// against e_ref BEFORE w_max_tet kills the preferential picking; the
+	// in-tet rejection still recovers a piecewise-linear density inside each
+	// tet because the clip is per-node monotone.
 	const e_node = new Float64Array(n_nodes);
-	let e_global_max = 0;
 	for (let i = 0; i < n_nodes; i++) {
 		const e = 0.5 * (field_abc[i * 3] + field_abc[i * 3 + 1]);
-		const ec = e > 0 ? e : 0;
-		e_node[i] = ec;
-		if (ec > e_global_max) e_global_max = ec;
+		e_node[i] = e > 0 ? e : 0;
 	}
-	if (e_global_max <= 0) return empty;
-	const inv_e_global = 1 / e_global_max;
+	const e_ref = positive_percentile(e_node, ENERGY_PERCENTILE);
+	if (e_ref <= 0) return empty;
+	for (let i = 0; i < n_nodes; i++) {
+		if (e_node[i] > e_ref) e_node[i] = e_ref;
+	}
+	const inv_e_ref = 1 / e_ref;
 
 	// ── Per-tet max weight (upper bound for rejection inside the tet) ───
-	// w(x) = ENERGY_FLOOR + (1−ENERGY_FLOOR)·e(x)/e_global_max is affine in
-	// the barycentric coords, so w_max_in_tet = w at the corner with
-	// max e_node.
+	// w(x) = ENERGY_FLOOR + (1−ENERGY_FLOOR)·e(x)/e_ref is affine over the
+	// (already-clipped) e, so the per-tet max sits at the corner with the
+	// largest clipped e.
 	const w_max_tet = new Float64Array(n_tets);
 	for (let t = 0; t < n_tets; t++) {
 		let em = 0;
@@ -163,15 +233,17 @@ export async function viz_sample(
 			const en = e_node[tets[t * 4 + k]];
 			if (en > em) em = en;
 		}
-		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_global;
+		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_ref;
 	}
 
-	// ── Tet-pick CDF: weight = vol · w_max_tet  (so the marginal density
-	//    per unit volume after rejection is exactly w(x)) ────────────────
+	// ── Tet-pick CDF: weight = vol^VOL_ALPHA · w_max_tet ────────────────
+	// VOL_ALPHA<1 stops big air tets from monopolising samples when the
+	// mesh has 100-1000× size variation, so small structure-bearing tets
+	// near conductors still get a fair share of points.
 	const cdf = new Float64Array(n_tets);
 	let acc = 0;
 	for (let t = 0; t < n_tets; t++) {
-		acc += vols[t] * w_max_tet[t];
+		acc += Math.pow(vols[t], VOL_ALPHA) * w_max_tet[t];
 		cdf[t] = acc;
 	}
 	if (acc <= 0) return empty;
@@ -179,10 +251,6 @@ export async function viz_sample(
 	for (let t = 0; t < n_tets; t++) cdf[t] *= inv_total;
 
 	// ── Draw N points with rejection inside the picked tet ──────────────
-	// Rejection budget: w_max_tet caps acceptance from below by 1/4
-	// (energy concentrated in one corner of a 4-node element), so the
-	// expected proposal count per sample is at most ~4. Cap iterations
-	// to keep numerical edge cases bounded.
 	const MAX_PROPOSALS = 64;
 	const positions = new Float32Array(n * 3);
 	const abc = new Float32Array(n * 3);
@@ -196,10 +264,12 @@ export async function viz_sample(
 		const ea = e_node[a], eb = e_node[b], ec_ = e_node[c], ed = e_node[d];
 		const wmax = w_max_tet[t_idx];
 
+		// e_local ≤ e_ref since corner values are pre-clipped, so the
+		// saturation is implicit and no per-iteration min() is needed.
 		for (let attempt = 0; attempt < MAX_PROPOSALS; attempt++) {
 			uniform_bary(w);
 			const e_local = w[0] * ea + w[1] * eb + w[2] * ec_ + w[3] * ed;
-			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_global;
+			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_ref;
 			if (Math.random() * wmax <= w_local) break;
 		}
 
@@ -263,16 +333,17 @@ export async function viz_sample_static(
 	const n_tets = vols.length;
 	const n_nodes = weight.length;
 
-	// ── Per-node non-negative density driver ────────────────────────────
+	// ── Per-node non-negative density driver, percentile-clipped ────────
 	const e_node = new Float64Array(n_nodes);
-	let e_global_max = 0;
 	for (let i = 0; i < n_nodes; i++) {
-		const e = weight[i] > 0 ? weight[i] : 0;
-		e_node[i] = e;
-		if (e > e_global_max) e_global_max = e;
+		e_node[i] = weight[i] > 0 ? weight[i] : 0;
 	}
-	if (e_global_max <= 0) return empty;
-	const inv_e_global = 1 / e_global_max;
+	const e_ref = positive_percentile(e_node, ENERGY_PERCENTILE);
+	if (e_ref <= 0) return empty;
+	for (let i = 0; i < n_nodes; i++) {
+		if (e_node[i] > e_ref) e_node[i] = e_ref;
+	}
+	const inv_e_ref = 1 / e_ref;
 
 	// ── Per-tet max weight (upper bound for rejection inside the tet) ───
 	const w_max_tet = new Float64Array(n_tets);
@@ -282,14 +353,14 @@ export async function viz_sample_static(
 			const en = e_node[tets[t * 4 + k]];
 			if (en > em) em = en;
 		}
-		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_global;
+		w_max_tet[t] = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * em * inv_e_ref;
 	}
 
-	// ── Tet-pick CDF: weight = vol · w_max_tet ──────────────────────────
+	// ── Tet-pick CDF: weight = vol^VOL_ALPHA · w_max_tet ────────────────
 	const cdf = new Float64Array(n_tets);
 	let acc = 0;
 	for (let t = 0; t < n_tets; t++) {
-		acc += vols[t] * w_max_tet[t];
+		acc += Math.pow(vols[t], VOL_ALPHA) * w_max_tet[t];
 		cdf[t] = acc;
 	}
 	if (acc <= 0) return empty;
@@ -314,7 +385,7 @@ export async function viz_sample_static(
 		for (let attempt = 0; attempt < MAX_PROPOSALS; attempt++) {
 			uniform_bary(w);
 			const e_local = w[0] * ea + w[1] * eb + w[2] * ec_ + w[3] * ed;
-			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_global;
+			const w_local = ENERGY_FLOOR + (1 - ENERGY_FLOOR) * e_local * inv_e_ref;
 			if (Math.random() * wmax <= w_local) break;
 		}
 
