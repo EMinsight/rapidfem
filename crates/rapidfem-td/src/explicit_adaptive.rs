@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! Adaptive embedded low-storage Runge-Kutta time integration.
 //!
 //! The Kennedy-Carpenter-Lewis RK4(3)5[2R+]C scheme — five stages, fourth

@@ -178,9 +178,23 @@ analytical solutions and external reference solvers.
 cargo test --release
 ```
 
-## License
+## License & attribution
 
-[GNU Affero General Public License v3.0 or later](LICENSE). If you run a
-modified version of rapidfem as a network service (e.g. SaaS), the AGPL
-requires that you make the modified source available to the users of that
-service. For commercial use under different terms, get in touch.
+rapidfem is distributed under the [GNU General Public License v3 or
+later](LICENSE), with the original Gmsh additional permission preserved so
+the produced binaries can link Gmsh, Netgen, METIS, OpenCASCADE and ParaView
+under their own licences. For commercial use under different terms, get in
+touch.
+
+Substantial portions of the frequency-domain backend
+(`crates/rapidfem-fd`) and the shared mesh / quadrature / materials code
+(`crates/rapidfem-core`) are direct ports from
+[**EMerge**](https://github.com/FennisRobert/EMerge) by Robert Fennis,
+originally licensed under GPL-2.0+ with the same Gmsh additional permission;
+per the GPL "or later" grant they are redistributed here under GPL-3.0+.
+The wave-port mode eigensolver (`port_eigen.rs`), the time-domain DGTD
+backend (`crates/rapidfem-td`), the Python / web UI layers and the Rust
+build / packaging machinery are original to this project.
+
+See [`NOTICE`](NOTICE) for the file-by-file attribution and the runtime
+third-party dependency list.

@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! rapidfem CLI: thin TOML-driven wrapper around `rapidfem_fd::simulation::Simulation`.
 //! All simulation logic lives in the library (lib.rs). This file is just I/O glue:
 //! parse args → load mesh+config → run sim → write outputs.

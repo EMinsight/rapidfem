@@ -1,8 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+// Copyright (C) Robert Fennis (original EMerge source)
+//
+// This file is part of rapidfem and contains code ported from EMerge
+// (https://github.com/FennisRobert/EMerge), originally licensed under
+// GPL-2.0-or-later with the Gmsh additional permission; redistributed
+// here under GPL-3.0-or-later with that permission preserved.
+// See LICENSE and NOTICE for the full terms.
+
 //! Exact port of microwave_bc.py: RectangularWaveguide class and CoordinateSystem.
 //!
 //! All method names and formulas match EMerge exactly.
 
 use num_complex::Complex64 as C64;
+use rapidfem_core::port_eigen::NumericalMode;
 use crate::constants::*;
 
 /// Port of cs.py: CoordinateSystem
@@ -662,4 +674,186 @@ pub fn lumped_port_dims(
         }
     }
     (width, height)
+}
+
+
+// =============================================================================
+// NumericalWavePort: 2D mode eigensolve on the port-face triangulation.
+//
+// Wraps a `NumericalMode` (scalar TE/TM Helmholtz OR full-vector hybrid for
+// inhomogeneous cross-sections) and exposes it via the `Port` trait. The
+// mode profile is unit-peak-normalised by `NumericalMode`; we rescale to the
+// power-normalised amplitude via the precomputed integral
+//   norm = sqrt( ∫ |e_t^unit|^2 dA )
+// at construction time. Then
+//   port_mode_3d_global(x, k0) = e_profile(x) * amplitude(k0) / norm
+// with amplitude(k0) chosen so that 0.5/Z_mode * A^2 * norm^2 = power.
+// =============================================================================
+
+/// Single quadrature point on a triangle: (weight, L1, L2, L3) in barycentric.
+type Tri4Tuple = (f64, f64, f64, f64);
+
+/// Sum a function over the triangle surface mesh using gmsh-style P1 quadrature.
+/// Inline replica of `sparam::surface_integral` for real-valued scalars — we
+/// only need this at port construction to integrate |e_t^unit|^2, which is
+/// real, so importing the complex version would be churn.
+fn integrate_scalar_over_tris(
+    nodes: &[[f64; 3]],
+    triangles: &[[usize; 3]],
+    dpts: &[Tri4Tuple],
+    f: &dyn Fn(f64, f64, f64) -> f64,
+) -> f64 {
+    let mut total = 0.0;
+    for tri in triangles {
+        let v1 = nodes[tri[0]];
+        let v2 = nodes[tri[1]];
+        let v3 = nodes[tri[2]];
+        let e1 = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
+        let e2 = [v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]];
+        let cr = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let area = 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+        let mut tri_sum = 0.0;
+        for &(w, l1, l2, l3) in dpts {
+            let x = v1[0] * l1 + v2[0] * l2 + v3[0] * l3;
+            let y = v1[1] * l1 + v2[1] * l2 + v3[1] * l3;
+            let z = v1[2] * l1 + v2[2] * l2 + v3[2] * l3;
+            tri_sum += w * f(x, y, z);
+        }
+        total += tri_sum * area;
+    }
+    total
+}
+
+/// FD-side wrapper of `NumericalMode` that satisfies the `Port` trait.
+///
+/// One construction per port: the eigensolve runs at `f0` (the operating
+/// frequency the user passed), and the resulting `(e_t, h_t)` mode profile is
+/// cached. During the sweep, `get_uinc` / `port_mode_3d_global` re-scale the
+/// (real) profile by an amplitude that depends on the live `k0`:
+///   amplitude(k0) = sqrt(2 · z_mode(k0) · power) / mode_l2_norm
+/// where `mode_l2_norm = sqrt(∫|e_t^unit|^2 dA)` is precomputed.
+pub struct NumericalWavePort {
+    pub port_number: usize,
+    pub power: f64,
+    pub mode: NumericalMode,
+    /// √(∫ |e_t^unit|^2 dA) over the port face — precomputed at construction.
+    pub mode_l2_norm: f64,
+    /// Effective index frozen at the eigensolve frequency f0. Hybrid quasi-
+    /// TEM only — scalar modes ignore this and derive β from the cutoff.
+    pub n_eff: f64,
+    /// `true` if `mode` came from `solve_vector_modes` (β = n_eff·k0); `false`
+    /// if from `solve_modes` (β = sqrt(k0² − k_c²)).
+    pub is_vector: bool,
+}
+
+impl NumericalWavePort {
+    /// Modal propagation constant β at the live operating wavenumber k0.
+    /// Vector path: linear dispersion frozen at f0. Scalar path: closed-form
+    /// from the cutoff.
+    pub fn get_beta(&self, k0: f64) -> f64 {
+        if self.is_vector {
+            self.n_eff * k0
+        } else {
+            let kc = self.mode.cutoff();
+            (k0 * k0 - kc * kc).max(0.0).sqrt()
+        }
+    }
+
+    pub fn get_gamma(&self, k0: f64) -> C64 {
+        C64::new(0.0, self.get_beta(k0))
+    }
+
+    /// Modal wave impedance in SI ohms — the field-ratio `|E_t|/|H_t|` of
+    /// the propagating mode. Scalar TE: `Z_0/√(1−(k_c/ω)²)`; scalar TM:
+    /// `Z_0·√(1−(k_c/ω)²)`; vector hybrid (quasi-TEM): `Z_0/n_eff`. Used
+    /// only by power-flux-based S-param paths (`sparam_field_power`,
+    /// `sparam_mode_power`); the mode-projection path (`sparam_waveport`)
+    /// is amplitude-invariant.
+    pub fn z_mode(&self, k0: f64) -> f64 {
+        let omega = k0 * C0;
+        self.mode.te_impedance(omega) * Z0
+    }
+
+    /// Power-normalised amplitude scaling for the unit-peak mode profile.
+    ///
+    /// The eigenmode's transverse power flux (Poynting integral) is, for
+    /// any propagating mode written as `exp(-jβz)`:
+    ///
+    /// ``S_z = (β / 2ωμ_0) · |E_t|²  =  (n_eff / 2 Z_0) · |E_t|²``
+    ///
+    /// independent of TE / TM / hybrid character, homogeneous or
+    /// inhomogeneous fill. Setting the unit-peak-normalised mode to
+    /// carry the user's `power` watts gives
+    ///
+    /// ``amp = √(2 Z_0 · power / n_eff(k0)) / mode_l2_norm``
+    ///
+    /// where `mode_l2_norm² = ∫ |E_t^unit|² dA`. Frequency dependence
+    /// enters only via `n_eff(k0)` (scalar TE/TM dispersion); the vector
+    /// path freezes `n_eff` at the eigensolve frequency `f_0`.
+    fn amplitude(&self, k0: f64) -> f64 {
+        if self.mode_l2_norm <= 0.0 {
+            return 0.0;
+        }
+        let beta = self.get_beta(k0);
+        if beta <= 0.0 {
+            return 0.0;
+        }
+        let n_eff_now = beta / k0;
+        (2.0 * Z0 * self.power / n_eff_now).sqrt() / self.mode_l2_norm
+    }
+
+    /// Mode profile at a global point, scaled so the incident wave carries
+    /// `self.power` watts through the port face.
+    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
+        let e = self.mode.e_profile([x, y, z]);
+        let a = self.amplitude(k0);
+        (a * e[0], a * e[1], a * e[2])
+    }
+
+    /// Incident-wave RHS contribution, same convention as RectWaveguide:
+    /// uinc = −2j·β · port_mode_3d_global.
+    pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
+        let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, k0);
+        let factor = C64::new(0.0, -2.0 * self.get_beta(k0));
+        [factor * C64::from(ex), factor * C64::from(ey), factor * C64::from(ez)]
+    }
+
+    /// Construct from an already-solved `NumericalMode`.
+    ///
+    /// Pre-computes `mode_l2_norm = √(∫ |E_t^unit|² dA)` over the port
+    /// face. Combined with the eigenmode's `n_eff` it gives the
+    /// Poynting-flux-per-unit-amplitude `S_z = (n_eff/2 Z_0) · |E_t|²`
+    /// that `amplitude(k0)` inverts to land the unit-peak mode at the
+    /// user-requested `power`.
+    pub fn new(
+        port_number: usize,
+        power: f64,
+        mode: NumericalMode,
+        n_eff: f64,
+        is_vector: bool,
+        face_nodes: &[[f64; 3]],
+        face_tris: &[[usize; 3]],
+    ) -> Self {
+        let dpts: Vec<Tri4Tuple> = crate::quadrature::gaus_quad_tri(4)
+            .into_iter()
+            .map(|q| (q[0], q[1], q[2], q[3]))
+            .collect();
+        let l2_sq = integrate_scalar_over_tris(face_nodes, face_tris, &dpts, &|x, y, z| {
+            let e = mode.e_profile([x, y, z]);
+            e[0] * e[0] + e[1] * e[1] + e[2] * e[2]
+        });
+        let mode_l2_norm = l2_sq.max(0.0).sqrt();
+        NumericalWavePort {
+            port_number,
+            power,
+            mode,
+            mode_l2_norm,
+            n_eff,
+            is_vector,
+        }
+    }
 }

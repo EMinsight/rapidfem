@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! 2D wave-port mode solver: transverse eigenmodes at a port cross-section.
 //!
 //! A modal port injects and extracts a known transverse field profile
@@ -810,7 +817,15 @@ pub fn solve_vector_modes(
         }
     }
 
-    let sigma = eps_r.iter().cloned().fold(1.0_f64, f64::max) + 0.05;
+    // Shift target σ. The eigenvalue λ = β² has units of 1/m² (same as
+    // k0²), so the dimensionless n_eff² target must be multiplied by k0²
+    // for the shift to land near the physical β² band. Earlier code used
+    // a bare dimensionless σ which only happened to work when k0 ≈ 1 (the
+    // natural-scale unit tests); for SI inputs (`k0 ≈ 100` 1/m and lengths
+    // in metres) the shift lived 4+ orders of magnitude away from any
+    // propagating mode and the solver returned only spurious eigenvalues.
+    let n_eff_target = eps_r.iter().cloned().fold(1.0_f64, f64::max) + 0.05;
+    let sigma = n_eff_target * k0 * k0;
     let c = Mat::<f64>::from_fn(ndof, ndof, |i, j| {
         a[i * ndof + j] - sigma * b[i * ndof + j]
     });
@@ -1140,6 +1155,44 @@ mod tests {
         let ehdot = mid[0] * h[0] + mid[1] * h[1] + mid[2] * h[2];
         assert!(ehdot.abs() < 1e-9, "e_t·h_t = {ehdot:.3e}");
         assert!((nm.cutoff() - PI / 2.0).abs() / (PI / 2.0) < 0.04);
+    }
+
+    #[test]
+    fn microstrip_quasi_tem_natural_scale() {
+        // Dimensionless microstrip-like cross-section: width 2, height 1.
+        // Substrate band y < 0.1 with eps=3.55, air above with eps=1.
+        // Trace as internal-PEC line at y=0.1, x in [0.9, 1.1]. k0=3 — well
+        // below the homogeneous TE10 cutoff (k_c = pi/2 = 1.571), so the
+        // ONLY propagating mode is the conductor-supported quasi-TEM.
+        let (nodes, tris) = rect_mesh(2.0, 1.0, 60, 40);
+        let mut pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
+        let eps: Vec<f64> = pm.tris.iter().map(|&t| {
+            let yc = (pm.nodes[t[0]][1] + pm.nodes[t[1]][1] + pm.nodes[t[2]][1]) / 3.0;
+            if yc < 0.1 { 3.55 } else { 1.0 }
+        }).collect();
+        // Mark trace nodes on internal PEC.
+        let mut on_pec = vec![false; pm.nodes.len()];
+        for (i, n) in pm.nodes.iter().enumerate() {
+            if (n[1] - 0.1).abs() < 1e-6 && (n[0] - 1.0).abs() < 0.1 + 1e-6 {
+                on_pec[i] = true;
+            }
+        }
+        pm.on_pec = on_pec;
+        let n_pec = pm.on_pec.iter().filter(|&&b| b).count();
+        assert!(n_pec >= 2, "trace PEC nodes = {n_pec}, expected at least 2");
+
+        let k0 = 3.0;
+        let modes = solve_vector_modes(&pm, &eps, k0, 3);
+        eprintln!("[microstrip natural-scale] k0={k0}, eps_max=3.55, {} modes:", modes.len());
+        for (i, m) in modes.iter().enumerate() {
+            eprintln!("  mode[{i}] n_eff = {:.4}", m.n_eff);
+        }
+        assert!(!modes.is_empty(), "no microstrip quasi-TEM mode");
+        // Quasi-TEM n_eff is bracketed by sqrt(eff_eps) where eff_eps lies
+        // between 1 (no substrate) and 3.55 (full substrate fill).
+        let n_eff = modes[0].n_eff;
+        assert!(n_eff > 1.0 && n_eff < 3.55_f64.sqrt(),
+            "n_eff = {n_eff:.3} not bracketed (1, 1.884)");
     }
 
     #[test]

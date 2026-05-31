@@ -39,7 +39,7 @@
 		// never loads it.
 		const beacon = document.createElement('script');
 		beacon.defer = true;
-		beacon.src = 'https://app.whatsmytraffic.com/beacon.js';
+		beacon.src = 'https://whatsmytraffic.com/beacon.js';
 		beacon.setAttribute('data-website-id', '074c6b1d-f8ff-4aad-809c-7eeaf7ccad77');
 		document.head.appendChild(beacon);
 

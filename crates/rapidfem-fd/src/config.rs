@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
+//
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
+
 //! TOML configuration file parsing for CLI.
 
 use serde::Deserialize;
@@ -185,6 +192,44 @@ pub enum PortConfig {
         #[serde(default = "default_z_dir")]
         direction: [f64; 3],
     },
+    /// Numerical wave port: 2D mode eigensolve on the port-face triangulation.
+    ///
+    /// The mode profile is computed once at the user-supplied operating
+    /// frequency `f0` by `rapidfem_core::port_eigen::{solve_modes, solve_vector_modes}`
+    /// and cached. Three modes:
+    /// - default (`mode_kind = "auto"` or omitted): full-vector hybrid for an
+    ///   inhomogeneous cross-section (substrate + air) — quasi-TEM microstrip.
+    /// - `mode_kind = "te"` / `"tm"`: scalar Helmholtz on a homogeneously
+    ///   filled hollow guide (rectangular / ridged / arbitrary shape).
+    ///
+    /// `mode_index` selects the n-th mode ordered by descending n_eff (vector
+    /// solve) or descending cutoff (scalar solve). `pec_tags` lists internal
+    /// PEC surfaces (a microstrip trace cutting through the port face); nodes
+    /// on those tags get the `tangential E = 0` constraint.
+    ///
+    /// Dispersion approximation: β(k0) = n_eff(f0) · k0 (vector path), β(k0) =
+    /// sqrt(k0² - k_c²) (scalar path). For broadband sweeps far from f0 the
+    /// vector path's β drifts; re-solving per frequency is a follow-up.
+    #[serde(rename = "wave_numerical")]
+    WaveNumerical {
+        tag: i32,
+        /// Operating frequency for the mode solve (Hz).
+        f0: f64,
+        /// Mode index, 0 = fundamental (descending n_eff / cutoff).
+        #[serde(default)]
+        mode_index: usize,
+        /// "auto" / "vector" — full hybrid solve (default). "te" / "tm" —
+        /// scalar Helmholtz on the homogeneously-filled cross-section.
+        #[serde(default = "default_wave_kind")]
+        mode_kind: String,
+        /// Physical-group tags whose nodes are internal PEC (e.g. a
+        /// microstrip trace dividing the port face). Outer-boundary PEC is
+        /// inferred automatically.
+        #[serde(default)]
+        pec_tags: Vec<i32>,
+        #[serde(default = "default_one")]
+        power: f64,
+    },
     /// Surface impedance (lossy conductor wall). Either supply σ (S/m) for skin-depth-based
     /// impedance, or `zs` (real+imag Ω/sq) for a frequency-independent constant.
     #[serde(rename = "surface_impedance")]
@@ -311,6 +356,7 @@ fn default_abc_type() -> String { "B".to_string() }
 fn default_solver_prefer() -> String { "auto".to_string() }
 fn default_z_dir() -> [f64; 3] { [0.0, 0.0, 1.0] }
 fn default_floquet_mode() -> u32 { 1 }
+fn default_wave_kind() -> String { "auto".to_string() }
 
 pub fn load_config(path: &str) -> Result<Config, String> {
     let content = std::fs::read_to_string(path)

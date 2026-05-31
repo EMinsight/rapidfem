@@ -358,73 +358,130 @@ class CoaxPort(_Physics):
 
 
 class WavePort(_Physics):
-    """Numerically-solved wave port (time-domain backend only).
+    """Numerically-solved wave port — 2-D mode eigensolve on the port face.
 
-    Computes the port's transverse mode profile by a 2D eigensolve on
-    the port-face cross-section, instead of assuming an analytic shape.
-    This is the right port for a guide whose mode has no closed form —
-    a ridged or circular waveguide, and (once the inhomogeneous vector
-    solve lands) a microstrip or coplanar line. The solved profile then
-    flows through the same injection / extraction machinery as the
-    analytic :class:`RectWaveguidePort` and :class:`CoaxPort`.
+    Computes the port's transverse mode profile by a 2-D eigensolve on
+    the port-face triangulation, instead of assuming an analytic shape.
+    This is the right port for a guide whose mode has no closed form: a
+    ridged or arbitrary hollow waveguide (scalar :math:`\\mathrm{TE}` /
+    :math:`\\mathrm{TM}` path) and a microstrip / coplanar / coupled
+    line (full-vector hybrid path with per-element :math:`\\varepsilon_r`).
+    The solved profile flows through the same Robin-BC injection and
+    mode-projection extraction as :class:`RectWaveguidePort` and
+    :class:`CoaxPort`.
 
-    At this stage the solver handles a **homogeneously filled**
-    cross-section (the scalar Helmholtz :math:`\\mathrm{TE}` / :math:`\\mathrm{TM}`
-    eigenproblem); the dominant mode of an arbitrary hollow guide is
-    captured exactly. Inhomogeneous (dielectric + air) hybrid modes for
-    microstrip-class lines are a follow-up on the same machinery.
+    Two solver paths, selected via ``mode_kind``:
 
-    Frequency-domain ``ProblemFD`` does not support :class:`WavePort`.
+    - ``"auto"`` / ``"vector"`` / ``"hybrid"`` (default) — **full-vector
+      hybrid** eigenproblem (mixed Nédélec-edge :math:`E_t` + Lagrange-
+      nodal :math:`E_z`). Honours per-element :math:`\\varepsilon_r` so
+      the inhomogeneous quasi-TEM mode of a microstrip-class line is
+      captured directly. Pair with ``pec=`` to mark any internal PEC
+      conductor (the trace) that bisects the cross-section. Dispersion
+      uses :math:`\\beta(k_0) = n_{\\mathrm{eff}}(f_0) \\cdot k_0`
+      throughout the sweep — set ``f0`` near band centre.
+    - ``"te"`` / ``"tm"`` — **scalar Helmholtz** TE / TM modes on the
+      homogeneously filled hollow cross-section. Cutoff and dispersion
+      come from the scalar :math:`k_c`; weak frequency dependence so
+      ``f0`` choice barely matters for the mode shape.
+
+    Both paths support frequency-domain (:class:`ProblemFD`); the time-
+    domain backend currently only consumes ``"te"`` / ``"tm"``.
 
 
     Example
     -------
-    Dominant mode of a ridged-waveguide cross-section:
+    Microstrip line driven by a hybrid wave port at each end, with the
+    trace marked as internal PEC inside the cross-section:
 
     .. code-block:: python
 
-        rf.WavePort(guide.faces.min(axis="z"))
+        sub = g.box(W, L, H_sub, material=fr4)
+        air = g.box(W, L, H_air, position=(0, 0, H_sub), material=rf.Air())
+        trace = g.xy_plate(w0, L, position=(-w0/2, 0, H_sub))
+        g.fragment(sub, air, trace)
+
+        pec_trace = rf.PEC(trace, sub.faces.min(axis="z"))
+        rf.WavePort(sub.faces.min(axis="y"), air.faces.min(axis="y"),
+                    f0=10e9, mode_kind="auto", pec=[pec_trace])
+        rf.WavePort(sub.faces.max(axis="y"), air.faces.max(axis="y"),
+                    f0=10e9, mode_kind="auto", pec=[pec_trace])
+
+    Hollow-guide variant — dominant TE mode of an arbitrary cross-section:
+
+    .. code-block:: python
+
+        rf.WavePort(guide.faces.min(axis="z"), f0=10e9, mode_kind="te")
 
 
     Parameters
     ----------
     targets : GeoObject or EntityCollection
-        port face(s)
-    te : bool
-        for the homogeneous (``f0 = None``) scalar solve: pick a
-        :math:`\\mathrm{TE}` mode (``True``, default) or :math:`\\mathrm{TM}`
-        (``False``). Ignored for the vector solve.
+        port face(s) — multiple faces are merged into one cross-section
+    mode_kind : str, optional
+        ``"auto"`` / ``"vector"`` / ``"hybrid"`` (default) for the
+        full-vector hybrid solve, ``"te"`` / ``"tm"`` for the scalar
+        Helmholtz path.
     mode_index : int
-        which mode to use, ordered by dominance (``0`` = fundamental)
-    f0 : float or None
-        design frequency in Hz. ``None`` (default) runs the scalar
-        ``TE``/``TM`` solve for a homogeneously filled hollow guide.
-        Setting ``f0`` switches to the **full-vector hybrid** solve at
-        that operating frequency, using the per-element permittivity —
-        the path for an inhomogeneous (substrate + air) microstrip-class
-        line, whose quasi-TEM mode profile is needed there. The profile
-        is weakly frequency-dependent, so a single ``f0`` near the band
-        of interest suffices.
+        which mode to use, ordered by descending :math:`n_{\\mathrm{eff}}`
+        (vector path) or ascending cutoff (scalar path). ``0`` = dominant.
+    f0 : float
+        eigensolve operating frequency in Hz. Required for the FD backend
+        — the vector mode profile is computed once here and used across
+        the whole sweep.
+    pec : iterable of :class:`PEC`, optional
+        PEC physics objects whose nodes on the port face are marked as
+        internal conductors (a microstrip trace cutting through the
+        cross-section). Outer-boundary PEC is inferred automatically;
+        this is only for *internal* PEC.
     power : float
-        incident power in watts
+        incident power in watts (default ``1.0``)
+    te : bool, optional
+        legacy backwards-compat flag — superseded by ``mode_kind``.
     """
 
     def __init__(self, *targets,
                  te: bool = True,
                  mode_index: int = 0,
                  f0: float | None = None,
-                 power: float = 1.0):
+                 power: float = 1.0,
+                 mode_kind: str | None = None,
+                 pec: "Iterable | None" = None):
         super().__init__(*targets)
         self.te = bool(te)
         self.mode_index = int(mode_index)
         self.f0 = None if f0 is None else float(f0)
         self.power = float(power)
+        if mode_kind is not None:
+            self.mode_kind = str(mode_kind).lower()
+        else:
+            self.mode_kind = "auto"
+        self.pec = list(pec) if pec is not None else []
 
     def _to_toml(self, tag: int) -> str:
-        raise NotImplementedError(
-            "WavePort is a time-domain feature; the frequency-domain "
-            "backend (ProblemFD) has no wave-port mode solver. Use "
-            "RectWaveguidePort / CoaxPort / LumpedPort with ProblemFD."
+        if self.f0 is None:
+            raise ValueError(
+                "WavePort requires f0= for the FD frequency-domain backend "
+                "(the operating frequency of the 2-D mode eigensolve)."
+            )
+        # Resolve attached PEC objects to their physical-group tags so the
+        # cross-section eigensolve can mark the corresponding nodes as
+        # internal conductors. Geometry.mesh() populates `_physics_tags`,
+        # so this only resolves once meshing has happened.
+        pec_tags: list[int] = []
+        geom = self._geometry
+        for phys in self.pec:
+            phys_tag = geom._physics_tags.get(id(phys))
+            if isinstance(phys_tag, int):
+                pec_tags.append(phys_tag)
+        pec_list = "[" + ", ".join(str(t) for t in pec_tags) + "]"
+        return (
+            f'[[ports]]\ntype = "wave_numerical"\ntag = {tag}\n'
+            f'f0 = {_f64(self.f0)}\n'
+            f'mode_index = {self.mode_index}\n'
+            f'mode_kind = "{self.mode_kind}"\n'
+            f'pec_tags = {pec_list}\n'
+            f'power = {_f64(self.power)}\n'
         )
 
 
