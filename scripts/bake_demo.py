@@ -56,6 +56,7 @@ DEMO_EXAMPLES = frozenset({
     "fd_microstrip_line",
     "fd_iris_filter",
     "fd_patch_antenna",
+    "fd_inverted_f_antenna",
     "fd_pyramidal_horn",
     "fd_dielectric_resonator",
     # RFIC layout import

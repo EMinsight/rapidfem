@@ -1,7 +1,21 @@
-"""Printed inverted-F antenna (IFA) on FR-4 — single-layer 2.45 GHz design.
+"""Printed inverted-F antenna (IFA) on FR-4 with adaptive mesh refinement.
 
 Antenna trace and ground plane are coplanar on the same copper layer of a
 1 mm FR-4 board. Adapted from EMerge ``demo21`` and TI App Note SWRA117D.
+
+The interesting twist here: the initial mesh is **deliberately coarse** —
+trace plates inherit the global wavelength-based size cap and the
+substrate is only pinned by its thickness. At ~8 mm global ``maxh`` the
+0.5-0.9 mm trace widths are barely a fraction of one tet, so the first
+sweep gets the resonance frequency wrong by a couple of hundred MHz.
+
+Two AMR passes fix that without the user having to hand-tune
+``TRACE_MAXH``: :meth:`rapidfem.ProblemFD.element_errors` returns the
+Monk residual indicator at the resonance frequency, the top-η tet
+centroids drive :meth:`rapidfem.Geometry.refine_near_points`, and the
+mesh is regenerated with a finer h locally around the trace edges. The
+loop is user-driven (no wrapper) so the convergence story is visible
+print-by-print.
 """
 
 # %% Parameters
@@ -30,14 +44,23 @@ GROUND_L = 30.0 * mm
 
 PAD = 35.0 * mm
 
-FREQUENCIES = np.linspace(2.0e9, 4.0e9, 21)
+FREQUENCIES = np.linspace(2.0e9, 3.0e9, 21)    # 50 MHz grid around the
+                                               # designed 2.45 GHz resonance
 F0 = 2.45e9
 
 MAXH = rf.lambda_maxh(f_max=3.0e9)
-TRACE_MAXH = 0.4 * mm
+TRACE_MAXH_COARSE = 1.5 * mm   # rough hint so the trace exists, but is still
+                               # under-resolved by ~3x vs the production size
+
+# AMR knobs.
+N_AMR_ITERATIONS = 2
+AMR_THETA = 0.6            # Doerfler-marking fraction (aggressive — the
+                           # eta distribution on the meander is very spiky)
+AMR_REFINE_RATIO = 0.5     # new tet size = marked h_k * AMR_REFINE_RATIO
 
 
-# %% Geometry + Materials
+# %% Geometry + Materials (no per-trace TRACE_MAXH, no auto_refine_features —
+#    the AMR loop below will catch the under-resolved trace edges instead)
 SUB_X0, SUB_X1 = -D1, TRACE_W - D1
 SUB_Y0, SUB_Y1 = -GROUND_L, L6 - D4 + W2
 SUB_DX = SUB_X1 - SUB_X0
@@ -46,8 +69,8 @@ SUB_DY = SUB_Y1 - SUB_Y0
 g = rf.Geometry(maxh=MAXH)
 
 # Substrate refinement is set by thickness, not wavelength — at 3 GHz in FR-4
-# λ is ~50 mm but SUB_H = 1 mm, so the box would be ~1 cell thick at the
-# wavelength cap. Pin the dielectric at ~1.5× thickness.
+# lambda is ~50 mm but SUB_H = 1 mm, so the box would be ~1 cell thick at the
+# wavelength cap. Pin the dielectric at ~1.5x thickness.
 fr4 = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
 
 sub = g.box(SUB_DX, SUB_DY, SUB_H, position=(SUB_X0, SUB_Y0, -SUB_H),
@@ -75,10 +98,11 @@ ant_segs_xy = [
     (L3 + L5 + L2 + L5,          L6 - D4,          L2, W2),
     (L3 + L5 + L2 + L5 + L2 - W2, L6 - D4 - L1,    W2, L1),
 ]
-ant_plates = [g.xy_plate(w, h, position=(x, y, 0), maxh=TRACE_MAXH)
+ant_plates = [g.xy_plate(w, h, position=(x, y, 0), maxh=TRACE_MAXH_COARSE)
               for x, y, w, h in ant_segs_xy]
 
-port = g.xy_plate(W2, 0.5 * mm, position=(W1 + D5, 0, 0), maxh=TRACE_MAXH)
+port = g.xy_plate(W2, 0.5 * mm, position=(W1 + D5, 0, 0),
+                  maxh=TRACE_MAXH_COARSE)
 ground = g.xy_plate(SUB_DX, GROUND_L, position=(SUB_X0, SUB_Y0, 0))
 
 g.fragment(air, sub, ground, port, *ant_plates)
@@ -91,19 +115,65 @@ rf.ABC(*air.faces.outer, order=1)
 rf.show(g)
 
 
-# %% Mesh
-g.auto_refine_features(base_maxh=MAXH)
+# %% Initial mesh — coarse on purpose; trace edges are barely resolved.
 g.mesh()
 rf.show(g)
 
 
-# %% Problem + Sweep
-prob = rf.Problem(g)
-result = prob.sweep(FREQUENCIES)
+# %% AMR loop — print iter, n_tets, |S11|_min, f_res, deltas
+
+print(f"\nAMR loop: {N_AMR_ITERATIONS + 1} sweeps, theta={AMR_THETA}, "
+      f"refine_ratio={AMR_REFINE_RATIO}")
+
+prev_s11min = None
+prev_f_res = None
+prob = None
+result = None
+
+for it in range(N_AMR_ITERATIONS + 1):
+    prob = rf.Problem(g)
+    result = prob.sweep(FREQUENCIES)
+
+    mags = np.array([abs(result.sparams[i, 0, 0])
+                     for i in range(len(FREQUENCIES))])
+    i_res = int(mags.argmin())
+    f_res = FREQUENCIES[i_res]
+    s11_min = mags[i_res]
+
+    if prev_s11min is not None:
+        ds = s11_min - prev_s11min
+        df = (f_res - prev_f_res) / 1e6
+        delta_str = f"  d|S11|={ds:+.4f}  df_res={df:+.1f} MHz"
+    else:
+        delta_str = "  (initial coarse)"
+
+    print(f"iter {it}: tets={prob.n_tets:>6}  DOFs={prob.n_dofs:>6}  "
+          f"|S11|_min={s11_min:.4f} @ {f_res / 1e9:.3f} GHz{delta_str}")
+
+    if it == N_AMR_ITERATIONS:
+        break  # last iteration just reports
+
+    # Mark high-residual tets at the resonance frequency.
+    errs = prob.element_errors(result, freq_idx=i_res, theta=AMR_THETA)
+    if len(errs.marked) == 0:
+        print("  no tets marked — stopping AMR")
+        break
+    hot = errs.tet_centroids[errs.marked]
+    target_h = float(errs.h_k[errs.marked].mean() * AMR_REFINE_RATIO)
+    print(f"  refining {len(errs.marked)} tets, target h = "
+          f"{target_h * 1e3:.3f} mm")
+    g.refine_near_points(hot, h=target_h, distance=5.0 * target_h)
+    g.mesh()
+
+    prev_s11min = s11_min
+    prev_f_res = f_res
+
+
+# %% Final result + far-field at F0
 rf.show(prob)
 rf.show(result)
 
-print(f"DOFs: {prob.n_dofs}, tets: {prob.n_tets}")
+print(f"\nfinal mesh: DOFs={prob.n_dofs}, tets={prob.n_tets}")
 
 mags = [abs(result.sparams[i, 0, 0]) for i in range(len(FREQUENCIES))]
 fi_min = int(min(range(len(mags)), key=lambda i: mags[i]))
