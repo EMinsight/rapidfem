@@ -14,11 +14,15 @@ mesher as one watertight PEC face), and ``g.fragment`` makes the trace,
 substrate, and air conformal.
 
 Wave ports at the substrate's x-min / x-max cross-sections drive both ends
-with the microstrip's quasi-TEM mode (``mode_kind="auto"``). The lateral
-box is closed with PEC y-walls so the propagating mode set stays the single
-quasi-TEM the wave port projects onto; an ABC on the air top lets the
-radiated component leave. The sweep covers 5.2 - 6.2 GHz, 21 points; peak
-insertion loss is ~-1.1 dB near 5.75 GHz, matching EMerge's reference.
+with the microstrip's quasi-TEM mode (``mode_kind="auto"``). A first-order
+ABC on the lateral y-walls and the air top opens the enclosure so the
+structure radiates instead of trapping energy in a lossless cavity (see the
+boundary-condition note below for why that matters and why second order is
+wrong here). The sweep covers 5.2 - 6.2 GHz, 21 points and reproduces the
+EMerge pass-band shape centred near 5.7 GHz; the open lateral walls sit
+close to the trace, so the modelled insertion loss (~-5 to -6 dB) runs
+above EMerge's -1.1 dB reference by the extra lateral-radiation loss
+(widen the y-pad to trade tet count for less of it).
 """
 
 # %% Parameters
@@ -215,16 +219,26 @@ rf.WavePort(sub.faces.min(axis="x"), air.faces.min(axis="x"),
             f0=F0, mode_kind="auto", pec=[pec_microstrip])
 rf.WavePort(sub.faces.max(axis="x"), air.faces.max(axis="x"),
             f0=F0, mode_kind="auto", pec=[pec_microstrip])
-# Close the lateral box: PEC on the substrate and air y-side walls forms
-# a parallel-plate-bounded enclosure that pins the propagating mode set
-# down to the single quasi-TEM the wave port projects onto. ABC stays
-# on the air top so the radiated component above the trace still leaves
-# cleanly. Without this, the y-walls' open BCs let energy couple into
-# higher-order transverse-substrate modes (cutoff ≈ c/(2·sub_y_width·√εr)
-# slightly above the sweep) that show up as |S|² > 1 around the band.
-rf.PEC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
-       air.faces.min(axis="y"), air.faces.max(axis="y"))
-rf.ABC(air.faces.max(axis="z"), order=2)
+# Open the enclosure with an ABC on every free outer wall: the four
+# lateral y-side faces of substrate and air, plus the air top (the x-side
+# faces are the wave ports). A real filter radiates from its open edges;
+# modelling the sides as PEC instead seals
+# the structure into a *lossless* cavity, and the half-wave coupled
+# resonators then sit on near-undamped box resonances right in the
+# pass-band. The driven FEM system goes near-singular there and the direct
+# solve returns a non-physical, energy-creating field: |S| reads several dB
+# over 0 across the pass-band (worst where the resonators store the most
+# energy). The ABC supplies the missing radiation-loss path, damps those
+# modes, and restores |S11|² + |S21|² ≤ 1.
+#
+# Use the FIRST-order ABC (the default). The second-order ABC (order=2) is
+# not discretely passive here: its tangential-curvature term injects energy
+# at the high internal fields of the coupled resonators, pushing |S| back
+# over 0 dB. First order is a plain matched-impedance sheet, dissipative by
+# construction.
+rf.ABC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
+       air.faces.min(axis="y"), air.faces.max(axis="y"),
+       air.faces.max(axis="z"))
 
 rf.show(g)
 
