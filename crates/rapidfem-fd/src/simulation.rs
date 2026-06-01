@@ -743,15 +743,14 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(bc));
             }
-            PortConfig::Abc { tag, order, abctype } => {
+            PortConfig::Abc { tag } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping ABC", tag);
                     continue;
                 }
-                let abc_char = abctype.chars().next().unwrap_or('B');
-                let abc = AbsorbingBoundary::new(*order, abc_char);
-                eprintln!("  ABC: tag={}, order={}, type={}", tag, order, abctype);
+                let abc = AbsorbingBoundary::new();
+                eprintln!("  ABC: tag={}", tag);
                 port_tris.push(tri_ids);
                 ports.push(Box::new(abc));
             }

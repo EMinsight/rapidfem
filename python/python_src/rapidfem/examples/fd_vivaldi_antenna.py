@@ -157,7 +157,7 @@ g.fragment(air, sub, ground, feed, stub, port)
 # Physics
 rf.LumpedPort(port, direction=(0, 0, 1), z0=50.0)
 rf.PEC(ground, feed, stub)
-rf.ABC(*air.faces.outer, order=2)
+rf.ABC(*air.faces.outer)
 
 rf.show(g)
 

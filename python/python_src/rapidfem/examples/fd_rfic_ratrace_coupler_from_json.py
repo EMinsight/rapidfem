@@ -48,7 +48,7 @@ rf.PEC(*(v.faces for v in all_volumes), *layout.ground_patches)
 for port in layout.ports.values():
     rf.LumpedPort(port, direction=(0, 0, 1), z0=50.0)
 
-rf.ABC(*layout.air.faces.outer, order=1)
+rf.ABC(*layout.air.faces.outer)
 
 
 # %% Mesh

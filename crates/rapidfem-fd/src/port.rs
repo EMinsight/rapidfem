@@ -22,13 +22,6 @@ pub trait Port {
     /// Whether this port is driven (has an excitation vector)
     fn is_driven(&self) -> bool;
 
-    /// Whether this port needs order-2 ABC correction
-    fn is_abc_order2(&self) -> bool { false }
-
-    /// ABC order-2 coefficients (c1, c2) — the first- and second-order
-    /// Bayliss-Turkel factors. `None` for everything but an order-2 ABC.
-    fn abc_o2_params(&self) -> Option<(f64, f64)> { None }
-
     /// Port mode field at a global point (for S-param extraction).
     /// Returns None for ABC (no S-param extraction).
     fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)>;
@@ -130,14 +123,6 @@ impl Port for crate::waveguide::AbsorbingBoundary {
     fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
     fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
     fn is_driven(&self) -> bool { false }
-    fn is_abc_order2(&self) -> bool { self.order >= 2 }
-    fn abc_o2_params(&self) -> Option<(f64, f64)> {
-        if self.order >= 2 {
-            Some((self.get_c1(), self.get_c2()))
-        } else {
-            None
-        }
-    }
     fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
     fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
     fn port_number(&self) -> usize { 0 }

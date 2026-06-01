@@ -45,7 +45,7 @@ rf.PEC(*coax.faces.where(lambda c, b: Z0 + 1e-4 < c[2] < Z1 - 1e-4))
 # plus the monopole tip cap, so it is a solid PEC rod radiating in the air.
 rf.PEC(*inner.faces.where(lambda c, b: Z0 + 1e-4 < c[2] < Z2 - 1e-4))
 rf.PEC(inner.faces.max(axis="z"))
-rf.ABC(*box.faces.outer, order=1)
+rf.ABC(*box.faces.outer)
 g.mesh()
 rf.show(g)
 

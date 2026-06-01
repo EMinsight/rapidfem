@@ -64,7 +64,7 @@ rf.PEC(feed.faces.min(axis="y"), feed.faces.max(axis="y"),
 rf.PEC(*horn.faces.where(lambda c, b: 1e-6 < c[0] < LHORN - 1e-6))
 rf.PML(pml_xp, direction=(1, 0, 0), inner_face=LHORN + LPAD_BEAM, thickness=PML_T)
 rf.PEC(*pml_xp.faces.outer)
-rf.ABC(*air.faces.outer.unassigned, order=1)
+rf.ABC(*air.faces.outer.unassigned)
 g.mesh()
 rf.show(g)
 

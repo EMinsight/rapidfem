@@ -675,7 +675,7 @@ class PMC(_Physics):
 
 
 class ABC(_Physics):
-    """First- or second-order absorbing boundary condition.
+    """First-order absorbing boundary condition.
 
     Surface-level radiation boundary that approximates outgoing-wave
     behaviour without the cost of a volumetric absorber. The first-order
@@ -687,33 +687,8 @@ class ABC(_Physics):
             + j k_0\\, \\hat{\\mathbf{n}} \\times
             (\\hat{\\mathbf{n}} \\times \\mathbf{E}) = \\mathbf{0}
 
-    Order 2 adds a tangential-second-derivative correction for better
-    accuracy at oblique incidence, at the cost of additional matrix
-    fill-in.
-
-
-    Note
-    ----
-    The raw second-order (Bayliss-Turkel) correction ``coeff * (Curl - Div)``
-    is indefinite (``Curl`` and ``Div`` are each positive-semidefinite), so
-    on its own it can drive the boundary's imaginary part negative and make
-    the ABC *inject* energy (``|S| > 0`` dB) at conductor edges or the strong
-    near-field of a high-Q resonator. rapidfem therefore projects the full
-    per-element boundary operator ``k0*c1*B1 + (c2/k0)*(Curl - Div)`` onto the
-    nearest positive-semidefinite matrix before assembly, which keeps the
-    global ``Im(A) ⪰ 0`` and so guarantees ``|S| ≤ 1``. The second-order
-    accuracy is retained in every eigendirection compatible with passivity;
-    only the (otherwise energy-injecting) directions degrade gracefully to a
-    first-order reflector.
-
-    The projection is *per element* — sufficient for global passivity but
-    conservative (a locally-indefinite element that neighbours would have
-    compensated still gets clamped). In practice ``order=2`` therefore lands
-    close to ``order=1`` on resonant or guided problems, so treat it as a
-    fail-safe (``order=2`` no longer blows up) rather than a guaranteed
-    accuracy win. ``order=1`` remains the cheapest choice and is passive by
-    construction; when you need a genuinely low-reflection *and* passive
-    absorber, use :class:`PML`.
+    It is a plain matched-impedance sheet, dissipative by construction, so
+    ``|S| ≤ 1`` always.
 
 
     Note
@@ -721,7 +696,10 @@ class ABC(_Physics):
     For strong absorption at the radiating face of an antenna prefer
     :class:`PML`. ABC works best when the boundary sees nearly normal
     incidence (e.g. outer faces several wavelengths away from the
-    source).
+    source). (A second-order ABC was removed: its Bayliss-Turkel correction
+    is indefinite and not unconditionally passive, and the passivity-safe
+    projection of it gave no real accuracy gain over first order — use
+    :class:`PML` when first order reflects too much.)
 
 
     Example
@@ -730,31 +708,20 @@ class ABC(_Physics):
 
     .. code-block:: python
 
-        rf.ABC(*air.faces.outer, order=1)
+        rf.ABC(*air.faces.outer)
 
 
     Parameters
     ----------
     targets : GeoObject or EntityCollection
         face(s) to terminate
-    order : int
-        ABC order, 1 or 2
-    abctype : str
-        coefficient family A-E (defaults to ``"B"``)
     """
 
-    def __init__(self, *targets,
-                 order: int = 1,
-                 abctype: str = "B"):
+    def __init__(self, *targets):
         super().__init__(*targets)
-        self.order = int(order)
-        self.abctype = str(abctype)
 
     def _to_toml(self, tag: int) -> str:
-        return (
-            f'[[ports]]\ntype = "abc"\ntag = {tag}\n'
-            f'order = {self.order}\nabctype = "{self.abctype}"\n'
-        )
+        return f'[[ports]]\ntype = "abc"\ntag = {tag}\n'
 
 
 class SurfaceImpedance(_Physics):

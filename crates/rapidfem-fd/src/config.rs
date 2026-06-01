@@ -162,10 +162,6 @@ pub enum PortConfig {
     #[serde(rename = "abc")]
     Abc {
         tag: i32,
-        #[serde(default = "default_abc_order")]
-        order: usize,
-        #[serde(default = "default_abc_type")]
-        abctype: String,
     },
     /// Perfect magnetic conductor — natural BC (n × H = 0). No-op during assembly.
     /// Useful when users want to mark a surface explicitly as PMC for documentation.
@@ -351,8 +347,6 @@ pub struct OutputConfig {
 fn default_mode() -> [usize; 2] { [1, 0] }
 fn default_one() -> f64 { 1.0 }
 fn default_z0() -> f64 { 50.0 }
-fn default_abc_order() -> usize { 1 }
-fn default_abc_type() -> String { "B".to_string() }
 fn default_solver_prefer() -> String { "auto".to_string() }
 fn default_z_dir() -> [f64; 3] { [0.0, 0.0, 1.0] }
 fn default_floquet_mode() -> u32 { 1 }

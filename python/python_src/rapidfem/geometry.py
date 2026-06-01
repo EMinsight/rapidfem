@@ -357,7 +357,7 @@ class EntityCollection:
 
         .. code-block:: python
 
-            rf.ABC(*air.faces.outer, order=1)
+            rf.ABC(*air.faces.outer)
 
 
         Returns

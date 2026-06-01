@@ -155,57 +155,26 @@ impl RectWaveguide {
     }
 }
 
-/// Exact port of microwave_bc.py: AbsorbingBoundary
-///
-/// Order-1 ABC: γ = j·k₀·neff (neff=1 for air)
-/// Order-2 ABC: γ = j·k₀·c₁·neff, plus a correction matrix (handled in assembly)
+/// First-order Sommerfeld absorbing boundary: γ = j·k₀·neff (neff = 1 for air).
+/// A plain matched-impedance sheet, dissipative by construction.
 pub struct AbsorbingBoundary {
-    pub order: usize,
     pub neff: f64,
-    pub abctype: char,
 }
 
-/// Order-2 ABC coefficients (c₁, c₂) from microwave_bc.py lines 177-182
-pub const ABC_O2_COEFFS: [(char, f64, f64); 5] = [
-    ('A', 1.0, -0.5),
-    ('B', 1.00023, -0.51555),
-    ('C', 1.03084, -0.73631),
-    ('D', 1.06103, -0.84883),
-    ('E', 1.12500, -1.00000),
-];
-
 impl AbsorbingBoundary {
-    pub fn new(order: usize, abctype: char) -> Self {
-        AbsorbingBoundary { order, neff: 1.0, abctype }
+    pub fn new() -> Self {
+        AbsorbingBoundary { neff: 1.0 }
     }
 
-    /// Port of get_gamma(k0) from microwave_bc.py lines 409-422
+    /// γ(k0) = j·k₀·neff  (port of get_gamma, microwave_bc.py).
     pub fn get_gamma(&self, k0: f64) -> C64 {
-        if self.order == 1 {
-            C64::new(0.0, k0 * self.neff)
-        } else {
-            let c1 = ABC_O2_COEFFS.iter()
-                .find(|(c, _, _)| *c == self.abctype)
-                .map(|(_, c1, _)| *c1)
-                .unwrap_or(1.00023);
-            C64::new(0.0, k0 * c1 * self.neff)
-        }
+        C64::new(0.0, k0 * self.neff)
     }
+}
 
-    /// Get the c₁ coefficient (first-order scale) for the order-2 ABC.
-    pub fn get_c1(&self) -> f64 {
-        ABC_O2_COEFFS.iter()
-            .find(|(c, _, _)| *c == self.abctype)
-            .map(|(_, c1, _)| *c1)
-            .unwrap_or(1.00023)
-    }
-
-    /// Get the c₂ coefficient for order-2 correction matrix
-    pub fn get_c2(&self) -> f64 {
-        ABC_O2_COEFFS.iter()
-            .find(|(c, _, _)| *c == self.abctype)
-            .map(|(_, _, c2)| *c2)
-            .unwrap_or(-0.51555)
+impl Default for AbsorbingBoundary {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

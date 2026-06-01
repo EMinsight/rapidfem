@@ -340,9 +340,8 @@ def _collect_abc(geometry):
     near-normally-incident outgoing waves leave with negligible
     reflection, oblique incidence reflects more.
 
-    Order / abctype attributes on the FD ``rf.ABC`` are ignored here;
-    the TD characteristic absorber is a first-order condition by
-    construction. The user keeps a single ``rf.ABC(*faces, order=...)``
+    The TD characteristic absorber is a first-order condition, the same
+    order as the FD ``rf.ABC``. The user keeps a single ``rf.ABC(*faces)``
     declaration that both backends respect; only its boundary
     treatment differs.
     """

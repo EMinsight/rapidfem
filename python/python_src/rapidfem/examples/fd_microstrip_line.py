@@ -57,7 +57,7 @@ g.fragment(sub, air, trace, port_in, port_out)
 rf.LumpedPort(port_in,  direction=(0, 0, 1), z0=50.0)
 rf.LumpedPort(port_out, direction=(0, 0, 1), z0=50.0)
 rf.PEC(trace, sub.faces.min(axis="z"))   # trace + ground plane
-rf.ABC(*air.faces.outer, order=2)
+rf.ABC(*air.faces.outer)
 
 rf.show(g)
 

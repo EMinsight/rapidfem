@@ -579,7 +579,7 @@ class FemLayoutResult:
         PEC(*(v.faces for v in all_conductors), layout.ground)
         for port in layout.ports.values():
             LumpedPort(port, direction=(0, 0, 1), z0=50.0)
-        ABC(*layout.air.faces.outer, order=1)
+        ABC(*layout.air.faces.outer)
         layout.geometry.mesh()
         result = Problem(layout.geometry).sweep([1e9, 10e9, 50e9])
     """

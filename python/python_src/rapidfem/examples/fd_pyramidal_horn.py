@@ -78,7 +78,7 @@ rf.PML(pml_xp, direction=(1, 0, 0), inner_face=Lhorn + LPAD_BEAM,
 rf.PEC(*pml_xp.faces.outer)
 
 # Air outer hull (minus the PML interface, which is interior to the model) → ABC.
-rf.ABC(*air.faces.outer.unassigned, order=1)
+rf.ABC(*air.faces.outer.unassigned)
 
 rf.show(g)
 

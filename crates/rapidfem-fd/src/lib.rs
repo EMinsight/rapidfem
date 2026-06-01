@@ -20,7 +20,6 @@ pub mod tri_assembly;
 pub mod waveguide;
 pub mod sparam;
 pub mod interp;
-pub mod abc_order2;
 pub mod port;
 pub mod touchstone;
 pub mod pardiso;
