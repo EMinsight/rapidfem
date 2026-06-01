@@ -852,6 +852,12 @@
 		const dens = point_density;
 		const want = show_field;
 		if (!gl_state || !ready || !want || !f) return;
+		// The field is indexed by the mesh's node order. Right after a remesh
+		// the field buffer can still belong to the PREVIOUS mesh (different
+		// node count); sampling it against the new tets maps values onto the
+		// wrong points. Skip until the field matches the current mesh. (The TD
+		// path samples its own DG-corner mesh, so it is exempt.)
+		if (!td_trajectory && mesh && f.length !== mesh.nodes.length) return;
 		const total_pts = Math.max(500, Math.round(dens * 50000));
 		const my_token = ++viz_sample_token;
 		viz_sample(f, total_pts).then((r) => {

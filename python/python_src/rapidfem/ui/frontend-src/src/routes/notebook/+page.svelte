@@ -518,6 +518,20 @@
 		display = 'view3d';
 	}
 
+	/** A newly displayed mesh / geometry invalidates the previous solve's
+	 *  volumetric field: those buffers are indexed by the OLD mesh's node
+	 *  order, so the field viewer would map them onto the wrong points of the
+	 *  new tets. Drop them (and the field toggle) until the next solve. The
+	 *  2D S-parameter plots are node-independent and left untouched. */
+	function invalidate_fields_for_new_mesh() {
+		fields_raw = null;
+		fields_j_raw = null;
+		fields_h_raw = null;
+		show_field = false;
+		last_solve_stats = null;
+		td_trajectory_payload = null;
+	}
+
 	/** A `td_trajectory` payload carries `$bin` field refs (nodes / tets /
 	 *  frames) in the static demo. The trajectory *is* the displayed content,
 	 *  so resolve them now — fetch the field buffer and hydrate in place. */
@@ -576,6 +590,9 @@
 			onDisplay: (kind, payload) => {
 				if (kind === 'geometry') {
 					const p = payload as GeometryPayload;
+					// New geometry/mesh on screen: prior solve's node-indexed
+					// field no longer matches — reset the field viewer.
+					invalidate_fields_for_new_mesh();
 					last_geom_stats = {
 						n_entities: p.stats.n_entities,
 						n_triangles: p.stats.n_triangles ?? 0,
@@ -589,6 +606,9 @@
 					}
 				} else if (kind === 'mesh') {
 					const m = payload as MeshPayload;
+					// Remesh: prior solve's node-indexed field no longer matches
+					// the new tets — reset the field viewer.
+					invalidate_fields_for_new_mesh();
 					wireframe = null;
 					mesh_data = meshPayloadToMeshData(m);
 					last_mesh_stats = {
