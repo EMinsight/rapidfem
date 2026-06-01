@@ -1464,8 +1464,9 @@ class Geometry:
     def disc(self, radius: float,
              position: tuple[float, float, float] = (0, 0, 0),
              *,
+             axis: tuple[float, float, float] = (0, 0, 1),
              maxh: float | None = None) -> GeoObject:
-        """add a circular face in the xy-plane
+        """add a circular face with an arbitrary normal
 
         Smooth NURBS circle (gmsh OCC ``addDisk``) — meshes into curved
         triangles when ``MeshSizeFromCurvature`` is active. Pair with
@@ -1479,6 +1480,10 @@ class Geometry:
             disc radius in metres
         position : tuple[float, float, float]
             disc centre (defaults to origin)
+        axis : tuple[float, float, float]
+            disc normal (defaults to +z, i.e. the xy-plane). Any direction
+            is allowed — e.g. ``(1, 0, 0)`` puts the disc in the yz-plane.
+            Need not be unit length; gmsh normalises it.
         maxh : float, optional
             per-face mesh size override
 
@@ -1489,7 +1494,12 @@ class Geometry:
         """
         x, y, z = position
         s = self._s
-        tag = gmsh.model.occ.addDisk(s(x), s(y), s(z), s(radius), s(radius))
+        # gmsh treats an empty zAxis as the default +z (xy-plane); only pass a
+        # normal when it actually differs, to avoid disturbing existing calls.
+        z_axis = ([float(axis[0]), float(axis[1]), float(axis[2])]
+                  if tuple(axis) != (0, 0, 1) else [])
+        tag = gmsh.model.occ.addDisk(s(x), s(y), s(z), s(radius), s(radius),
+                                     zAxis=z_axis)
         return self._wrap_face(tag, maxh=maxh)
 
     # ── Extrude / revolve ───────────────────────────────────────────────────
