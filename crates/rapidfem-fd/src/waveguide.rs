@@ -192,6 +192,14 @@ impl AbsorbingBoundary {
         }
     }
 
+    /// Get the c₁ coefficient (first-order scale) for the order-2 ABC.
+    pub fn get_c1(&self) -> f64 {
+        ABC_O2_COEFFS.iter()
+            .find(|(c, _, _)| *c == self.abctype)
+            .map(|(_, c1, _)| *c1)
+            .unwrap_or(1.00023)
+    }
+
     /// Get the c₂ coefficient for order-2 correction matrix
     pub fn get_c2(&self) -> f64 {
         ABC_O2_COEFFS.iter()

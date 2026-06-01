@@ -134,11 +134,13 @@ pub fn assemble_and_solve_with_pml(
             }
         }
 
-        // ABC order-2 correction: Bempty += abc_order_2_matrix(...)
+        // ABC order-2 correction (passivity-projected): Bempty += correction.
+        // The first-order Robin term (gamma = j*k0*c1) is already in Bempty
+        // above; this adds j*(H_psd − k0*c1*B1) so the total is j*H_psd ⪰ 0.
         if port.is_abc_order2() {
-            if let Some(coeff) = port.abc_o2_coeff(k0) {
+            if let Some((c1, c2)) = port.abc_o2_params() {
                 let abc_correction = crate::abc_order2::abc_order_2_matrix(
-                    mesh, basis, tri_ids, coeff,
+                    mesh, basis, tri_ids, k0, c1, c2, &ac_base,
                 );
                 for (i, &v) in abc_correction.iter().enumerate() {
                     bempty[i] += v;
@@ -386,8 +388,8 @@ pub fn frequency_sweep_with_pml(
                 for ii in 0..8 { for jj in 0..8 { bempty[p + ii*8 + jj] += bsub[ii][jj]; } }
             }
             if port.is_abc_order2() {
-                if let Some(coeff) = port.abc_o2_coeff(k0) {
-                    let abc_corr = crate::abc_order2::abc_order_2_matrix(mesh, basis, tri_ids, coeff);
+                if let Some((c1, c2)) = port.abc_o2_params() {
+                    let abc_corr = crate::abc_order2::abc_order_2_matrix(mesh, basis, tri_ids, k0, c1, c2, &ac_base);
                     for (i, &v) in abc_corr.iter().enumerate() { bempty[i] += v; }
                 }
             }

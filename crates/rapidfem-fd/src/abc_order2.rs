@@ -9,14 +9,37 @@
 // here under GPL-3.0-or-later with that permission preserved.
 // See LICENSE and NOTICE for the full terms.
 
-//! Exact port of robin_abc_order2.py: second-order ABC correction matrix.
+//! Passivity-projected second-order ABC correction matrix.
 //!
-//! Computes Mat = coeff * Lengths * (CurlMatrix - DivMatrix) * |Area| per triangle.
-//! Uses curl and divergence of Nedelec-2 surface basis functions.
+//! The raw second-order term is `(c2/k0) * Lengths * (Curl - Div) * |Area|`
+//! (ported from EMerge's robin_abc_order2.py). `Curl` and `Div` are each
+//! symmetric positive-semidefinite, so their difference is indefinite, and the
+//! second-order term can drive the boundary operator's imaginary part negative
+//! — the boundary then *injects* energy and `|S|` exceeds 0 dB on high-Q /
+//! near-conductor faces (a known Bayliss-Turkel instability).
+//!
+//! We restore passivity element-by-element. For each boundary triangle we form
+//! the full imaginary boundary operator that the assembly applies,
+//!
+//! ```text
+//!     H = k0*c1 * B1  +  (c2/k0) * (Curl - Div)
+//! ```
+//!
+//! where `B1 = ∫ (n̂×W_i)·(n̂×W_j) dS` is the first-order surface mass (the same
+//! matrix the Robin term uses, via `ned2_tri_stiff`), and project `H` onto the
+//! nearest symmetric positive-semidefinite matrix (eigen-clamp the negatives to
+//! zero). Summing PSD element operators keeps the global `Im(A) ⪰ 0`, so the
+//! discrete system is dissipative and `|S| ≤ 1` is guaranteed, while the full
+//! second-order accuracy survives in every eigendirection that is already
+//! passivity-compatible (only the offending directions degrade, to a perfect
+//! reflector rather than an energy source). The correction we hand back is
+//! `j*(H_psd − k0*c1*B1)`, so `first-order (j*k0*c1*B1) + correction = j*H_psd`.
 
 use num_complex::Complex64 as C64;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
+use crate::tri_assembly::ned2_tri_stiff;
+use crate::coefficients::AreaCoeffCache;
 
 const NQP: usize = 6;
 
@@ -196,13 +219,13 @@ fn compute_distances_3(xs: &[f64; 3], ys: &[f64; 3], zs: &[f64; 3]) -> [[f64; 3]
     ds
 }
 
-/// Exact port of _abc_order_2_terms(tri_vertices, local_edge_map, cf)
-/// Returns 8x8 complex correction matrix for one triangle.
+/// Per-triangle real `Lengths * (Curl - Div) * |Area|` operator (the raw
+/// second-order term without its `c2/k0` scaling). Symmetric 8x8. The caller
+/// scales it, adds the first-order surface mass, and projects to PSD.
 pub fn abc_order_2_terms(
     glob_vertices: &[[f64; 3]; 3],
     local_edge_map: &[[usize; 2]; 3],
-    cf: C64,
-) -> [[C64; 8]; 8] {
+) -> [[f64; 8]; 8] {
     let zero = C64::new(0.0, 0.0);
 
     // Local coordinate system (same as tri_assembly)
@@ -353,25 +376,119 @@ pub fn abc_order_2_terms(
     div_mat[7][3] = gqi(&ff2d, &ff1d, &dpts_w);
     div_mat[7][7] = gqi(&ff2d, &ff2d, &dpts_w);
 
-    // Mat = cf * Lengths * (CurlMatrix - DivMatrix) * |Area|
-    let mut mat = [[zero; 8]; 8];
+    // R = Lengths * (CurlMatrix - DivMatrix) * |Area|, real (the gqi inner
+    // products of real polynomials carry no imaginary part).
+    let mut r = [[0.0f64; 8]; 8];
     for i in 0..8 {
         for j in 0..8 {
-            mat[i][j] = cf * C64::from(lengths[i][j]) * (curl_mat[i][j] - div_mat[i][j]) * C64::from(area);
+            r[i][j] = lengths[i][j] * (curl_mat[i][j] - div_mat[i][j]).re * area;
         }
     }
-    mat
+    r
 }
 
-/// Port of abc_order_2_matrix: assemble order-2 ABC correction into the flat tri matrix.
-/// Returns the correction as a flat array (same format as Bempty).
+/// Project a symmetric 8x8 onto the nearest positive-semidefinite matrix:
+/// eigen-decompose (cyclic Jacobi), clamp negative eigenvalues to zero, and
+/// reconstruct. Reduces to the input when it is already PSD.
+fn psd_project_8(a: &[[f64; 8]; 8]) -> [[f64; 8]; 8] {
+    // Work on a symmetrized copy; accumulate eigenvectors in `v`.
+    let mut m = [[0.0f64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            m[i][j] = 0.5 * (a[i][j] + a[j][i]);
+        }
+    }
+    let mut v = [[0.0f64; 8]; 8];
+    for i in 0..8 {
+        v[i][i] = 1.0;
+    }
+    // Cyclic Jacobi sweeps. 8x8 converges in a handful of sweeps; 60 is a hard
+    // cap that is never reached in practice.
+    for _ in 0..60 {
+        let mut off = 0.0f64;
+        for p in 0..8 {
+            for q in (p + 1)..8 {
+                off += m[p][q] * m[p][q];
+            }
+        }
+        if off <= 1e-28 {
+            break;
+        }
+        for p in 0..8 {
+            for q in (p + 1)..8 {
+                let apq = m[p][q];
+                if apq == 0.0 {
+                    continue;
+                }
+                // Rotation that zeroes m[p][q] (Golub & Van Loan, sym. Schur).
+                let tau = (m[q][q] - m[p][p]) / (2.0 * apq);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+                // M <- Jᵀ M J  (apply to columns then rows of m, both sides).
+                for k in 0..8 {
+                    let g = m[k][p];
+                    let h = m[k][q];
+                    m[k][p] = c * g - s * h;
+                    m[k][q] = s * g + c * h;
+                }
+                for k in 0..8 {
+                    let g = m[p][k];
+                    let h = m[q][k];
+                    m[p][k] = c * g - s * h;
+                    m[q][k] = s * g + c * h;
+                }
+                for k in 0..8 {
+                    let g = v[k][p];
+                    let h = v[k][q];
+                    v[k][p] = c * g - s * h;
+                    v[k][q] = s * g + c * h;
+                }
+            }
+        }
+    }
+    // Reconstruct V * clamp(Λ, 0) * Vᵀ.
+    let mut out = [[0.0f64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            let mut sum = 0.0f64;
+            for k in 0..8 {
+                let lam = m[k][k].max(0.0);
+                sum += v[i][k] * lam * v[j][k];
+            }
+            out[i][j] = sum;
+        }
+    }
+    out
+}
+
+/// Assemble the passivity-projected order-2 ABC correction into the flat tri
+/// matrix (same layout as Bempty). For each boundary triangle it combines the
+/// raw second-order term with the first-order surface mass `B1`, projects the
+/// resulting imaginary boundary operator onto the PSD cone, and returns the
+/// correction `j*(H_psd − k0*c1*B1)` so that, added to the first-order Robin
+/// term `j*k0*c1*B1` already in Bempty, the total boundary contribution is the
+/// guaranteed-passive `j*H_psd`.
+///
+/// `c1`, `c2` are the order-2 coefficients (the same pair used by `get_gamma`
+/// and the raw correction); `ac_base` is the shared area-coefficient cache the
+/// Robin assembly already builds.
 pub fn abc_order_2_matrix(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
     tri_ids: &[usize],
-    coeff: C64,
+    k0: f64,
+    c1: f64,
+    c2: f64,
+    ac_base: &AreaCoeffCache,
 ) -> Vec<C64> {
     let mut mat = vec![C64::new(0.0, 0.0); basis.n_tris * 64];
+    let kc1 = k0 * c1;       // first-order scale
+    let c2k = c2 / k0;       // second-order scale
 
     for &itri in tri_ids {
         let tri = &mesh.tris[itri];
@@ -380,7 +497,6 @@ pub fn abc_order_2_matrix(
         // Local edge mapping (same as robin BC: edges from tri_to_edge)
         let edges = &mesh.tri_to_edge[itri];
         let global_edge_nodes: [[usize; 2]; 3] = std::array::from_fn(|i| mesh.edges[edges[i]]);
-        // Convert to local tri node indices
         let mut local_edge_map = [[0usize; 2]; 3];
         for (i, pair) in global_edge_nodes.iter().enumerate() {
             for (j, &gid) in pair.iter().enumerate() {
@@ -393,15 +509,147 @@ pub fn abc_order_2_matrix(
             }
         }
 
-        let sub_mat = abc_order_2_terms(&verts, &local_edge_map, coeff);
+        // Raw second-order operator (real) and first-order surface mass B1.
+        // `ned2_tri_stiff(.., gamma=1)` returns B1 in the same 8-DOF layout, so
+        // the two combine directly.
+        let r = abc_order_2_terms(&verts, &local_edge_map);
+        let b1 = ned2_tri_stiff(&verts, C64::new(1.0, 0.0), ac_base);
 
+        // Combined imaginary boundary operator, then PSD projection.
+        let mut h = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                h[i][j] = kc1 * b1[i][j].re + c2k * r[i][j];
+            }
+        }
+        let h_psd = psd_project_8(&h);
+
+        // correction = j*(H_psd − k0*c1*B1)
         let p = itri * 64;
-        for ii in 0..8 {
-            for jj in 0..8 {
-                mat[p + ii * 8 + jj] += sub_mat[ii][jj];
+        for i in 0..8 {
+            for j in 0..8 {
+                let corr = h_psd[i][j] - kc1 * b1[i][j].re;
+                mat[p + i * 8 + j] += C64::new(0.0, corr);
             }
         }
     }
 
     mat
+}
+
+#[cfg(test)]
+mod tests {
+    use super::psd_project_8;
+
+    /// Minimum quadratic form x'Mx / x'x over the rows of a probe basis —
+    /// a cheap negative-definiteness detector (a PSD matrix gives >= 0).
+    fn min_rayleigh(m: &[[f64; 8]; 8], probes: &[[f64; 8]]) -> f64 {
+        let mut lo = f64::INFINITY;
+        for x in probes {
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for i in 0..8 {
+                den += x[i] * x[i];
+                for j in 0..8 {
+                    num += x[i] * m[i][j] * x[j];
+                }
+            }
+            if den > 0.0 {
+                lo = lo.min(num / den);
+            }
+        }
+        lo
+    }
+
+    #[test]
+    fn psd_project_clamps_diagonal() {
+        // In its own eigenbasis the projection must clamp negatives to zero.
+        let diag = [3.0, -2.0, 0.0, 5.0, -0.1, 1.0, -7.0, 2.0];
+        let mut a = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            a[i][i] = diag[i];
+        }
+        let out = psd_project_8(&a);
+        for i in 0..8 {
+            for j in 0..8 {
+                let want = if i == j { diag[i].max(0.0) } else { 0.0 };
+                assert!((out[i][j] - want).abs() < 1e-9, "[{i}][{j}]={} want {want}", out[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn psd_project_is_identity_on_psd() {
+        // B = M Mᵀ is PSD; projecting it changes nothing.
+        let mut m = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                m[i][j] = ((i * 7 + j * 3) % 5) as f64 - 2.0;
+            }
+        }
+        let mut b = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                let mut s = 0.0;
+                for k in 0..8 {
+                    s += m[i][k] * m[j][k];
+                }
+                b[i][j] = s;
+            }
+        }
+        let out = psd_project_8(&b);
+        for i in 0..8 {
+            for j in 0..8 {
+                assert!((out[i][j] - b[i][j]).abs() < 1e-6, "[{i}][{j}] {} vs {}", out[i][j], b[i][j]);
+            }
+        }
+    }
+
+    #[test]
+    fn psd_project_output_is_psd_when_rotated() {
+        // Indefinite A = R D Rᵀ (D has a -3 eigenvalue), rotated in plane (0,3).
+        // The projection must reproduce R clamp(D) Rᵀ and be PSD.
+        let (c, s) = (0.6f64.cos(), 0.6f64.sin());
+        let d = [4.0, 1.0, 2.0, -3.0, 0.5, 1.5, 2.5, 0.7];
+        let mut a = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            a[i][i] = d[i];
+        }
+        a[0][0] = c * c * d[0] + s * s * d[3];
+        a[3][3] = s * s * d[0] + c * c * d[3];
+        a[0][3] = c * s * (d[0] - d[3]);
+        a[3][0] = a[0][3];
+
+        let out = psd_project_8(&a);
+
+        // Expected: same construction with d[3] clamped to 0.
+        let dc = [4.0, 1.0, 2.0, 0.0, 0.5, 1.5, 2.5, 0.7];
+        let mut exp = [[0.0f64; 8]; 8];
+        for i in 0..8 {
+            exp[i][i] = dc[i];
+        }
+        exp[0][0] = c * c * dc[0] + s * s * dc[3];
+        exp[3][3] = s * s * dc[0] + c * c * dc[3];
+        exp[0][3] = c * s * (dc[0] - dc[3]);
+        exp[3][0] = exp[0][3];
+        for i in 0..8 {
+            for j in 0..8 {
+                assert!((out[i][j] - exp[i][j]).abs() < 1e-7, "[{i}][{j}] {} vs {}", out[i][j], exp[i][j]);
+            }
+        }
+
+        // And it is numerically PSD on the canonical + rotated-axis probes.
+        let mut probes: Vec<[f64; 8]> = (0..8)
+            .map(|k| {
+                let mut e = [0.0; 8];
+                e[k] = 1.0;
+                e
+            })
+            .collect();
+        let mut rot = [0.0; 8];
+        rot[0] = -s;
+        rot[3] = c; // the originally-negative eigenvector
+        probes.push(rot);
+        assert!(min_rayleigh(&out, &probes) >= -1e-9);
+    }
 }

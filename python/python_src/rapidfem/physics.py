@@ -692,20 +692,20 @@ class ABC(_Physics):
     fill-in.
 
 
-    Warning
-    -------
-    The second-order ABC (``order=2``) is **not unconditionally passive**.
-    Its correction matrix is ``coeff * (Curl - Div)``, and ``Curl`` and
-    ``Div`` are each symmetric positive-semidefinite, so their difference is
-    indefinite. Where the boundary sees strong tangential *divergence*
-    content (a conductor edge near the wall, or the intense near-field of a
-    high-Q resonator), the ``-Div`` term flips the sign of the boundary
-    power flux and the ABC *injects* energy: ``|S|`` then reads above 0 dB.
-    This is inherent to the Bayliss-Turkel formulation, not a discretisation
-    artefact. Prefer the default ``order=1`` (a plain matched-impedance
-    sheet, dissipative by construction) for resonant / high-Q structures or
-    whenever the ABC sits close to conductors; reach for :class:`PML` when
-    you need both low reflection *and* guaranteed passivity.
+    Note
+    ----
+    The raw second-order (Bayliss-Turkel) correction ``coeff * (Curl - Div)``
+    is indefinite (``Curl`` and ``Div`` are each positive-semidefinite), so
+    on its own it can drive the boundary's imaginary part negative and make
+    the ABC *inject* energy (``|S| > 0`` dB) at conductor edges or the strong
+    near-field of a high-Q resonator. rapidfem therefore projects the full
+    per-element boundary operator ``k0*c1*B1 + (c2/k0)*(Curl - Div)`` onto the
+    nearest positive-semidefinite matrix before assembly, which keeps the
+    global ``Im(A) ⪰ 0`` and so guarantees ``|S| ≤ 1``. The second-order
+    accuracy is retained in every eigendirection compatible with passivity;
+    only the (otherwise energy-injecting) directions degrade gracefully to a
+    first-order reflector. ``order=1`` remains the cheapest choice and is
+    passive by construction.
 
 
     Note

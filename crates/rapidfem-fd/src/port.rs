@@ -25,8 +25,9 @@ pub trait Port {
     /// Whether this port needs order-2 ABC correction
     fn is_abc_order2(&self) -> bool { false }
 
-    /// ABC order-2 coefficient j*c2/k0 (only for ABC order 2)
-    fn abc_o2_coeff(&self, k0: f64) -> Option<C64> { let _ = k0; None }
+    /// ABC order-2 coefficients (c1, c2) — the first- and second-order
+    /// Bayliss-Turkel factors. `None` for everything but an order-2 ABC.
+    fn abc_o2_params(&self) -> Option<(f64, f64)> { None }
 
     /// Port mode field at a global point (for S-param extraction).
     /// Returns None for ABC (no S-param extraction).
@@ -130,9 +131,9 @@ impl Port for crate::waveguide::AbsorbingBoundary {
     fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
     fn is_driven(&self) -> bool { false }
     fn is_abc_order2(&self) -> bool { self.order >= 2 }
-    fn abc_o2_coeff(&self, k0: f64) -> Option<C64> {
+    fn abc_o2_params(&self) -> Option<(f64, f64)> {
         if self.order >= 2 {
-            Some(C64::new(0.0, 1.0) * C64::from(self.get_c2() / k0))
+            Some((self.get_c1(), self.get_c2()))
         } else {
             None
         }
