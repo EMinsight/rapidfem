@@ -991,8 +991,11 @@ pub fn solve_vector_modes(
     // [11..14]=P2 edge-midpoint. The reduced global DOF index for each local
     // DOF is resolved inline per element in the assembly loop below.
 
-    let mut a = vec![0.0f64; ndof * ndof];
-    let mut b = vec![0.0f64; ndof * ndof];
+    // Sparse assembly: accumulate COO triplets (faer sums duplicate (i,j)).
+    // The port face can carry tens of thousands of DOFs at production
+    // refinement, where a dense ndof×ndof factorisation is intractable.
+    let mut a_trip: Vec<(usize, usize, f64)> = Vec::new();
+    let mut b_trip: Vec<(usize, usize, f64)> = Vec::new();
     // Symmetric eigenproblem A·x = λ·B·x (cf. EMerge `generalized_eigen_hb.py`).
     //
     //   A = [ Att − k0²·Btt          0         ]
@@ -1090,8 +1093,8 @@ pub fn solve_vector_modes(
                 // is λ < 0); β is recovered as √(−λ) in the solve below. The
                 // discrete gradient null space lands at λ ≈ 0 and is rejected
                 // by the |λ| = β² floor, NOT by an ad-hoc A negation.
-                a[di * ndof + dj] += stiff - er * k0 * k0 * mass;  // Att − k0²·Btt
-                b[di * ndof + dj] += mass;                          // Dtt
+                a_trip.push((di, dj, stiff - er * k0 * k0 * mass)); // Att − k0²·Btt
+                b_trip.push((di, dj, mass));                         // Dtt
             }
         }
 
@@ -1112,8 +1115,8 @@ pub fn solve_vector_modes(
                     val += w * (wi[0] * pg[0] + wi[1] * pg[1]);
                 }
                 val *= area;
-                b[di_et * ndof + dj_ez] += val;
-                b[dj_ez * ndof + di_et] += val;
+                b_trip.push((di_et, dj_ez, val));
+                b_trip.push((dj_ez, di_et, val));
             }
         }
 
@@ -1136,7 +1139,7 @@ pub fn solve_vector_modes(
                 }
                 grad_ij *= area;
                 mass_ij *= area;
-                b[di * ndof + dj] += grad_ij - er * k0 * k0 * mass_ij;
+                b_trip.push((di, dj, grad_ij - er * k0 * k0 * mass_ij));
             }
         }
     }
@@ -1175,16 +1178,12 @@ pub fn solve_vector_modes(
     let allow_curl_free = tem_supported && homogeneous;
     let debug = std::env::var("PORT_EIGEN_DEBUG").is_ok();
 
-    // Sparse-ish matvec y = B·v on the dense row-major B block.
+    // Sparse matvec y = B·v straight from the COO triplets (faer would also
+    // do this, but iterating the triplets avoids materialising B separately).
     let b_matvec = |v: &[f64]| -> Vec<f64> {
         let mut y = vec![0.0f64; ndof];
-        for i in 0..ndof {
-            let row = i * ndof;
-            let mut s = 0.0;
-            for j in 0..ndof {
-                s += b[row + j] * v[j];
-            }
-            y[i] = s;
+        for &(i, j, val) in &b_trip {
+            y[i] += val * v[j];
         }
         y
     };
@@ -1234,17 +1233,41 @@ pub fn solve_vector_modes(
         if etmass > 0.0 { curl2 / etmass } else { 0.0 }
     };
 
-    // Dense shift-invert Arnoldi at shift σ: build a Krylov subspace of
+    // Sparse shift-invert Arnoldi at shift σ: build a Krylov subspace of
     // M = (A − σB)⁻¹B (full Gram-Schmidt → upper-Hessenberg H = Vᵀ M V),
     // eigendecompose the small H, and return the real Ritz pairs as
-    // (λ = σ + 1/μ, reduced eigenvector). Resolves the modes nearest σ.
+    // (λ = σ + 1/μ, reduced eigenvector). Resolves the modes nearest σ. The
+    // shift-invert linear solves go through faer's pure-Rust sparse LU, so the
+    // cost scales with the (sparse) factorisation, not ndof³.
     let m_kry = ndof.min(80);
     let arnoldi = |sigma: f64| -> Vec<(f64, Vec<f64>)> {
-        use faer::linalg::solvers::Solve;
-        let c = Mat::<f64>::from_fn(ndof, ndof, |i, j| {
-            a[i * ndof + j] - sigma * b[i * ndof + j]
-        });
-        let lu = c.partial_piv_lu();
+        use faer::sparse::{SparseColMat, Triplet};
+        use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
+        use faer::linalg::solvers::SolveCore;
+        // C = A − σB as sparse triplets (union pattern of A and B).
+        let trips: Vec<Triplet<usize, usize, f64>> = a_trip
+            .iter()
+            .map(|&(r, c, v)| Triplet { row: r, col: c, val: v })
+            .chain(b_trip.iter().map(|&(r, c, v)| Triplet { row: r, col: c, val: -sigma * v }))
+            .collect();
+        let cmat = match SparseColMat::<usize, f64>::try_new_from_triplets(ndof, ndof, &trips) {
+            Ok(m) => m,
+            Err(_) => return Vec::new(),
+        };
+        let sym = match SymbolicLu::try_new(cmat.as_ref().symbolic()) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let lu = match Lu::try_new_with_symbolic(sym, cmat.as_ref()) {
+            Ok(l) => l,
+            Err(_) => return Vec::new(),
+        };
+        // x ← C⁻¹ x (in place) for a length-ndof RHS.
+        let solve = |bv: &[f64]| -> Vec<f64> {
+            let mut x = Mat::<f64>::from_fn(ndof, 1, |i, _| bv[i]);
+            lu.solve_in_place_with_conj(faer::Conj::No, x.as_mut());
+            (0..ndof).map(|i| x[(i, 0)]).collect()
+        };
         // Deterministic start vector (no RNG: keeps resume/CI reproducible).
         let mut v0: Vec<f64> =
             (0..ndof).map(|i| (((i * 7 + 13) % 97) as f64 / 97.0) - 0.5).collect();
@@ -1256,9 +1279,7 @@ pub fn solve_vector_modes(
         let mut m_act = m_kry;
         for j in 0..m_kry {
             let bv = b_matvec(&vs[j]);
-            let rhs = Mat::<f64>::from_fn(ndof, 1, |i, _| bv[i]);
-            let sol = lu.solve(&rhs);
-            let mut w: Vec<f64> = (0..ndof).map(|i| sol[(i, 0)]).collect();
+            let mut w: Vec<f64> = solve(&bv);
             // Full reorthogonalisation against all previous Arnoldi vectors.
             for i in 0..=j {
                 let hij: f64 =
