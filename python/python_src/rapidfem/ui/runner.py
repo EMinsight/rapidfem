@@ -184,24 +184,30 @@ class Session:
         self._stderr_thread.join(timeout=1.0)
 
     def interrupt(self) -> bool:
-        """Raise `KeyboardInterrupt` inside the worker's running cell.
+        """Stop the worker's running cell.
 
-        Sends SIGINT to the subprocess — the worker's main-thread default
-        handler converts that into a `KeyboardInterrupt`, which propagates
-        out of `exec()` and is caught by the cell-run error path, emitting
-        an `error` event to the client.
+        On POSIX, sends `SIGINT` so the worker's default handler raises
+        `KeyboardInterrupt` out of `exec()` — graceful, preserves kernel state
+        (works for pure-Python loops; a native solve only checks the signal
+        after the call returns, so it isn't interrupted mid-solve there
+        either). On Windows there is no reliable signal path to a non-console
+        child, so we hard-stop the worker. Either way a long native solve
+        (PARDISO / gmsh) can only be stopped by terminating the process, so the
+        Windows path is also the robust "stop a runaway solve" path: the worker
+        dies, the running cell ends (`worker-exit`), and `_get_or_create`
+        spawns a fresh kernel on the next run (state is reset, like Restart).
 
-        Returns False on Windows (no clean equivalent for non-console
-        children) or if the process is already dead.
+        Returns False only if the process is already dead.
         """
         if not self.is_alive():
             return False
-        # Windows: subprocess.CREATE_NEW_PROCESS_GROUP + CTRL_BREAK_EVENT is the
-        # usual workaround but our worker isn't a console process — skip for
-        # now and let the caller fall back to `kill()` if it really needs to
-        # stop a runaway cell.
         if os.name == "nt":
-            return False
+            self._queue.put({
+                "type": "stream", "stream": "stderr",
+                "value": "\n[kernel interrupted — worker stopped; state reset]\n",
+            })
+            self.kill()
+            return True
         try:
             self.process.send_signal(signal.SIGINT)
             return True
