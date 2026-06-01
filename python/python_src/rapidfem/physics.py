@@ -704,8 +704,16 @@ class ABC(_Physics):
     global ``Im(A) ⪰ 0`` and so guarantees ``|S| ≤ 1``. The second-order
     accuracy is retained in every eigendirection compatible with passivity;
     only the (otherwise energy-injecting) directions degrade gracefully to a
-    first-order reflector. ``order=1`` remains the cheapest choice and is
-    passive by construction.
+    first-order reflector.
+
+    The projection is *per element* — sufficient for global passivity but
+    conservative (a locally-indefinite element that neighbours would have
+    compensated still gets clamped). In practice ``order=2`` therefore lands
+    close to ``order=1`` on resonant or guided problems, so treat it as a
+    fail-safe (``order=2`` no longer blows up) rather than a guaranteed
+    accuracy win. ``order=1`` remains the cheapest choice and is passive by
+    construction; when you need a genuinely low-reflection *and* passive
+    absorber, use :class:`PML`.
 
 
     Note

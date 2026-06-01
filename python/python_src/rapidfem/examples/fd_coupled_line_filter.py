@@ -231,11 +231,10 @@ rf.WavePort(sub.faces.max(axis="x"), air.faces.max(axis="x"),
 # energy). The ABC supplies the missing radiation-loss path, damps those
 # modes, and restores |S11|² + |S21|² ≤ 1.
 #
-# Use the FIRST-order ABC (the default). The second-order ABC (order=2) is
-# not discretely passive here: its tangential-curvature term injects energy
-# at the high internal fields of the coupled resonators, pushing |S| back
-# over 0 dB. First order is a plain matched-impedance sheet, dissipative by
-# construction.
+# First-order ABC (the default): a plain matched-impedance sheet, dissipative
+# by construction. order=2 is now passivity-projected too (it no longer blows
+# |S| over 0 dB), but its per-element PSD projection makes it ≈ order=1 on a
+# resonant geometry like this, so the simpler order=1 is the right pick here.
 rf.ABC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
        air.faces.min(axis="y"), air.faces.max(axis="y"),
        air.faces.max(axis="z"))
