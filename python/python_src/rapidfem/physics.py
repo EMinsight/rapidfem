@@ -692,6 +692,22 @@ class ABC(_Physics):
     fill-in.
 
 
+    Warning
+    -------
+    The second-order ABC (``order=2``) is **not unconditionally passive**.
+    Its correction matrix is ``coeff * (Curl - Div)``, and ``Curl`` and
+    ``Div`` are each symmetric positive-semidefinite, so their difference is
+    indefinite. Where the boundary sees strong tangential *divergence*
+    content (a conductor edge near the wall, or the intense near-field of a
+    high-Q resonator), the ``-Div`` term flips the sign of the boundary
+    power flux and the ABC *injects* energy: ``|S|`` then reads above 0 dB.
+    This is inherent to the Bayliss-Turkel formulation, not a discretisation
+    artefact. Prefer the default ``order=1`` (a plain matched-impedance
+    sheet, dissipative by construction) for resonant / high-Q structures or
+    whenever the ABC sits close to conductors; reach for :class:`PML` when
+    you need both low reflection *and* guaranteed passivity.
+
+
     Note
     ----
     For strong absorption at the radiating face of an antenna prefer
