@@ -228,13 +228,9 @@ rf.WavePort(sub.faces.max(axis="x"), air.faces.max(axis="x"),
 # pass-band. The driven FEM system goes near-singular there and the direct
 # solve returns a non-physical, energy-creating field: |S| reads several dB
 # over 0 across the pass-band (worst where the resonators store the most
-# energy). The ABC supplies the missing radiation-loss path, damps those
+# energy). The first-order ABC (a plain matched-impedance sheet, dissipative
+# by construction) supplies the missing radiation-loss path, damps those
 # modes, and restores |S11|² + |S21|² ≤ 1.
-#
-# First-order ABC (the default): a plain matched-impedance sheet, dissipative
-# by construction. order=2 is now passivity-projected too (it no longer blows
-# |S| over 0 dB), but its per-element PSD projection makes it ≈ order=1 on a
-# resonant geometry like this, so the simpler order=1 is the right pick here.
 rf.ABC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
        air.faces.min(axis="y"), air.faces.max(axis="y"),
        air.faces.max(axis="z"))
