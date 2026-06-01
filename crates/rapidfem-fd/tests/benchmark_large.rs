@@ -59,8 +59,8 @@ fn run_bench(mesh_path: &str, label: &str, a: f64, b: f64) {
     let p2v: Vec<[usize; 3]> = port2_tris.iter().map(|&ti| mesh.tris[ti]).collect();
     let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
     let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
-    let s11 = sparam_waveport(&mesh.nodes, &p1v, p1_ref, k0, true, &fieldf, 4);
-    let s21 = sparam_waveport(&mesh.nodes, &p2v, p2_ref, k0, false, &fieldf, 4);
+    let s11 = sparam_waveport(&mesh.nodes, &p1v, p1_ref, k0, true, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
+    let s21 = sparam_waveport(&mesh.nodes, &p2v, p2_ref, k0, false, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
     let total = t0.elapsed().as_secs_f64();
 
     eprintln!("  {}: {} tets, {} DOFs, solve={:.3}s, total={:.3}s, |S11|={:.4}, |S21|={:.4}",

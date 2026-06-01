@@ -54,9 +54,19 @@ pub fn surface_integral(
     total
 }
 
-/// Port of sparam.py: sparam_waveport
+/// Port of sparam.py's modal-port S-parameter (EMerge `_compute_s_data` else
+/// branch: `sparam_field_power` / `sparam_mode_power`).
 ///
-/// S = ∫ (E_field - Q·E_mode) · conj(E_mode) dS / ∫ |E_mode|² dS
+/// S = ∫ (E_field − Q·E_mode)·conj(E_mode)·c dS / ∫ |E_mode|²·c dS
+///
+/// where `c(x,y,z)` is the **local wave admittance weight** — `√(εᵣ/μᵣ)` for a
+/// TEM/quasi-TEM mode (`1/μᵣ` for TE, `1/εᵣ` for TM), supplied by `weight`.
+/// The weight turns the bare field overlap (`|E|²`) into the power / Poynting
+/// overlap: the power-wave amplitude is `b ∝ ∫E×H*·n̂`, and for a TEM mode
+/// `H_mode ∝ c·(n̂×E_mode)`, so `b ∝ ∫ c·E·conj(E_mode)`. Without it the
+/// overlap mis-weights an *inhomogeneous* quasi-TEM mode (the cross-section
+/// impedance varies), giving a passivity error `|S|² > 1` ∝ the inhomogeneity.
+/// The ratio stays amplitude-invariant, so the mode normalisation cancels.
 pub fn sparam_waveport(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
@@ -64,6 +74,7 @@ pub fn sparam_waveport(
     k0: f64,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
+    weight: &dyn Fn(f64, f64, f64) -> f64,
     gq_order: usize,
 ) -> C64 {
     let q = if active { 1.0 } else { 0.0 };
@@ -71,21 +82,18 @@ pub fn sparam_waveport(
     let mode_dot_field = surface_integral(nodes, tri_verts, &|x, y, z| {
         let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
         let (fx, fy, fz) = fieldf(x, y, z);
+        let c = C64::from(weight(x, y, z));
 
         let ex1 = fx - C64::from(q * mx);
         let ey1 = fy - C64::from(q * my);
         let ez1 = fz - C64::from(q * mz);
 
-        let ex2 = C64::from(mx).conj();
-        let ey2 = C64::from(my).conj();
-        let ez2 = C64::from(mz).conj();
-
-        ex1*ex2 + ey1*ey2 + ez1*ez2
+        c * (ex1 * C64::from(mx) + ey1 * C64::from(my) + ez1 * C64::from(mz))
     }, gq_order);
 
     let norm = surface_integral(nodes, tri_verts, &|x, y, z| {
         let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
-        C64::from(mx*mx + my*my + mz*mz)
+        C64::from(weight(x, y, z) * (mx*mx + my*my + mz*mz))
     }, gq_order);
 
     if norm.norm() < crate::constants::SINGULAR_EPS {

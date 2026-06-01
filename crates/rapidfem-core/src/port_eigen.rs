@@ -380,6 +380,13 @@ struct Ned2ModeData {
     e_face: Vec<[f64; 2]>,
     /// Per-triangle edge orientation / sign / length data.
     tri_edges: Vec<TriEdges>,
+    /// Longitudinal `E_z` P2 coefficients on the vertex DOFs (per global node)
+    /// and edge-midpoint DOFs (per global edge). A quasi-TEM mode in an
+    /// inhomogeneous cross-section carries `E_z ≠ 0`; `e_profile` adds it along
+    /// the propagation axis (matching EMerge's `ned2_tri_interp_full`, which
+    /// combines `E_t + ẑ·E_z`).
+    e_z_node: Vec<f64>,
+    e_z_edge: Vec<f64>,
 }
 
 /// How a numerical mode's wave impedance varies with frequency.
@@ -467,6 +474,8 @@ impl NumericalMode {
         let (_n_edge, tri_edges, _use) = build_edges(&mesh);
         let e_edge = mode.e_edge_ned2.clone();
         let e_face = mode.e_face_ned2.clone();
+        let e_z_node = mode.e_z_node.clone();
+        let e_z_edge = mode.e_z_edge.clone();
         // Unit-peak normalisation: sample |E_t| at every triangle's three
         // vertices via the full Ned-2 evaluation and take the max. Two
         // edges of the triangle meet at each corner so this catches the
@@ -489,7 +498,9 @@ impl NumericalMode {
         NumericalMode {
             mesh,
             e_uv_node: Vec::new(),
-            ned2: Some(Ned2ModeData { e_edge, e_face, tri_edges }),
+            ned2: Some(Ned2ModeData {
+                e_edge, e_face, tri_edges, e_z_node, e_z_edge,
+            }),
             inv_peak,
             w_hat,
             cutoff: 0.0,
@@ -564,11 +575,20 @@ impl NumericalMode {
     pub fn e_profile(&self, x: [f64; 3]) -> [f64; 3] {
         let uv = self.to_uv(x);
         let (ti, l) = self.locate(uv);
+        let mut ez = 0.0f64;
         let e: [f64; 2] = match &self.ned2 {
             Some(nd) => {
                 let t = self.mesh.tris[ti];
                 let (_a, g) = self.mesh.tri_geom(t);
-                ned2_et_at(&nd.tri_edges[ti], &g, &nd.e_edge, &nd.e_face[ti], ti, l)
+                // Longitudinal E_z: P2 over the 3 vertices + 3 edge midpoints.
+                let te = &nd.tri_edges[ti];
+                for v in 0..3 {
+                    ez += nd.e_z_node[t[v]] * p2_basis(v, l);
+                }
+                for el in 0..3 {
+                    ez += nd.e_z_edge[te.gidx[el]] * p2_basis(3 + el, l);
+                }
+                ned2_et_at(te, &g, &nd.e_edge, &nd.e_face[ti], ti, l)
             }
             None => {
                 let t = self.mesh.tris[ti];
@@ -580,11 +600,12 @@ impl NumericalMode {
                 e
             }
         };
-        let (eu, ev) = (e[0] * self.inv_peak, e[1] * self.inv_peak);
+        let (eu, ev, ew) = (e[0] * self.inv_peak, e[1] * self.inv_peak,
+                            ez * self.inv_peak);
         [
-            eu * self.mesh.u_hat[0] + ev * self.mesh.v_hat[0],
-            eu * self.mesh.u_hat[1] + ev * self.mesh.v_hat[1],
-            eu * self.mesh.u_hat[2] + ev * self.mesh.v_hat[2],
+            eu * self.mesh.u_hat[0] + ev * self.mesh.v_hat[0] + ew * self.w_hat[0],
+            eu * self.mesh.u_hat[1] + ev * self.mesh.v_hat[1] + ew * self.w_hat[1],
+            eu * self.mesh.u_hat[2] + ev * self.mesh.v_hat[2] + ew * self.w_hat[2],
         ]
     }
 

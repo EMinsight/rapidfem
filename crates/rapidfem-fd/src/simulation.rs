@@ -256,6 +256,29 @@ impl Simulation {
         // The tet-locating grid depends only on the mesh, not the
         // frequency - build it once for the whole sweep.
         let grid = interp::TetGrid::new(&self.mesh);
+
+        // Local wave-admittance weight √(εᵣ/μᵣ) per tet, for the power-overlap
+        // S-parameter (matches EMerge's TEM `const = 1/√(μᵣ/εᵣ)`). Constant
+        // across a homogeneous port (cancels in the ratio); varies across an
+        // inhomogeneous quasi-TEM cross-section, where it is what keeps the
+        // extraction unitary. Material scalars are frequency-flat here.
+        let n_tets = self.mesh.n_tets();
+        let eps_tet = per_tet_eps_scalar(&self.materials, n_tets);
+        let mut mur_tet = vec![1.0_f64; n_tets];
+        for mat in &self.materials {
+            let ur = match mat.ur_diag {
+                Some([a, b, c]) => (a + b + c) / 3.0,
+                None => mat.ur,
+            };
+            for &ti in &mat.tet_indices { mur_tet[ti] = ur; }
+        }
+        let weight = |x: f64, y: f64, z: f64| -> f64 {
+            match grid.find_containing_tet(&self.mesh, x, y, z) {
+                Some(tet) => (eps_tet[tet] / mur_tet[tet]).sqrt(),
+                None => 1.0,
+            }
+        };
+
         let mut all_sparams = Vec::with_capacity(frequencies.len());
         for (fi, freq_result) in results.iter().enumerate() {
             let k0 = 2.0 * PI * frequencies[fi] / C0;
@@ -286,7 +309,7 @@ impl Simulation {
                             .iter()
                             .map(|&ti| self.mesh.tris[ti])
                             .collect();
-                        sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, 4)
+                        sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, &weight, 4)
                     };
                     freq_s[obs_idx][exc_idx] = s;
                 }

@@ -111,8 +111,8 @@ fn test_straight_waveguide_sparams() {
 
     let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
     let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
-    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, k0, true, &fieldf, 4);
-    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, k0, false, &fieldf, 4);
+    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, k0, true, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
+    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, k0, false, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
 
     eprintln!("\n=== S-parameters ===");
     eprintln!("  |S11| = {:.6} ({:.1} dB)", s11.norm(), 20.0 * s11.norm().max(1e-10).log10());
