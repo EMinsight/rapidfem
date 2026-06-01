@@ -2444,7 +2444,7 @@ class Geometry:
         mat_class_count: dict[str, int] = {}
         phys_class_count: dict[str, int] = {}
         port_classes = {
-            "RectWaveguidePort", "LumpedPort", "CoaxPort",
+            "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
             "UserDefinedPort", "FloquetPort",
         }
 
