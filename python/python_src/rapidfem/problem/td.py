@@ -860,6 +860,24 @@ class ProblemTD:
         """The ODE right-hand side ``dy/dt = A·y``."""
         return self._op.apply(_arr(y))
 
+    def rhs_into(self, y, out):
+        """Allocation-free :meth:`rhs`: write ``dy/dt = A·y`` into ``out``.
+
+        ``out`` must be a contiguous float64 array of length :attr:`n_dofs`.
+        Reuse one buffer across a hand-rolled integration loop to avoid a
+        fresh allocation per evaluation. The built-in steppers already do
+        this internally, so prefer :meth:`step` / :meth:`transient` unless
+        you are driving the operator yourself.
+
+        Parameters
+        ----------
+        y : array_like
+            state vector of length :attr:`n_dofs`
+        out : numpy.ndarray
+            float64 output buffer of length :attr:`n_dofs`, overwritten in place
+        """
+        self._op.apply_into(_arr(y), out)
+
     def field_energy(self, state):
         """Instantaneous electromagnetic field energy of a state.
 

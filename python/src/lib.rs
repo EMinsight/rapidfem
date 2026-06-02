@@ -13,7 +13,7 @@
 use num_complex::Complex64;
 use numpy::{
     Complex64 as NpC64, IntoPyArray, PyArray1, PyArray2, PyArray3,
-    PyReadonlyArray1,
+    PyReadonlyArray1, PyReadwriteArray1,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -846,6 +846,34 @@ impl PyTdOperator {
             .as_slice()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(self.op.apply(y).into_pyarray_bound(py))
+    }
+
+    /// Allocation-free matvec: evaluate `dy/dt = A·y` into the caller's `out`
+    /// buffer instead of returning a fresh array. Both `y` and `out` must
+    /// have length `n_dof`. Useful for hand-rolled integration loops that
+    /// reuse one scratch buffer across steps; the high-level steppers
+    /// (`step`, `step_explicit`, ...) already do this internally.
+    fn apply_into<'py>(
+        &self,
+        y: PyReadonlyArray1<'py, f64>,
+        mut out: PyReadwriteArray1<'py, f64>,
+    ) -> PyResult<()> {
+        let n = self.op.n_dof();
+        let y = y
+            .as_slice()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let out = out
+            .as_slice_mut()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if y.len() != n || out.len() != n {
+            return Err(PyRuntimeError::new_err(format!(
+                "apply_into: expected y and out of length n_dof = {n}, got y={} out={}",
+                y.len(),
+                out.len()
+            )));
+        }
+        self.op.apply_into(y, out);
+        Ok(())
     }
 
     /// Instantaneous electromagnetic field energy
