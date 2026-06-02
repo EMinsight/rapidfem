@@ -403,6 +403,109 @@ class ProblemFD:
             theta=theta,
         )
 
+    # ── Field accessors ───────────────────────────────────────────────────
+
+    def _field_accessor(self, name: str, result, freq_idx: int, port_idx: int):
+        """shared body for the (freq_idx, port_idx) node-field wrappers"""
+        if self._native is None:
+            raise RuntimeError(
+                f"call .sweep(...) before .{name}(...), needs a solved problem")
+        arr = getattr(self._native, name)(result, freq_idx, port_idx)
+        if arr is None:
+            raise IndexError(
+                f"no solution for (freq_idx={freq_idx}, port_idx={port_idx})")
+        return np.asarray(arr)
+
+    def field_at_nodes(self, result, freq_idx: int = 0, port_idx: int = 0):
+        """electric field E sampled at every mesh node
+
+        Convenience wrapper so post-processing does not have to reach
+        through :attr:`native`.
+
+        Parameters
+        ----------
+        result : SweepResult
+            a solved sweep from :meth:`sweep`
+        freq_idx : int
+            frequency index into ``result.frequencies``
+        port_idx : int
+            driven-port index (the excitation that produced the field)
+
+        Returns
+        -------
+        numpy.ndarray
+            complex ``(n_nodes, 3)`` array of (Ex, Ey, Ez) per node, in V/m
+        """
+        return self._field_accessor("field_at_nodes", result, freq_idx, port_idx)
+
+    def current_density_at_nodes(self, result, freq_idx: int = 0, port_idx: int = 0):
+        """loss-equivalent current density J at every mesh node
+
+        ``J = sigma_eff * E`` with ``sigma_eff = omega*eps0*eps_r*tan(delta)
+        + sigma_bulk``, so both dielectric (loss tangent) and Ohmic losses
+        contribute.
+
+        Parameters
+        ----------
+        result : SweepResult
+            a solved sweep from :meth:`sweep`
+        freq_idx : int
+            frequency index into ``result.frequencies``
+        port_idx : int
+            driven-port index
+
+        Returns
+        -------
+        numpy.ndarray
+            complex ``(n_nodes, 3)`` array of (Jx, Jy, Jz) per node, in A/m^2
+        """
+        return self._field_accessor(
+            "current_density_at_nodes", result, freq_idx, port_idx)
+
+    def h_field_at_nodes(self, result, freq_idx: int = 0, port_idx: int = 0):
+        """magnetic field H sampled at every mesh node
+
+        ``H = curl(E) / (j*omega*mu0*mu_r)``, derived from the analytic
+        Nedelec-2 curl of the FEM solution.
+
+        Parameters
+        ----------
+        result : SweepResult
+            a solved sweep from :meth:`sweep`
+        freq_idx : int
+            frequency index into ``result.frequencies``
+        port_idx : int
+            driven-port index
+
+        Returns
+        -------
+        numpy.ndarray
+            complex ``(n_nodes, 3)`` array of (Hx, Hy, Hz) per node, in A/m
+        """
+        return self._field_accessor("h_field_at_nodes", result, freq_idx, port_idx)
+
+    def mode_field_at_nodes(self, mode):
+        """electric field E of an eigenmode sampled at every mesh node
+
+        Parameters
+        ----------
+        mode : Eigenmode
+            one entry returned by :meth:`eigenmode`
+
+        Returns
+        -------
+        numpy.ndarray
+            complex ``(n_nodes, 3)`` array of (Ex, Ey, Ez) per node. The
+            magnitude is arbitrary, eigenmodes are defined up to a global scale.
+        """
+        if self._native is None:
+            raise RuntimeError(
+                "call .eigenmode(...) before .mode_field_at_nodes(...)")
+        arr = self._native.mode_field_at_nodes(mode)
+        if arr is None:
+            raise IndexError("eigenmode carries no stored field")
+        return np.asarray(arr)
+
     # ── Introspection ─────────────────────────────────────────────────────
 
     @property
@@ -441,6 +544,20 @@ class ProblemFD:
         if self._native is None:
             raise ValueError("run an analysis first to assemble the FEM operator")
         return self._native.n_tets
+
+    @property
+    def mesh_nodes(self):
+        """``(n_nodes, 3)`` float64 array of mesh node coordinates, in metres"""
+        if self._native is None:
+            raise RuntimeError("run an analysis first to assemble the mesh")
+        return np.asarray(self._native.mesh_nodes)
+
+    @property
+    def mesh_tets(self):
+        """``(n_tets, 4)`` int array of tetrahedron node indices"""
+        if self._native is None:
+            raise RuntimeError("run an analysis first to assemble the mesh")
+        return np.asarray(self._native.mesh_tets)
 
     # ── TOML assembly ─────────────────────────────────────────────────────
 
