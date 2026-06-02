@@ -42,107 +42,57 @@ pub trait Port {
     fn port_height(&self) -> Option<f64> { None }
 }
 
-// Implement Port for RectWaveguide
-impl Port for crate::waveguide::RectWaveguide {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
-        Some(self.get_uinc(x, y, z, k0))
-    }
-    fn is_driven(&self) -> bool { true }
-    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
-        Some(self.port_mode_3d_global(x, y, z, k0))
-    }
-    fn z_mode(&self, k0: f64) -> f64 { self.z_mode(k0) }
-    fn port_number(&self) -> usize { self.port_number }
+/// Passive boundary: no excitation and no S-param extraction (ABC-style).
+/// Every such type forwards `get_gamma` to its inherent method and stubs the
+/// rest, so they share one impl body.
+macro_rules! impl_passive_port {
+    ($ty:ty) => {
+        impl Port for $ty {
+            fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
+            fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
+            fn is_driven(&self) -> bool { false }
+            fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64)
+                -> Option<(f64, f64, f64)> { None }
+            fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
+            fn port_number(&self) -> usize { 0 }
+        }
+    };
 }
 
-// Implement Port for LumpedElement
-impl Port for crate::waveguide::LumpedElement {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
-    fn is_driven(&self) -> bool { false }
-    fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
-    fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
-    fn port_number(&self) -> usize { 0 }
+/// Driven port: forwards excitation and mode field to inherent methods and
+/// indexes by `self.port_number`. Only the mode impedance differs per type,
+/// so it is supplied as a `|port, k0|` closure.
+macro_rules! impl_driven_port {
+    ($ty:ty, $z_mode:expr) => {
+        impl Port for $ty {
+            fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
+            fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
+                Some(self.get_uinc(x, y, z, k0))
+            }
+            fn is_driven(&self) -> bool { true }
+            fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64)
+                -> Option<(f64, f64, f64)> {
+                Some(self.port_mode_3d_global(x, y, z, k0))
+            }
+            fn z_mode(&self, k0: f64) -> f64 { ($z_mode)(self, k0) }
+            fn port_number(&self) -> usize { self.port_number }
+        }
+    };
 }
 
-// Implement Port for SurfaceImpedance
-impl Port for crate::waveguide::SurfaceImpedance {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
-    fn is_driven(&self) -> bool { false }
-    fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
-    fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
-    fn port_number(&self) -> usize { 0 }
-}
+impl_passive_port!(crate::waveguide::LumpedElement);
+impl_passive_port!(crate::waveguide::SurfaceImpedance);
+impl_passive_port!(crate::waveguide::AbsorbingBoundary);
 
-// Implement Port for FloquetPort
-impl Port for crate::waveguide::FloquetPort {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
-        Some(self.get_uinc(x, y, z, k0))
-    }
-    fn is_driven(&self) -> bool { true }
-    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
-        Some(self.port_mode_3d_global(x, y, z, k0))
-    }
-    fn z_mode(&self, _k0: f64) -> f64 { crate::constants::Z0 }
-    fn port_number(&self) -> usize { self.port_number }
-}
+impl_driven_port!(crate::waveguide::RectWaveguide, |p: &crate::waveguide::RectWaveguide, k0| p.z_mode(k0));
+impl_driven_port!(crate::waveguide::FloquetPort, |_p: &crate::waveguide::FloquetPort, _k0| crate::constants::Z0);
+// UserDefinedPort: dummy mode impedance, the user scales via incident power.
+impl_driven_port!(crate::waveguide::UserDefinedPort, |_p: &crate::waveguide::UserDefinedPort, _k0| 1.0);
+impl_driven_port!(crate::waveguide::CoaxPort, |p: &crate::waveguide::CoaxPort, _k0| p.port_z());
+impl_driven_port!(crate::waveguide::NumericalWavePort, |p: &crate::waveguide::NumericalWavePort, k0| p.z_mode(k0));
 
-// Implement Port for UserDefinedPort
-impl Port for crate::waveguide::UserDefinedPort {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
-        Some(self.get_uinc(x, y, z, k0))
-    }
-    fn is_driven(&self) -> bool { true }
-    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
-        Some(self.port_mode_3d_global(x, y, z, k0))
-    }
-    fn z_mode(&self, _k0: f64) -> f64 { 1.0 }  // dummy; user can scale via power
-    fn port_number(&self) -> usize { self.port_number }
-}
-
-// Implement Port for CoaxPort
-impl Port for crate::waveguide::CoaxPort {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
-        Some(self.get_uinc(x, y, z, k0))
-    }
-    fn is_driven(&self) -> bool { true }
-    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
-        Some(self.port_mode_3d_global(x, y, z, k0))
-    }
-    fn z_mode(&self, _k0: f64) -> f64 { self.port_z() }
-    fn port_number(&self) -> usize { self.port_number }
-}
-
-// Implement Port for AbsorbingBoundary
-impl Port for crate::waveguide::AbsorbingBoundary {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<[C64; 3]> { None }
-    fn is_driven(&self) -> bool { false }
-    fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> Option<(f64, f64, f64)> { None }
-    fn z_mode(&self, _k0: f64) -> f64 { 0.0 }
-    fn port_number(&self) -> usize { 0 }
-}
-
-// Implement Port for NumericalWavePort (numerical 2-D mode eigensolve)
-impl Port for crate::waveguide::NumericalWavePort {
-    fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
-    fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
-        Some(self.get_uinc(x, y, z, k0))
-    }
-    fn is_driven(&self) -> bool { true }
-    fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<(f64, f64, f64)> {
-        Some(self.port_mode_3d_global(x, y, z, k0))
-    }
-    fn z_mode(&self, k0: f64) -> f64 { self.z_mode(k0) }
-    fn port_number(&self) -> usize { self.port_number }
-}
-
-// Implement Port for LumpedPort
+// LumpedPort is driven AND lumped (voltage extraction), so it adds the lumped
+// trait methods on top of the driven pattern and stays hand-written.
 impl Port for crate::waveguide::LumpedPort {
     fn get_gamma(&self, k0: f64) -> C64 { self.get_gamma(k0) }
     fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> Option<[C64; 3]> {
