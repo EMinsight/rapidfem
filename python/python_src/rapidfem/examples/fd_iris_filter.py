@@ -32,7 +32,7 @@ air = g.box(A, B, L, position=(-A / 2, -B / 2, 0), material=rf.Air())
 z_centers = [INPUT_LEN + IRIS_T / 2 + k * SPACING for k in range(len(APERTURES))]
 
 # Each iris = two PEC strips along ±x leaving a slot in x of APERTURES[k].
-# The iris-solid volumes are dummies — their faces become PEC via fragment,
+# The iris-solid volumes are dummies, their faces become PEC via fragment,
 # and the tets inside are just air (no field of interest behind a PEC wall).
 iris_vols = []
 for k, (zc, w) in enumerate(zip(z_centers, APERTURES)):
@@ -48,7 +48,7 @@ g.fragment(air, *iris_vols)
 
 # Ports + PEC. air.faces after fragment includes the iris-interface faces,
 # so .unassigned (after attaching ports) gives both waveguide walls AND
-# all iris boundary faces — exactly what we want PEC'd.
+# all iris boundary faces, exactly what we want PEC'd.
 rf.RectWaveguidePort(air.faces.min(axis="z"))
 rf.RectWaveguidePort(air.faces.max(axis="z"))
 rf.PEC(*air.faces.unassigned)
@@ -74,4 +74,4 @@ print(f"DOFs: {prob.n_dofs}, tets: {prob.n_tets}")
 if passband:
     print(f"3-dB band: {passband[0]:.2f}-{passband[-1]:.2f} GHz ({len(passband)} pts)")
 else:
-    print("No 3-dB passband found in the sweep — try widening the frequency range.")
+    print("No 3-dB passband found in the sweep, try widening the frequency range.")

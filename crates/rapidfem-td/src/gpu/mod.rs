@@ -223,7 +223,7 @@ impl GpuContext {
     }
 }
 
-/// A trivial elementwise-add kernel — the P0.1 smoke test that the host
+/// A trivial elementwise-add kernel, the P0.1 smoke test that the host
 /// layer can build and run a kernel end to end on the device.
 const VADD_SOURCE: &str = r#"
 kernel void vadd(global const float* a,
@@ -234,7 +234,7 @@ kernel void vadd(global const float* a,
 }
 "#;
 
-/// Run `c = a + b` on the GPU — the smoke test for [`GpuContext`].
+/// Run `c = a + b` on the GPU, the smoke test for [`GpuContext`].
 pub fn vector_add(
     gpu: &GpuContext,
     a: &[f32],
@@ -271,7 +271,7 @@ mod tests {
         let gpu = match GpuContext::new() {
             Ok(g) => g,
             Err(e) => {
-                // No GPU on this machine — skip rather than fail.
+                // No GPU on this machine, skip rather than fail.
                 eprintln!("skipping GPU test: {e}");
                 return;
             }

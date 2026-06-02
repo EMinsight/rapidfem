@@ -19,7 +19,7 @@ use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 
 /// Port of interp.py: tet_coefficients(xs, ys, zs)
-/// Returns (aas, bbs, ccs, dds, V) — the FULL barycentric coefficients including constant term.
+/// Returns (aas, bbs, ccs, dds, V), the FULL barycentric coefficients including constant term.
 pub fn tet_coefficients(xs: &[f64; 4], ys: &[f64; 4], zs: &[f64; 4])
     -> ([f64; 4], [f64; 4], [f64; 4], [f64; 4], f64)
 {
@@ -261,7 +261,7 @@ fn find_containing_tet_brute(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usiz
     None
 }
 
-/// Find the tet containing a point (brute force — for backward compatibility).
+/// Find the tet containing a point (brute force, for backward compatibility).
 pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize> {
     find_containing_tet_brute(mesh, x, y, z)
 }
@@ -286,7 +286,7 @@ pub fn find_containing_tet(mesh: &Mesh, x: f64, y: f64, z: f64) -> Option<usize>
 ///   curl(φ_f1) =  v1·l1·[f1·(g2×g3) + 2·f2·(g1×g3) + f3·(g1×g2)]
 ///   curl(φ_f2) =  v1·l2·[f1·(g2×g3) −   f2·(g1×g3) − 2·f3·(g1×g2)]
 ///
-/// All four pieces are linear in position via f1, f2, f3 — there is no
+/// All four pieces are linear in position via f1, f2, f3, there is no
 /// constant-per-tet approximation. Used by the error estimator, the
 /// far-field integration, and the H-field channel (H = ∇×E / (jωμ)).
 pub fn eval_curl_in_tet(
@@ -443,7 +443,7 @@ mod tests {
         let basis = Nedelec2Basis::new(&mesh);
         assert_eq!(basis.n_field, 20);
 
-        // Deterministic seed — every DOF gets a distinct, non-trivial complex value.
+        // Deterministic seed, every DOF gets a distinct, non-trivial complex value.
         let solution: Vec<C64> = (0..20)
             .map(|i| C64::new(0.37 + 0.11 * i as f64, -0.21 + 0.07 * i as f64))
             .collect();

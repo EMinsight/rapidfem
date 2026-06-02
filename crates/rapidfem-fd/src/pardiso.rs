@@ -11,7 +11,7 @@
 //! `PardisoSolver::try_new()` returns `None` and the caller falls back to faer.
 //!
 //! Uses mtype=6 (complex symmetric indefinite) with 0-based CSR indexing.
-//! Upper triangle only — exploits A = Aᵀ for 2× memory/speed savings.
+//! Upper triangle only, exploits A = Aᵀ for 2× memory/speed savings.
 //!
 //! When the `pardiso` feature is disabled (e.g., WASM builds), this module exposes
 //! API-compatible stubs: `try_new` returns None and the caller path that uses
@@ -94,13 +94,13 @@ impl PardisoSolver {
         let mut iparm = [0i32; 64];
 
         // Match EMerge's PARDISO config (pardiso_interface.py:380-405)
-        iparm[0] = 1;    // Don't use default values — we set them
+        iparm[0] = 1;    // Don't use default values, we set them
         iparm[1] = 3;    // Permutation: METIS-style minimum-degree (EMerge default)
         iparm[2] = 4;    // Number of threads
         iparm[7] = 0;    // No iterative refinement
         iparm[9] = 13;   // Pivot perturbation magnitude (1e-13). Critical for ill-conditioned
                          // matrices like PML's anisotropic-complex stretched tensors.
-        iparm[12] = 2;   // Improved weighted matching — needed for complex-symmetric non-PD.
+        iparm[12] = 2;   // Improved weighted matching, needed for complex-symmetric non-PD.
         iparm[34] = 1;   // 0-based (C-style) indexing
 
         eprintln!("  PARDISO: MKL loaded successfully");

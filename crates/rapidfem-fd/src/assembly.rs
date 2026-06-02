@@ -85,11 +85,11 @@ pub fn assemble_and_solve_with_pml(
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Assembled E,B in {:.1}ms ({} entries)", t0.elapsed().as_secs_f64()*1e3, rows.len());
 
-    // Step 2: K = E - k0² * B (defer CSR construction — build faer triplets directly later)
+    // Step 2: K = E - k0² * B (defer CSR construction, build faer triplets directly later)
     let t1 = web_time::Instant::now();
     let k0_sq = C64::from(k0 * k0);
 
-    // Step 3: PEC DOFs — exact port of assembler.py lines 356-373
+    // Step 3: PEC DOFs, exact port of assembler.py lines 356-373
     let mut pec_ids: HashSet<usize> = HashSet::new();
 
     for &ti in pec_tri_indices {
@@ -110,7 +110,7 @@ pub fn assemble_and_solve_with_pml(
     }
     eprintln!("  PEC DOFs: {} of {}", pec_ids.len(), n_field);
 
-    // Step 4: Robin BC — exact port of assembler.py lines 380-413
+    // Step 4: Robin BC, exact port of assembler.py lines 380-413
     // Uses EMerge's flat array mechanism: Bempty + compute_bc_entries + generate_csr
     let ac_base = AreaCoeffCache::new();
     let gauss_points = gaus_quad_tri(4);
@@ -139,7 +139,7 @@ pub fn assemble_and_solve_with_pml(
 
     eprintln!("  Robin BC assembled in {:.1}ms", t1.elapsed().as_secs_f64()*1e3);
 
-    // Step 5: Port excitation vectors — only for driven ports
+    // Step 5: Port excitation vectors, only for driven ports
     let mut port_vectors: Vec<Vec<C64>> = Vec::new();
     let mut driven_port_indices: Vec<usize> = Vec::new();
 
@@ -264,7 +264,7 @@ pub fn frequency_sweep_with_pml(
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
 ) -> Result<Vec<SolveResult>, String> {
-    // Detect if any material is frequency-dependent — if so, K must be rebuilt every frequency
+    // Detect if any material is frequency-dependent, if so, K must be rebuilt every frequency
     let materials_dispersive = materials
         .map(|m| m.iter().any(|x| x.dispersion.is_dispersive()))
         .unwrap_or(false);
@@ -329,7 +329,7 @@ pub fn frequency_sweep_with_pml(
         })
         .collect();
 
-    // Pick backend once for the whole sweep — symbolic factorisation is
+    // Pick backend once for the whole sweep, symbolic factorisation is
     // amortised across frequencies via `solver.refactorize`.
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
     let mut first_factor = true;
@@ -362,7 +362,7 @@ pub fn frequency_sweep_with_pml(
             data_b = db;
         }
 
-        // Robin BC (γ frequency-dependent) — reuse bempty buffer
+        // Robin BC (γ frequency-dependent), reuse bempty buffer
         bempty.fill(C64::new(0.0, 0.0));
         for (_, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
             let gamma = port.get_gamma(k0);

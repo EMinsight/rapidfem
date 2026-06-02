@@ -1,14 +1,14 @@
-"""Time-domain DGTD problem — :class:`ProblemTD`.
+"""Time-domain DGTD problem, :class:`ProblemTD`.
 
 `ProblemTD` is the time-domain counterpart of :class:`ProblemFD`. Where
 `ProblemFD` is an analysis tool (geometry in, S-parameters out), `ProblemTD`
 is a *model-export* tool: it compiles a cavity into a linear ODE
-``dy/dt = A·y`` and exposes it at every level of abstraction —
+``dy/dt = A·y`` and exposes it at every level of abstraction,
 
-* :meth:`transient`           — turnkey: propagate an initial state,
-* :meth:`step`                — advance the state one exponential step,
-* :meth:`rhs` / :meth:`jacobian` — the ODE right-hand side / constant Jacobian,
-* :meth:`state_space`         — the verbatim sparse operator ``A``.
+* :meth:`transient`           : turnkey, propagate an initial state,
+* :meth:`step`                : advance the state one exponential step,
+* :meth:`rhs` / :meth:`jacobian`, the ODE right-hand side / constant Jacobian,
+* :meth:`state_space`         : the verbatim sparse operator ``A``.
 
 The current backend meshes a structured box cavity with PEC walls; general
 geometry support follows the frequency-domain ``(mesh, TOML)`` path.
@@ -29,7 +29,7 @@ _FIELD = {"E": 0, "H": 1}
 _COMP = {"x": 0, "y": 1, "z": 2}
 
 # Speed of light (m/s). The DG operator runs in normalised units (c = 1, time
-# measured in metres); `c` maps operator results to physical SI units —
+# measured in metres); `c` maps operator results to physical SI units,
 # `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
 C_LIGHT = 299_792_458.0
 
@@ -52,7 +52,7 @@ _SPARAM_ARRIVAL_FRAC = 0.05
 # `exp(-2·nu_max·t/3)`. Setting `nu_max = _ABSORBER_LOSS_BUDGET / thickness`
 # fixes `nu_max·t` regardless of slab depth, so the layer absorbs equally well
 # at any thickness. `_ABSORBER_LOSS_BUDGET = 24` gives a round-trip reflection
-# of `exp(-2·24/3) ≈ 1e-7` — far below 1 %. (`rf.PML.delta_max` is the
+# of `exp(-2·24/3) ≈ 1e-7`, far below 1 %. (`rf.PML.delta_max` is the
 # frequency-domain coordinate-stretch magnitude, a different quantity, and is
 # deliberately NOT used as the TD loss rate.)
 _ABSORBER_LOSS_BUDGET = 24.0
@@ -64,7 +64,7 @@ _ABSORBER_LOSS_BUDGET = 24.0
 # known-unstable value, each candidate probed by a short explicit run from
 # a delta excitation.
 _CFL_POWER_ITERS = 40       # power-iteration count for the spectral radius
-_CFL_PROBE_STEPS = 64       # explicit steps run per stability probe — long
+_CFL_PROBE_STEPS = 64       # explicit steps run per stability probe, long
                             # enough to see slow non-normal growth rates that
                             # the original 16-step probe missed.
 _CFL_BISECT_ITERS = 7       # bisection steps bracketing the stability limit
@@ -86,13 +86,13 @@ _CFL_SAFETY = 0.8           # margin applied to the bracketed stability limit
 # is to drop the dependence on `cfl_dt`: a non-normal upwind-DG operator
 # that slipped past a fixed CFL probe still shows up here, and the step
 # gets cut before the trajectory diverges.
-_RK_ATOL = 1e-8             # absolute error floor — the noise level a quiet
+_RK_ATOL = 1e-8             # absolute error floor, the noise level a quiet
                             # DOF is allowed without contributing to err_norm.
-_RK_RTOL = 1e-4             # relative tolerance — solution-fraction budget
+_RK_RTOL = 1e-4             # relative tolerance, solution-fraction budget
                             # per DOF. 1e-4 keeps phase error well under one
                             # wavelength over a typical TD run while sitting
                             # near LSERK4's CFL on a near-uniform mesh.
-_RK_SAFETY = 0.9            # safety factor in the step-size update —
+_RK_SAFETY = 0.9            # safety factor in the step-size update,
                             # Hairer-Wanner standard.
 _RK_GROWTH_LIMIT = 5.0      # max step-size growth between accepted steps.
 _RK_SHRINK_LIMIT = 0.2      # min step-size factor per failure (lower bound).
@@ -109,12 +109,12 @@ _RK_MIN_STEP_FACTOR = 1e-10
 
 
 def _log(msg):
-    """Progress logging for long TD runs — to stderr, like the FD solver."""
+    """Progress logging for long TD runs, to stderr, like the FD solver."""
     print(f"  [rapidfem-td] {msg}", file=sys.stderr, flush=True)
 
 
 def _arr(y):
-    """A contiguous 1-D float64 array — the zero-copy form the native
+    """A contiguous 1-D float64 array, the zero-copy form the native
     operator reads directly from its buffer (no Python-list round-trip)."""
     return np.ascontiguousarray(y, dtype=np.float64).ravel()
 
@@ -175,7 +175,7 @@ def _collect_dispersive(geometry):
     Returns ``[(tag, er_inf, er_static, tau_s)]`` for the native TD
     operator's ``dispersive`` argument. Each volume :class:`Material`
     carrying a :class:`rapidfem.Debye` component runs the time-domain
-    auxiliary-differential-equation (ADE) update — the operator appends a
+    auxiliary-differential-equation (ADE) update, the operator appends a
     per-element polarisation field and integrates ``dP/dt = a*P + g*E``.
 
     The Drude model is intentionally not collected here: the time-domain
@@ -197,7 +197,7 @@ def _collect_dispersive(geometry):
 
 
 def _collect_ports(geometry):
-    """Walk the geometry's port physics — :class:`RectWaveguidePort`,
+    """Walk the geometry's port physics, :class:`RectWaveguidePort`,
     :class:`CoaxPort` and :class:`FloquetPort`.
 
     Returns ``(rect_ports, coax_ports, floquet_ports, wave_ports)``:
@@ -206,19 +206,19 @@ def _collect_ports(geometry):
       the native TD operator's rectangular ``TE_mn`` ports
     - ``coax_ports`` is ``[(face_tag, center)]`` for its coaxial TEM ports
     - ``floquet_ports`` is ``[(face_tag, pol_mode, scan_theta, scan_phi)]``
-      for its Floquet plane-wave ports — ``pol_mode`` is ``1`` (TE) or
+      for its Floquet plane-wave ports, ``pol_mode`` is ``1`` (TE) or
       ``2`` (TM), matching the FD ``mode_nr`` convention; scan angles
       are radians.
     - ``wave_ports`` is ``[(face_tag, te, mode_index)]`` for numerically
-      solved cross-section modes (:class:`WavePort`) — ``te`` selects
+      solved cross-section modes (:class:`WavePort`), ``te`` selects
       TE vs TM, ``mode_index`` picks the mode by ascending cutoff.
 
     Operator port indices follow the geometry declaration order, with
     rectangular ports first, coax ports next, Floquet ports after, and
-    wave ports last — matching the native ``TdOperator.from_mesh_bytes``
+    wave ports last, matching the native ``TdOperator.from_mesh_bytes``
     layout.
 
-    A waveguide port has ``direction`` ``None`` — its frame is auto-fit
+    A waveguide port has ``direction`` ``None``, its frame is auto-fit
     from the face. A coax port carries the analytic TEM ``E_ρ ∝ ρ̂/ρ``
     annular mode and forwards its optional axis ``origin`` to the native
     ``center`` override. A Floquet port carries a uniform plane wave with
@@ -227,7 +227,7 @@ def _collect_ports(geometry):
     transverse phase factor is dropped (documented approximation, see
     :class:`FloquetPort`).
 
-    :class:`LumpedPort` is rejected — the time-domain backend has no
+    :class:`LumpedPort` is rejected, the time-domain backend has no
     lumped port (a uniform delta-gap profile only works on a genuine
     parallel-plate gap, not on concentrated quasi-TEM lines). Use a
     modal or wave port instead.
@@ -391,7 +391,7 @@ def _collect_absorbers(geometry):
 
     Each :class:`rapidfem.PML` terminates the domain with a volumetric
     absorbing slab. In time domain it wires through to the native operator
-    as a graded impedance-matched absorbing layer — there is no separate
+    as a graded impedance-matched absorbing layer, there is no separate
     coordinate-stretch PML in the TD backend; the matched absorber is the
     TD equivalent.
 
@@ -401,7 +401,7 @@ def _collect_absorbers(geometry):
     ``direction``; ``is_low`` is true when that component points toward
     decreasing coordinate (the layer extends to the low-coordinate end).
     ``nu_max`` is derived from the slab thickness so the round-trip
-    reflection stays well below 1 % — see :data:`_ABSORBER_LOSS_BUDGET`.
+    reflection stays well below 1 %, see :data:`_ABSORBER_LOSS_BUDGET`.
     """
     from ..physics import PML
 
@@ -439,8 +439,8 @@ class TdODE:
         self.n_dof = problem.n_dof
 
     def rhs(self, t, y):
-        """``dy/dt`` at state ``y``. The ``t`` argument is ignored — the
-        system is autonomous and linear — but kept for the integrator
+        """``dy/dt`` at state ``y``. The ``t`` argument is ignored, the
+        system is autonomous and linear, but kept for the integrator
         signature. Matrix-free, runs on all cores."""
         return self._p._op.apply(_arr(y))
 
@@ -475,7 +475,7 @@ class TdStepper:
                                 self.krylov_dim, self._cfl)
 
     def advance(self, y):
-        """Advance ``y`` by one ``dt`` step — same as calling the stepper."""
+        """Advance ``y`` by one ``dt`` step, same as calling the stepper."""
         return self(y)
 
     def __repr__(self):
@@ -484,7 +484,7 @@ class TdStepper:
 
 def _point_label(spec):
     """Human-readable label for a ``(point, field, component)`` probe/source
-    spec — e.g. ``"E_z @ (0.25, 0.25, 0.5)"``."""
+    spec, e.g. ``"E_z @ (0.25, 0.25, 0.5)"``."""
     p, f, c = spec
     coords = ", ".join(f"{v:g}" for v in np.asarray(p, dtype=float).ravel())
     return f"{f}_{c} @ ({coords})"
@@ -494,7 +494,7 @@ class TdScattering:
     """Modal-port scattering matrix from :meth:`ProblemTD.sparams`.
 
     Iterates as ``(frequencies, sparams)``, so the documented tuple
-    unpacking — ``freqs, S = ptd.sparams(...)`` — keeps working unchanged;
+    unpacking, ``freqs, S = ptd.sparams(...)``, keeps working unchanged;
     the named attributes additionally let :func:`rapidfem.show` plot the
     result in the UI.
 
@@ -512,7 +512,7 @@ class TdScattering:
 
     @property
     def n_ports(self):
-        """Number of ports — the side length of the S-matrix."""
+        """Number of ports, the side length of the S-matrix."""
         return self.sparams.shape[1] if self.sparams.ndim == 3 else 0
 
     def __iter__(self):
@@ -585,9 +585,9 @@ class TdTransfer:
 
 
 class TdTrajectory(np.ndarray):
-    """A time-domain field trajectory — ``[n_snapshot, n_dof]``.
+    """A time-domain field trajectory, ``[n_snapshot, n_dof]``.
 
-    For every numerical purpose this *is* a :class:`numpy.ndarray` —
+    For every numerical purpose this *is* a :class:`numpy.ndarray`,
     indexing, slicing, ``.shape``, arithmetic and
     :meth:`ProblemTD.export_vtk` all behave exactly as before. It
     additionally carries a back-reference to the originating
@@ -610,7 +610,7 @@ class TdTrajectory(np.ndarray):
 
 
 def _fmt(a):
-    """Whitespace-joined ascii of a numeric array — VTK DataArray payload."""
+    """Whitespace-joined ascii of a numeric array, VTK DataArray payload."""
     return " ".join(f"{v:.9g}" for v in np.asarray(a).ravel())
 
 
@@ -678,40 +678,40 @@ class ProblemTD:
     """Time-domain DGTD Maxwell problem ready for analysis.
 
     A container around a meshed :class:`~rapidfem.Geometry` and its
-    attached materials, ports and BCs — the time-domain counterpart of
+    attached materials, ports and BCs, the time-domain counterpart of
     :class:`~rapidfem.ProblemFD`. The curl equations are discretised in
     space with a **nodal discontinuous Galerkin** method on tetrahedra,
     giving an explicit linear ODE ``dy/dt = A·y`` with a constant, sparse
     operator ``A``; a driven port adds a rank-1 source ``b(t)``.
 
-    ``ProblemTD`` is a **model-export tool** — it hands back that ODE at
+    ``ProblemTD`` is a **model-export tool**, it hands back that ODE at
     every level of abstraction, so the verb to call is just the level of
     detail wanted:
 
-    - :meth:`rhs` / :meth:`state_space` — the matrix-free right-hand side,
+    - :meth:`rhs` / :meth:`state_space`, the matrix-free right-hand side,
       or the verbatim sparse operator ``A``
-    - :meth:`ode` — a handoff object for an external integrator
+    - :meth:`ode`, a handoff object for an external integrator
       (e.g. ``scipy.integrate.solve_ivp``)
-    - :meth:`step` / :meth:`stepper` / :meth:`transient` — exact
+    - :meth:`step` / :meth:`stepper` / :meth:`transient`, exact
       exponential time stepping (matrix-free Krylov / ETD)
-    - :meth:`driven_transient` / :meth:`transfer_function` / :meth:`sparams`
-      — soft-source or modal-port excitation, a scalar transfer function,
+    - :meth:`driven_transient` / :meth:`transfer_function` / :meth:`sparams`:
+      soft-source or modal-port excitation, a scalar transfer function,
       and the modal-port scattering matrix
-    - :meth:`resonances` — cavity eigenfrequencies from the spectrum
-    - :meth:`export_vtk` — a VTK field animation
+    - :meth:`resonances`, cavity eigenfrequencies from the spectrum
+    - :meth:`export_vtk`, a VTK field animation
 
     Because the semi-discrete system is linear with a constant ``A``, the
-    exponential propagator is *exact* at any step size — the time step is
+    exponential propagator is *exact* at any step size, the time step is
     set by the wanted output cadence, not by a CFL stability limit.
 
     Note
     ----
     The geometry must already be meshed (via ``g.mesh()``) before the
-    ProblemTD is constructed — construction snapshots the mesh bytes.
+    ProblemTD is constructed, construction snapshots the mesh bytes.
     Re-meshing the geometry afterwards has no effect on an existing
     ProblemTD; construct a new one instead. :meth:`box` is a shortcut that
     builds directly on a structured box cavity, bypassing the geometry
-    API — handy for validation.
+    API, handy for validation.
 
     Example
     -------
@@ -740,7 +740,7 @@ class ProblemTD:
     order : int
         the DG polynomial order the operator was built at
     flux : str
-        the numerical flux in use — ``"upwind"`` or ``"central"``
+        the numerical flux in use, ``"upwind"`` or ``"central"``
     c : float
         speed of light in the mesh's length units; sets the operator ↔
         physical time/frequency mapping
@@ -765,7 +765,7 @@ class ProblemTD:
             raise ValueError(f"flux must be one of {sorted(_FLUX)}")
         if getattr(geometry, "_last_mesh", None) is None:
             raise RuntimeError(
-                "geometry not meshed yet — call g.mesh() before "
+                "geometry not meshed yet, call g.mesh() before "
                 "constructing a ProblemTD"
             )
         self.c = float(c)
@@ -816,7 +816,7 @@ class ProblemTD:
     @classmethod
     def box(cls, *, size, cells, order=2, flux="upwind", c=1.0):
         """Build directly on a structured box cavity, bypassing the geometry
-        API — handy for validation and quick experiments.
+        API, handy for validation and quick experiments.
 
         Parameters
         ----------
@@ -889,7 +889,7 @@ class ProblemTD:
         return self._op.field_energy(_arr(state))
 
     def jacobian(self):
-        """The (constant) Jacobian of the linear system — i.e. ``A`` itself,
+        """The (constant) Jacobian of the linear system, i.e. ``A`` itself,
         as a sparse matrix. See :meth:`state_space`."""
         return self.state_space()
 
@@ -904,7 +904,7 @@ class ProblemTD:
         """Export the problem as an explicit linear ODE ``dy/dt = A·y``.
 
         Returns a :class:`TdODE` carrying everything an external
-        integrator needs — ``n_dof``, a matrix-free ``rhs(t, y)`` with
+        integrator needs, ``n_dof``, a matrix-free ``rhs(t, y)`` with
         the :func:`scipy.integrate.solve_ivp` signature, and
         ``jacobian()``.
         """
@@ -914,7 +914,7 @@ class ProblemTD:
         """Cavity resonant frequencies (Hz) from the operator's spectrum.
 
         The DG Maxwell operator's eigenvalues are `±iω`; with the upwind flux
-        the physical modes are the least-damped ones — `f = c·|ω|/(2π)`.
+        the physical modes are the least-damped ones, `f = c·|ω|/(2π)`.
         Dense eigenvalue solve, so for modest meshes only.
         """
         a = self.state_space().toarray()
@@ -935,7 +935,7 @@ class ProblemTD:
     # -- mid level: stepping ------------------------------------------------
     def step(self, y, h, krylov_dim=40, tol=None):
         """Advance the state by ``h`` (in the same time units as ``c``) with
-        the matrix-free exponential propagator — exact for the linear
+        the matrix-free exponential propagator, exact for the linear
         homogeneous system at any ``h``.
 
         ``tol`` is the Krylov a-posteriori error tolerance; ``None`` keeps
@@ -988,7 +988,7 @@ class ProblemTD:
         Returns
         -------
         y_new : ndarray
-            The advanced state, shape ``[n_dof]`` — the fourth-order main
+            The advanced state, shape ``[n_dof]``, the fourth-order main
             solution.
         err : ndarray
             Per-DOF embedded-error vector ``y_4 − y_3``, shape
@@ -1000,7 +1000,7 @@ class ProblemTD:
 
         Notes
         -----
-        Conditionally stable like :meth:`step_explicit` — an ``h`` past
+        Conditionally stable like :meth:`step_explicit`, an ``h`` past
         the operator's CFL limit eventually NaNs. The controller in
         :meth:`transient` rejects any infinite ``err`` and shrinks ``h``,
         so the high-level loop survives a bad initial-guess step; the raw
@@ -1042,7 +1042,7 @@ class ProblemTD:
         # power-iteration leftover `v`, which is the most-unstable mode), so
         # the probe directly tests the binding mode rather than whichever
         # modes a delta happens to project onto. A stable z must keep the
-        # geometric-mean per-step amplification at most slightly above 1 —
+        # geometric-mean per-step amplification at most slightly above 1,
         # an upwind-DG operator is non-normal, so a probe that just stays
         # "bounded after a few steps" can hide a slow drift that NaNs the
         # real run over thousands of substeps.
@@ -1110,7 +1110,7 @@ class ProblemTD:
 
     def _kcl_err_norm(self, y_old, y_new, err):
         """Weighted L2 error norm `sqrt(mean((err / (atol+rtol·max|y|))²))`
-        the controller compares against 1.0 — the standard Hairer-Wanner
+        the controller compares against 1.0, the standard Hairer-Wanner
         mixed-tolerance criterion (each DOF scaled by its own magnitude).
         """
         scale = _RK_ATOL + _RK_RTOL * np.maximum(np.abs(y_old), np.abs(y_new))
@@ -1143,9 +1143,9 @@ class ProblemTD:
         the controller's current step size across frames so a long quiet
         phase doesn't re-acquire it from scratch.
 
-        Three driving modes via the kwargs: ``source=None, sdof=None`` —
-        free system (`dy/dt = A·y`); ``sdof, waveform`` — single-DOF soft
-        source with zeroth-order hold; ``source, waveform`` — full source
+        Three driving modes via the kwargs: ``source=None, sdof=None``,
+        free system (`dy/dt = A·y`); ``sdof, waveform``, single-DOF soft
+        source with zeroth-order hold; ``source, waveform``, full source
         vector ``b`` driven by ``g(t) = waveform``, the modal-port path.
 
         Returns ``(y, h_next, prev_err_norm, n_acc, n_rej)``.
@@ -1175,7 +1175,7 @@ class ProblemTD:
                 y_try, err = self._op.step_kcl(
                     _arr(y), float(self.c * h_try),
                 )
-            # A NaN err_norm rejects too — non-finite means the step blew
+            # A NaN err_norm rejects too, non-finite means the step blew
             # the CFL limit, the controller must shrink and retry.
             if not np.all(np.isfinite(y_try)):
                 err_norm = np.inf
@@ -1208,7 +1208,7 @@ class ProblemTD:
     def stepper(self, dt, *, krylov_dim=40, method="exponential"):
         """A reusable one-step propagator bound to a fixed ``dt``.
 
-        Returns a :class:`TdStepper` — call it repeatedly to advance a
+        Returns a :class:`TdStepper`, call it repeatedly to advance a
         state without re-passing ``dt``/``krylov_dim`` each time.
 
         ``method`` selects the integrator: ``"exponential"`` (exact at any
@@ -1222,7 +1222,7 @@ class ProblemTD:
     # -- ports: soft sources & field probes --------------------------------
     def probe_dof(self, point, *, field="E", component="z"):
         """Global DOF index for a field component at the node nearest
-        ``point`` — used to place soft sources and field probes."""
+        ``point``, used to place soft sources and field probes."""
         return self._op.nearest_node_dof(
             tuple(float(x) for x in point), _FIELD[field], _COMP[component]
         )
@@ -1238,7 +1238,7 @@ class ProblemTD:
         source : (point, field, component)
             Where and which field component to inject.
         waveform : callable
-            ``g(t)`` — the excitation, e.g. a :class:`~rapidfem.GaussianPulse`.
+            ``g(t)``, the excitation, e.g. a :class:`~rapidfem.GaussianPulse`.
         probes : list of (point, field, component)
             Field samples to record over the run.
         dt, steps : float, int
@@ -1247,9 +1247,9 @@ class ProblemTD:
         Returns
         -------
         TdResponse
-            Iterates as ``(times, responses)`` — ``times`` of shape
+            Iterates as ``(times, responses)``, ``times`` of shape
             ``[steps+1]`` and ``responses`` of shape
-            ``[n_probes, steps+1]`` — so ``times, resp = ...`` unpacking
+            ``[n_probes, steps+1]``, so ``times, resp = ...`` unpacking
             works unchanged; passing it to :func:`rapidfem.show` plots the
             probe signals.
         """
@@ -1325,8 +1325,8 @@ class ProblemTD:
         """Field-to-field frequency response by on-the-fly RFT.
 
         Drives a broadband ``pulse`` at ``source``, records ``probe``,
-        then divides the probe spectrum by the source spectrum —
-        ``H(f) = R(f) / G(f)`` — to recover the linear cavity's transfer
+        then divides the probe spectrum by the source spectrum,
+        ``H(f) = R(f) / G(f)``, to recover the linear cavity's transfer
         function in one transient run. Peaks of ``|H(f)|`` mark the
         resonances.
 
@@ -1342,7 +1342,7 @@ class ProblemTD:
         probe : (point, field, component)
             Field sample to record.
         pulse : callable
-            Broadband excitation ``g(t)`` — its spectrum sets the usable
+            Broadband excitation ``g(t)``, its spectrum sets the usable
             frequency band (a :class:`~rapidfem.GaussianPulse` is the
             typical choice).
         dt, steps : float, int
@@ -1353,7 +1353,7 @@ class ProblemTD:
         Returns
         -------
         TdTransfer
-            Iterates as ``(freqs, H)`` — ``freqs`` the frequency axis (Hz
+            Iterates as ``(freqs, H)``, ``freqs`` the frequency axis (Hz
             for an SI geometry, operator units for a :meth:`box`, length
             ``steps//2 + 1``) and ``H`` the complex transfer function
             ``R(f)/G(f)``, zero outside the pulse band. ``freqs, H = ...``
@@ -1370,7 +1370,7 @@ class ProblemTD:
         freqs = np.fft.rfftfreq(times.size, dt)
         # H = R/G only where the drive carries real energy. Outside the
         # pulse band G→0, and dividing by it amplifies pure numerical
-        # noise — the classic deconvolution artefact — so H is held at
+        # noise, the classic deconvolution artefact, so H is held at
         # zero below 1 % of the peak source spectrum.
         h = np.zeros_like(spec_r)
         band = np.abs(spec_g) > 1e-2 * np.abs(spec_g).max()
@@ -1395,13 +1395,13 @@ class ProblemTD:
 
         Drives each port in turn with a broadband pulse, extracts the
         modal amplitudes at every port by surface-integral projection,
-        and assembles ``S_ij(f) = B_i(f)/A_j(f)`` — the wave leaving port
+        and assembles ``S_ij(f) = B_i(f)/A_j(f)``, the wave leaving port
         ``i`` per unit wave incident at the driven port ``j``.
 
         Parameters
         ----------
         freqs : array_like
-            Frequencies — Hz for a geometry, operator units for a
+            Frequencies, Hz for a geometry, operator units for a
             :meth:`box`.
         dt, steps : float, int
             Time step and step count. The run must be long enough to
@@ -1417,7 +1417,7 @@ class ProblemTD:
         Returns
         -------
         TdScattering
-            Iterates as ``(freqs, S)`` — ``freqs`` the frequency axis and
+            Iterates as ``(freqs, S)``, ``freqs`` the frequency axis and
             ``S`` the complex scattering matrix of shape
             ``[n_freq, n_port, n_port]``, with ``S[f, i, j]`` in the same
             index order as the frequency-domain backend's
@@ -1426,7 +1426,7 @@ class ProblemTD:
         """
         freqs = np.asarray(freqs, dtype=float).ravel()
         total_ports = self._op.n_ports()
-        # Modal ports only — ABC faces (port_has_mode == False) are
+        # Modal ports only, ABC faces (port_has_mode == False) are
         # absorbing-only and do not participate in S-parameter
         # extraction. The S-matrix is indexed over the modal subset
         # in declaration order.
@@ -1436,7 +1436,7 @@ class ProblemTD:
         n_ports = len(modal_idx)
         if n_ports == 0:
             raise RuntimeError(
-                "ProblemTD has no modal ports — attach "
+                "ProblemTD has no modal ports, attach "
                 "RectWaveguidePort(s) or CoaxPort(s) to the "
                 "geometry before constructing it; ABC faces alone do "
                 "not carry a mode for extraction"
@@ -1462,7 +1462,7 @@ class ProblemTD:
             tau = 1.0 / (np.pi * max(fw, 0.25 * fc))
             pulse = GaussianPulse(t0=4.0 * tau, tau=tau, f0=fc)
         g = np.asarray(pulse(times), dtype=float)
-        # DFT kernel — rows index frequency, columns index time sample.
+        # DFT kernel, rows index frequency, columns index time sample.
         phase = np.exp(-2j * np.pi * np.outer(freqs, times)) * dt
 
         h_op = float(self.c * dt)
@@ -1583,7 +1583,7 @@ class ProblemTD:
         return rect + coax + floq + wave
 
     def _port_operator_index(self, port):
-        """Operator port index of a modal port physics object — the index
+        """Operator port index of a modal port physics object, the index
         :meth:`port_source` / :meth:`port_projections` take. Resolves the
         port's position among the modal ports (declaration order) and maps
         it onto the operator's modal subset (``port_has_mode``), so
@@ -1608,7 +1608,7 @@ class ProblemTD:
 
     def port_signals(self, traj, ports, *, dt=None, labels=None):
         """Modal wave amplitude ``P_e(t)`` at each port over a trajectory,
-        as a :class:`TdResponse` for :func:`rapidfem.show` — a time-domain
+        as a :class:`TdResponse` for :func:`rapidfem.show`, a time-domain
         line plot of the modal port signals next to the field animation.
 
         Parameters
@@ -1639,7 +1639,7 @@ class ProblemTD:
 
     def _driven_vector_traj(self, b, waveform, *, y0, dt, steps, method,
                             device, krylov_dim, verbose):
-        """Field trajectory of ``dy/dt = A·y + b·g(t)`` — the full-vector
+        """Field trajectory of ``dy/dt = A·y + b·g(t)``, the full-vector
         (modal-port) source path, routed across ``method`` ∈
         {exponential, explicit} × ``device`` ∈ {cpu, gpu}. The exponential
         step is exact at any ``dt`` (one step per snapshot); the explicit
@@ -1759,7 +1759,7 @@ class ProblemTD:
         if verbose and method == "adaptive":
             _log(f"transient(port): CPU vector KCL adaptive "
                  f"(atol={_RK_ATOL:g}, rtol={_RK_RTOL:g})")
-        # Adaptive controller state — carried across frames as in the
+        # Adaptive controller state, carried across frames as in the
         # source-less path. The vector-source variant of the KCL stepper
         # receives `b·g(t_now)` as its full source, zeroth-order hold.
         h_ad = dt
@@ -1851,7 +1851,7 @@ class ProblemTD:
             output frame (zeroth-order hold).
 
             *Adaptive vs the frequency-domain* :class:`~rapidfem.Adaptive`
-            *class*: unrelated — :class:`~rapidfem.Adaptive` drives mesh /
+            *class*: unrelated, :class:`~rapidfem.Adaptive` drives mesh /
             order h-p refinement in :meth:`ProblemFD.sweep`; here the
             argument selects a *time integrator*.
         warmup : int
@@ -2020,7 +2020,7 @@ class ProblemTD:
         t0 = time.time()
         every = max(1, steps // 10)
         label = "driven transient" if driven else "transient"
-        # Adaptive controller state — carried across frames so a long quiet
+        # Adaptive controller state, carried across frames so a long quiet
         # phase doesn't reacquire its step from scratch. Initial guess:
         # one full output cadence; first frame will get cut quickly by the
         # PI controller if the operator is stiffer than that.
@@ -2075,8 +2075,8 @@ class ProblemTD:
 
         Each snapshot in ``states`` becomes a ``.vtu`` file; a ``.pvd``
         collection ties them into a time animation. The field is exported
-        on **discontinuous linear tetrahedra** — one cell per DG element,
-        sampled at the element corners — carrying the ``E`` and ``H``
+        on **discontinuous linear tetrahedra**, one cell per DG element,
+        sampled at the element corners, carrying the ``E`` and ``H``
         vector fields as point data. Corner values are exact;
         sub-element high-order variation is not rendered.
 
@@ -2084,7 +2084,7 @@ class ProblemTD:
         ----------
         states : ndarray
             A single state ``[n_dof]`` or a trajectory
-            ``[n_snapshots, n_dof]`` — e.g. the return of
+            ``[n_snapshots, n_dof]``, e.g. the return of
             :meth:`transient`.
         path : str or os.PathLike
             Output base path. ``<path>.pvd`` and ``<path>_NNNN.vtu`` are

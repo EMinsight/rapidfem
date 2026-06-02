@@ -188,7 +188,7 @@ def _td_timeseries_payload(obj) -> dict[str, Any]:
             "series": series,
             "source_label": obj.source_label,
         }
-    # TdTransfer — complex frequency response
+    # TdTransfer, complex frequency response
     x = np.asarray(obj.frequencies, dtype=float).ravel()
     H = np.asarray(obj.H)
     return {
@@ -210,7 +210,7 @@ def _td_trajectory_payload(
     """``TdTrajectory`` → a self-contained DG-corner mesh + per-node field.
 
     Emits the DG element corners deduplicated into unique nodes plus the
-    tet connectivity, and — per kept frame, per unique node — the ``|E|``
+    tet connectivity, and, per kept frame, per unique node, the ``|E|``
     and ``|H|`` field magnitude. The frontend samples a point cloud from
     that mesh *at runtime* (energy-weighted, like the frequency-domain
     ``viz.ts`` sampler) at whatever density the user picks, then evaluates
@@ -219,7 +219,7 @@ def _td_trajectory_payload(
     not a fixed 16k-point cloud).
 
     Per-frame magnitudes are quantised to integers ``0…1000`` of the
-    global per-channel maximum (``field_max``) — ample for an additive
+    global per-channel maximum (``field_max``), ample for an additive
     colour ramp and an order of magnitude smaller on the wire than raw
     floats. The viewer rescales by ``field_max`` and holds that colour
     scale fixed across the animation. Snapshots are decimated to at most
@@ -230,7 +230,7 @@ def _td_trajectory_payload(
     p = getattr(traj, "_problem", None)
     if p is None:
         raise RuntimeError(
-            "trajectory carries no ProblemTD reference — it must come "
+            "trajectory carries no ProblemTD reference, it must come "
             "straight from ProblemTD.transient()"
         )
     states = np.ascontiguousarray(traj, dtype=np.float64)
@@ -251,7 +251,7 @@ def _td_trajectory_payload(
                         .astype(int))
     else:
         idx = np.arange(n_snap)
-    # Corner field of every kept frame — [n_frame, n_elem, 4, 6].
+    # Corner field of every kept frame, [n_frame, n_elem, 4, 6].
     cstates = states[idx].reshape(len(idx), n_elem, np_, 6)[:, :, corners, :]
 
     # ── Deduplicate the n_elem·4 corner coordinates into unique nodes ───
@@ -340,7 +340,7 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
         elif item.kind == "simulation":
             # Captured object is a rapidfem.Problem; reach into its native
             # solver for mesh + field accessors. If the user show()ed the
-            # Problem before running any analysis, .native raises — surface
+            # Problem before running any analysis, .native raises, surface
             # that as a display-level error rather than crashing the bake.
             try:
                 last_sim = item.obj.native
@@ -357,7 +357,7 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             last_modes = [item.obj]
         elif item.kind in ("td_result", "td_timeseries", "td_transfer",
                             "td_trajectory"):
-            # Time-domain results are self-contained — emit directly,
+            # Time-domain results are self-contained, emit directly,
             # no sim/result pairing needed. A transfer function reuses the
             # time-series payload builder (it sets domain="freq" itself).
             _td_builder = {
@@ -397,7 +397,7 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             out.append({"kind": "mesh", "name": "simulation", "payload": mesh_payload})
 
     # Eigenmode result: one "frequency" per mode, no port dimension. We
-    # reuse the existing `result` payload shape — frontends already know
+    # reuse the existing `result` payload shape, frontends already know
     # how to drive the field viewer + frequency slider; for eigenmodes
     # the slider becomes a mode index, and S-params are empty.
     if last_sim is not None and last_modes is not None and last_result is None:
@@ -406,7 +406,7 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             modes = last_modes
             n_mode = len(modes)
             freqs_per_mode = [float(m.frequency_hz) for m in modes]
-            # JSON doesn't have an `Infinity` literal — Python's json.dumps
+            # JSON doesn't have an `Infinity` literal, Python's json.dumps
             # writes the non-standard `Infinity` token, which browsers and
             # spec-compliant parsers reject. Lossless modes have Q = inf, so
             # map those to `null`; the frontend's `isFinite()` check renders
@@ -492,7 +492,7 @@ def _abc_phasor(vec_complex) -> list[float] | None:
     """(n_nodes, 3) complex → flat [A, B, C, ...] per node.
 
     Encodes |E(t)|² = A·cos²(ωt) + B·sin²(ωt) − 2·C·sin·cos with
-    A = |Re|², B = |Im|², C = Re·Im — the same animation-friendly form the
+    A = |Re|², B = |Im|², C = Re·Im, the same animation-friendly form the
     splat shader composites against a phase uniform. Returns `None` if the
     backend produced no field for this (freq, port).
     """
@@ -510,7 +510,7 @@ def _abc_phasor(vec_complex) -> list[float] | None:
 def _build_channel_payloads(sim, result, n_freq: int, n_p: int) -> dict[str, list]:
     """Build per-channel `[freq][port][flat_abc]` payloads for E, J, H.
 
-    Each channel uses the same (A, B, C) phasor encoding — the frontend picks
+    Each channel uses the same (A, B, C) phasor encoding, the frontend picks
     one channel at a time and feeds the flat array straight into the splat
     sampler. Channels are computed eagerly so a UI toggle is a zero-roundtrip
     switch.
@@ -575,7 +575,7 @@ def register(app: Flask) -> None:
         return jsonify({"ok": True, "path": rel, "content": content})
 
     # ── Examples (shipped with the package) ───────────────────────────────
-    # NB: /api/cell/run and /api/cell/reset moved to rapidfem.ui.runner — the
+    # NB: /api/cell/run and /api/cell/reset moved to rapidfem.ui.runner, the
     # subprocess-based runner exposes them with streaming via /api/cell/poll.
 
     @app.get("/api/examples")

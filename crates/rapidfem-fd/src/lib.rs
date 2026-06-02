@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! rapidfem-fd — frequency-domain Nédélec-FEM backend.
+//! rapidfem-fd, frequency-domain Nédélec-FEM backend.
 //!
 //! The solver-agnostic mesh / quadrature / material data model lives in
 //! `rapidfem-core` and is re-exported here, so existing `crate::mesh`-style

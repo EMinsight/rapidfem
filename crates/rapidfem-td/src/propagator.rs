@@ -77,7 +77,7 @@ fn matmul_into(a: &[Accum], b: &[Accum], n: usize, out: &mut [Accum]) {
     }
 }
 
-/// Scratch for the dense matrix exponential — five `n×n` buffers, grown on
+/// Scratch for the dense matrix exponential, five `n×n` buffers, grown on
 /// demand and reused.
 struct ExpmScratch {
     cap: usize,
@@ -111,7 +111,7 @@ impl ExpmScratch {
     }
 }
 
-/// `exp(A)` of an `n×n` row-major matrix into `out`, reusing `s` — the
+/// `exp(A)` of an `n×n` row-major matrix into `out`, reusing `s`, the
 /// allocation-free counterpart of [`expm`].
 fn expm_into(a: &[Accum], n: usize, out: &mut [Accum], s: &mut ExpmScratch) {
     let nn = n * n;
@@ -159,15 +159,15 @@ fn expm_into(a: &[Accum], n: usize, out: &mut [Accum], s: &mut ExpmScratch) {
     out[..nn].copy_from_slice(&s.result[..nn]);
 }
 
-/// Reusable workspace for the Krylov exponential propagator — owns the
+/// Reusable workspace for the Krylov exponential propagator, owns the
 /// Arnoldi basis and the dense `H` buffers, so
 /// [`expmv_into`](Self::expmv_into) allocates nothing once warmed.
 pub struct KrylovWorkspace {
-    /// Arnoldi basis, flat — vector `j` occupies `basis[j*n .. (j+1)*n]`.
+    /// Arnoldi basis, flat, vector `j` occupies `basis[j*n .. (j+1)*n]`.
     basis: Vec<Accum>,
     /// Arnoldi working vector / matvec output.
     w: Vec<Accum>,
-    /// CGS2 projection coefficients — `Vᵀ·w` for one orthogonalisation pass.
+    /// CGS2 projection coefficients, `Vᵀ·w` for one orthogonalisation pass.
     proj: Vec<Accum>,
     /// Upper Hessenberg `H`, `m×m` row-major.
     h: Vec<Accum>,
@@ -221,13 +221,13 @@ impl KrylovWorkspace {
 
     /// Matrix-free `exp(t·A)·v` into `out`, with `matvec(x, ax)` writing
     /// `A·x` into `ax`. After the buffers have grown once to fit `n` and
-    /// `max_dim`, this allocates nothing — the form to call in a step loop.
+    /// `max_dim`, this allocates nothing, the form to call in a step loop.
     ///
     /// `max_dim` caps the Krylov dimension. `tol` is a *relative*
     /// a-posteriori error tolerance: after each new basis vector the
     /// estimate `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked, and the subspace
     /// stops growing once it drops below `tol` (or on a lucky breakdown).
-    /// `tol = 0` skips the estimate and runs the full `max_dim` — the
+    /// `tol = 0` skips the estimate and runs the full `max_dim`, the
     /// fixed-dimension behaviour. Returns the Krylov dimension actually used.
     pub fn expmv_into<F>(
         &mut self,
@@ -265,20 +265,20 @@ impl KrylovWorkspace {
         // Arnoldi with classical Gram-Schmidt + one reorthogonalisation
         // (CGS2). Unlike modified Gram-Schmidt's sequential dot/axpy chain
         // the `cols` projections of each pass are independent, so the
-        // batched `Vᵀ·w` and `w -= V·c` fan out across the rayon pool — a
+        // batched `Vᵀ·w` and `w -= V·c` fan out across the rayon pool, a
         // large win once the mesh is past a few hundred elements (see the
         // `ortho_bench` example). Two passes recover MGS-grade
         // orthogonality. After each new basis vector the relative
         // a-posteriori estimate `h_{j+1,j}·|exp(tH)_{dim-1,0}|` is checked
         // against `tol`; the subspace stops growing once it converges. The
-        // dim×dim `exp(tH)` for the estimate is cheap — O(dim³) against the
+        // dim×dim `exp(tH)` for the estimate is cheap, O(dim³) against the
         // O(cols·n) projection work.
         let mut dim = max_dim;
         for j in 0..max_dim {
             matvec(&self.basis[j * n..j * n + n], &mut self.w[..n]);
             let cols = j + 1;
             for _pass in 0..2 {
-                // proj[i] = ⟨basis[i], w⟩ — independent across i.
+                // proj[i] = ⟨basis[i], w⟩, independent across i.
                 {
                     let basis = &self.basis;
                     let w = &self.w[..n];
@@ -290,7 +290,7 @@ impl KrylovWorkspace {
                             *p = bi.iter().zip(w).map(|(a, x)| a * x).sum();
                         });
                 }
-                // w -= Σ_i proj[i]·basis[i] — fanned out over w in chunks.
+                // w -= Σ_i proj[i]·basis[i], fanned out over w in chunks.
                 {
                     let basis = &self.basis;
                     let proj = &self.proj;
@@ -374,7 +374,7 @@ impl KrylovWorkspace {
     /// Allocation-free ETD step of `dy/dt = A·y + b` with `b` constant over
     /// the step: `y ← exp(hA)·y + h·φ₁(hA)·b`, written into `out` (`n`).
     ///
-    /// Uses the augmented-matrix identity (see [`etd_step`]) — the Krylov
+    /// Uses the augmented-matrix identity (see [`etd_step`]), the Krylov
     /// projection runs on the `(n+1)`-dimensional augmented system, reusing
     /// this workspace throughout. `max_dim` / `tol` cap and adaptively
     /// truncate the Krylov subspace exactly as in [`expmv_into`](Self::expmv_into).
@@ -420,7 +420,7 @@ impl KrylovWorkspace {
 ///
 /// `matvec` computes `A·x`. `m` is the Krylov dimension; Arnoldi stops early
 /// on a lucky breakdown. Allocating wrapper around
-/// [`KrylovWorkspace::expmv_into`] — reuse a [`KrylovWorkspace`] directly to
+/// [`KrylovWorkspace::expmv_into`], reuse a [`KrylovWorkspace`] directly to
 /// step without allocating.
 pub fn expmv<F>(matvec: F, v: &[Accum], t: Accum, m: usize) -> Vec<Accum>
 where
@@ -440,7 +440,7 @@ where
 ///
 /// Uses the augmented-matrix identity
 /// `exp(h·[[A, b],[0, 0]])·[y; 1] = [exp(hA)y + h·φ₁(hA)b ; 1]`, so the
-/// Krylov `expmv` handles the φ-function with no extra machinery — the
+/// Krylov `expmv` handles the φ-function with no extra machinery, the
 /// homogeneous part is exact at any `h`.
 pub fn etd_step<F>(matvec: F, y: &[Accum], b: &[Accum], h: Accum, m: usize) -> Vec<Accum>
 where
@@ -467,8 +467,8 @@ where
 /// **linear** across the step from `b0 = b(tₙ)` to `b1 = b(tₙ+h)`:
 /// `y ← exp(hA)y + h·φ₁(hA)·b0 + h²·φ₂(hA)·d`,  `d = (b1-b0)/h`.
 ///
-/// Uses a two-row augmentation — `exp(h·[[A, d, b0],[0,0,1],[0,0,0]])` applied
-/// to `[y; 0; 1]` — so the Krylov `expmv` produces both φ-functions with no
+/// Uses a two-row augmentation, `exp(h·[[A, d, b0],[0,0,1],[0,0,0]])` applied
+/// to `[y; 0; 1]`, so the Krylov `expmv` produces both φ-functions with no
 /// extra machinery. Exact when `b` is linear; second-order otherwise.
 pub fn etd_step2<F>(
     matvec: F,
@@ -743,7 +743,7 @@ mod tests {
             |x, ax| ax.copy_from_slice(&op.apply(x)),
             &v, t, 80, 1e-9, &mut got,
         );
-        assert!(dim < full, "no early stop — adaptive {dim}, fixed {full}");
+        assert!(dim < full, "no early stop, adaptive {dim}, fixed {full}");
 
         let err: f64 = got
             .iter()
@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn etd_step2_is_second_order_and_exact_for_linear_sources() {
         // A = 0: with no dynamics, etd_step2 integrates b(t) = b0 + d·t
-        // exactly — the trapezoidal value y0 + h·(b0+b1)/2.
+        // exactly, the trapezoidal value y0 + h·(b0+b1)/2.
         let zero = |x: &[f64]| vec![0.0; x.len()];
         let y0 = [1.0, -2.0];
         let (b0, b1) = ([0.5, 1.5], [2.5, -0.5]);
@@ -826,7 +826,7 @@ mod tests {
             .sqrt()
         };
         let rate = err(16) / err(32);
-        assert!(rate > 3.5, "etd_step2 not ~2nd order — error ratio {rate:.2}");
+        assert!(rate > 3.5, "etd_step2 not ~2nd order, error ratio {rate:.2}");
     }
 
     #[test]

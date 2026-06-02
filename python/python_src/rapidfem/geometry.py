@@ -30,7 +30,7 @@ registration time. After every boolean op, the geometry walks its
 registry and re-resolves each entity by matching (cog, bbox) against
 current gmsh entities. COG-only is ambiguous for coplanar overlapping
 faces (e.g. annulus + sub-region after embedding a plate); bbox
-disambiguates. ``fuse`` is supported but warned about — face merging
+disambiguates. ``fuse`` is supported but warned about, face merging
 shifts COGs, so names cannot survive.
 """
 
@@ -62,13 +62,13 @@ _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
 class _Entity:
     """A tracked gmsh entity with stable identity through boolean ops.
 
-    `tag` is the *current* gmsh tag — may be updated by Geometry._reresolve()
+    `tag` is the *current* gmsh tag, may be updated by Geometry._reresolve()
     after fragment/cut. The (cog, bbox, dim) triple is the stable identity used
     for re-resolution.
 
     ``material`` can be either a :class:`rapidfem.Material` instance (object-API
     path, set via ``g.box(..., material=...)``) or a string (legacy, set via
-    ``obj.material = "fr4"`` — used by rfic.Stack et al.).
+    ``obj.material = "fr4"``, used by rfic.Stack et al.).
     """
     dim: int
     tag: int
@@ -94,15 +94,15 @@ def _resolve_entity(target: _Entity) -> int | None:
     """Find a gmsh entity in `target.dim` matching the stored (bbox, cog).
 
     Strategy: bbox is the primary identity (stable through fragment, even when
-    sub-volumes are carved out — the outer bbox doesn't change). COG is a
+    sub-volumes are carved out, the outer bbox doesn't change). COG is a
     secondary discriminator with a tolerance that scales with the bbox extent.
     This handles two real failure modes:
       1. COG drift after carving a sub-volume out of a larger one (e.g. air
-         box minus substrate) — bbox stays put, COG shifts by mass redistribution.
-      2. Coplanar overlapping faces (annulus + sub-region after fragment) —
+         box minus substrate), bbox stays put, COG shifts by mass redistribution.
+      2. Coplanar overlapping faces (annulus + sub-region after fragment),
          both have the same COG, but different bboxes.
     """
-    # bbox extent diagonal — sets an "internal scale" for COG drift tolerance.
+    # bbox extent diagonal, sets an "internal scale" for COG drift tolerance.
     extent = math.sqrt(sum((target.bbox[3 + i] - target.bbox[i]) ** 2 for i in range(3)))
     cog_tol = max(_COG_TOL, 0.01 * extent)  # 1% of diagonal, or absolute floor
 
@@ -188,7 +188,7 @@ class EntityCollection:
         """keep only entities whose centroid is at the minimum along ``axis``
 
         For a convex primitive (box, cylinder) this usually returns a
-        single-face collection — exactly what you want for picking
+        single-face collection, exactly what you want for picking
         ports or specific walls.
 
 
@@ -243,7 +243,7 @@ class EntityCollection:
     def where(self, predicate: Callable[[tuple, tuple], bool]) -> "EntityCollection":
         """filter entities by a user-supplied predicate on centroid + bbox
 
-        The most flexible selector — escape hatch for selecting faces
+        The most flexible selector, escape hatch for selecting faces
         by region or orientation that don't reduce to a simple ``min``
         / ``max`` along an axis.
 
@@ -333,12 +333,12 @@ class EntityCollection:
         """axis-aligned faces lying on the outer hull of the gmsh model
 
         A face is "outer" iff one of its axes is degenerate (zero
-        extent — i.e. the face is planar and perpendicular to that
+        extent, i.e. the face is planar and perpendicular to that
         axis) AND the face's coordinate along that axis matches the
         model bounding-box extremum within tolerance.
 
-        Interior fragmented interfaces — which share the model's x/y
-        bbox extents but sit at some inner z — are correctly excluded.
+        Interior fragmented interfaces, which share the model's x/y
+        bbox extents but sit at some inner z, are correctly excluded.
         Useful for tagging the external walls of a PML enclosure where
         the inner air↔PML interface must stay free.
 
@@ -372,12 +372,12 @@ class EntityCollection:
         xmin, ymin, zmin, xmax, ymax, zmax = bb
         # gmsh's getBoundingBox(-1, -1) returns ±1e+106 on any axis whenever
         # the model contains a degenerate or unbounded entity (we hit this
-        # with the mom-cap 200-via cluster — fragment leaves slivers that
+        # with the mom-cap 200-via cluster, fragment leaves slivers that
         # gmsh's bbox accumulator treats as infinite). When that happens the
         # naive extremum-match below filters every face out and the caller
         # gets an empty collection, which torpedoes any `rf.ABC(*air.faces
         # .outer, ...)` wiring downstream. Fall back to the union of every
-        # tracked entity's bbox — those are real getBoundingBox results for
+        # tracked entity's bbox, those are real getBoundingBox results for
         # specific entities so they don't carry the infinity.
         _UNBOUNDED = 1e10
         def _is_finite_bbox(b):
@@ -386,13 +386,13 @@ class EntityCollection:
             # gmsh.getBoundingBox(-1, -1) returns ±1e100 when the model has
             # degenerate entities (e.g. mom-cap's 200-via cluster leaves
             # fragment slivers gmsh treats as infinite). Substituting a
-            # global union over all tracked entities doesn't help either —
+            # global union over all tracked entities doesn't help either,
             # those same slivers carry the infinite bbox, AND non-sliver
             # volumes like substrate/oxide/air sometimes end up with
             # different post-fragment footprints from each other.
             # Best fallback: pick extremes from THIS collection's faces
             # only. For `air.faces.outer`, that means we compare air's
-            # outer faces against the bbox of air alone — exactly what the
+            # outer faces against the bbox of air alone, exactly what the
             # caller intuitively expects.
             xs0, ys0, zs0, xs1, ys1, zs1 = (
                 math.inf, math.inf, math.inf, -math.inf, -math.inf, -math.inf)
@@ -477,7 +477,7 @@ class GeoObject:
         the object-API path attaches physics directly and does not
         require names
     material : rapidfem.Material or str or None
-        volume material — a :class:`Material` instance under the new
+        volume material, a :class:`Material` instance under the new
         object API, or a string under the legacy ``rfic.Stack`` path
     maxh : float or None
         per-entity mesh size override in metres
@@ -657,20 +657,20 @@ class Geometry:
         # Working scale: gmsh internally works in (user_meters / scale) units.
         # Default scale=1.0 means gmsh sees meters directly. Set scale=1e-6
         # for µm-scale RFIC geometries so a 1 µm feature becomes 1.0 in gmsh
-        # units — way above gmsh's default 1e-7 tolerance, so booleans and
+        # units, way above gmsh's default 1e-7 tolerance, so booleans and
         # meshing on dense layouts (interleaved combs, via clusters, …) stay
         # robust. Just before meshing every entity is dilated back to user
         # units so the resulting mesh nodes land at the original meter
         # coordinates the FEM solver expects.
         self._scale = float(scale)
-        # Default tolerance is 1e-7 m — comparable to a µm feature, which
+        # Default tolerance is 1e-7 m, comparable to a µm feature, which
         # makes boolean ops/mesh struggle at RFIC scale. Drop two orders so
         # the tolerance lives well below any feature the FEM cares about.
         gmsh.option.setNumber("Geometry.Tolerance", 1e-9)
         gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-9)
         # Single-threaded OCC boolean operators. The multi-threaded path
         # intermittently deadlocks on geometrically dense models (the RFIC
-        # layouts with many fragmented conductors) — a known OpenCASCADE
+        # layouts with many fragmented conductors), a known OpenCASCADE
         # flakiness; the booleans are not the meshing bottleneck anyway.
         gmsh.option.setNumber("Geometry.OCCParallel", 0)
         gmsh.model.add(name)
@@ -887,7 +887,7 @@ class Geometry:
         # Drop duplicated last point (gdstk includes it sometimes)
         if np.allclose(pts[0], pts[-1]):
             pts = pts[:-1]
-        # Drop adjacent coincident vertices — gdstk boolean unions can leave
+        # Drop adjacent coincident vertices, gdstk boolean unions can leave
         # them at shared corners and they'd collapse OCC line endpoints into a
         # broken loop. Keep one of every coincident-pair (within ~1nm).
         tol = 1e-9
@@ -958,7 +958,7 @@ class Geometry:
             maxh: float | None = None) -> GeoObject:
         """add an axis-aligned box primitive
 
-        The workhorse volume primitive — used for substrates, air
+        The workhorse volume primitive, used for substrates, air
         regions, waveguide cavities, and PML slabs. The returned
         :class:`GeoObject` has 6 ``.faces`` and 12 ``.edges`` selectable
         via :class:`EntityCollection`.
@@ -1192,7 +1192,7 @@ class Geometry:
                  maxh: float | None = None) -> GeoObject:
         """add a thin rectangular plate in the xy-plane
 
-        2-D primitive — used for thin conductors like patch antennas,
+        2-D primitive, used for thin conductors like patch antennas,
         microstrip traces, and lumped-port footprints. The returned
         object carries dim = 2 and a single ``.faces`` selector that
         points at itself.
@@ -1312,7 +1312,7 @@ class Geometry:
         ----
         gmsh OCC has no direct arbitrary-rectangle API; we build a
         four-vertex wire and plane surface internally. The four edge
-        vectors ``width`` and ``height`` should be orthogonal — if
+        vectors ``width`` and ``height`` should be orthogonal, if
         they are not, you get a planar parallelogram, not a rectangle.
 
 
@@ -1368,7 +1368,7 @@ class Geometry:
                 maxh: float | None = None) -> GeoObject:
         """add a planar polygon face
 
-        2-D primitive for arbitrary outlines — combine with
+        2-D primitive for arbitrary outlines, combine with
         :meth:`extrude` for a non-axis-aligned trace, :meth:`revolve`
         for an axisymmetric solid, or :meth:`loft` to bridge two
         profiles into a horn-style frustum.
@@ -1377,8 +1377,8 @@ class Geometry:
         Note
         ----
         2-tuple vertices are placed in the xy-plane at ``z = 0`` plus
-        the ``position`` offset; 3-tuple vertices must all be coplanar
-        — gmsh OCC errors on non-planar input.
+        the ``position`` offset; 3-tuple vertices must all be coplanar,
+        gmsh OCC errors on non-planar input.
 
 
         Example
@@ -1468,7 +1468,7 @@ class Geometry:
              maxh: float | None = None) -> GeoObject:
         """add a circular face with an arbitrary normal
 
-        Smooth NURBS circle (gmsh OCC ``addDisk``) — meshes into curved
+        Smooth NURBS circle (gmsh OCC ``addDisk``), meshes into curved
         triangles when ``MeshSizeFromCurvature`` is active. Pair with
         :meth:`extrude` for a circular post or :meth:`revolve` for a
         spherical cap.
@@ -1482,7 +1482,7 @@ class Geometry:
             disc centre (defaults to origin)
         axis : tuple[float, float, float]
             disc normal (defaults to +z, i.e. the xy-plane). Any direction
-            is allowed — e.g. ``(1, 0, 0)`` puts the disc in the yz-plane.
+            is allowed, e.g. ``(1, 0, 0)`` puts the disc in the yz-plane.
             Need not be unit length; gmsh normalises it.
         maxh : float, optional
             per-face mesh size override
@@ -1595,7 +1595,7 @@ class Geometry:
         face_a, face_b : GeoObject
             two 2-D faces to bridge
         ruled : bool
-            ``True`` (default) gives flat side surfaces — the right
+            ``True`` (default) gives flat side surfaces, the right
             choice for pyramidal / frustum-style horns; ``False`` fits
             a spline through the section profiles
         material : rapidfem.Material, optional
@@ -1698,7 +1698,7 @@ class Geometry:
 
         Splits each overlap into a shared face or volume that both
         operands keep. Meshing then produces a single conformal tet
-        mesh across every interface — exactly what the FEM solver
+        mesh across every interface, exactly what the FEM solver
         needs. Names and per-entity mesh sizes assigned on the
         operands survive.
 
@@ -1706,7 +1706,7 @@ class Geometry:
         Note
         ----
         Uses gmsh's ``occ.fragment`` ``out_map`` to update each input's
-        tag directly — robust against COG drift that can break naive
+        tag directly, robust against COG drift that can break naive
         name-tracking after boolean ops. Child faces and edges are
         re-resolved by ``(centroid, bbox)`` matching against the
         registry.
@@ -1747,7 +1747,7 @@ class Geometry:
 
         Note
         ----
-        Tools are **consumed** by ``cut`` — do not reference them after
+        Tools are **consumed** by ``cut``, do not reference them after
         the call. Use :meth:`fragment` instead if you need both
         operands to survive (e.g. for a substrate-in-air model).
 
@@ -1776,7 +1776,7 @@ class Geometry:
 
         When tools sit fully inside the target (e.g. iris-strips inside an air
         box), gmsh's out_map[0] for the target enumerates EVERY piece of the
-        partition that covers it — including the pieces each tool claims as
+        partition that covers it, including the pieces each tool claims as
         its own primary. Without de-duplication, those tool pieces would also
         appear as "extras" under the target with the wrong material, producing
         overlapping physical groups in gmsh and ambiguous material tagging in
@@ -1840,7 +1840,7 @@ class Geometry:
         gmsh dimtags survive the transform unchanged; only the
         geometric attributes (COG, bbox) of every tracked entity
         descending from ``obj`` are refreshed. Named selectors keep
-        working — the resolver sees the new positions.
+        working, the resolver sees the new positions.
 
 
         Example
@@ -1908,7 +1908,7 @@ class Geometry:
     def _refresh_descendants(self, obj: GeoObject) -> None:
         """Refresh COG/bbox for every tracked entity in ``obj``'s boundary
         tree (plus ``obj`` itself). In-place transforms keep dimtags but
-        move centroids — without this, named-face resolvers would miss.
+        move centroids, without this, named-face resolvers would miss.
 
         gmsh's ``getBoundary(recursive=True)`` descends straight to the
         vertices, so we walk one dimension at a time to collect faces and
@@ -1935,7 +1935,7 @@ class Geometry:
 
         Note
         ----
-        Tools are **consumed** by ``intersect`` — do not reference
+        Tools are **consumed** by ``intersect``, do not reference
         them after the call.
 
 
@@ -1974,7 +1974,7 @@ class Geometry:
         ----
         Face names on the operands are **not** preserved (faces merge
         and centroids shift). Top-level volume names survive via the
-        gmsh ``out_map``, but set face names AFTER ``fuse`` — or use
+        gmsh ``out_map``, but set face names AFTER ``fuse``, or use
         :meth:`fragment` if you need the interfaces themselves to
         survive as named entities.
 
@@ -2029,7 +2029,7 @@ class Geometry:
 
         Note
         ----
-        Idempotent — only writes ``maxh`` when it's currently ``None``,
+        Idempotent, only writes ``maxh`` when it's currently ``None``,
         so explicit per-volume sizes (set via ``g.box(..., maxh=...)``
         or ``obj.maxh = ...``) always win.
 
@@ -2046,7 +2046,7 @@ class Geometry:
         Parameters
         ----------
         base_maxh : float
-            reference size — volumes wider than this in all directions
+            reference size, volumes wider than this in all directions
             are left untouched
         resolution : int
             target number of tets across the thinnest dimension (3 is
@@ -2088,7 +2088,7 @@ class Geometry:
         On the next :meth:`mesh` call, gmsh's ``Distance`` + ``Threshold``
         background fields will enforce element size ``h`` within
         ``distance`` of any point in ``points``, smoothly relaxing back
-        to the global cap further out. Multiple calls are additive —
+        to the global cap further out. Multiple calls are additive,
         each request becomes its own field and merges with the others
         via ``Min``.
 
@@ -2168,7 +2168,7 @@ class Geometry:
           stored in ``self._physics_tags[id(physics_obj)]``.
         - Legacy string materials/names (``obj.material = "fr4"``,
           ``obj.name = "ground"``) continue to work for the GDS
-          import / ``rfic.Stack`` flow — they produce name-keyed groups
+          import / ``rfic.Stack`` flow, they produce name-keyed groups
           in the returned ``name_to_tag`` dict.
 
 
@@ -2205,14 +2205,14 @@ class Geometry:
             maxh = self._maxh
         if maxh is None:
             raise ValueError(
-                "no maxh set — pass it to Geometry(maxh=...) or g.mesh(maxh=...)"
+                "no maxh set, pass it to Geometry(maxh=...) or g.mesh(maxh=...)"
             )
         gmsh.model.occ.synchronize()
         # Dilate every OCC entity from the internal scaled coords back to
         # user units BEFORE any mesh setup. Threshold fields, mesh size
         # hints and the mesher itself then all see real-meter geometry; the
         # resulting .msh ends up in user units without needing a post-mesh
-        # transform. Idempotent — flag guards re-runs of mesh().
+        # transform. Idempotent, flag guards re-runs of mesh().
         if self._scale != 1.0 and not getattr(self, "_dilated", False):
             s = self._scale
             all_dt = gmsh.model.getEntities()
@@ -2284,15 +2284,15 @@ class Geometry:
         # Each refinement request becomes a cloud of OCC points with a
         # ``meshSize`` attribute, embedded into the volumes that
         # contain them, plus a Distance + Threshold field that smooths
-        # the transition out to ``distance``. Three pieces together —
-        # ``meshSize`` + ``embed`` + ``MeshSizeFromPoints=1`` — are
+        # the transition out to ``distance``. Three pieces together,
+        # ``meshSize`` + ``embed`` + ``MeshSizeFromPoints=1``, are
         # required to get HXT to actually honour the local size; the
         # field alone is too soft (HXT-Delaunay treats it as a hint,
         # not a constraint). Empirically: bare-field gives ~0%
         # refinement; full recipe gives +200% local tets.
         refinement_field_ids: list[int] = []
         refinement_has_embed = False
-        # Cache the volume list once — typically a handful, and
+        # Cache the volume list once, typically a handful, and
         # ``isInside`` is cheap. After-fragment we have the final
         # volume set.
         post_frag_vols = [t for d, t in gmsh.model.getEntities(dim=3)]
@@ -2307,7 +2307,7 @@ class Geometry:
             tags: list[int] = []
             for p in pts:
                 # ``meshSize`` on the OCC point ties the local size to
-                # the point — picked up when MeshSizeFromPoints=1.
+                # the point, picked up when MeshSizeFromPoints=1.
                 tag = gmsh.model.occ.addPoint(
                     self._s(float(p[0])), self._s(float(p[1])),
                     self._s(float(p[2])),
@@ -2318,7 +2318,7 @@ class Geometry:
                 continue
             gmsh.model.occ.synchronize()
             # Dilate the newly-added points if the geometry was dilated
-            # earlier (scale != 1) — keep them in user units.
+            # earlier (scale != 1), keep them in user units.
             if self._scale != 1.0 and getattr(self, "_dilated", False):
                 s = self._scale
                 gmsh.model.occ.dilate(
@@ -2380,14 +2380,14 @@ class Geometry:
             # sizes. ``MeshSizeFromPoints`` stays ON when there are
             # refinement points so their ``meshSize`` attribute kicks
             # in (HXT-Delaunay needs both the field AND the per-point
-            # size to actually refine — field alone is too soft).
+            # size to actually refine, field alone is too soft).
             gmsh.option.setNumber(
                 "Mesh.MeshSizeFromPoints",
                 1 if refinement_has_embed else 0,
             )
             # Without ExtendFromBoundary, HXT-Delaunay treats the
             # background field as a soft hint and barely refines the
-            # interior — and lets neighbouring tets across an interface
+            # interior, and lets neighbouring tets across an interface
             # jump by an order of magnitude (e.g. 0.5 mm substrate next
             # to 10 mm air). With grading ON the boundary sizes propagate
             # smoothly inward, killing those extreme-size transitions at
@@ -2418,7 +2418,7 @@ class Geometry:
         self._material_tags = {}
         self._physics_tags = {}
         name_to_tag: dict[str, int] = {}
-        # Start physical-group tags well above every entity tag — the Rust
+        # Start physical-group tags well above every entity tag, the Rust
         # mesh loader (`src/mesh_io.rs::tris_for_tag`) keys tris by either
         # the entity's physical-group tag OR (fallback) the entity tag
         # itself when no group is assigned. Sharing the integer namespace
@@ -2426,7 +2426,7 @@ class Geometry:
         # and Port "9" picks up the unrelated entity's triangles.
         next_tag = 100_000
 
-        # Collect volume entities targeted by PML — they go into the PML
+        # Collect volume entities targeted by PML, they go into the PML
         # physical group (step 2) and must NOT also land in a material group,
         # otherwise the Rust solver sees them tagged twice and the PML's
         # coordinate stretch is overridden by the bulk material assignment.
@@ -2542,7 +2542,7 @@ class Geometry:
         # it scales across cores, and on curved bodies its tet population
         # carries fewer near-degenerate slivers than the serial Delaunay
         # (1) or Frontal (4). The original Delaunay default predates HXT
-        # in gmsh and is kept only as an escape hatch — pick the relevant
+        # in gmsh and is kept only as an escape hatch, pick the relevant
         # algorithm explicitly so the mesh is reproducible across users.
         algo_codes = {
             "hxt":      10,    # parallel Delaunay (recommended default)
@@ -2567,13 +2567,13 @@ class Geometry:
         # .msh so every downstream consumer sees the optimised mesh.
         #
         # On a Netgen crash the mesh state is poisoned (boundary-face
-        # physical groups silently lose elements — verified on the patch
+        # physical groups silently lose elements, verified on the patch
         # antenna's five-PML-slab + substrate + plate stack, where the
         # post-crash mesh kept its volume tets but dropped every port and
         # PEC triangle). A bare try/except is not enough; we re-generate
         # the mesh so downstream code sees a coherent mesh with port faces
         # intact. The trade is one extra ``mesh.generate(3)`` call and
-        # losing the slivers we'd have liked to remove — both acceptable.
+        # losing the slivers we'd have liked to remove, both acceptable.
         # Off entirely via ``optimize=False`` for benchmarking or
         # debugging a raw-mesher symptom.
         if optimize:

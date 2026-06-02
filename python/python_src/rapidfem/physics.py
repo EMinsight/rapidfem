@@ -93,7 +93,7 @@ class _Physics:
     pipeline:
 
     - ``_expected_dim``: 2 for face physics, 3 for volume physics
-    - ``_section``: ``"ports"``, ``"pec"``, or ``"pml"`` — tells the
+    - ``_section``: ``"ports"``, ``"pec"``, or ``"pml"``, tells the
       :class:`rapidfem.Problem` TOML assembler which block this object
       belongs to
 
@@ -105,7 +105,7 @@ class _Physics:
     The object registers itself with the target's :class:`Geometry` on
     ``__init__``; no further wiring step is required.
 
-    The physics object is purely declarative — it holds no state about
+    The physics object is purely declarative, it holds no state about
     the mesh. The geometry's :meth:`Geometry.mesh` step turns it into a
     gmsh physical group, and :class:`rapidfem.Problem` reads that group
     tag back when assembling the TOML config.
@@ -358,7 +358,7 @@ class CoaxPort(_Physics):
 
 
 class WavePort(_Physics):
-    """Numerically-solved wave port — 2-D mode eigensolve on the port face.
+    """Numerically-solved wave port, 2-D mode eigensolve on the port face.
 
     Computes the port's transverse mode profile by a 2-D eigensolve on
     the port-face triangulation, instead of assuming an analytic shape.
@@ -372,15 +372,15 @@ class WavePort(_Physics):
 
     Two solver paths, selected via ``mode_kind``:
 
-    - ``"auto"`` / ``"vector"`` / ``"hybrid"`` (default) — **full-vector
+    - ``"auto"`` / ``"vector"`` / ``"hybrid"`` (default), **full-vector
       hybrid** eigenproblem (mixed Nédélec-edge :math:`E_t` + Lagrange-
       nodal :math:`E_z`). Honours per-element :math:`\\varepsilon_r` so
       the inhomogeneous quasi-TEM mode of a microstrip-class line is
       captured directly. Pair with ``pec=`` to mark any internal PEC
       conductor (the trace) that bisects the cross-section. Dispersion
       uses :math:`\\beta(k_0) = n_{\\mathrm{eff}}(f_0) \\cdot k_0`
-      throughout the sweep — set ``f0`` near band centre.
-    - ``"te"`` / ``"tm"`` — **scalar Helmholtz** TE / TM modes on the
+      throughout the sweep, set ``f0`` near band centre.
+    - ``"te"`` / ``"tm"``, **scalar Helmholtz** TE / TM modes on the
       homogeneously filled hollow cross-section. Cutoff and dispersion
       come from the scalar :math:`k_c`; weak frequency dependence so
       ``f0`` choice barely matters for the mode shape.
@@ -407,7 +407,7 @@ class WavePort(_Physics):
         rf.WavePort(sub.faces.max(axis="y"), air.faces.max(axis="y"),
                     f0=10e9, mode_kind="auto", pec=[pec_trace])
 
-    Hollow-guide variant — dominant TE mode of an arbitrary cross-section:
+    Hollow-guide variant, dominant TE mode of an arbitrary cross-section:
 
     .. code-block:: python
 
@@ -417,7 +417,7 @@ class WavePort(_Physics):
     Parameters
     ----------
     targets : GeoObject or EntityCollection
-        port face(s) — multiple faces are merged into one cross-section
+        port face(s), multiple faces are merged into one cross-section
     mode_kind : str, optional
         ``"auto"`` / ``"vector"`` / ``"hybrid"`` (default) for the
         full-vector hybrid solve, ``"te"`` / ``"tm"`` for the scalar
@@ -426,8 +426,8 @@ class WavePort(_Physics):
         which mode to use, ordered by descending :math:`n_{\\mathrm{eff}}`
         (vector path) or ascending cutoff (scalar path). ``0`` = dominant.
     f0 : float
-        eigensolve operating frequency in Hz. Required for the FD backend
-        — the vector mode profile is computed once here and used across
+        eigensolve operating frequency in Hz. Required for the FD backend,
+        the vector mode profile is computed once here and used across
         the whole sweep.
     pec : iterable of :class:`PEC`, optional
         PEC physics objects whose nodes on the port face are marked as
@@ -437,7 +437,7 @@ class WavePort(_Physics):
     power : float
         incident power in watts (default ``1.0``)
     te : bool, optional
-        legacy backwards-compat flag — superseded by ``mode_kind``.
+        legacy backwards-compat flag, superseded by ``mode_kind``.
     """
 
     def __init__(self, *targets,
@@ -618,7 +618,7 @@ class PEC(_Physics):
     ----
     Multiple ``rf.PEC(...)`` calls in the same problem are aggregated
     into one TOML ``[pec]`` block when :class:`Problem` assembles the
-    config — so you can spread declarations across several lines for
+    config, so you can spread declarations across several lines for
     readability without worrying about runtime overhead.
 
 
@@ -644,7 +644,7 @@ class PEC(_Physics):
 
 
 class PMC(_Physics):
-    """Perfect magnetic conductor — symmetry boundary.
+    """Perfect magnetic conductor, symmetry boundary.
 
     Dual to :class:`PEC`, enforcing
 
@@ -698,7 +698,7 @@ class ABC(_Physics):
     incidence (e.g. outer faces several wavelengths away from the
     source). (A second-order ABC was removed: its Bayliss-Turkel correction
     is indefinite and not unconditionally passive, and the passivity-safe
-    projection of it gave no real accuracy gain over first order — use
+    projection of it gave no real accuracy gain over first order, use
     :class:`PML` when first order reflects too much.)
 
 
@@ -803,7 +803,7 @@ class SurfaceImpedance(_Physics):
 class LumpedElement(_Physics):
     """Series chip R-L-C element on a 2-D footprint.
 
-    Embeds a series-RLC element across a named face — typically used
+    Embeds a series-RLC element across a named face, typically used
     for isolation resistors (Wilkinson dividers), shunt caps to ground,
     or matching networks. The element impedance is
 
@@ -895,7 +895,7 @@ class PML(_Physics):
     PML lives on a *volume* (dim=3), not a surface. Build it as an
     extra cuboid attached to the air region; assign a placeholder
     material (e.g. :class:`Air`) so the volume gets meshed, then
-    declare the PML BC on the volume — the BC's stretch overrides the
+    declare the PML BC on the volume, the BC's stretch overrides the
     bulk permittivity for the absorption profile.
 
     For a closed enclosure around an antenna use one PML slab per

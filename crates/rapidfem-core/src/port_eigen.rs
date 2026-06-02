@@ -12,21 +12,21 @@
 //! profile is analytic ([`crate::waveguide`]); for an *arbitrary*
 //! cross-section (a ridged guide, an L-shaped duct, a microstrip or
 //! coplanar line) the profile has no closed form and is computed here by
-//! a 2D eigensolve on the port-face triangulation. Backend-agnostic —
+//! a 2D eigensolve on the port-face triangulation. Backend-agnostic,
 //! the time-domain and frequency-domain solvers share it.
 //!
 //! Two solvers, both on the extracted [`PortMesh2D`] cross-section:
 //!
-//! - [`solve_modes`] — the **scalar Helmholtz** eigenproblem
+//! - [`solve_modes`], the **scalar Helmholtz** eigenproblem
 //!   `∇_t² ψ + k_c² ψ = 0` (P1 nodal), giving the `TE`/`TM` modes and
 //!   cutoffs `k_c` of a *homogeneously filled* hollow guide. `TM` is
 //!   Dirichlet (`E_z = 0` on PEC), `TE` Neumann.
-//! - [`solve_vector_modes`] — the **full-vector hybrid** eigenproblem
+//! - [`solve_vector_modes`], the **full-vector hybrid** eigenproblem
 //!   (mixed Nédélec-edge `E_t` + Lagrange-nodal `E_z`, eigenvalue
 //!   `λ = β²/k0² = n_eff²`) with per-triangle `ε_r`, so it resolves the
 //!   quasi-TEM mode of an *inhomogeneous* (substrate + air) line. PEC
-//!   walls — the outer boundary and any internal conductor (a microstrip
-//!   trace, via [`PortMesh2D::on_pec`]) — impose `tangential E = 0`.
+//!   walls, the outer boundary and any internal conductor (a microstrip
+//!   trace, via [`PortMesh2D::on_pec`]), impose `tangential E = 0`.
 //!
 //! A solved mode becomes a [`NumericalMode`], which samples `(e_t, h_t)`
 //! at arbitrary points for the port machinery: the scalar path
@@ -45,7 +45,7 @@ pub struct PortMesh2D {
     pub nodes: Vec<[f64; 2]>,
     /// Triangles as triples of indices into `nodes`.
     pub tris: Vec<[usize; 3]>,
-    /// `true` for a node on the outer boundary of the cross-section —
+    /// `true` for a node on the outer boundary of the cross-section,
     /// a boundary edge is one used by exactly one triangle. These get
     /// the Dirichlet condition for `TM` modes.
     pub on_boundary: Vec<bool>,
@@ -246,7 +246,7 @@ pub struct PortEigenmode {
 pub enum ModeKind {
     /// `TM`: `E_z = 0` (Dirichlet) on the PEC boundary.
     Tm,
-    /// `TE`: `∂H_z/∂n = 0` (natural Neumann) — no constraint applied.
+    /// `TE`: `∂H_z/∂n = 0` (natural Neumann), no constraint applied.
     Te,
 }
 
@@ -257,7 +257,7 @@ pub enum ModeKind {
 /// `TM` modes pin the boundary nodes to zero (Dirichlet); `TE` modes
 /// leave them free. The generalized problem is reduced to the symmetric
 /// standard problem `B φ = k_c² φ` with `B = D^{-1/2} S D^{-1/2}` and
-/// `D = diag(m)`, then `ψ = D^{-1/2} φ`. Dense — intended for the modest
+/// `D = diag(m)`, then `ψ = D^{-1/2} φ`. Dense, intended for the modest
 /// node counts of a single port face.
 pub fn solve_modes(
     mesh: &PortMesh2D,
@@ -269,7 +269,7 @@ pub fn solve_modes(
 
     // PEC nodes (outer wall + any internal conductor) carry Dirichlet for
     // TM (E_z = 0) and Neumann for TE; an internal conductor still pins
-    // E_z, so it is constrained in both — but for the scalar TE Neumann
+    // E_z, so it is constrained in both, but for the scalar TE Neumann
     // problem only the internal conductor (not the outer wall) is pinned.
     let pec = |i: usize| {
         mesh.on_boundary[i] || mesh.on_pec.get(i).copied().unwrap_or(false)
@@ -328,7 +328,7 @@ pub fn solve_modes(
 }
 
 /// A solved numerical port mode, ready to be sampled as a transverse
-/// `(e_t, h_t)` profile at arbitrary points on the port face — the
+/// `(e_t, h_t)` profile at arbitrary points on the port face, the
 /// drop-in replacement for an analytic [`crate::waveguide::RectPort`]
 /// profile when the cross-section has no closed-form mode.
 ///
@@ -347,7 +347,7 @@ pub fn solve_modes(
 pub struct NumericalMode {
     mesh: PortMesh2D,
     /// Transverse electric field `E_t` at each cross-section node, in the
-    /// port-plane `(u, v)` components — the **scalar**-path profile
+    /// port-plane `(u, v)` components, the **scalar**-path profile
     /// (`from_scalar`); `e_profile` barycentric-interpolates it. Empty
     /// when the Ned-2 representation is used.
     e_uv_node: Vec<[f64; 2]>,
@@ -359,7 +359,7 @@ pub struct NumericalMode {
     /// is exact (modulo Galerkin error) rather than the `O(h)` lossy
     /// projection a Nédélec-1 / P1 hybrid would produce. `None` for scalar.
     ned2: Option<Ned2ModeData>,
-    /// Inverse peak `|E_t|` over the cross-section — the unit-peak
+    /// Inverse peak `|E_t|` over the cross-section, the unit-peak
     /// normalisation.
     inv_peak: f64,
     /// Inward normal `ŵ = û × v̂` (global), the mode propagation axis.
@@ -396,7 +396,7 @@ enum ImpedanceModel {
     Te { k_c: f64 },
     /// `TM`: `Z = √(1−(k_c/ω)²)`.
     Tm { k_c: f64 },
-    /// Flat `Z = z` — a quasi-TEM / hybrid vector mode, with `z = 1/n_eff`
+    /// Flat `Z = z`, a quasi-TEM / hybrid vector mode, with `z = 1/n_eff`
     /// (the TEM wave impedance `η√(μ/ε_eff)` in `η = 1` units).
     Flat { z: f64 },
 }
@@ -610,7 +610,7 @@ impl NumericalMode {
     }
 
     /// Transverse magnetic-field profile `h_t = ŵ × e_t` at a global
-    /// point — the inward-propagating partner of `e_t`. Global coords.
+    /// point, the inward-propagating partner of `e_t`. Global coords.
     pub fn h_profile(&self, x: [f64; 3]) -> [f64; 3] {
         cross3(self.w_hat, self.e_profile(x))
     }
@@ -625,16 +625,16 @@ pub struct VectorMode {
     /// Operating free-space wavenumber the solve was run at.
     pub k0: f64,
     /// Transverse electric field `E_t` at each cross-section node, in the
-    /// port-plane `(u, v)` components — recovered (area-averaged) from the
+    /// port-plane `(u, v)` components, recovered (area-averaged) from the
     /// edge-element solution. Convenience for inspection; the sharp profile
     /// uses the Ned-2 / face / P2 coefficient arrays directly.
     pub e_uv_node: Vec<[f64; 2]>,
-    /// Nédélec-2 second-kind edge solution — 2 coefficients per global
+    /// Nédélec-2 second-kind edge solution, 2 coefficients per global
     /// cross-section edge `[mode0, mode1]`. Mode 0 is "λ_a-weighted", mode
     /// 1 is "λ_b-weighted" where (a, b) is the edge's canonical endpoint
     /// ordering. Zero on PEC-constrained edges.
     pub e_edge_ned2: Vec<[f64; 2]>,
-    /// Nédélec-2 face (bubble) coefficients — 2 per triangle. These are
+    /// Nédélec-2 face (bubble) coefficients, 2 per triangle. These are
     /// interior degrees of freedom not shared with neighbours.
     pub e_face_ned2: Vec<[f64; 2]>,
     /// Longitudinal field `E_z` coefficients on the P2 vertex DOFs (one
@@ -656,7 +656,7 @@ struct TriEdges {
 }
 
 // =====================================================================
-// Nédélec-2 (second-kind) 2-D basis on a triangle — basis evaluators.
+// Nédélec-2 (second-kind) 2-D basis on a triangle, basis evaluators.
 //
 // Per-triangle local DOF layout (8 transverse + 6 P2-nodal for E_z = 14):
 //   [0..6]   = edge DOFs (3 edges x 2 modes per edge)
@@ -699,7 +699,7 @@ fn wedge2(a: [f64; 2], b: [f64; 2]) -> f64 {
 /// `W = λ_a∇λ_b − λ_b∇λ_a`,
 ///   mode 0 (`ne1`) = W,                 (orientation-odd → carries `sign`)
 ///   mode 1 (`ne2`) = (λ_a − λ_b)·W.     (orientation-even → no `sign`)
-/// `span{W, (λ_a−λ_b)W}` is the genuine second-kind Nédélec edge space — NOT
+/// `span{W, (λ_a−λ_b)W}` is the genuine second-kind Nédélec edge space, NOT
 /// `span{λ_a W, λ_b W}`, which is a different (wrong) space.
 #[inline]
 fn ned2_edge_basis(
@@ -841,7 +841,7 @@ fn p2_grad(dof: usize, g: &[[f64; 2]; 3], l: [f64; 3]) -> [f64; 2] {
     }
 }
 
-/// Strang's 7-point Gauss-Dunavant quadrature on the reference triangle —
+/// Strang's 7-point Gauss-Dunavant quadrature on the reference triangle,
 /// exact for polynomials up to degree 5. Each entry is `(weight, l0, l1, l2)`
 /// with weights summing to 1 (multiply integrand by triangle area to get the
 /// actual surface integral). Used by the Ned-2 + P2 element-matrix assembly.
@@ -892,7 +892,7 @@ fn build_edges(mesh: &PortMesh2D) -> (usize, Vec<TriEdges>, Vec<u32>) {
 /// effective index (most-confined first).
 ///
 /// `eps_r` is the per-triangle relative permittivity (length
-/// `mesh.tris.len()`) — an inhomogeneous fill (substrate + air), exactly
+/// `mesh.tris.len()`), an inhomogeneous fill (substrate + air), exactly
 /// what a microstrip-class line needs and what the scalar
 /// [`solve_modes`] cannot represent. `μ_r = 1`.
 ///
@@ -901,7 +901,7 @@ fn build_edges(mesh: &PortMesh2D) -> (usize, Vec<TriEdges>, Vec<u32>) {
 /// impose `tangential E = 0`: boundary edges and nodes are constrained
 /// out. The singular generalized problem `A x = λ B x` is solved by
 /// shift-invert near `σ` (just above the largest `ε_r`): eigenvalues `ν`
-/// of `(A − σB)⁻¹ B`, then `λ = σ + 1/ν`. Dense — sized for one face.
+/// of `(A − σB)⁻¹ B`, then `λ = σ + 1/ν`. Dense, sized for one face.
 pub fn solve_vector_modes(
     mesh: &PortMesh2D,
     eps_r: &[f64],
@@ -917,7 +917,7 @@ pub fn solve_vector_modes(
     let node_pec: Vec<bool> =
         (0..n_node).map(|i| mesh.on_boundary[i] || on_pec(i)).collect();
     // Edge is PEC if (a) an outer-boundary edge (used by one triangle), or
-    // (b) both endpoints lie on an INTERNAL conductor — the edge then runs
+    // (b) both endpoints lie on an INTERNAL conductor, the edge then runs
     // along the trace surface and its tangential E must vanish. The
     // internal rule uses `on_pec` (not `node_pec`) so two outer-boundary
     // nodes joined by an interior chord are not spuriously constrained.
@@ -965,10 +965,10 @@ pub fn solve_vector_modes(
 
     // DOF numbering for the Ned-2 + P2 hybrid eigenproblem.
     //
-    // Block 1 — transverse Et (Ned-2 second-kind, degree 2):
+    // Block 1, transverse Et (Ned-2 second-kind, degree 2):
     //   2 coefs per cross-section edge (PEC-constrained edges drop both)
     //   2 coefs per triangle (interior face bubbles, never PEC)
-    // Block 2 — longitudinal Ez (P2 Lagrange):
+    // Block 2, longitudinal Ez (P2 Lagrange):
     //   1 coef per cross-section node (PEC nodes drop)
     //   1 coef per edge midpoint (PEC edges drop)
     //
@@ -1091,7 +1091,7 @@ pub fn solve_vector_modes(
             }
         }
 
-        // Et–Et block: A[di,dj] += Att − k0²·Btt,  B[di,dj] += Dtt.
+        // Et-Et block: A[di,dj] += Att − k0²·Btt,  B[di,dj] += Dtt.
         for i in 0..8 {
             let di = dofs[i];
             if di == usize::MAX { continue; }
@@ -1119,7 +1119,7 @@ pub fn solve_vector_modes(
             }
         }
 
-        // Et–Ez cross blocks in B (symmetric):
+        // Et-Ez cross blocks in B (symmetric):
         //   B[Et_i, Ez_j] = Dzt^T[i,j] = ∫ φ_i · ∇N_j dA
         //   B[Ez_i, Et_j] = Dzt[i,j]   = ∫ ∇N_i · φ_j dA
         // (These are the same scalar integral, written in transposed slots.)
@@ -1141,7 +1141,7 @@ pub fn solve_vector_modes(
             }
         }
 
-        // Ez–Ez block: B[di,dj] += Dzz1 − k0²·Dzz2 with
+        // Ez-Ez block: B[di,dj] += Dzz1 − k0²·Dzz2 with
         //   Dzz1 = ∫ ∇N_i · ∇N_j dA           (P2 Laplacian)
         //   Dzz2 = ∫ ε_r · N_i · N_j dA       (P2 mass with ε_r)
         for i in 0..6 {
@@ -1174,13 +1174,13 @@ pub fn solve_vector_modes(
     // curl-free modes spread across n_eff² ∈ [ε_min, ε_max] (in a homogeneous
     // region they pile into one degenerate cluster at exactly ε_max). A DENSE
     // all-at-once eigensolve cannot separate that cluster from the genuine
-    // guided mode — the eigenvectors mix. EMerge instead uses a shift-invert
+    // guided mode, the eigenvectors mix. EMerge instead uses a shift-invert
     // ITERATIVE solve (scipy `eigs`) that resolves only the few isolated modes
     // nearest a shift σ, so the cluster contributes at most one representative
     // and the genuine mode converges cleanly. We replicate that with a dense
     // shift-invert ARNOLDI (Krylov dim ≪ ndof) on M = (A − σB)⁻¹B, swept over
     // σ across the band, then keep the curl-bearing modes (k_t² above floor)
-    // and return the fundamental (largest n_eff) — the curl-free spurious /
+    // and return the fundamental (largest n_eff), the curl-free spurious /
     // gradient modes are rejected by the transverse curl energy
     //   k_t² = ∫|∇×E_t|² dA / ∫|E_t|² dA.
     let eps_max = eps_r.iter().cloned().fold(1.0_f64, f64::max);
@@ -1192,8 +1192,8 @@ pub fn solve_vector_modes(
     // physical only when the fill is homogeneous AND ≥ 2 conductors support a
     // TEM wave (a stripline / coax). In that single case the curl-free mode is
     // the fundamental and must be kept; everywhere else a curl-free mode is a
-    // spurious plane-wave / gradient mode. (An inhomogeneous quasi-TEM line —
-    // microstrip — has a slightly curl-bearing fundamental BELOW ε_max, so the
+    // spurious plane-wave / gradient mode. (An inhomogeneous quasi-TEM line,
+    // microstrip, has a slightly curl-bearing fundamental BELOW ε_max, so the
     // curl filter still applies and correctly rejects the ε_max spurious.)
     let homogeneous = (eps_max - eps_min) < 1e-9 * eps_max;
     let allow_curl_free = tem_supported && homogeneous;
@@ -1368,7 +1368,7 @@ pub fn solve_vector_modes(
                     neff2_t, beta2, neff2, kt2
                 );
             }
-            // Reject curl-free spurious / gradient modes — UNLESS this is a
+            // Reject curl-free spurious / gradient modes, UNLESS this is a
             // homogeneous multi-conductor TEM line, whose curl-free
             // fundamental at n_eff² = ε_max is physical.
             if !allow_curl_free && kt2 < kt2_floor { continue; }
@@ -1413,7 +1413,7 @@ pub fn solve_vector_modes(
             }
 
             // Convenience nodal Et profile (area-weighted average of the
-            // Ned-2 evaluation at each triangle's corners) — kept for the
+            // Ned-2 evaluation at each triangle's corners), kept for the
             // diagnostics/inspection path used by some tests.
             let mut acc = vec![[0.0f64; 2]; n_node];
             let mut wsum = vec![0.0f64; n_node];
@@ -1594,7 +1594,7 @@ mod tests {
         // A 2×1 guide with a vertical PEC septum at x = 1 splits into two
         // 1×1 half-guides. The dominant mode's cutoff jumps from the open
         // guide's k_c = π/2 (width 2) to k_c = π (width 1). In the vector
-        // solver a PEC is `tangential E = 0` — applied to the internal
+        // solver a PEC is `tangential E = 0`, applied to the internal
         // septum edges + nodes. At k0 = 5 (above both cutoffs) the
         // effective index drops accordingly: n_eff² = 1 − (k_c/k0)² goes
         // from ≈ 0.901 (open) to ≈ 0.605 (septum). This is the clean
@@ -1627,7 +1627,7 @@ mod tests {
         );
         assert!(
             (neff2_sept - want_sept).abs() < 0.06,
-            "septum n_eff² = {neff2_sept:.3}, want {want_sept:.3} — \
+            "septum n_eff² = {neff2_sept:.3}, want {want_sept:.3}, \
              internal PEC not splitting the guide",
         );
         assert!(
@@ -1663,7 +1663,7 @@ mod tests {
         // Half-air (ε=1) / half-dielectric (ε=4) 2×1 guide: the dominant
         // mode's effective index must lie strictly between the all-air and
         // all-dielectric results (a partially-filled guide's n_eff is
-        // bracketed by its homogeneous limits) — the qualitative signature
+        // bracketed by its homogeneous limits), the qualitative signature
         // of a correct inhomogeneous (microstrip-class) hybrid solve.
         let (nodes, tris) = rect_mesh(2.0, 1.0, 20, 10);
         let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
@@ -1725,12 +1725,12 @@ mod tests {
     fn microstrip_quasi_tem_natural_scale() {
         // Dimensionless microstrip-like cross-section: width 2, height 1.
         // Substrate band y < 0.1 with eps=3.55, air above with eps=1.
-        // Trace as internal-PEC line at y=0.1, x in [0.9, 1.1]. k0=3 — well
+        // Trace as internal-PEC line at y=0.1, x in [0.9, 1.1]. k0=3, well
         // below the homogeneous TE10 cutoff (k_c = pi/2 = 1.571), so the
         // ONLY propagating mode is the conductor-supported quasi-TEM.
         //
         // The Ned-2 + P2 element is second-order, so a 20×10 mesh resolves the
-        // quasi-TEM mode as well as the old Whitney/P1 path did on 60×40 — and
+        // quasi-TEM mode as well as the old Whitney/P1 path did on 60×40, and
         // keeps the DENSE eigensolve tractable (~2.9k DOF). Fine production
         // port faces need the sparse shift-invert path (Stage B); the dense
         // solver here is O(ndof³) and would blow up past a few thousand DOF.

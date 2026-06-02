@@ -37,7 +37,7 @@ use std::sync::Mutex;
 ///
 /// `field` holds `3·Np` values (`field[node*3 + comp]`); the result has the
 /// same layout and contains `∇×field` sampled at the element nodes. This is
-/// the allocating wrapper around [`element_curl_into`] — the hot path uses
+/// the allocating wrapper around [`element_curl_into`], the hot path uses
 /// the scratch-buffer form.
 pub fn element_curl(
     re: &ReferenceElement,
@@ -52,7 +52,7 @@ pub fn element_curl(
     out
 }
 
-/// Physical curl, writing into caller-provided buffers — no allocation.
+/// Physical curl, writing into caller-provided buffers, no allocation.
 ///
 /// `out` (`3·Np`) receives `∇×field`; `rd` (`3·Np`) and `pd` (`9·Np`) are
 /// scratch. `rd[k·n+i]` holds the `ξ_k` reference derivative; `pd[(p·3+c)·n+i]`
@@ -135,7 +135,7 @@ pub(crate) struct FaceInfo {
     pub(crate) port: usize,
 }
 
-/// A port — a set of mesh boundary faces carrying a waveguide mode.
+/// A port, a set of mesh boundary faces carrying a waveguide mode.
 ///
 /// Identified by the mesh triangle indices on the port plane (a gmsh face
 /// tag resolves to exactly such a set via `Mesh::ftag_to_tri`). With
@@ -151,7 +151,7 @@ pub struct PortSpec {
 }
 
 impl PortSpec {
-    /// Build a waveguide port from a gmsh face tag — collecting the port
+    /// Build a waveguide port from a gmsh face tag, collecting the port
     /// triangles and fitting the rectangular-waveguide `TE_mn` mode to the
     /// face.
     ///
@@ -347,16 +347,16 @@ impl PortSpec {
         Some(PortSpec { tris, mode: Some(PortMode::Coax(coax)) })
     }
 
-    /// Build a numerically-solved **wave port** from a gmsh face tag — a
+    /// Build a numerically-solved **wave port** from a gmsh face tag, a
     /// 2D cross-section eigensolve on the port face produces the mode
     /// profile, for cross-sections with no closed-form mode.
     ///
     /// Two solve paths, chosen by `k0`:
-    /// - `k0 <= 0`: the scalar Helmholtz `TE`/`TM` solve — a
+    /// - `k0 <= 0`: the scalar Helmholtz `TE`/`TM` solve, a
     ///   *homogeneously filled* hollow guide of arbitrary cross-section
     ///   (ridged, circular, L-shaped). `te` picks `TE`/`TM`.
     /// - `k0 > 0`: the full-vector hybrid solve at operating wavenumber
-    ///   `k0` (in 1/mesh-length), with per-element `ε_r` — the
+    ///   `k0` (in 1/mesh-length), with per-element `ε_r`, the
     ///   *inhomogeneous* (substrate + air) quasi-TEM mode of a
     ///   microstrip-class line. `eps_per_tet` supplies the relative
     ///   permittivity of every mesh tet (vacuum = 1 where absent); each
@@ -380,7 +380,7 @@ impl PortSpec {
             return None;
         }
         // Inward normal of a representative face triangle (toward the
-        // adjacent tet centroid) — same construction as the coax port.
+        // adjacent tet centroid), same construction as the coax port.
         let t0 = tris[0];
         let [v0, v1, v2] = mesh.tris[t0];
         let (p0, p1, p2) = (
@@ -451,7 +451,7 @@ impl PortSpec {
         Some(PortSpec { tris, mode: Some(PortMode::Numerical(nm)) })
     }
 
-    /// Build a Floquet plane-wave port from a gmsh face tag — collecting
+    /// Build a Floquet plane-wave port from a gmsh face tag, collecting
     /// the port triangles and fitting the rectangular unit-cell face.
     ///
     /// `polarisation` picks TE (`s`-pol) or TM (`p`-pol). The scan angles
@@ -464,7 +464,7 @@ impl PortSpec {
     /// triangles.
     ///
     /// The transverse Floquet phase factor `e^{-j·k_t·r_t}` is **dropped**
-    /// at oblique scan — see [`FloquetPort`]'s docstring. Normal incidence
+    /// at oblique scan, see [`FloquetPort`]'s docstring. Normal incidence
     /// is exact; oblique angles are a documented approximation matching
     /// the FD backend's convention.
     pub fn floquet_from_mesh_tag(
@@ -620,7 +620,7 @@ struct PortData {
     profiles: Vec<([Field; 3], [Field; 3])>,
 }
 
-/// Per-thread working buffers for [`MaxwellOperator::apply_element`] — the
+/// Per-thread working buffers for [`MaxwellOperator::apply_element`], the
 /// fixed-size scratch, allocated once and reused so the operator hot path
 /// performs no per-element heap allocation.
 struct Scratch {
@@ -630,7 +630,7 @@ struct Scratch {
     /// Curl results dE / dH (`3·Np` each).
     de: Vec<Field>,
     dh: Vec<Field>,
-    /// `element_curl_into` scratch — reference (`3·Np`) and physical (`9·Np`)
+    /// `element_curl_into` scratch, reference (`3·Np`) and physical (`9·Np`)
     /// derivatives.
     rd: Vec<Field>,
     pd: Vec<Field>,
@@ -648,7 +648,7 @@ impl Scratch {
         }
     }
 
-    /// A non-allocating placeholder — the value swapped in when a real
+    /// A non-allocating placeholder, the value swapped in when a real
     /// `Scratch` is returned to the pool.
     fn empty() -> Self {
         Scratch {
@@ -676,17 +676,17 @@ impl Drop for ScratchGuard<'_> {
     }
 }
 
-/// Per-job working buffers for the sparse assembly — reused across every
+/// Per-job working buffers for the sparse assembly, reused across every
 /// element a rayon worker folds, so `assemble_sparse`'s element loop
 /// allocates nothing beyond the geometric growth of the output accumulators.
 struct SparseFragment {
-    /// Global probe vector — one DOF set to 1 at a time.
+    /// Global probe vector, one DOF set to 1 at a time.
     probe: Vec<Field>,
     /// Element output block (`stride`).
     out: Vec<Field>,
     /// Operator scratch.
     scratch: Scratch,
-    /// `(local_row, global_col, value)` triples for one element — cleared
+    /// `(local_row, global_col, value)` triples for one element, cleared
     /// and refilled per element; pre-sized to the worst-case stencil count.
     entries: Vec<(usize, usize, Field)>,
     /// Accumulated CSR fragment for this job, in element order.
@@ -710,7 +710,7 @@ impl SparseFragment {
     }
 }
 
-/// Per-element electromagnetic material — diagonal relative permittivity /
+/// Per-element electromagnetic material, diagonal relative permittivity /
 /// permeability tensors and conductivity, in the solver's normalised units
 /// (`c = ε₀ = μ₀ = 1`). Diagonal tensors cover isotropic and uniaxial /
 /// biaxial media (and the uniaxial PML); fully off-diagonal tensors are a
@@ -723,14 +723,14 @@ pub struct ElemMaterial {
     pub mu: [Field; 3],
     /// Electric conductivity `σ` (Ohmic loss).
     pub sigma: Field,
-    /// Magnetic conductivity `σ*` — the magnetic-loss term. Setting
+    /// Magnetic conductivity `σ*`, the magnetic-loss term. Setting
     /// `σ*/μ = σ/ε` gives an impedance-matched absorbing layer (no reflection
     /// at normal incidence).
     pub sigma_m: Field,
 }
 
 impl ElemMaterial {
-    /// Vacuum — `ε = μ = 1`, no loss.
+    /// Vacuum, `ε = μ = 1`, no loss.
     pub const VACUUM: ElemMaterial = ElemMaterial {
         eps: [1.0; 3],
         mu: [1.0; 3],
@@ -755,7 +755,7 @@ impl ElemMaterial {
     }
 }
 
-/// Per-element Debye dispersive data — resolved at build time.
+/// Per-element Debye dispersive data, resolved at build time.
 ///
 /// A Debye element runs the auxiliary-differential-equation (ADE) update: its
 /// `eps` in [`ElemMaterial`] is `ε_∞`, and a per-node polarisation field `P`
@@ -771,7 +771,7 @@ struct DispersiveElem {
     a: Field,
     /// Source gain `g = (ε_s − ε_∞)/τ` of `Ṗ = a·P + g·E`.
     g: Field,
-    /// `1/ε_∞` — the augmented Ampere-law scaling on this element's E nodes.
+    /// `1/ε_∞`, the augmented Ampere-law scaling on this element's E nodes.
     inv_eps_inf: Field,
 }
 
@@ -779,7 +779,7 @@ struct DispersiveElem {
 /// mesh with PEC outer walls and per-element materials.
 ///
 /// State layout: the `[E,H]` block comes first, `y[(e*Np + node)*6 + comp]`
-/// with `comp` 0..3 = E, 3..6 = H — `6·Np·n_elem` entries, unchanged from the
+/// with `comp` 0..3 = E, 3..6 = H, `6·Np·n_elem` entries, unchanged from the
 /// non-dispersive operator. When Debye dispersive materials are present an
 /// auxiliary-polarisation block is APPENDED: `3·Np` entries per Debye element,
 /// `P[base + node*3 + comp]`. With no dispersive material that block is empty
@@ -801,10 +801,10 @@ pub struct MaxwellOperator {
     pub(crate) inv_mu: Vec<[Field; 3]>,
     pub(crate) sigma_eps: Vec<[Field; 3]>,
     pub(crate) sigma_mu: Vec<[Field; 3]>,
-    /// Reusable per-thread scratch buffers — keeps `apply` allocation-free
+    /// Reusable per-thread scratch buffers, keeps `apply` allocation-free
     /// after the first call (see [`Scratch`]).
     scratch_pool: Mutex<Vec<Scratch>>,
-    /// Resolved port data — faces and waveguide mode per port.
+    /// Resolved port data, faces and waveguide mode per port.
     ports: Vec<PortData>,
     /// Per-Debye-element ADE data, in P-block order (slot `s` owns the P
     /// segment `[(6*Np*n_elem) + s*3*Np .. + 3*Np]`). Empty for a
@@ -1098,7 +1098,7 @@ impl MaxwellOperator {
     /// Build the operator with per-element materials, waveguide ports and an
     /// optional list of Debye dispersive elements.
     ///
-    /// `dispersive` carries `(element_index, DebyeMaterial)` pairs — each
+    /// `dispersive` carries `(element_index, DebyeMaterial)` pairs, each
     /// listed element runs the auxiliary-polarisation ADE, and its
     /// `materials[element]` entry must already carry `ε = ε_∞` (the
     /// high-frequency permittivity) so the static curl term and the dispersive
@@ -1284,7 +1284,7 @@ impl MaxwellOperator {
                 ]
             })
             .collect();
-        // Resolve per-port data — collect each port's boundary faces.
+        // Resolve per-port data, collect each port's boundary faces.
         let mut port_data: Vec<PortData> = ports
             .iter()
             .map(|spec| PortData {
@@ -1367,7 +1367,7 @@ impl MaxwellOperator {
             + 3 * self.re.n_nodes * self.disp.len()
     }
 
-    /// Length of the leading `[E,H]` block, `6·Np·n_elem` — the offset at
+    /// Length of the leading `[E,H]` block, `6·Np·n_elem`, the offset at
     /// which the appended polarisation block begins.
     fn eh_len(&self) -> usize {
         6 * self.re.n_nodes * self.n_elem
@@ -1379,7 +1379,7 @@ impl MaxwellOperator {
     }
 
     /// Global DOF index for a field component at the mesh node nearest
-    /// `point` — the hook for a soft source or a field probe.
+    /// `point`, the hook for a soft source or a field probe.
     /// `field`: 0 = E, 1 = H. `comp`: 0 = x, 1 = y, 2 = z.
     pub fn nearest_node_dof(
         &self,
@@ -1404,7 +1404,7 @@ impl MaxwellOperator {
         best
     }
 
-    /// Physical coordinates of every DG node — `n_elem·Np` points in state
+    /// Physical coordinates of every DG node, `n_elem·Np` points in state
     /// order, `point[e*Np + node]`. The hook for a field export.
     pub fn node_coords(&self) -> Vec<[Field; 3]> {
         let np = self.re.n_nodes;
@@ -1418,7 +1418,7 @@ impl MaxwellOperator {
     }
 
     /// The four reference-node local indices at the tet corners, ordered
-    /// `(0,0,0), (1,0,0), (0,1,0), (0,0,1)` — the connectivity hook for a
+    /// `(0,0,0), (1,0,0), (0,1,0), (0,0,1)`, the connectivity hook for a
     /// linear-tetrahedron VTK export.
     pub fn corner_local_nodes(&self) -> [usize; 4] {
         let corners = [
@@ -1456,7 +1456,7 @@ impl MaxwellOperator {
 
     /// `true` if port `port_idx` carries a waveguide mode (rectangular,
     /// coaxial or Floquet). A port with no mode is a pure characteristic
-    /// absorbing boundary (ABC), not an input / output channel — port
+    /// absorbing boundary (ABC), not an input / output channel, port
     /// inspection and S-parameter extraction routines should skip those.
     /// Number of resolved `(element, local_face)` boundary-face pairs
     /// for port `port_idx`. For a port plate on a *domain boundary*
@@ -1505,7 +1505,7 @@ impl MaxwellOperator {
     ///
     /// The port flux uses the ghost state `(E⁺, H⁺) = (E_inc, H_inc)`; its
     /// `(E⁻, H⁻)` part is already the absorbing operator `A`, and the
-    /// incident-field part is this rank-1 source — the lift of
+    /// incident-field part is this rank-1 source, the lift of
     /// `(n̂×h_t − n̂×(n̂×e_t))` (electric) and `(−n̂×e_t − n̂×(n̂×h_t))`
     /// (magnetic) over the port faces, with the per-element material
     /// scaling applied.
@@ -1516,7 +1516,7 @@ impl MaxwellOperator {
         let mut b = vec![0.0; self.n_dof()];
         let pd = &self.ports[port_idx];
         if pd.mode.is_none() {
-            return b; // absorbing-only port — nothing to inject
+            return b; // absorbing-only port, nothing to inject
         }
         for (face_idx, &(e, f)) in pd.faces.iter().enumerate() {
             let fi = &self.faces[e * 4 + f];
@@ -1554,14 +1554,14 @@ impl MaxwellOperator {
     }
 
     /// Modal field projections `(P_e, P_h)` at port `port_idx` for the
-    /// current state `y` — the port-face E and H surface-integral-projected
+    /// current state `y`, the port-face E and H surface-integral-projected
     /// onto the mode's transverse profile.
     ///
     /// Both propagation directions share the transverse-E profile but
     /// carry transverse H scaled by `±1/Z` (the modal impedance), so
     /// `E_t = e_t·(A+B)` and `H_t = (h_t/Z)·(A−B)`. Hence `P_e = A+B` and
     /// `Z·P_h = A−B`; the forward/backward split `A,B = (P_e ± Z·P_h)/2`
-    /// is done per frequency since `Z` is dispersive — feed the recorded
+    /// is done per frequency since `Z` is dispersive, feed the recorded
     /// `(P_e, P_h)` time series through a transform first.
     pub fn port_modal_projections(
         &self,
@@ -1604,7 +1604,7 @@ impl MaxwellOperator {
         dy
     }
 
-    /// Evaluate `dy/dt = A·y` into the caller's buffer — the allocation-free
+    /// Evaluate `dy/dt = A·y` into the caller's buffer, the allocation-free
     /// hot path. The per-element work is independent (each element writes
     /// only its own slice of `dy`), so it runs in parallel across cores;
     /// every worker reuses a pooled [`Scratch`], so after the first call
@@ -1620,7 +1620,7 @@ impl MaxwellOperator {
         let stride = np * 6;
         let eh_len = self.eh_len();
         let (dy_eh, dy_p) = dy.split_at_mut(eh_len);
-        // The [E,H] block — per-element curl + flux + materials, plus the
+        // The [E,H] block, per-element curl + flux + materials, plus the
         // dispersive polarisation current on Debye elements (reads P from
         // y's appended block).
         //
@@ -1647,7 +1647,7 @@ impl MaxwellOperator {
                     }
                 },
             );
-        // The appended polarisation block — one local relaxation ODE per
+        // The appended polarisation block, one local relaxation ODE per
         // Debye element: dP = a*P + g*E. No spatial coupling; dealt out in
         // coarse contiguous runs of slots, like the [E,H] block above, so
         // neighbouring threads do not false-share the P-block lines.
@@ -1690,7 +1690,7 @@ impl MaxwellOperator {
         ScratchGuard { pool: &self.scratch_pool, scratch }
     }
 
-    /// Compute element `e`'s block of `dy = A·y` into `out` — its `Np·6`
+    /// Compute element `e`'s block of `dy = A·y` into `out`, its `Np·6`
     /// contiguous slice. `s` supplies the reusable per-thread working
     /// buffers, so this allocates nothing.
     fn apply_element(
@@ -1722,7 +1722,7 @@ impl MaxwellOperator {
             *v = -*v;
         }
 
-        // Surface term — central flux.
+        // Surface term, central flux.
         for f in 0..4 {
             let fi = &self.faces[e * 4 + f];
             let n = fi.normal;
@@ -1733,9 +1733,9 @@ impl MaxwellOperator {
                 let hm = [s.hh[vi * 3], s.hh[vi * 3 + 1], s.hh[vi * 3 + 2]];
                 // Jumps [E] = E⁻-E⁺, [H] = H⁻-H⁺.
                 let (je, jh) = if fi.port != usize::MAX {
-                    // Port boundary — characteristic flux against the
+                    // Port boundary, characteristic flux against the
                     // incident field. Phase 1: the incident field is zero,
-                    // so the jump is the interior trace itself — a
+                    // so the jump is the interior trace itself, a
                     // first-order absorbing boundary that lets outgoing
                     // waves leave.
                     (em, hm)
@@ -1774,7 +1774,7 @@ impl MaxwellOperator {
                 };
                 let nxjh = cross3(n, jh);
                 let nxje = cross3(n, je);
-                // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential — dissipative,
+                // Upwind penalty n̂×(n̂×[·]) = -[·]_tangential, dissipative,
                 // damps the discontinuous spurious modes. Port faces are
                 // always fully characteristic (the port absorbs outgoing
                 // waves regardless of the global central/upwind blend).
@@ -1808,7 +1808,7 @@ impl MaxwellOperator {
             }
         }
 
-        // Dispersive polarisation current — on a Debye element D = ε_∞·E + P,
+        // Dispersive polarisation current, on a Debye element D = ε_∞·E + P,
         // so Ampere's law carries an extra −Ṗ/ε_∞ term with Ṗ = a·P + g·E.
         // P lives in y's appended block; the E block above already used
         // ε = ε_∞ for this element, so this only subtracts the current.
@@ -1845,7 +1845,7 @@ impl MaxwellOperator {
     }
 
     /// Instantaneous electromagnetic field energy
-    /// `E_field = ½·∫(ε|E|² + μ|H|²) dV` — evaluated matrix-free.
+    /// `E_field = ½·∫(ε|E|² + μ|H|²) dV`, evaluated matrix-free.
     ///
     /// The DG energy-mass matrix `M̃` (see [`assemble_energy_mass`]) is
     /// block-diagonal per element, so `½·yᵀM̃y` is a plain per-element sum:
@@ -1853,7 +1853,7 @@ impl MaxwellOperator {
     /// mass block is `|det J_e|·M_ref`, weighted by `ε_c` on the E
     /// components and `μ_c` on the H components, and this routine accumulates
     /// the scalar quadratic form `½·Σ_e Σ_c w_c·(fᵀ·(scale·M_ref)·f)`
-    /// directly — `f` the element's per-component nodal vector.
+    /// directly, `f` the element's per-component nodal vector.
     ///
     /// Only the first `6·Np·n_elem` entries of `y` (the E,H state) are read;
     /// any auxiliary state appended after that is ignored, so this does NOT
@@ -1898,7 +1898,7 @@ impl MaxwellOperator {
         0.5 * half
     }
 
-    /// Dense block-diagonal energy mass `M̃` — the material-weighted field
+    /// Dense block-diagonal energy mass `M̃`, the material-weighted field
     /// energy `yᵀM̃y = ∫(ε|E|² + μ|H|²)`: per element a copy of
     /// `|det J_e|·M_ref`, scaled by `ε` on the E components and `μ` on the H
     /// components.
@@ -1926,7 +1926,7 @@ impl MaxwellOperator {
     }
 }
 
-/// Compressed-sparse-row matrix — the explicit state-space operator `A`.
+/// Compressed-sparse-row matrix, the explicit state-space operator `A`.
 pub struct CsrMatrix {
     /// Dimension.
     pub n: usize,
@@ -1959,8 +1959,8 @@ impl CsrMatrix {
 }
 
 impl MaxwellOperator {
-    /// Assemble the operator as an explicit sparse CSR matrix — the
-    /// state-space `A` — **without ever densifying**.
+    /// Assemble the operator as an explicit sparse CSR matrix, the
+    /// state-space `A`, **without ever densifying**.
     ///
     /// The DG operator couples each element only to itself and its (≤4) face
     /// neighbours, so row block `e` is found by probing just that small
@@ -1968,7 +1968,7 @@ impl MaxwellOperator {
     /// block. Element blocks are independent and assemble in parallel.
     /// Memory is `O(nnz)`, not `O(N²)`, so this scales to production meshes
     /// where [`assemble_dense`](Self::assemble_dense) cannot.
-    /// Sorted column-element stencil of row block `e` — itself plus every
+    /// Sorted column-element stencil of row block `e`, itself plus every
     /// distinct face neighbour. Returns the fixed `[usize; 5]` array and the
     /// number of entries used; never allocates.
     fn element_stencil(&self, e: usize) -> ([usize; 5], usize) {
@@ -1994,7 +1994,7 @@ impl MaxwellOperator {
         let eh_len = self.eh_len();
 
         // Each rayon worker folds a contiguous run of elements into one
-        // `SparseFragment`, reusing its buffers across every element — the
+        // `SparseFragment`, reusing its buffers across every element, the
         // element loop allocates nothing. `with_min_len` forces chunks
         // coarse enough for that reuse to pay off while still giving the
         // thread pool plenty of independent work. `fold` keeps the
@@ -2063,7 +2063,7 @@ impl MaxwellOperator {
                             }
                         }
                     }
-                    // Group by local row, columns ascending within a row —
+                    // Group by local row, columns ascending within a row,
                     // sorting on the full key needs no stable-sort scratch.
                     f.entries.sort_unstable_by_key(|&(il, j, _)| (il, j));
                     let mut cursor = 0;
@@ -2084,7 +2084,7 @@ impl MaxwellOperator {
             )
             .collect();
 
-        // Concatenate the per-job fragments — already in element order, so
+        // Concatenate the per-job fragments, already in element order, so
         // these are the leading `eh_len` rows of the CSR.
         let mut row_ptr = Vec::with_capacity(n + 1);
         let mut col_idx = Vec::new();
@@ -2100,7 +2100,7 @@ impl MaxwellOperator {
             values.extend_from_slice(&f.values);
         }
 
-        // The appended polarisation rows — one local ODE per Debye element,
+        // The appended polarisation rows, one local ODE per Debye element,
         // dP = a*P + g*E. Each P row carries exactly two entries: the
         // diagonal `a` (its own P DOF) and `g` (the matching E DOF). Columns
         // ascending: the E DOF (in the [E,H] block) precedes the P DOF.
@@ -2112,7 +2112,7 @@ impl MaxwellOperator {
                 for c in 0..3 {
                     let e_col = e_base + node * 6 + c;
                     let p_col = p_base + node * 3 + c;
-                    // g*E coupling, then a*P diagonal — ascending columns.
+                    // g*E coupling, then a*P diagonal, ascending columns.
                     col_idx.push(e_col);
                     values.push(d.g);
                     col_idx.push(p_col);
@@ -2300,7 +2300,7 @@ mod tests {
     #[test]
     fn field_energy_matches_dense_energy_mass() {
         // The matrix-free `field_energy` is exactly the quadratic form
-        // `½·yᵀM̃y` of the dense block-diagonal energy mass — proven here on
+        // `½·yᵀM̃y` of the dense block-diagonal energy mass, proven here on
         // a tiny heterogeneous box so the dense `N×N` matrix is affordable.
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
@@ -2351,7 +2351,7 @@ mod tests {
     #[test]
     fn conductivity_damps_at_the_analytic_rate() {
         // A uniform conductivity σ damps every mode by Re = -σ/(2ε) on top of
-        // the numerical (upwind) damping — isolated by differencing σ>0
+        // the numerical (upwind) damping, isolated by differencing σ>0
         // against σ=0.
         use crate::mesh_gen::structured_box;
         use faer::Mat;
@@ -2384,7 +2384,7 @@ mod tests {
 
     #[test]
     fn anisotropic_central_flux_conserves_energy() {
-        // Diagonal-anisotropic ε, μ — the central-flux operator still
+        // Diagonal-anisotropic ε, μ, the central-flux operator still
         // conserves the per-component-weighted material energy: M̃·A is skew.
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(1, 1, 1, 1.0, 1.0, 1.0);
@@ -2430,7 +2430,7 @@ mod tests {
     #[test]
     fn matched_absorber_damps_at_the_full_rate() {
         // An impedance-matched material (σ/ε = σ*/μ = ν) loses energy from
-        // both the E and H halves, so a mode decays at Re = -ν — twice the
+        // both the E and H halves, so a mode decays at Re = -ν, twice the
         // rate of an electric-only loss. This validates the magnetic-loss
         // term and the matched-absorber construction together.
         use crate::mesh_gen::structured_box;
@@ -2482,7 +2482,7 @@ mod tests {
         let eig = mat.eigenvalues().expect("eigenvalues");
 
         // Among the non-static modes (|Im| > 1), the physical fundamental is
-        // the least-damped — the largest (least-negative) real part.
+        // the least-damped, the largest (least-negative) real part.
         let want = std::f64::consts::PI * 2.0_f64.sqrt();
         let mut fundamental = (f64::NEG_INFINITY, 0.0_f64);
         for z in &eig {
@@ -2495,7 +2495,7 @@ mod tests {
         eprintln!(
             "DIAG cavity: fundamental Re={re:.5} |Im|={im:.5}  analytic π√2={want:.5}  rel.err={err:.4}"
         );
-        assert!(re < 0.0, "upwind flux must damp — fundamental Re = {re}");
+        assert!(re < 0.0, "upwind flux must damp, fundamental Re = {re}");
         assert!(
             err < 0.05,
             "fundamental |Im| = {im:.4}, analytic π√2 = {want:.4}, rel.err {err:.3}"
@@ -2504,7 +2504,7 @@ mod tests {
 
     #[test]
     fn cavity_eigenfrequency_on_irregular_mesh() {
-        // WP1.2: the cavity fundamental survives on a skewed, irregular mesh —
+        // WP1.2: the cavity fundamental survives on a skewed, irregular mesh,
         // the physics does not depend on mesh regularity, only the
         // discretisation error grows mildly.
         use crate::mesh_gen::structured_box_jittered;
@@ -2529,7 +2529,7 @@ mod tests {
         eprintln!(
             "DIAG irregular mesh: Re={re:.5} |Im|={im:.5} π√2={want:.5} err={err:.4}"
         );
-        assert!(re < 0.0, "upwind flux must damp — Re = {re}");
+        assert!(re < 0.0, "upwind flux must damp, Re = {re}");
         assert!(
             err < 0.08,
             "irregular-mesh fundamental |Im| = {im:.4}, π√2 = {want:.4}, rel.err {err:.3}"
@@ -2570,7 +2570,7 @@ mod tests {
         assert!(fine < 1e-3, "fine-mesh error {fine:.2e} too large");
         assert!(
             coarse / fine > 4.0,
-            "weak convergence — error ratio only {:.1}",
+            "weak convergence, error ratio only {:.1}",
             coarse / fine
         );
     }
@@ -2585,7 +2585,7 @@ mod tests {
         let op = MaxwellOperator::new(&mesh, 2, 1.0);
         let n = op.n_dof();
 
-        // Source: E_z at the cavity centre — which is a node, so exact.
+        // Source: E_z at the cavity centre, which is a node, so exact.
         let sdof = op.nearest_node_dof([0.5, 0.5, 0.5], 0, 2);
         assert!(sdof < n);
         let mut s = vec![0.0; n];
@@ -2632,7 +2632,7 @@ mod tests {
             .sqrt();
         let scale: f64 = mf.iter().map(|x| x * x).sum::<f64>().sqrt();
         assert!(err < 1e-10 * scale, "sparse vs matrix-free: err {err}");
-        // The DG operator couples only neighbouring elements — genuinely sparse.
+        // The DG operator couples only neighbouring elements, genuinely sparse.
         assert!(
             csr.nnz() < n * n / 4,
             "operator not sparse: nnz {} of {}",
@@ -2644,7 +2644,7 @@ mod tests {
     #[test]
     fn sparse_assembly_scales_without_densifying() {
         // WP6.2 gate: assemble `A` for a mesh whose dense form would need
-        // gigabytes — the element-wise probe path must stay O(nnz). Each row
+        // gigabytes, the element-wise probe path must stay O(nnz). Each row
         // can couple at most `5·stride` columns (self + 4 face neighbours),
         // so nnz grows linearly with N, not quadratically.
         use crate::mesh_gen::structured_box;
@@ -2653,7 +2653,7 @@ mod tests {
         let n = op.n_dof();
         let stride = 6 * 10; // 6 fields × Np(order 2) = 60
 
-        // The dense matrix would be n² f64 — assert it is genuinely out of
+        // The dense matrix would be n² f64, assert it is genuinely out of
         // reach, so this test actually exercises the non-densifying path.
         let dense_bytes = (n as u128).pow(2) * 8;
         assert!(
@@ -2720,7 +2720,7 @@ mod tests {
     #[test]
     fn port_face_drains_field_energy() {
         // WP1.1: a boundary face tagged as a port acts as a characteristic
-        // absorbing boundary — a divergence-free field disturbance
+        // absorbing boundary, a divergence-free field disturbance
         // radiates out through it, whereas the all-PEC channel keeps the
         // energy bounded.
         use crate::mesh_gen::structured_box;
@@ -2755,13 +2755,13 @@ mod tests {
         };
 
         let run = |ports: &[PortSpec]| -> f64 {
-            // Central flux — the all-PEC channel is then exactly
+            // Central flux, the all-PEC channel is then exactly
             // energy-conserving, so any drain is the port's doing.
             let op = MaxwellOperator::new_with_materials_ports(
                 &mesh, 2, 0.0, &vacuum, ports,
             );
             let n = op.n_dof();
-            // A smooth, z-only Eₓ bump — depends on z alone, so ∇·E = 0:
+            // A smooth, z-only Eₓ bump, depends on z alone, so ∇·E = 0:
             // it propagates as ±z travelling waves, no static residue.
             let coords = op.node_coords();
             let mut y = vec![0.0; n];
@@ -2779,16 +2779,16 @@ mod tests {
         let port = run(&[PortSpec { tris: port_tris, mode: None }]);
         // The all-PEC channel conserves energy exactly (central flux); the
         // port drains the majority of it. The residue is the test field's
-        // below-cutoff content — evanescent in a waveguide, so it cannot
-        // reach the port — not a flux defect; the quantitative reflection
+        // below-cutoff content, evanescent in a waveguide, so it cannot
+        // reach the port, not a flux defect; the quantitative reflection
         // is gated by the matched-line S₁₁ check (WP3.2).
         assert!(
             pec > 0.95,
-            "central-flux all-PEC channel must conserve energy — kept {pec:.3}"
+            "central-flux all-PEC channel must conserve energy, kept {pec:.3}"
         );
         assert!(
             port < 0.5,
-            "port face must drain the bulk of the energy — kept {port:.3}"
+            "port face must drain the bulk of the energy, kept {port:.3}"
         );
         assert!(
             pec - port > 0.3,
@@ -2799,7 +2799,7 @@ mod tests {
     #[test]
     fn port_operator_only_dissipates_energy() {
         // WP2.1: with a port the operator is no longer energy-conserving.
-        // The symmetric part of M̃A — i.e. M̃A + (M̃A)ᵀ — must be negative
+        // The symmetric part of M̃A, i.e. M̃A + (M̃A)ᵀ, must be negative
         // semidefinite: the port can only drain energy from the
         // homogeneous (unexcited) system, never inject it. The interior
         // central flux contributes a skew (zero-symmetric) part, so any
@@ -2819,7 +2819,7 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-        // Central flux — the interior is energy-conserving, only the port
+        // Central flux, the interior is energy-conserving, only the port
         // dissipates.
         let op = MaxwellOperator::new_with_materials_ports(
             &mesh, 2, 0.0, &vacuum, &[PortSpec { tris: port_tris, mode: None }],
@@ -2855,11 +2855,11 @@ mod tests {
             .fold(f64::INFINITY, f64::min);
         assert!(
             max_re < 1e-7 * scale,
-            "port operator gains energy — max eig(M̃A+AᵀM̃) = {max_re:.3e}"
+            "port operator gains energy, max eig(M̃A+AᵀM̃) = {max_re:.3e}"
         );
         assert!(
             min_re < -1e-3 * scale,
-            "port operator shows no dissipation — min eig = {min_re:.3e}"
+            "port operator shows no dissipation, min eig = {min_re:.3e}"
         );
     }
 
@@ -2966,7 +2966,7 @@ mod tests {
     fn port_extracts_the_incident_amplitude() {
         // WP3.1: driving a straight guide, the per-frequency forward/
         // backward split A,B = (P_e ± Z·P_h)/2 recovers an almost purely
-        // forward wave — |B|/|A| ≪ 1 on a uniform guide (before any far-end
+        // forward wave, |B|/|A| ≪ 1 on a uniform guide (before any far-end
         // reflection can return), confirming the modal extraction.
         use crate::mesh_gen::structured_box;
         use crate::propagator::etd_step;
@@ -3074,8 +3074,8 @@ mod tests {
     fn coax_port_carries_a_matched_tem_wave() {
         // WP-Coax: a coaxial TEM mode injected at a coax port travels down a
         // straight matched coaxial line, propagates cleanly, and the port is
-        // low-reflection. The TEM mode is dispersionless — it clocks exactly
-        // c — and the per-frequency forward/backward split A,B = (P_e±Z·P_h)/2
+        // low-reflection. The TEM mode is dispersionless, it clocks exactly
+        // c, and the per-frequency forward/backward split A,B = (P_e±Z·P_h)/2
         // recovers an almost purely forward wave (|B/A| ≪ 1) before any
         // far-end reflection can return. This mirrors `port_injects_a_mode_at
         // _the_group_velocity` / `port_extracts_the_incident_amplitude` and,
@@ -3085,7 +3085,7 @@ mod tests {
         // The coax TEM field `E ∝ ρ̂/ρ` is divergence-free in the transverse
         // plane, so it propagates as a free travelling wave at exactly c.
         // The four side walls are transparent characteristic boundaries
-        // (`mode = None` ports) — exactly as in the lumped-TEM test — so no
+        // (`mode = None` ports), exactly as in the lumped-TEM test, so no
         // hollow-guide dispersion is imposed and the dispersionless TEM
         // velocity is the genuine signal.
         use crate::mesh_gen::structured_box;
@@ -3115,7 +3115,7 @@ mod tests {
         assert!(!z0_tris.is_empty() && !zl_tris.is_empty());
         assert!(!x_lo.is_empty() && !y_lo.is_empty());
 
-        // The coax port on the z = 0 face — radial TEM field about the box
+        // The coax port on the z = 0 face, radial TEM field about the box
         // centre, inward normal +z. The annulus spans the box: an inner
         // radius clear of the singular axis, an outer radius inside the wall.
         let center = [a / 2.0, a / 2.0, 0.0];
@@ -3126,7 +3126,7 @@ mod tests {
             r_outer: 1.3,
         };
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-        // Central flux — the interior is energy-conserving, so any drain is
+        // Central flux, the interior is energy-conserving, so any drain is
         // the port's doing. The z = lz end and the four side walls are
         // transparent absorbing ports (no mode): the far-end carries no
         // reflection, and the side walls let the coax field exist as a
@@ -3149,7 +3149,7 @@ mod tests {
             ],
         );
         let n = op.n_dof();
-        // The coax port has no cutoff — the TEM mode reaches DC.
+        // The coax port has no cutoff, the TEM mode reaches DC.
         assert!(
             op.port_cutoff(0).abs() < 1e-12,
             "coax port must have zero cutoff"
@@ -3168,7 +3168,7 @@ mod tests {
             (-((t - t0) / tau).powi(2)).exp() * (omega0 * (t - t0)).sin()
         };
 
-        // Probes on the annulus mid-radius, two z stations apart — the TEM
+        // Probes on the annulus mid-radius, two z stations apart, the TEM
         // packet arrival times give the propagation speed.
         let r_mid = 0.5 * (coax.r_inner + coax.r_outer);
         let probe = |z: f64| {
@@ -3210,7 +3210,7 @@ mod tests {
             "injected TEM mode did not reach the probes: {peak1:.2e}, {peak2:.2e}"
         );
 
-        // The coax TEM wave is dispersionless — it travels at exactly c = 1.
+        // The coax TEM wave is dispersionless, it travels at exactly c = 1.
         let v = (zp2 - zp1) / (tpk2 - tpk1);
         let v_err = (v - 1.0).abs();
         eprintln!(
@@ -3221,7 +3221,7 @@ mod tests {
             "coax TEM packet speed {v:.3}, expected the dispersionless c = 1"
         );
 
-        // Per-frequency forward / backward split — the modal extraction
+        // Per-frequency forward / backward split, the modal extraction
         // returns a finite incident amplitude (the coax mode is genuinely
         // present in the propagated state) and the wave is predominantly
         // forward. The threshold is looser than the rectangular-waveguide
@@ -3243,7 +3243,7 @@ mod tests {
         for &omega in &[1.45 * PI, 1.6 * PI, 1.75 * PI] {
             let pe = dft(&fpe, omega);
             let ph = dft(&fph, omega);
-            // TEM impedance is flat Z = 1 — no per-frequency rescaling.
+            // TEM impedance is flat Z = 1, no per-frequency rescaling.
             let z = coax.te_impedance(omega);
             let amp =
                 (0.5 * (pe.0 + z * ph.0), 0.5 * (pe.1 + z * ph.1));
@@ -3258,7 +3258,7 @@ mod tests {
                 mag(bmp),
             );
             assert!(mag(amp) > 1e-3, "no incident amplitude at ω={omega}");
-            // Forward wave dominates — the backward component stays below
+            // Forward wave dominates, the backward component stays below
             // a fraction of the forward amplitude.
             assert!(
                 refl < 0.5,
@@ -3269,10 +3269,10 @@ mod tests {
 
     #[test]
     fn two_port_guide_s_parameters() {
-        // WP3.2: a matched straight two-port guide — S₁₁ ≈ 0, |S₂₁| ≈ 1,
+        // WP3.2: a matched straight two-port guide, S₁₁ ≈ 0, |S₂₁| ≈ 1,
         // energy |S₁₁|² + |S₂₁|² ≈ 1, and reciprocity |S₂₁| ≈ |S₁₂|. The
         // run stops before the (imperfectly absorbed) far-port reflection
-        // can return — the time window isolates the direct S-parameters.
+        // can return, the time window isolates the direct S-parameters.
         use crate::mesh_gen::structured_box;
         use crate::propagator::etd_step;
         use std::f64::consts::PI;
@@ -3415,7 +3415,7 @@ mod tests {
     #[test]
     fn non_dispersive_operator_has_the_unchanged_dof_count() {
         // Safety property: with no Debye material the operator is byte
-        // identical to before — n_dof is exactly 6*Np*n_elem and the P
+        // identical to before, n_dof is exactly 6*Np*n_elem and the P
         // block is empty.
         use crate::mesh_gen::structured_box;
         let mesh = structured_box(2, 2, 2, 1.0, 1.0, 1.0);
@@ -3466,7 +3466,7 @@ mod tests {
         let mat = DebyeMaterial { eps_inf: 2.5, eps_static: 7.0, tau: 0.3 };
         let mats =
             vec![ElemMaterial::isotropic(mat.eps_inf, 1.0, 0.0); n_elem];
-        // Make half the elements dispersive — exercise the mixed path.
+        // Make half the elements dispersive, exercise the mixed path.
         let disp: Vec<(usize, DebyeMaterial)> =
             (0..n_elem).step_by(2).map(|e| (e, mat)).collect();
         let op = MaxwellOperator::new_with_materials_ports_dispersive(
@@ -4011,7 +4011,7 @@ mod tests {
                 ],
             );
             let n = op.n_dof();
-            // Floquet ports are non-dispersive plane waves — zero cutoff.
+            // Floquet ports are non-dispersive plane waves, zero cutoff.
             assert!(op.port_cutoff(0).abs() < 1e-12);
             assert!(op.port_cutoff(1).abs() < 1e-12);
 
@@ -4063,7 +4063,7 @@ mod tests {
                 (re * dt, im * dt)
             };
             let cmag = |z: (f64, f64)| (z.0 * z.0 + z.1 * z.1).sqrt();
-            // Pick the carrier — well inside the resolved band.
+            // Pick the carrier, well inside the resolved band.
             let omega = 1.5 * PI;
             let pe_tx = dft(&tx_pe, omega);
             let ph_tx = dft(&tx_ph, omega);
@@ -4074,7 +4074,7 @@ mod tests {
             let a_tx = (0.5 * (pe_tx.0 + ph_tx.0), 0.5 * (pe_tx.1 + ph_tx.1));
             let b_tx_amp =
                 (0.5 * (pe_tx.0 - ph_tx.0), 0.5 * (pe_tx.1 - ph_tx.1));
-            // At the RX port "backward" is the wave outgoing through +z —
+            // At the RX port "backward" is the wave outgoing through +z,
             // i.e. the transmitted wave (the port's inward normal is −z).
             let b_rx =
                 (0.5 * (pe_rx.0 - ph_rx.0), 0.5 * (pe_rx.1 - ph_rx.1));
@@ -4113,7 +4113,7 @@ mod tests {
                 "{pol:?} transit delay {delay:.2}, expected ≈ 6.0 (lz)"
             );
             // The receive-port modal projection picked up a non-negligible
-            // signal — the plane wave actually arrived.
+            // signal, the plane wave actually arrived.
             assert!(
                 peak > 5e-2,
                 "{pol:?} no transmitted signal at RX: peak {peak:.2e}"

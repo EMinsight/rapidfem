@@ -131,7 +131,7 @@ pub fn build_material_tensors(
     (er, ur)
 }
 
-/// PML (Perfectly Matched Layer) region — port of geo/pmlbox.py.
+/// PML (Perfectly Matched Layer) region, port of geo/pmlbox.py.
 ///
 /// Absorbing layer using anisotropic complex coordinate-stretched material tensors:
 ///   sₐ(coord) = 1 - j · u(coord)^n · δmax,  u = (coord - inner_face)·sign / thickness

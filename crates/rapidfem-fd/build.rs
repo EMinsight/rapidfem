@@ -1,4 +1,4 @@
-// build.rs — compiles the Apple Accelerate shim on macOS only.
+// build.rs, compiles the Apple Accelerate shim on macOS only.
 //
 // The shim is a thin C wrapper around Apple's SparseFactor / SparseSolve /
 // SparseCleanup so the Rust side doesn't have to chase the C++-overloaded
@@ -13,7 +13,7 @@ fn main() {
             .file(shim)
             .flag_if_supported("-O3")
             .compile("rapidfem_accelerate_shim");
-        // Link Apple Accelerate framework — it provides the sparse solvers.
+        // Link Apple Accelerate framework, it provides the sparse solvers.
         println!("cargo:rustc-link-lib=framework=Accelerate");
     }
 }

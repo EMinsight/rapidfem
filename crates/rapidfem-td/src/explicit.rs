@@ -14,8 +14,8 @@
 //! low-storage Runge-Kutta scheme (LSERK4), the standard nodal-DG
 //! integrator (Hesthaven & Warburton, *Nodal DG Methods*).
 //!
-//! A step is five matvecs and two state registers — far cheaper than an
-//! exponential step — but the scheme is only **conditionally** stable: the
+//! A step is five matvecs and two state registers, far cheaper than an
+//! exponential step, but the scheme is only **conditionally** stable: the
 //! step is bounded by a CFL limit `dt ≲ C / ρ(A)` set by the spectral
 //! radius of the operator. On a mesh with a wide element-size range the
 //! exponential integrator, immune to that limit, can still win per unit of
@@ -27,11 +27,11 @@ use rayon::prelude::*;
 
 use crate::constants::{Field, LSERK4_A, LSERK4_B, LSERK4_STAGES};
 
-/// Reusable workspace for the LSERK4 explicit stepper — owns the residual
+/// Reusable workspace for the LSERK4 explicit stepper, owns the residual
 /// register and the matvec scratch, so a stepped transient allocates
 /// nothing once warmed.
 pub struct LserkWorkspace {
-    /// Residual register `p` — the one extra state vector low-storage RK
+    /// Residual register `p`, the one extra state vector low-storage RK
     /// carries between stages.
     p: Vec<Field>,
     /// Matvec output `A·y` for the current stage.
@@ -61,7 +61,7 @@ impl LserkWorkspace {
 
     /// One LSERK4 step of `dy/dt = A·y`, advancing `y` in place by `dt`.
     /// `matvec(x, ax)` writes `A·x` into `ax`. After the buffers have grown
-    /// once to fit `n`, this allocates nothing — the form to call in a step
+    /// once to fit `n`, this allocates nothing, the form to call in a step
     /// loop.
     ///
     /// The scheme is fourth-order accurate and **conditionally stable**:
@@ -141,7 +141,7 @@ impl LserkWorkspace {
     /// Advances `y` in place by `dt`.
     ///
     /// The vector-source generalisation of
-    /// [`step_driven_into`](Self::step_driven_into) — a single-DOF point
+    /// [`step_driven_into`](Self::step_driven_into), a single-DOF point
     /// source is the special case `b = e_dof·value`. This is the path for
     /// modal-port injection, where the source spreads over every port-face
     /// DOF. The zeroth-order hold mirrors the exponential
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn lserk4_is_fourth_order_on_a_linear_ode() {
-        // dy/dt = A·y with A = [[0,-ω],[ω,0]] — a pure rotation, exact
+        // dy/dt = A·y with A = [[0,-ω],[ω,0]], a pure rotation, exact
         // solution y(t) = R(ωt)·y₀. Halving the step must quarter the error
         // twice over (a fourth-order rate ≈ 16).
         let omega = 1.3_f64;
@@ -211,7 +211,7 @@ mod tests {
             ((y[0] - exact[0]).powi(2) + (y[1] - exact[1]).powi(2)).sqrt()
         };
         let rate = err(20) / err(40);
-        assert!(rate > 12.0, "LSERK4 not ~4th order — error ratio {rate:.1}");
+        assert!(rate > 12.0, "LSERK4 not ~4th order, error ratio {rate:.1}");
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         let y0: Vec<Field> =
             (0..n).map(|i| (0.3 + i as Field * 0.017).sin()).collect();
 
-        // A conservatively small step — deep inside any CFL limit, so the
+        // A conservatively small step, deep inside any CFL limit, so the
         // O(dt⁵) error is what is being measured.
         let dt = 1e-3;
         let mut y_rk = y0.clone();
@@ -256,8 +256,8 @@ mod tests {
     fn lserk4_is_stable_below_cfl_and_diverges_above() {
         // The defining property of the explicit scheme: bounded well below
         // the CFL limit, divergent well above it. The exact limit in
-        // `dt·ρ(A)` depends on where the spectrum sits — upwind-flux
-        // dissipation pushes it past the bare 2.8 imaginary-axis bound —
+        // `dt·ρ(A)` depends on where the spectrum sits, upwind-flux
+        // dissipation pushes it past the bare 2.8 imaginary-axis bound,
         // so the test brackets it with a wide margin rather than pinning a
         // constant. `ρ(A)` is estimated by a short power iteration on the
         // magnitude.

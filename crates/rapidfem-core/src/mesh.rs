@@ -16,23 +16,23 @@ use hashbrown::HashMap;
 
 /// Edge local index ordering within a tetrahedron (1-indexed node pairs).
 /// Mirrors EMerge's _idset1 = ((1,2),(1,3),(1,4),(2,3),(4,2),(3,4))
-/// Note: (4,2) not (2,4) — this ordering is critical for basis function orientation.
+/// Note: (4,2) not (2,4), this ordering is critical for basis function orientation.
 pub const TET_EDGE_LOCAL: [[usize; 2]; 6] = [
     [0, 1], // (1,2) in 1-indexed
     [0, 2], // (1,3)
     [0, 3], // (1,4)
     [1, 2], // (2,3)
-    [3, 1], // (4,2) — note reversed!
+    [3, 1], // (4,2), note reversed!
     [2, 3], // (3,4)
 ];
 
 /// Face local index ordering within a tetrahedron (1-indexed node triples).
 /// Mirrors EMerge's _idset2 = ((1,2,3),(1,3,4),(1,4,2),(2,3,4))
-/// Note: (1,4,2) not (1,2,4) — this ordering is critical.
+/// Note: (1,4,2) not (1,2,4), this ordering is critical.
 pub const TET_FACE_LOCAL: [[usize; 3]; 4] = [
     [0, 1, 2], // (1,2,3)
     [0, 2, 3], // (1,3,4)
-    [0, 3, 1], // (1,4,2) — note reversed!
+    [0, 3, 1], // (1,4,2), note reversed!
     [1, 2, 3], // (2,3,4)
 ];
 
@@ -107,7 +107,7 @@ impl Mesh {
             }
         }
 
-        // Build tri_to_edge — must match EMerge's ordering:
+        // Build tri_to_edge, must match EMerge's ordering:
         // tri_to_edge[0] = edge(sorted[0], sorted[1])
         // tri_to_edge[1] = edge(sorted[1], sorted[2])
         // tri_to_edge[2] = edge(sorted[0], sorted[2])
@@ -116,7 +116,7 @@ impl Mesh {
         for (ti, tri) in tris.iter().enumerate() {
             let edge_pairs = [
                 (tri[0].min(tri[1]), tri[0].max(tri[1])), // edge(0,1)
-                (tri[1].min(tri[2]), tri[1].max(tri[2])), // edge(1,2) — EMerge order!
+                (tri[1].min(tri[2]), tri[1].max(tri[2])), // edge(1,2), EMerge order!
                 (tri[0].min(tri[2]), tri[0].max(tri[2])), // edge(0,2)
             ];
             for (ei, &key) in edge_pairs.iter().enumerate() {

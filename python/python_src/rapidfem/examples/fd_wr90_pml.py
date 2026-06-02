@@ -1,13 +1,13 @@
-"""WR-90 waveguide terminated in a PML — single-port matched load.
+"""WR-90 waveguide terminated in a PML, single-port matched load.
 
 A PML volume absorbs outgoing waves with vastly less reflection than
-a 1st/2nd-order ABC, especially at oblique incidence — the trade is that
+a 1st/2nd-order ABC, especially at oblique incidence, the trade is that
 PML is a *volumetric* region (a mesh-resolved shell) rather than a
 single boundary surface.
 
 Setup: WR-90 with the driven port at z=0 and a PML cap at z=L_INNER.
 With the PML tuned correctly, |S11| should be at the numerical floor
-across the whole single-mode band — that's the matched-load signature.
+across the whole single-mode band, that's the matched-load signature.
 """
 
 # %% Parameters

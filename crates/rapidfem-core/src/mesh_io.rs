@@ -26,7 +26,7 @@ pub fn parse_mesh_bytes(bytes: &[u8]) -> Result<Mesh, String> {
     let msh = mshio::parse_msh_bytes(bytes)
         .map_err(|e| format!("Cannot parse mesh bytes: {:?}", e))?;
 
-    // Extract nodes — build a global node list and tag-to-index map
+    // Extract nodes, build a global node list and tag-to-index map
     let msh_nodes = msh.data.nodes
         .as_ref().ok_or("No nodes in mesh")?;
 

@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! High-level Simulation API — owns a mesh + parsed config and exposes callable
+//! High-level Simulation API, owns a mesh + parsed config and exposes callable
 //! methods for sweep, eigenmode, and far-field. The single entry point used by
 //! both the CLI (main.rs), the Python bindings (PyO3), and the WASM wrapper.
 //!
@@ -347,7 +347,7 @@ impl Simulation {
     /// Monk-style residual a-posteriori error indicator per tet for a given
     /// `(freq_idx, port_idx)` solution. Returns the full estimate (η per tet,
     /// volume and face contributions, total, marked subset from Dörfler at
-    /// `theta`). Intended for diagnostics — the same indicator drives the
+    /// `theta`). Intended for diagnostics, the same indicator drives the
     /// adaptive loop in `--adaptive` sweeps.
     pub fn element_errors_at(
         &self,
@@ -385,9 +385,9 @@ impl Simulation {
 
     /// Same shape as `field_at_nodes` but for an eigenmode's DOF vector.
     /// The mode field is a free-field eigenfunction (not normalised to a
-    /// driving port) — visualisation libraries typically rescale to a
+    /// driving port), visualisation libraries typically rescale to a
     /// peak magnitude. Returns `None` if the mode's DOF vector is empty
-    /// (defensive — `run_eigenmode` never produces empty modes).
+    /// (defensive, `run_eigenmode` never produces empty modes).
     pub fn eigenmode_field_at_nodes(&self, mode: &Eigenmode) -> Option<Vec<C64>> {
         if mode.field.is_empty() {
             return None;
@@ -395,7 +395,7 @@ impl Simulation {
         Some(self.eval_dofs_at_nodes(&mode.field))
     }
 
-    /// Common interior — node → first-adjacent tet → barycentric eval.
+    /// Common interior, node → first-adjacent tet → barycentric eval.
     /// Both ``field_at_nodes`` and ``eigenmode_field_at_nodes`` route here
     /// so the per-node node→tet table is built the same way in both paths.
     fn eval_dofs_at_nodes(&self, solution: &[C64]) -> Vec<C64> {
@@ -434,8 +434,8 @@ impl Simulation {
     ///     σ_eff = ω · ε₀ · εᵣ · tan(δ) + σ_bulk
     ///
     /// The first term turns dielectric losses (loss tangent) into an
-    /// equivalent current density so substrates like Rogers — which carry
-    /// tan_δ but no bulk σ — still light up in the J channel. The second
+    /// equivalent current density so substrates like Rogers, which carry
+    /// tan_δ but no bulk σ, still light up in the J channel. The second
     /// term is the ordinary Ohmic conductivity. Together this matches the
     /// total imaginary permittivity the solver uses for power dissipation.
     fn per_tet_sigma_eff(&self, omega: f64) -> Vec<f64> {
@@ -479,7 +479,7 @@ impl Simulation {
 
     /// Loss-equivalent current density J = σ_eff · E at each mesh node, in
     /// (A/m²). `σ_eff = ω·ε₀·εᵣ·tan(δ) + σ_bulk` covers both Ohmic and
-    /// dielectric losses — so this is the actual dissipative current, not
+    /// dielectric losses, so this is the actual dissipative current, not
     /// just the bulk-conduction component. Zero in lossless regions.
     /// Returns `Vec<C64>` of length `3 · n_nodes` (interleaved Jx, Jy, Jz).
     pub fn current_density_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
@@ -587,7 +587,7 @@ impl Simulation {
 }
 
 // ============================================================================
-// Construction helpers — extracted from main.rs's prior orchestration
+// Construction helpers, extracted from main.rs's prior orchestration
 // ============================================================================
 
 fn build_ports(
@@ -924,7 +924,7 @@ fn build_lumped_lines(
 
 /// Build a per-tet scalar relative permittivity from the materials list. Used
 /// by `build_wave_numerical` to feed the vector eigensolver. Anisotropic
-/// materials collapse to the mean of their diagonal — sufficient for the
+/// materials collapse to the mean of their diagonal, sufficient for the
 /// shift-invert pivot in `solve_vector_modes`.
 fn per_tet_eps_scalar(materials: &[Material], n_tets: usize) -> Vec<f64> {
     let mut eps = vec![1.0_f64; n_tets];
@@ -1017,7 +1017,7 @@ fn build_wave_numerical(
     // Per-face εr (size = face_tris.len()) is always needed: the vector
     // path uses it as the eigensolve weight, and the unified amplitude
     // normalisation in NumericalWavePort uses it for the Poynting-flux
-    // integral. Scalar paths get a uniform-1.0 vector — they sit on
+    // integral. Scalar paths get a uniform-1.0 vector, they sit on
     // homogeneous-fill cross-sections by construction.
     let eps_per_tet = per_tet_eps_scalar(materials, mesh.n_tets());
     let eps_face: Vec<f64> = tri_ids

@@ -7,7 +7,7 @@
 
 //! Centralised numerical constants for the time-domain backend.
 //!
-//! Every tolerance and algorithmic threshold lives here — never inline,
+//! Every tolerance and algorithmic threshold lives here, never inline,
 //! never hardcoded at a call site. A solver constant that needs tuning is
 //! tuned in one place. The numerical precision is centralised here too:
 //! [`Field`] and [`Accum`] are the two scalar types the solver is written
@@ -21,8 +21,8 @@
 /// This is the precision a future GPU / mixed-precision path may drop to
 /// `f32`: the per-element curl + flux is the throughput-bound hot path and
 /// the part a consumer GPU runs fastest in single precision. On the CPU it
-/// is `f64` today. The operator-side data path — fields, fluxes, geometric
-/// factors, material tensors — is meant to be typed `Field` end to end.
+/// is `f64` today. The operator-side data path, fields, fluxes, geometric
+/// factors, material tensors, is meant to be typed `Field` end to end.
 ///
 /// `Field` and [`Accum`] meet at the matvec boundary inside
 /// [`crate::propagator::KrylovWorkspace::expmv_into`]: once they differ,
@@ -32,7 +32,7 @@ pub type Field = f64;
 /// Scalar type of the Krylov accumulator: the Arnoldi basis, the CGS2
 /// orthogonalisation, the Hessenberg matrix and the dense `expm`.
 ///
-/// Stays `f64` — the scaling-and-squaring propagator and the
+/// Stays `f64`, the scaling-and-squaring propagator and the
 /// [`KRYLOV_TOL`]` = 1e-10` a-posteriori estimate depend on double
 /// precision, so this is *not* a flip target. Typing the propagator
 /// against `Accum` documents that boundary rather than enabling a change.
@@ -80,7 +80,7 @@ pub const KRYLOV_CHUNK: usize = 12;
 /// rayon dispatch overhead and clear of cache-line false sharing on `w`.
 pub const ARNOLDI_MIN_CHUNK: usize = 256;
 
-/// Target rayon tasks per worker thread for the CGS2 `w -= V·c` update — a
+/// Target rayon tasks per worker thread for the CGS2 `w -= V·c` update, a
 /// few-fold over-subscription so the work-stealing scheduler balances the
 /// pass even at modest `n`. A fixed chunk size starved the pass on small
 /// and medium meshes (only `⌈n/chunk⌉` tasks regardless of core count);
@@ -94,7 +94,7 @@ pub const ARNOLDI_TASKS_PER_THREAD: usize = 4;
 /// ∞-norm is at or below this before the Taylor core is summed.
 pub const EXPM_SCALE_THRESHOLD: Accum = 0.5;
 
-/// Taylor-series order for the dense `expm` core — the number of terms
+/// Taylor-series order for the dense `expm` core, the number of terms
 /// summed after scaling. About 18 terms reach double precision once the
 /// scaled norm is within [`EXPM_SCALE_THRESHOLD`].
 pub const EXPM_TAYLOR_TERMS: usize = 18;
@@ -104,7 +104,7 @@ pub const EXPM_TAYLOR_TERMS: usize = 18;
 /// `a` coefficients of the Carpenter-Kennedy 5-stage 4th-order low-storage
 /// Runge-Kutta scheme (LSERK4). The explicit alternative to the Krylov
 /// exponential propagator: five matvecs per step, two state registers, and
-/// — unlike the unconditionally stable exponential integrator — a CFL step
+///, unlike the unconditionally stable exponential integrator, a CFL step
 /// limit set by the spectral radius of the operator. Standard nodal-DG
 /// integrator (Hesthaven & Warburton, *Nodal DG Methods*).
 pub const LSERK4_A: [Field; 5] = [
@@ -115,7 +115,7 @@ pub const LSERK4_A: [Field; 5] = [
     -1275806237668.0 / 842570457699.0,
 ];
 
-/// `b` coefficients of LSERK4 — the per-stage update weights. Paired with
+/// `b` coefficients of LSERK4, the per-stage update weights. Paired with
 /// [`LSERK4_A`]; see there.
 pub const LSERK4_B: [Field; 5] = [
     1432997174477.0 / 9575080441755.0,
@@ -125,7 +125,7 @@ pub const LSERK4_B: [Field; 5] = [
     2277821191437.0 / 14882151754819.0,
 ];
 
-/// LSERK4 stage count — five stages reaching fourth order.
+/// LSERK4 stage count, five stages reaching fourth order.
 pub const LSERK4_STAGES: usize = 5;
 
 // ── Embedded adaptive RK: Kennedy-Carpenter-Lewis RK4(3)5[2R+]C ────────────
@@ -133,7 +133,7 @@ pub const LSERK4_STAGES: usize = 5;
 // Kennedy, Carpenter & Lewis 2000, "Low-storage, explicit Runge-Kutta
 // schemes for the compressible Navier-Stokes equations" (Appl. Num. Math.
 // 35, 177-219). The "2R+" form needs two state-shaped registers like
-// [`LSERK4_A`] plus one extra accumulator for the embedded error vector —
+// [`LSERK4_A`] plus one extra accumulator for the embedded error vector,
 // the third register goes to nothing else, only the adaptive controller. A
 // step is five matvecs (same as LSERK4) but yields a fourth-order solution
 // *and* a third-order embedded estimate, so the step-size controller can
@@ -142,11 +142,11 @@ pub const LSERK4_STAGES: usize = 5;
 // Coefficients are the exact rationals from the KCL 2000 paper, Table 1
 // (RK4(3)5[2R+]C variant), as tabulated in NodePy's `low_storage_rk.py`
 // (https://github.com/ketch/nodepy, file `low_storage_rk.py`, identifier
-// `RK4(3)5[2R+]C`). Storing `B_HAT` directly — and computing the embedded
-// error weight `e_i = B_HAT_i - B_i` at use — keeps the table verifiable
+// `RK4(3)5[2R+]C`). Storing `B_HAT` directly, and computing the embedded
+// error weight `e_i = B_HAT_i - B_i` at use, keeps the table verifiable
 // against the paper at a glance.
 
-/// `â_i = A_{i+1,i} - b_i` for KCL RK4(3)5[2R+]C — the four post-stage
+/// `â_i = A_{i+1,i} - b_i` for KCL RK4(3)5[2R+]C, the four post-stage
 /// updates that march the stage register `S2` to the next evaluation point
 /// in Ketcheson's van-der-Houwen 2R form (Ketcheson 2010, JCP 229, Alg. 2).
 /// Only `s - 1 = 4` values: the final stage closes the step without
@@ -159,7 +159,7 @@ pub const KCL_A: [Field; 4] = [
     26877169314380.0 / 34165994151039.0,
 ];
 
-/// `b_i` coefficients of KCL RK4(3)5[2R+]C — the per-stage main-solution
+/// `b_i` coefficients of KCL RK4(3)5[2R+]C, the per-stage main-solution
 /// update weights (fourth-order accurate). Paired with [`KCL_A`].
 pub const KCL_B: [Field; 5] = [
     1153189308089.0 / 22510343858157.0,
@@ -169,7 +169,7 @@ pub const KCL_B: [Field; 5] = [
     5198255086312.0 / 14908931495163.0,
 ];
 
-/// `b̂_i` coefficients of KCL RK4(3)5[2R+]C — the per-stage *embedded*
+/// `b̂_i` coefficients of KCL RK4(3)5[2R+]C, the per-stage *embedded*
 /// (third-order) solution weights. The step-size controller never needs
 /// `y_emb` itself, only its difference `y_emb - y_main = sum_i (b̂_i - b_i)
 /// q_i`, accumulated into the embedded-error register at each stage.
@@ -181,7 +181,7 @@ pub const KCL_BHAT: [Field; 5] = [
     1097981568119.0 / 3980877426909.0,
 ];
 
-/// KCL RK4(3)5[2R+]C stage count — five stages, fourth-order main,
+/// KCL RK4(3)5[2R+]C stage count, five stages, fourth-order main,
 /// third-order embedded.
 pub const KCL_STAGES: usize = 5;
 

@@ -7,7 +7,7 @@
 
 //! Structured tetrahedral mesh generation.
 //!
-//! A box mesher via the conforming Kuhn (Freudenthal) triangulation — six
+//! A box mesher via the conforming Kuhn (Freudenthal) triangulation, six
 //! tets per cell through a fixed main diagonal, which keeps shared cell faces
 //! matched. [`structured_box_jittered`] perturbs the interior to produce
 //! irregular meshes for validating the solver on non-uniform elements.
@@ -80,8 +80,8 @@ pub fn structured_box(
 
 /// Like [`structured_box`] but every node is pseudo-randomly displaced.
 ///
-/// The box shape stays exact — a displacement component is zeroed whenever
-/// the node lies on that axis's boundary face — so the cavity is unchanged,
+/// The box shape stays exact, a displacement component is zeroed whenever
+/// the node lies on that axis's boundary face, so the cavity is unchanged,
 /// but every tetrahedron becomes irregular and skewed. For validating the
 /// solver on non-uniform meshes. `amplitude` is a fraction of the cell size
 /// (keep `< 0.5` to avoid inverted elements).

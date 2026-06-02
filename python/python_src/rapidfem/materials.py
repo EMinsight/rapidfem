@@ -159,7 +159,7 @@ class Material:
     ----
     Materials are attached to volumes at construction time via the
     primitive's ``material=`` keyword. Multiple volumes can share one
-    ``Material`` instance — they then end up in the same physical
+    ``Material`` instance, they then end up in the same physical
     group at mesh time, which compresses the TOML config the Rust
     solver consumes.
 
@@ -200,7 +200,7 @@ class Material:
         Drude-model dispersive component
     maxh : float, optional
         max tet edge length (m) applied to every volume carrying this
-        material. Acts as a per-material refinement floor — useful for
+        material. Acts as a per-material refinement floor, useful for
         forcing finer cells inside thin conductors, narrow dielectric
         slabs, or any structure where the global ``maxh`` would
         under-resolve the field. An explicit ``maxh=`` on the primitive
@@ -267,7 +267,7 @@ class Material:
 # NAMED PRESETS =========================================================================
 
 class Air(Material):
-    """Vacuum or lossless air — :math:`\\varepsilon_r = \\mu_r = 1`,
+    """Vacuum or lossless air, :math:`\\varepsilon_r = \\mu_r = 1`,
     :math:`\\tan\\delta = \\sigma = 0`.
 
     The simplest material; sets every permittivity, permeability, and
@@ -349,7 +349,7 @@ class Conductor(Material):
     """Bulk lossy conductor.
 
     Models thick metal where the wave penetrates a non-negligible
-    fraction of the skin depth — the bulk conductivity :math:`\\sigma`
+    fraction of the skin depth, the bulk conductivity :math:`\\sigma`
     drives Ohmic loss via the volume current
     :math:`\\mathbf{J} = \\sigma \\mathbf{E}`.
 
@@ -358,7 +358,7 @@ class Conductor(Material):
     ----
     For thin metal sheets where the skin depth is much smaller than
     the conductor thickness, use :class:`SurfaceImpedance` on the face
-    instead — it captures the loss in a 2-D boundary condition without
+    instead, it captures the loss in a 2-D boundary condition without
     paying for volumetric mesh inside the metal.
 
 

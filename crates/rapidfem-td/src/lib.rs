@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! rapidfem-td — time-domain DGTD backend.
+//! rapidfem-td, time-domain DGTD backend.
 //!
 //! The DG spatial operator, the Krylov/ETD exponential propagator, the
 //! state-space export and model-order reduction land here. See

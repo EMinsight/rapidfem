@@ -7,7 +7,7 @@ drives the time-domain DGTD solver. `Problem` is retained as an alias of
 from .fd import Adaptive, ErrorIndicator, ProblemFD
 from .td import ProblemTD
 
-# Backward-compatible alias — `rf.Problem` continues to mean the
+# Backward-compatible alias, `rf.Problem` continues to mean the
 # frequency-domain problem.
 Problem = ProblemFD
 

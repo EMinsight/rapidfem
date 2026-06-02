@@ -11,7 +11,7 @@
 //! (complex symmetric). We accept the trait's full COO triplet input,
 //! build that representation once during `factorize`, and replay it on
 //! every `solve` (PARDISO's phase-33 wants the matrix again for iterative
-//! refinement — see iparm[7]).
+//! refinement, see iparm[7]).
 
 use num_complex::Complex64 as C64;
 use super::SparseSolver;
@@ -47,7 +47,7 @@ impl SparseSolver for PardisoSolver {
         vals: &[C64],
     ) -> Result<(), String> {
         let (ia, ja, a) = crate::pardiso::build_upper_csr(n, rows, cols, vals);
-        // Phase 12 — combined symbolic + numeric. Replaces whatever was
+        // Phase 12, combined symbolic + numeric. Replaces whatever was
         // factored previously.
         self.inner.analyze_and_factorize(n as i32, &ia, &ja, &a)?;
         self.n = n;

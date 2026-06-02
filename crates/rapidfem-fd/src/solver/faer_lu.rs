@@ -8,7 +8,7 @@
 //! `SparseSolver` impl using faer's pure-Rust sparse LU.
 //!
 //! The general-LU path is the cross-platform fallback. Complex symmetric is
-//! handled as a general matrix here — slower than a dedicated LDLᵀ but works
+//! handled as a general matrix here, slower than a dedicated LDLᵀ but works
 //! on every platform with no native deps. PARDISO and Apple Accelerate are
 //! the fast lane on their respective systems.
 
@@ -63,7 +63,7 @@ impl SparseSolver for FaerLuSolver {
         Ok(())
     }
 
-    /// Numeric refactor with the cached symbolic pattern — saves the AMD
+    /// Numeric refactor with the cached symbolic pattern, saves the AMD
     /// reordering and symbolic factorisation work across frequency sweeps.
     fn refactorize(
         &mut self,

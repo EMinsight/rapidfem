@@ -1,7 +1,7 @@
 """rapidfem worker subprocess.
 
 Per-file kernel that runs notebook cells in a clean, isolated Python process.
-Communicates with the parent server via JSON-line messages on stdin/stdout —
+Communicates with the parent server via JSON-line messages on stdin/stdout,
 no fd dup2, no WebSocket framing, no GIL gymnastics in the server thread.
 
 Protocol (one JSON object per line):
@@ -31,7 +31,7 @@ from typing import Any
 
 # ── Protocol I/O ────────────────────────────────────────────────────────────
 
-# Save the real stdout *before* we replace sys.stdout — protocol writes go
+# Save the real stdout *before* we replace sys.stdout, protocol writes go
 # to the real handle, user prints get rerouted via _ProtocolWriter.
 _real_stdout = sys.stdout
 _stdout_lock = threading.Lock()
@@ -64,7 +64,7 @@ def read_message() -> dict | None:
 class _ProtocolWriter:
     """File-like wrapper that ships writes as ``{"type":"stream"}`` events.
 
-    Installed on ``sys.stdout`` / ``sys.stderr`` permanently — anything the
+    Installed on ``sys.stdout`` / ``sys.stderr`` permanently, anything the
     user prints, plus output from any logging handler that captured these
     streams at module load, flows through ``send()`` to the parent.
     """
@@ -150,7 +150,7 @@ def initialize() -> None:
     except Exception:
         pass
 
-    # Restore Python's default SIGINT handler — gmsh.initialize() installs
+    # Restore Python's default SIGINT handler, gmsh.initialize() installs
     # one that suppresses the signal, but we want SIGINT to raise
     # KeyboardInterrupt inside the current cell so the parent can interrupt
     # a long-running solve.
@@ -175,7 +175,7 @@ def _emit_displays(captured) -> None:
     helper, which already knows the wire format the frontend expects.
     """
     try:
-        # Lazy import — keeps worker startup fast and decouples from server.
+        # Lazy import, keeps worker startup fast and decouples from server.
         from rapidfem.ui.api import _serialize_captures_for_protocol
     except Exception:
         # Fall back: no rich serialisation, just announce what was captured.
@@ -247,7 +247,7 @@ def main() -> None:
             else:
                 send({"type": "error", "error": f"Unknown message type: {t!r}"})
         except KeyboardInterrupt:
-            # SIGINT outside the cell-run exec — nothing to stop. Ignore and
+            # SIGINT outside the cell-run exec, nothing to stop. Ignore and
             # carry on; inside cell-run the exception is caught by run_cell.
             continue
         except Exception as e:

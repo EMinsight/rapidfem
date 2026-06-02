@@ -3,7 +3,7 @@
 Antenna trace and ground plane are coplanar on the same copper layer of a
 1 mm FR-4 board. Adapted from EMerge ``demo21`` and TI App Note SWRA117D.
 
-The interesting twist here: the initial mesh is **deliberately coarse** —
+The interesting twist here: the initial mesh is **deliberately coarse**,
 trace plates inherit the global wavelength-based size cap and the
 substrate is only pinned by its thickness. At ~8 mm global ``maxh`` the
 0.5-0.9 mm trace widths are barely a fraction of one tet, so the first
@@ -54,12 +54,12 @@ TRACE_MAXH_COARSE = 1.5 * mm   # rough hint so the trace exists, but is still
 
 # AMR knobs.
 N_AMR_ITERATIONS = 2
-AMR_THETA = 0.6            # Doerfler-marking fraction (aggressive — the
+AMR_THETA = 0.6            # Doerfler-marking fraction (aggressive, the
                            # eta distribution on the meander is very spiky)
 AMR_REFINE_RATIO = 0.5     # new tet size = marked h_k * AMR_REFINE_RATIO
 
 
-# %% Geometry + Materials (no per-trace TRACE_MAXH, no auto_refine_features —
+# %% Geometry + Materials (no per-trace TRACE_MAXH, no auto_refine_features,
 #    the AMR loop below will catch the under-resolved trace edges instead)
 SUB_X0, SUB_X1 = -D1, TRACE_W - D1
 SUB_Y0, SUB_Y1 = -GROUND_L, L6 - D4 + W2
@@ -68,7 +68,7 @@ SUB_DY = SUB_Y1 - SUB_Y0
 
 g = rf.Geometry(maxh=MAXH)
 
-# Substrate refinement is set by thickness, not wavelength — at 3 GHz in FR-4
+# Substrate refinement is set by thickness, not wavelength, at 3 GHz in FR-4
 # lambda is ~50 mm but SUB_H = 1 mm, so the box would be ~1 cell thick at the
 # wavelength cap. Pin the dielectric at ~1.5x thickness.
 fr4 = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
@@ -115,12 +115,12 @@ rf.ABC(*air.faces.outer)
 rf.show(g)
 
 
-# %% Initial mesh — coarse on purpose; trace edges are barely resolved.
+# %% Initial mesh, coarse on purpose; trace edges are barely resolved.
 g.mesh()
 rf.show(g)
 
 
-# %% AMR loop — print iter, n_tets, |S11|_min, f_res, deltas
+# %% AMR loop, print iter, n_tets, |S11|_min, f_res, deltas
 
 print(f"\nAMR loop: {N_AMR_ITERATIONS + 1} sweeps, theta={AMR_THETA}, "
       f"refine_ratio={AMR_REFINE_RATIO}")
@@ -156,7 +156,7 @@ for it in range(N_AMR_ITERATIONS + 1):
     # Mark high-residual tets at the resonance frequency.
     errs = prob.element_errors(result, freq_idx=i_res, theta=AMR_THETA)
     if len(errs.marked) == 0:
-        print("  no tets marked — stopping AMR")
+        print("  no tets marked, stopping AMR")
         break
     hot = errs.tet_centroids[errs.marked]
     target_h = float(errs.h_k[errs.marked].mean() * AMR_REFINE_RATIO)

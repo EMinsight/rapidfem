@@ -20,7 +20,7 @@ The tapered slot, the open-circuit disc and the corrugation slots are
 are plates on the top layer. A lumped port drives the line, an order-2 ABC
 closes the air box, and the far-field at 6 GHz reports directivity / gain.
 
-Wideband (3-8 GHz) — the sweep is the slow part; drop ``N_FREQ`` for a quick
+Wideband (3-8 GHz), the sweep is the slow part; drop ``N_FREQ`` for a quick
 look.
 """
 
@@ -85,7 +85,7 @@ def taper_points(half, x0=0.0):
     return top + bot
 
 
-# Dilated taper (taper offset outward by SLOT_MARGIN along its normal) — the
+# Dilated taper (taper offset outward by SLOT_MARGIN along its normal), the
 # keep-out used to carve the corrugations away from the taper itself.
 A_COEF = (G_GAP / 2.0) - (W_AP - G_GAP * K) / (2.0 - 2.0 * K)
 
@@ -124,7 +124,7 @@ disc = g.disc(RADIUS / 2.0, position=(-RADIUS / 2.0 + 1.0 * mm, 0.0, -TH))
 
 # Cut the tapered slot + open-circuit disc out of the ground plane. (The
 # EMerge demo also corrugates the ground edges with periodic slots to widen
-# the band; those are dropped here — the thin boolean slivers they create
+# the band; those are dropped here, the thin boolean slivers they create
 # wreck tet quality and balloon the solve. The bare tapered slot is still a
 # recognisable, well-behaved Vivaldi; see fy_dilated/N_SLOTS for the hook.)
 g.cut(ground, taper, disc)
@@ -147,7 +147,7 @@ for a in np.linspace(base - half, base + half, 24):
 stub = g.polygon(arc, maxh=0.6 * mm)
 
 # Lumped feed: a vertical sheet at the line input bridging the ground plane
-# (z = -TH) to the microstrip trace (z = 0), driven through the substrate —
+# (z = -TH) to the microstrip trace (z = 0), driven through the substrate,
 # the standard rapidfem microstrip feed (cf. fd_patch_antenna.py).
 port = g.plate(p0=(FEED_X - W0 / 2.0, FEED_Y0, -TH),
                width=(W0, 0.0, 0.0), height=(0.0, 0.0, TH), maxh=0.4 * mm)

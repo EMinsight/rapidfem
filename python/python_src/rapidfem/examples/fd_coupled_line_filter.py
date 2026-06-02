@@ -41,7 +41,7 @@ SUB_H  = 20 * mil
 ER_SUB = 3.55
 TAND   = 0.001
 
-# Filter geometry (EMerge demo3 values, in mil) — symmetric 6-section bandpass
+# Filter geometry (EMerge demo3 values, in mil), symmetric 6-section bandpass
 w0 = 37.0 * mil               # input/output line width
 l0 = 100.0 * mil              # input/output line length
 l1 = 314.22 * mil             # outer-section coupled length
@@ -54,12 +54,12 @@ GS = [v * mil for v in (9.63, 24.84, 41.499, 41.499, 24.84, 9.63)]     # section
 FREQUENCIES = np.linspace(5.2e9, 6.2e9, 21)
 MAXH = rf.lambda_maxh(f_max=6.2e9, er_max=ER_SUB)
 
-# Air/substrate envelope: no x-pad — the substrate's x-min and x-max faces
+# Air/substrate envelope: no x-pad, the substrate's x-min and x-max faces
 # ARE the wave-port cross-sections at the trace entry / exit (the trace
 # starts exactly at x = 0 and ends at the rightmost segment). Tight y-pad
 # (40 mil ≈ 1 mm) keeps the substrate width narrow enough that the lowest
 # transverse-resonance mode of the 20 mm × 0.5 mm slab sits above the
-# 6.2 GHz top of the sweep — without that, the wave-port single-mode
+# 6.2 GHz top of the sweep, without that, the wave-port single-mode
 # projection misses energy carried by higher-order transverse modes and
 # |S11|² + |S21|² runs over unity inside the pass-band.
 PAD_X_MIL = 0
@@ -67,7 +67,7 @@ PAD_Y_MIL = 40
 AIR_H_FACTOR = 4   # height = 4 * substrate thickness above and below
 
 
-# %% Trace layout — replays the EMerge .straight()/.jump() chain
+# %% Trace layout, replays the EMerge .straight()/.jump() chain
 class _Trace:
     """Builds the demo3 coupled-line meander as axis-aligned rectangles.
 
@@ -75,7 +75,7 @@ class _Trace:
     connected conductor) by ``L`` in +x, optionally switching width to ``w``
     and offsetting the centerline by ``dy``. ``jump(gap, side, reverse)``
     ends the current strand and starts a new one offset sideways by
-    ``(w_old + w_new)/2 + gap`` and ``reverse`` backward — that pair of
+    ``(w_old + w_new)/2 + gap`` and ``reverse`` backward, that pair of
     strips is one coupled-line section. ``strands`` is the result: a list of
     strands, each a list of ``(x_lo, y_lo, x_hi, y_hi)`` rectangles.
     """
@@ -159,7 +159,7 @@ y_max = max(r[3] for r in all_rects)
 # %% Geometry + Materials
 g = rf.Geometry(maxh=MAXH)
 
-# Substrate maxh must be a fraction of SUB_H — at the wave-port cross-section,
+# Substrate maxh must be a fraction of SUB_H, at the wave-port cross-section,
 # a 1-element-thick FR4 slab is too coarse for the vector eigensolve to see
 # the inhomogeneous quasi-TEM mode (returns 0 propagating modes).
 fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=SUB_H / 3)
@@ -196,7 +196,7 @@ for strand in strands:
         for (x_lo, y_lo, x_hi, y_hi) in strand
     ]
     if len(plates) > 1:
-        # fuse() warns that merged faces lose their names — irrelevant here,
+        # fuse() warns that merged faces lose their names, irrelevant here,
         # PEC is attached to the merged plate object directly below.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

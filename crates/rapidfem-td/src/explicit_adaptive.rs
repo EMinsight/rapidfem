@@ -7,7 +7,7 @@
 
 //! Adaptive embedded low-storage Runge-Kutta time integration.
 //!
-//! The Kennedy-Carpenter-Lewis RK4(3)5[2R+]C scheme — five stages, fourth
+//! The Kennedy-Carpenter-Lewis RK4(3)5[2R+]C scheme, five stages, fourth
 //! order with an embedded third-order error estimator, in the "2R+"
 //! low-storage form (two state-shaped registers plus a third for the
 //! embedded-error accumulator). Per step the matvec count is identical to
@@ -25,7 +25,7 @@ use rayon::prelude::*;
 
 use crate::constants::{Field, KCL_A, KCL_B, KCL_BHAT, KCL_STAGES};
 
-/// Reusable workspace for the KCL RK4(3)5[2R+]C embedded adaptive stepper —
+/// Reusable workspace for the KCL RK4(3)5[2R+]C embedded adaptive stepper,
 /// owns the stage register, the embedded-error accumulator, and the matvec
 /// scratch so a stepped transient allocates nothing once warmed.
 ///
@@ -33,13 +33,13 @@ use crate::constants::{Field, KCL_A, KCL_B, KCL_BHAT, KCL_STAGES};
 /// (Kennedy-Carpenter-Lewis 2000 + Ketcheson 2010): the caller's `y`
 /// plays the role of the main accumulator `S2`, this struct owns the
 /// stage-state register `Y_i`, the `dt·F` register, and the embedded-error
-/// accumulator. The "+" in 2R+ is the embedded-error register — 2 main
+/// accumulator. The "+" in 2R+ is the embedded-error register, 2 main
 /// state registers (`y` + `stage`) plus 1 for `e`, plus the matvec scratch.
 pub struct KclWorkspace {
-    /// Stage state register `Y_i` — built fresh each interior stage as
+    /// Stage state register `Y_i`, built fresh each interior stage as
     /// `S2 + (A_{i+1,i} - b_i)·dt·F_{i-1}`, then fed to the matvec.
     stage: Vec<Field>,
-    /// Embedded-error accumulator `e = Σ_i (b̂_i - b_i)·dt·F_i` — the per-
+    /// Embedded-error accumulator `e = Σ_i (b̂_i - b_i)·dt·F_i`, the per-
     /// DOF difference between the fourth-order and third-order solutions,
     /// the quantity an adaptive controller normalises and tests.
     e: Vec<Field>,
@@ -78,7 +78,7 @@ impl KclWorkspace {
     /// `matvec(x, ax)` writes `A·x` into `ax`.
     ///
     /// `err` is the per-DOF difference between the fourth-order main
-    /// solution and the third-order embedded one — a controller takes its
+    /// solution and the third-order embedded one, a controller takes its
     /// weighted L2 norm against `atol + rtol·|y|` and accepts or rejects
     /// the step. Allocation-free once warmed.
     pub fn step_into<F>(
@@ -94,7 +94,7 @@ impl KclWorkspace {
         assert_eq!(err.len(), n, "err length must equal state length");
         self.ensure(n);
 
-        // Stage 0 — matvec at y_n, accumulate b₀ into y (which becomes the
+        // Stage 0, matvec at y_n, accumulate b₀ into y (which becomes the
         // running S2), seed e with (b̂₀-b₀)·dt·F₀.
         matvec(&y[..n], &mut self.k[..n]);
         let b0 = KCL_B[0];
@@ -110,7 +110,7 @@ impl KclWorkspace {
                 *ei = e0 * f;              // e  = (b̂₀-b₀)·dt·F₀
             });
 
-        // Stages 1..s — build the new stage state from current S2 (=y) and
+        // Stages 1..s, build the new stage state from current S2 (=y) and
         // the carried-over dt·F_{i-1}, evaluate F_i, accumulate b_i·dt·F_i
         // into y and (b̂_i-b_i)·dt·F_i into e. Across iterations self.k
         // holds dt·F_{i-1} on entry and dt·F_i on exit.
@@ -166,7 +166,7 @@ impl KclWorkspace {
         assert_eq!(err.len(), n, "err length must equal state length");
         self.ensure(n);
 
-        // Stage 0 — RHS is A·y_n + b·g (zeroth-order hold across the step,
+        // Stage 0, RHS is A·y_n + b·g (zeroth-order hold across the step,
         // same convention as the LSERK4 driven path).
         matvec(&y[..n], &mut self.k[..n]);
         if source_dof < n {
@@ -220,7 +220,7 @@ impl KclWorkspace {
     /// Advances `y` in place by `dt` and writes the embedded-error vector
     /// into `err`.
     ///
-    /// The vector-source generalisation of [`step_driven_into`](Self::step_driven_into) —
+    /// The vector-source generalisation of [`step_driven_into`](Self::step_driven_into),
     /// the modal-port injection path, where the source spreads over every
     /// port-face DOF. Zeroth-order hold over the step, like the explicit
     /// and exponential counterparts.
@@ -239,7 +239,7 @@ impl KclWorkspace {
         assert_eq!(source.len(), n, "source length must equal state length");
         self.ensure(n);
 
-        // Stage 0 — RHS is A·y_n + b (full source vector, zeroth-order
+        // Stage 0, RHS is A·y_n + b (full source vector, zeroth-order
         // hold), the modal-port injection path.
         matvec(&y[..n], &mut self.k[..n]);
         let b0 = KCL_B[0];
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn kcl_is_fourth_order_on_a_linear_ode() {
-        // dy/dt = A·y with A = [[0,-ω],[ω,0]] — a pure rotation, exact
+        // dy/dt = A·y with A = [[0,-ω],[ω,0]], a pure rotation, exact
         // solution y(t) = R(ωt)·y₀. Halving the step must quarter the error
         // twice over (a fourth-order rate ≈ 16). Same probe as LSERK4's so
         // the orders can be compared apples-to-apples.
@@ -318,7 +318,7 @@ mod tests {
             ((y[0] - exact[0]).powi(2) + (y[1] - exact[1]).powi(2)).sqrt()
         };
         let rate = err(20) / err(40);
-        assert!(rate > 12.0, "KCL not ~4th order — error ratio {rate:.1}");
+        assert!(rate > 12.0, "KCL not ~4th order, error ratio {rate:.1}");
     }
 
     #[test]

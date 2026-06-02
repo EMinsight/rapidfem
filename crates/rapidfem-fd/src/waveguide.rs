@@ -57,7 +57,7 @@ impl CoordinateSystem {
         )
     }
 
-    /// Port of cs.py: in_global_basis(x, y, z) — transforms vector components
+    /// Port of cs.py: in_global_basis(x, y, z), transforms vector components
     pub fn in_global_basis(&self, x: f64, y: f64, z: f64) -> (f64, f64, f64) {
         (
             self.xax[0]*x + self.yax[0]*y + self.zax[0]*z,
@@ -102,7 +102,7 @@ impl RectWaveguide {
         C64::new(0.0, self.get_beta(k0))
     }
 
-    /// Port of Zmode(k0) — for TE modes
+    /// Port of Zmode(k0), for TE modes
     /// Zmode = k0 * C0 * MU0 / beta
     pub fn z_mode(&self, k0: f64) -> f64 {
         k0 * C0 * MU0 / self.get_beta(k0)
@@ -178,7 +178,7 @@ impl Default for AbsorbingBoundary {
     }
 }
 
-/// Floquet plane-wave port — port of microwave_bc.py:FloquetPort (lines 451-549).
+/// Floquet plane-wave port, port of microwave_bc.py:FloquetPort (lines 451-549).
 ///
 /// Models an incident plane wave at scan angles (θ, φ). Robin BC with γ = j·k₀·cos(θ).
 /// Two polarization modes: TE (S-pol, mode_nr=1) and TM (P-pol, mode_nr=2).
@@ -197,7 +197,7 @@ pub struct FloquetPort {
     pub port_number: usize,
     pub power: f64,
     pub er: f64,
-    /// Port-face area (m²) — used for amplitude normalization.
+    /// Port-face area (m²), used for amplitude normalization.
     pub area: f64,
     /// Scan angle θ measured from port normal (radians). 0 = normal incidence.
     pub scan_theta: f64,
@@ -235,7 +235,7 @@ impl FloquetPort {
 
         // At normal incidence (θ=0): no phase factor; field is real and uniform.
         // For oblique incidence we'd multiply by exp(-j(xl·kx + yl·ky)). Currently we drop
-        // that phase (real-only API) — see struct doc.
+        // that phase (real-only API), see struct doc.
         let _phase_xy = xl * (k0 * sin_t * cos_p) + yl * (k0 * sin_t * sin_p);
         let phase = 1.0;  // approximation; exact at θ=0
 
@@ -252,7 +252,7 @@ impl FloquetPort {
     }
 }
 
-/// User-defined port — port of microwave_bc.py:UserDefinedPort (lines 1172-1292).
+/// User-defined port, port of microwave_bc.py:UserDefinedPort (lines 1172-1292).
 ///
 /// The user supplies the port's E-field mode as a closure. A common case (constant E
 /// uniform across the face, e.g. parallel-plate TEM) is exposed via `from_constant`.
@@ -296,7 +296,7 @@ impl UserDefinedPort {
     }
 }
 
-/// Coaxial port (TEM mode) — port of microwave_bc.py:CoaxPort (lines 1031-1166).
+/// Coaxial port (TEM mode), port of microwave_bc.py:CoaxPort (lines 1031-1166).
 ///
 /// Mode field is the analytic TEM coaxial wave: E_ρ = V₀ / (ρ · ln(Ro/Ri)).
 /// V₀ = √(2·pZ₀·P), pZ₀ = (η/2π)·ln(Ro/Ri), η = Z₀/√εr, β = k₀√εr.
@@ -433,7 +433,7 @@ impl SurfaceImpedance {
     }
 }
 
-/// Lumped element (R, L, C in series) on a surface — port of microwave_bc.py:LumpedElement.
+/// Lumped element (R, L, C in series) on a surface, port of microwave_bc.py:LumpedElement.
 ///
 /// Robin BC with γ = j·k₀·Z₀/(Z(ω)·width/height) where Z(ω) = R + jωL + 1/(jωC).
 /// Distinct from LumpedPort: there's no excitation, just a passive impedance load.
@@ -606,7 +606,7 @@ pub fn detect_rect_port(
 /// Return (width, height) for a lumped port using EMerge's convention:
 /// height = extent along `direction`, width = extent orthogonal (in the port plane).
 ///
-/// EMerge microwave_bc.py:1314-1317 — height is the size in the direction axis along which
+/// EMerge microwave_bc.py:1314-1317, height is the size in the direction axis along which
 /// the potential is imposed; width is orthogonal to that. surfZ = Z0 * width / height.
 pub fn lumped_port_dims(
     mesh: &crate::mesh::Mesh,
@@ -671,7 +671,7 @@ pub fn lumped_port_dims(
 type Tri4Tuple = (f64, f64, f64, f64);
 
 /// Sum a function over the triangle surface mesh using gmsh-style P1 quadrature.
-/// Inline replica of `sparam::surface_integral` for real-valued scalars — we
+/// Inline replica of `sparam::surface_integral` for real-valued scalars, we
 /// only need this at port construction to integrate |e_t^unit|^2, which is
 /// real, so importing the complex version would be churn.
 fn integrate_scalar_over_tris(
@@ -717,10 +717,10 @@ pub struct NumericalWavePort {
     pub port_number: usize,
     pub power: f64,
     pub mode: NumericalMode,
-    /// √(∫ |e_t^unit|^2 dA) over the port face — precomputed at construction.
+    /// √(∫ |e_t^unit|^2 dA) over the port face, precomputed at construction.
     pub mode_l2_norm: f64,
     /// Effective index frozen at the eigensolve frequency f0. Hybrid quasi-
-    /// TEM only — scalar modes ignore this and derive β from the cutoff.
+    /// TEM only, scalar modes ignore this and derive β from the cutoff.
     pub n_eff: f64,
     /// `true` if `mode` came from `solve_vector_modes` (β = n_eff·k0); `false`
     /// if from `solve_modes` (β = sqrt(k0² − k_c²)).
@@ -744,7 +744,7 @@ impl NumericalWavePort {
         C64::new(0.0, self.get_beta(k0))
     }
 
-    /// Modal wave impedance in SI ohms — the field-ratio `|E_t|/|H_t|` of
+    /// Modal wave impedance in SI ohms, the field-ratio `|E_t|/|H_t|` of
     /// the propagating mode. Scalar TE: `Z_0/√(1−(k_c/ω)²)`; scalar TM:
     /// `Z_0·√(1−(k_c/ω)²)`; vector hybrid (quasi-TEM): `Z_0/n_eff`. Used
     /// only by power-flux-based S-param paths (`sparam_field_power`,

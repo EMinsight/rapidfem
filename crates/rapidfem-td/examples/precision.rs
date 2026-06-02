@@ -51,7 +51,7 @@ fn main() {
     let y0: Vec<Field> =
         (0..n).map(|i| (0.2 + i as Field * 0.013).sin()).collect();
 
-    // One matvec — the per-call operator error.
+    // One matvec, the per-call operator error.
     let dy = op.apply(&y0);
 
     // Spectral radius by power iteration, for a sub-CFL explicit step.
@@ -67,7 +67,7 @@ fn main() {
     }
     let dt = 1.0 / rho;
 
-    // A propagated transient — the accumulated operator error over a run.
+    // A propagated transient, the accumulated operator error over a run.
     let mut y = y0.clone();
     let mut ws = LserkWorkspace::new();
     for _ in 0..STEPS {
@@ -75,7 +75,7 @@ fn main() {
     }
 
     println!(
-        "precision probe — Field = {}-byte float",
+        "precision probe, Field = {}-byte float",
         size_of::<Field>()
     );
     println!("  n_dof {n}, upwind flux, {STEPS} LSERK4 steps");
@@ -106,7 +106,7 @@ fn main() {
                 );
             }
             Err(_) => println!(
-                "  no f64 reference at {} — run the f64 build first",
+                "  no f64 reference at {}, run the f64 build first",
                 path.display()
             ),
         }

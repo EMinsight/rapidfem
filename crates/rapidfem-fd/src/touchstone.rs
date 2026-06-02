@@ -18,7 +18,7 @@ use std::io::Write;
 /// Port of touchstone.py:generate_touchstone().
 ///
 /// `frequencies`: frequency points in Hz
-/// `s_params`: s_params[freq_idx][row][col] — complex S-matrix per frequency
+/// `s_params`: s_params[freq_idx][row][col], complex S-matrix per frequency
 /// `n_ports`: number of ports
 /// `z0`: reference impedance (default 50Ω)
 pub fn write_touchstone(

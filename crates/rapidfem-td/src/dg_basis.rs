@@ -54,7 +54,7 @@ pub struct ReferenceElement {
     /// per-face physical scaling `Fscale = area_phys / (1/2)` is applied later
     /// by the RHS operator.
     pub lift: Vec<Field>,
-    /// Per-face nodal surface-integration weights — `face_node_weights[f][m]`
+    /// Per-face nodal surface-integration weights, `face_node_weights[f][m]`
     /// is `∮ φ_m dA` over the reference face (the unit right triangle), so
     /// they sum to `1/2`. A physical surface integral is
     /// `Σ_m 2·area_phys·weight[m]·F_m`.
@@ -308,7 +308,7 @@ fn build_lift(
         3 => c[0] + c[1] + c[2] == p,
         _ => unreachable!(),
     };
-    // 2D coordinate of a face node — drop the constrained index.
+    // 2D coordinate of a face node, drop the constrained index.
     let coord2d = |f: usize, c: [usize; 3]| -> [usize; 2] {
         match f {
             0 => [c[0], c[1]],
@@ -383,7 +383,7 @@ fn build_lift(
                 emat[vi * cols + f * nfp + m] = mf[a * nfp + m];
             }
         }
-        // Nodal surface-integration weights — row sums of the face mass.
+        // Nodal surface-integration weights, row sums of the face mass.
         face_node_weights[f] = (0..nfp)
             .map(|a| (0..nfp).map(|m| mf[a * nfp + m]).sum())
             .collect();
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn lift_integrates_face_traces() {
         // 1ᵀ M (LIFT · trace) reduces to ∮ trace dA. For an all-ones trace on
-        // one face this is the reference face area — 1/2 in the unit
+        // one face this is the reference face area, 1/2 in the unit
         // right-triangle parametrisation used by every face.
         for p in 1..=4 {
             let re = ReferenceElement::new(p);

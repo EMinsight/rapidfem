@@ -48,7 +48,7 @@ fn test_straight_waveguide_sparams() {
 
     // S-param extraction: exact port of EMerge's approach
     // EMerge: fieldf = self.basis.interpolate_Ef(solution, tetids=port_tets)
-    // which calls MATHLIB.ned2_tet_interp — 3D tet interpolation searching all tets.
+    // which calls MATHLIB.ned2_tet_interp, 3D tet interpolation searching all tets.
     let sol0 = &result.solutions[0];
 
     // Build field evaluator using find_containing_tet (same as EMerge's ned2_tet_interp)

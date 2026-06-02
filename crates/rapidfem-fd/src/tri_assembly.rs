@@ -72,7 +72,7 @@ fn tri_local_cs(glob_vertices: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3], [f64
 
     let basis = [xhat, yhat, zhat];
 
-    // Project vertices to local 2D — inline, no Vec allocation
+    // Project vertices to local 2D, inline, no Vec allocation
     let mut xs = [0.0; 3];
     let mut ys = [0.0; 3];
     for k in 0..3 {

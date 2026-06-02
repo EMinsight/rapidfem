@@ -40,5 +40,5 @@ fn test_mesh_counts_vs_emerge() {
     assert_eq!(port1_tris.len(), 44, "Port1 tri count mismatch");
     assert_eq!(port2_tris.len(), 44, "Port2 tri count mismatch");
 
-    eprintln!("Mesh connectivity: PASS — all counts match EMerge");
+    eprintln!("Mesh connectivity: PASS, all counts match EMerge");
 }

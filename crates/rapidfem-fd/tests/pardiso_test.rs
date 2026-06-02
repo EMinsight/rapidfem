@@ -8,7 +8,7 @@ fn test_pardiso_2x2() {
         None => { eprintln!("PARDISO not available, skipping"); return; }
     };
 
-    // A = [[2+1j, 1], [1, 3+2j]] — same as Python test
+    // A = [[2+1j, 1], [1, 3+2j]], same as Python test
     // Full COO (both triangles):
     let rows = vec![0, 0, 1, 1];
     let cols = vec![0, 1, 0, 1];

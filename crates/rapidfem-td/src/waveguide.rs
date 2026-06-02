@@ -12,7 +12,7 @@
 //! port these profiles shape the incident excitation and the modal
 //! extraction; the guide dispersion itself emerges from the PEC walls
 //! during propagation, so only the transverse profile and the cutoff are
-//! needed here. A coaxial line carries the dispersionless TEM mode — a
+//! needed here. A coaxial line carries the dispersionless TEM mode, a
 //! radial `E_ρ ∝ 1/ρ` field between the two conductors. Everything is in
 //! the solver's normalised units (`c = ε₀ = μ₀ = 1`).
 
@@ -38,16 +38,16 @@ fn cross(a: [Field; 3], b: [Field; 3]) -> [Field; 3] {
 /// section, and `TE_mn` mode.
 ///
 /// `u_hat`, `v_hat`, `w_hat` form a right-handed frame (`û × v̂ = ŵ`) with
-/// `w_hat` the **inward** normal — pointing into the simulation domain.
+/// `w_hat` the **inward** normal, pointing into the simulation domain.
 #[derive(Clone, Debug)]
 pub struct RectPort {
-    /// A corner of the port rectangle (global coords) — the `(u,v)=(0,0)` point.
+    /// A corner of the port rectangle (global coords), the `(u,v)=(0,0)` point.
     pub origin: [Field; 3],
     /// Unit vector along the width `a` (global).
     pub u_hat: [Field; 3],
     /// Unit vector along the height `b` (global).
     pub v_hat: [Field; 3],
-    /// Inward unit normal — points into the domain (global).
+    /// Inward unit normal, points into the domain (global).
     pub w_hat: [Field; 3],
     /// Cross-section width.
     pub a: Field,
@@ -65,7 +65,7 @@ pub struct RectPort {
     pub mode: (usize, usize),
     /// Reference impedance for the `(0, 0)` sentinel mode, in the
     /// operator's normalised units (`Z = 1` is free-space 377 ohm).
-    /// Vestigial — only the internal `(0, 0)` frame-fit path touches it;
+    /// Vestigial, only the internal `(0, 0)` frame-fit path touches it;
     /// `TE_mn` modes ignore it (their impedance is dispersive, set by
     /// the cutoff). Kept to avoid churn until the wave-port work lands.
     pub z0: Field,
@@ -88,7 +88,7 @@ impl RectPort {
     ///
     /// `TE_mn`: `E_u ∝ (n/b)·cos(mπu/a)·sin(nπv/b)`,
     /// `E_v ∝ −(m/a)·sin(mπu/a)·cos(nπv/b)`. The sentinel mode `(0, 0)` is
-    /// a **lumped / TEM port** — a uniform transverse field along `v_hat`,
+    /// a **lumped / TEM port**, a uniform transverse field along `v_hat`,
     /// with zero cutoff and a flat (non-dispersive) `Z = 1` impedance.
     pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
         if self.mode == (0, 0) {
@@ -137,7 +137,7 @@ impl RectPort {
     /// The wider transverse dimension becomes the width `a` (`u_hat`), the
     /// narrower the height `b` (`v_hat`); the frame is made right-handed
     /// (`û × v̂ = ŵ`). The `TE_mn` mode then has `m` indexing the wide
-    /// dimension — so `TE₁₀` is the dominant mode regardless of orientation.
+    /// dimension, so `TE₁₀` is the dominant mode regardless of orientation.
     ///
     /// `field_axis` overrides the auto-fit transverse axis `v̂`: a lumped
     /// port's voltage-integration direction is projected into the port
@@ -150,7 +150,7 @@ impl RectPort {
         mode: (usize, usize),
         field_axis: Option<[Field; 3]>,
     ) -> RectPort {
-        // The inward normal is ±eₖ — the constant (out-of-plane) axis.
+        // The inward normal is ±eₖ, the constant (out-of-plane) axis.
         let k = (0..3)
             .max_by(|&i, &j| {
                 inward_normal[i]
@@ -240,7 +240,7 @@ impl RectPort {
 /// radius `r_o` a coaxial line supports a dispersionless TEM mode: a purely
 /// radial transverse electric field `E ∝ ρ̂/ρ` and an azimuthal magnetic
 /// field `H = ŵ × E`. The mode has no cutoff and travels at exactly `c`,
-/// so its modal impedance is flat — exactly the role the `(0, 0)` sentinel
+/// so its modal impedance is flat, exactly the role the `(0, 0)` sentinel
 /// of [`RectPort`] plays for a lumped port.
 ///
 /// The port plane is described by its `w_hat` inward normal (pointing into
@@ -250,7 +250,7 @@ impl RectPort {
 pub struct CoaxPort {
     /// Coax-axis center on the port plane (global coords).
     pub center: [Field; 3],
-    /// Inward unit normal — points into the domain (global). Also the
+    /// Inward unit normal, points into the domain (global). Also the
     /// coax propagation axis.
     pub w_hat: [Field; 3],
     /// Inner-conductor radius.
@@ -261,7 +261,7 @@ pub struct CoaxPort {
 
 impl CoaxPort {
     /// In-plane radial vector `x − center` with its `w_hat` component
-    /// removed — the part of the displacement that lies in the port plane.
+    /// removed, the part of the displacement that lies in the port plane.
     fn in_plane(&self, x: [Field; 3]) -> [Field; 3] {
         let d = [
             x[0] - self.center[0],
@@ -280,7 +280,7 @@ impl CoaxPort {
     /// on the port face, in global coordinates.
     ///
     /// The coax TEM field is `E_ρ ∝ 1/ρ`; this returns `ρ̂·(r_i/ρ)`, so the
-    /// dominant value is unit magnitude at the inner radius — the same
+    /// dominant value is unit magnitude at the inner radius, the same
     /// order-unity normalisation [`RectPort::e_profile`] uses. On the
     /// degenerate axis (`ρ → 0`, off the meshed annulus) the field is zero.
     pub fn e_profile(&self, x: [Field; 3]) -> [Field; 3] {
@@ -296,18 +296,18 @@ impl CoaxPort {
     }
 
     /// Transverse magnetic-field profile for the TEM mode propagating along
-    /// the inward normal — `h_t = ŵ × e_t`. Global coordinates.
+    /// the inward normal, `h_t = ŵ × e_t`. Global coordinates.
     pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
         cross(self.w_hat, self.e_profile(x))
     }
 
-    /// Cutoff angular frequency — always `0` for a TEM mode, which
+    /// Cutoff angular frequency, always `0` for a TEM mode, which
     /// propagates at every frequency down to DC.
     pub fn cutoff(&self) -> Field {
         0.0
     }
 
-    /// Modal wave impedance — flat `Z = 1` in the solver's normalised
+    /// Modal wave impedance, flat `Z = 1` in the solver's normalised
     /// units. The TEM mode is non-dispersive, so the forward/backward modal
     /// split needs no per-frequency rescaling, exactly like the `(0, 0)`
     /// lumped sentinel of [`RectPort`].
@@ -321,7 +321,7 @@ impl CoaxPort {
     /// The coax center is the centroid of the face nodes projected onto the
     /// port plane, unless `center_override` supplies an explicit axis point.
     /// The inner radius is the smallest in-plane node distance to that
-    /// center, the outer radius the largest — the annulus the mesh spans.
+    /// center, the outer radius the largest, the annulus the mesh spans.
     pub fn from_face(
         nodes: &[[Field; 3]],
         inward_normal: [Field; 3],
@@ -350,7 +350,7 @@ impl CoaxPort {
             r_inner: 0.0,
             r_outer: 0.0,
         };
-        // Inner / outer radii — the extreme in-plane node distances.
+        // Inner / outer radii, the extreme in-plane node distances.
         let (mut lo, mut hi) = (Field::MAX, 0.0_f64);
         for &p in nodes {
             let rv = port.in_plane(p);
@@ -389,7 +389,7 @@ pub enum FloquetPolarisation {
 /// face of a periodic unit cell.
 ///
 /// `u_hat`, `v_hat`, `w_hat` form a right-handed frame (`û × v̂ = ŵ`) with
-/// `w_hat` the **inward** normal — pointing into the simulation domain. At
+/// `w_hat` the **inward** normal, pointing into the simulation domain. At
 /// normal incidence the polarisation lies entirely in the port plane:
 /// `Te` picks the in-plane azimuth perpendicular,
 /// `Tm` picks the in-plane azimuth along the scan direction.
@@ -399,20 +399,20 @@ pub enum FloquetPolarisation {
 /// field complex-valued. The time-domain backend's port machinery is
 /// real-valued (the [`PortMode`] returns real `e_profile` / `h_profile`),
 /// so at oblique incidence (`scan_theta ≠ 0`) the transverse phase is
-/// **dropped** — the polarisation vector still rotates with `scan_theta`
+/// **dropped**, the polarisation vector still rotates with `scan_theta`
 /// (the TM out-of-plane lift, the TE in-plane orientation) but the field
 /// stays uniform across the face. This matches the FD `FloquetPort`'s
 /// documented approach. Normal incidence (`scan_theta = 0`) is the
 /// validated, exact case; oblique angles are a documented approximation.
 #[derive(Clone, Debug)]
 pub struct FloquetPort {
-    /// A corner of the port rectangle (global coords) — the `(u,v)=(0,0)` point.
+    /// A corner of the port rectangle (global coords), the `(u,v)=(0,0)` point.
     pub origin: [Field; 3],
     /// Unit vector along the width `a` (global).
     pub u_hat: [Field; 3],
     /// Unit vector along the height `b` (global).
     pub v_hat: [Field; 3],
-    /// Inward unit normal — points into the domain (global).
+    /// Inward unit normal, points into the domain (global).
     pub w_hat: [Field; 3],
     /// Cross-section width.
     pub a: Field,
@@ -426,7 +426,7 @@ pub struct FloquetPort {
     pub scan_phi: Field,
     /// Optional explicit in-plane polarisation override. If `Some`, this
     /// (already-projected and normalised) in-plane unit vector is the
-    /// transverse electric-field direction — the `polarisation`, `scan_*`
+    /// transverse electric-field direction, the `polarisation`, `scan_*`
     /// derivation is bypassed entirely. The dominant use is hooking up an
     /// experiment that pins a specific linear polarisation independent of
     /// the φ-azimuth convention.
@@ -442,7 +442,7 @@ impl FloquetPort {
     /// in-plane scan direction `(cosφ·û + sinφ·v̂)`, tilted by `scan_theta`
     /// out of the port plane along `−ŵ` for `θ > 0` (so its E·E stays unit
     /// length). The transverse phase factor `e^{-j·k_t·r_t}` is **dropped**
-    /// — see the struct doc.
+    ///, see the struct doc.
     fn polarisation_vec(&self) -> [Field; 3] {
         if let Some(p) = self.e_override {
             return p;
@@ -451,7 +451,7 @@ impl FloquetPort {
         let (cos_t, sin_t) = (self.scan_theta.cos(), self.scan_theta.sin());
         match self.polarisation {
             FloquetPolarisation::Te => {
-                // E ⟂ plane of incidence — in-plane perpendicular to (cosφ û + sinφ v̂).
+                // E ⟂ plane of incidence, in-plane perpendicular to (cosφ û + sinφ v̂).
                 let c = [-sin_p, cos_p];
                 [
                     c[0] * self.u_hat[0] + c[1] * self.v_hat[0],
@@ -460,7 +460,7 @@ impl FloquetPort {
                 ]
             }
             FloquetPolarisation::Tm => {
-                // E in plane of incidence — at θ = 0 along (cosφ û + sinφ v̂);
+                // E in plane of incidence, at θ = 0 along (cosφ û + sinφ v̂);
                 // for θ > 0 it tilts out of the port plane along −ŵ so that
                 // E·E = 1 (cos²θ + sin²θ).
                 let inplane = (cos_t * cos_p, cos_t * sin_p);
@@ -480,7 +480,7 @@ impl FloquetPort {
     }
 
     /// Transverse electric-field profile of the Floquet mode at a global
-    /// point on the port face — uniform across the face at the polarisation
+    /// point on the port face, uniform across the face at the polarisation
     /// vector derived from `polarisation`, `scan_theta`, `scan_phi`
     /// (or `e_override` when supplied). The transverse phase factor
     /// `e^{-j·k_t·r_t}` is dropped at oblique scan; see the struct doc.
@@ -488,21 +488,21 @@ impl FloquetPort {
         self.polarisation_vec()
     }
 
-    /// Transverse magnetic-field profile — `h_t = ŵ × e_t`, exactly as for
+    /// Transverse magnetic-field profile, `h_t = ŵ × e_t`, exactly as for
     /// the rectangular and coax modes. Free-space impedance is `1` in the
     /// solver's normalised units, so `|H| = |E|` for the propagating wave.
     pub fn h_profile(&self, x: [Field; 3]) -> [Field; 3] {
         cross(self.w_hat, self.e_profile(x))
     }
 
-    /// Cutoff angular frequency — always `0`. A plane wave propagates at
+    /// Cutoff angular frequency, always `0`. A plane wave propagates at
     /// every frequency down to DC; the unit-cell periodicity sets the
     /// transverse momentum, the longitudinal `k_z` carries the rest.
     pub fn cutoff(&self) -> Field {
         0.0
     }
 
-    /// Modal wave impedance — flat `Z = 1` in the solver's normalised
+    /// Modal wave impedance, flat `Z = 1` in the solver's normalised
     /// units (free space, non-dispersive). The forward / backward modal
     /// split therefore needs no per-frequency rescaling.
     pub fn te_impedance(&self, _omega: Field) -> Field {
@@ -529,7 +529,7 @@ impl FloquetPort {
         scan_phi: Field,
         polarisation_override: Option<[Field; 3]>,
     ) -> FloquetPort {
-        // Borrow the rectangular port's frame fitter — same axis-aligned
+        // Borrow the rectangular port's frame fitter, same axis-aligned
         // (u, v, w) layout and right-handed convention; mode is irrelevant
         // here so use the lumped sentinel.
         let rect = RectPort::from_face(nodes, inward_normal, (0, 0), None);
@@ -563,7 +563,7 @@ impl FloquetPort {
     }
 }
 
-/// A port's waveguide mode — the mode-specific data the port machinery
+/// A port's waveguide mode, the mode-specific data the port machinery
 /// consumes, dispatched by variant.
 ///
 /// The port flux, the injection source and the modal extraction are all
@@ -579,7 +579,7 @@ pub enum PortMode {
     Coax(CoaxPort),
     /// A Floquet plane-wave mode on a periodic unit-cell face.
     Floquet(FloquetPort),
-    /// A numerically-solved mode from a 2D cross-section eigensolve — the
+    /// A numerically-solved mode from a 2D cross-section eigensolve, the
     /// wave port for an arbitrary (ridged, circular, ...) cross-section
     /// whose profile has no closed form. See
     /// [`rapidfem_core::port_eigen`].
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn te10_profile_matches_the_analytic_field() {
-        // TE₁₀: E = v̂·sin(πx/a) — peaks mid-width, vanishes at the side
+        // TE₁₀: E = v̂·sin(πx/a), peaks mid-width, vanishes at the side
         // walls, is purely transverse-vertical.
         let p = z_port(0.5, 0.25, (1, 0));
         // Side walls u = 0, a → zero.
@@ -716,7 +716,7 @@ mod tests {
 
     #[test]
     fn from_face_honours_an_explicit_field_axis() {
-        // A z = 0 face spanning [0,2]×[0,1] — auto-fit makes v̂ the narrow
+        // A z = 0 face spanning [0,2]×[0,1], auto-fit makes v̂ the narrow
         // (y) axis. An explicit field axis must override that.
         let nodes = [
             [0.0, 0.0, 0.0],
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn lumped_port_is_a_uniform_zero_cutoff_mode() {
-        // The (0,0) sentinel mode — a lumped / TEM port: uniform transverse
+        // The (0,0) sentinel mode, a lumped / TEM port: uniform transverse
         // field, no cutoff, flat Z = 1 impedance.
         let p = z_port(0.5, 0.25, (0, 0));
         // Uniform field along v̂ everywhere on the face.
@@ -828,7 +828,7 @@ mod tests {
 
     #[test]
     fn coax_h_profile_is_an_inward_propagating_partner() {
-        // h_t = ŵ × e_t — E, H and the propagation direction are mutually
+        // h_t = ŵ × e_t, E, H and the propagation direction are mutually
         // orthogonal and E × H points inward (ŵ), like a forward wave.
         let p = z_coax(0.2, 0.6);
         let x = [0.3, 0.4, 0.0];
@@ -1012,7 +1012,7 @@ mod tests {
         // Unit norm.
         let nrm = (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]).sqrt();
         assert!((nrm - 1.0).abs() < 1e-12);
-        // And the field is still uniform across the face — the transverse
+        // And the field is still uniform across the face, the transverse
         // phase is intentionally dropped (real-valued port API).
         let e2 = p.e_profile([0.9, 0.1, 0.0]);
         for k in 0..3 {

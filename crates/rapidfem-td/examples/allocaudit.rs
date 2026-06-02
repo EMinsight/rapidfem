@@ -1,4 +1,4 @@
-//! Allocation audit — counts heap allocations on the TD hot paths.
+//! Allocation audit, counts heap allocations on the TD hot paths.
 //!
 //! A counting global allocator wraps the system allocator; the audit then
 //! reports how many allocations each operator call performs and how that
@@ -40,7 +40,7 @@ fn snap() -> (usize, usize) {
 }
 
 fn main() {
-    println!("rapidfem-td — allocation audit  (release, order 2)\n");
+    println!("rapidfem-td, allocation audit  (release, order 2)\n");
 
     // --- apply: allocations per operator call, vs mesh size --------------
     println!(

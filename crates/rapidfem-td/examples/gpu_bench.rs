@@ -1,7 +1,7 @@
 //! GPU scaling benchmark for the time-domain backend.
 //!
 //! Sweeps structured-box grids from a few hundred thousand to ~10M state
-//! DOFs in three geometries — a cube, an elongated beam, a flat slab — and
+//! DOFs in three geometries, a cube, an elongated beam, a flat slab, and
 //! reports the GPU throughput of the explicit LSERK4 transient and the
 //! Krylov exponential propagator. The cube / beam / slab differ in
 //! surface-to-volume ratio, so the flux-to-volume work balance shifts
@@ -28,7 +28,7 @@ const STEPS: usize = 100;
 const KRYLOV_DIM: usize = 40;
 /// Polynomial order of the sweep (order 2: 60 state DOFs per tet).
 const ORDER: usize = 2;
-/// Above this state-DOF count the CPU reference is skipped — its run
+/// Above this state-DOF count the CPU reference is skipped, its run
 /// would dominate the benchmark without adding information.
 const CPU_DOF_LIMIT: usize = 1_500_000;
 
@@ -68,7 +68,7 @@ fn main() {
             return;
         }
     };
-    println!("GPU scaling benchmark — time-domain backend");
+    println!("GPU scaling benchmark, time-domain backend");
     println!("device: {}", gpu.device_name);
     println!(
         "order {ORDER}, {STEPS} LSERK4 steps, krylov-dim {KRYLOV_DIM}, \
@@ -76,7 +76,7 @@ fn main() {
         rayon::current_num_threads(),
     );
 
-    // (geometry label, nx, ny, nz) — three shapes across a size sweep,
+    // (geometry label, nx, ny, nz), three shapes across a size sweep,
     // each reaching ~10M state DOFs at the top end.
     let cases: &[(&str, usize, usize, usize)] = &[
         ("cube", 8, 8, 8),

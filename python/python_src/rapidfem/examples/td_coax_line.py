@@ -17,7 +17,7 @@ import numpy as np
 
 import rapidfem as rf
 
-RI, RO = 1.50e-3, 3.45e-3   # inner / outer radius — 50 ohm air coax [m]
+RI, RO = 1.50e-3, 3.45e-3   # inner / outer radius, 50 ohm air coax [m]
 L = 40.0e-3                 # line length [m]
 F0 = 8.0e9                  # drive centre frequency
 

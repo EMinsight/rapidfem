@@ -21,13 +21,13 @@
 //! ```
 //!
 //! The augmented `(E, H, …, P)` system stays linear with constant
-//! coefficients, so the Krylov/ETD propagator carries it unchanged — `P` is
+//! coefficients, so the Krylov/ETD propagator carries it unchanged, `P` is
 //! just extra per-node state. (Drude / Lorentz media are analogous, with a
 //! second-order auxiliary equation.)
 
 use crate::constants::Field;
 
-/// A Debye dispersive material — the relaxation parameters mirror the
+/// A Debye dispersive material, the relaxation parameters mirror the
 /// frequency-domain `rapidfem.Debye`.
 #[derive(Clone, Copy, Debug)]
 pub struct DebyeMaterial {

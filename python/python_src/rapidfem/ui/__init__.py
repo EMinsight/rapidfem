@@ -1,4 +1,4 @@
-"""rapidfem.ui — Flask backend and bundled SvelteKit frontend.
+"""rapidfem.ui, Flask backend and bundled SvelteKit frontend.
 
 Available only when installed with the ``ui`` extra::
 

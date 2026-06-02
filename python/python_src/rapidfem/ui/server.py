@@ -1,7 +1,7 @@
 """Flask server for `rapidfem serve`.
 
 Exposes the bundled SvelteKit frontend on `/` and a small JSON API on
-`/api/*`. All endpoints are local-only by convention — there is no
+`/api/*`. All endpoints are local-only by convention, there is no
 authentication.
 
 Cell execution runs in a per-file subprocess worker (see
@@ -88,7 +88,7 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
     except ImportError:
         pass
 
-    # Frontend static serving — only registered when dist/ is present.
+    # Frontend static serving, only registered when dist/ is present.
     if dist is not None:
         @app.get("/", defaults={"path": ""})
         @app.get("/<path:path>")
@@ -100,7 +100,7 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
             target = dist / path
             if path and target.exists() and target.is_file():
                 return send_from_directory(dist, path)
-            # `/` is the prerendered landing — its asset URLs are relative
+            # `/` is the prerendered landing, its asset URLs are relative
             # (`./_app/...`), correct only at the root path.
             if not path:
                 return send_from_directory(dist, "index.html")
@@ -127,10 +127,10 @@ def create_app(workdir: Path, debug: bool = False) -> Flask:
 
 def run(app: Flask, host: str = "127.0.0.1", port: int = 5174, open_browser: bool = True) -> None:
     url = f"http://{host}:{port}/"
-    print(f"rapidfem serve — workdir: {app.config['RAPIDFEM_WORKDIR']}")
-    print(f"rapidfem serve — listening on {url}")
+    print(f"rapidfem serve, workdir: {app.config['RAPIDFEM_WORKDIR']}")
+    print(f"rapidfem serve, listening on {url}")
     if app.config["RAPIDFEM_FRONTEND_DIST"] is None:
-        print("rapidfem serve — WARNING: no frontend bundle found (run scripts/build_frontend).")
+        print("rapidfem serve, WARNING: no frontend bundle found (run scripts/build_frontend).")
 
     if open_browser and not os.environ.get("RAPIDFEM_NO_BROWSER"):
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

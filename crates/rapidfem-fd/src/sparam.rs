@@ -59,7 +59,7 @@ pub fn surface_integral(
 ///
 /// S = ∫ (E_field − Q·E_mode)·conj(E_mode)·c dS / ∫ |E_mode|²·c dS
 ///
-/// where `c(x,y,z)` is the **local wave admittance weight** — `√(εᵣ/μᵣ)` for a
+/// where `c(x,y,z)` is the **local wave admittance weight**, `√(εᵣ/μᵣ)` for a
 /// TEM/quasi-TEM mode (`1/μᵣ` for TE, `1/εᵣ` for TM), supplied by `weight`.
 /// The weight turns the bare field overlap (`|E|²`) into the power / Poynting
 /// overlap: the power-wave amplitude is `b ∝ ∫E×H*·n̂`, and for a TEM mode

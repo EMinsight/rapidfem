@@ -3,7 +3,7 @@
 The bundled canvas3d viewer expects per-entity buffers in the form
 ``{ name, tag, color: [r,g,b], positions: number[], normals: number[] }``
 where ``positions`` and ``normals`` are flat float arrays (3 components per
-vertex, 3 vertices per triangle — flat-shaded, no indexing).
+vertex, 3 vertices per triangle, flat-shaded, no indexing).
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def _material_color(material) -> list[float]:
     if material is None:
         return _COL_NEUTRAL
     if isinstance(material, str):
-        # Legacy string — keep the old hash-color so existing rfic.Stack flows
+        # Legacy string, keep the old hash-color so existing rfic.Stack flows
         # don't suddenly recolor on import.
         return _color_from_name(material)
     cls = type(material).__name__
@@ -116,7 +116,7 @@ def _entity_resolution(g, ent):
     at ``g.mesh()`` time (driven ports collapse to ``port_<N>``, materials to
     ``dielectric_<N>`` / ``air_<N>`` / ``conductor_<N>``), so the viewer's
     ``classify`` / ``pretty_label`` / ``color_for`` pipeline treats the geometry
-    preview and the meshed model identically — ports render lava and read
+    preview and the meshed model identically, ports render lava and read
     "Port N" before and after meshing alike. The color is computed here too and
     is what the wireframe fallback draws with directly.
     """
@@ -261,7 +261,7 @@ def geometry_to_payload(g: Any, *, target_tris: int = 4000) -> dict:
 
 
 def _surface_preview(g: Any) -> dict:
-    """Coarse OCC-surface tessellation for the Geometry cell — filled, colored
+    """Coarse OCC-surface tessellation for the Geometry cell, filled, colored
     per named face. Quick (~50ms) and gets wiped by `g.mesh()` before any FEM
     mesh is generated, so it never pollutes the user's discretization."""
     gmsh.model.occ.synchronize()
@@ -280,7 +280,7 @@ def _surface_preview(g: Any) -> dict:
     try:
         gmsh.model.mesh.generate(2)
     except Exception:
-        # Preview meshing failed — fall back to wireframe.
+        # Preview meshing failed, fall back to wireframe.
         return _wireframe_payload(g)
 
     # Two passes so volumes can color their own boundary. First the physics-
@@ -312,7 +312,7 @@ def _surface_preview(g: Any) -> dict:
             continue
         label, color = _entity_resolution(g, ent)
         if label is None:
-            continue   # untracked — a volume claims it in pass 2
+            continue   # untracked, a volume claims it in pass 2
         seen_surface_tags.add(ent.tag)
         _emit(label, ent.tag, 2, color, [(2, ent.tag)], _material_label(ent.material))
 
@@ -329,7 +329,7 @@ def _surface_preview(g: Any) -> dict:
                 seen_surface_tags.add(t)
         _emit(name, ent.tag, 3, color, dim_tags, _material_label(ent.material))
 
-    # Pass 3: any still-unclaimed surface (orphan fragment) — neutral.
+    # Pass 3: any still-unclaimed surface (orphan fragment), neutral.
     for ent in all_ents:
         if ent.dim != 2 or ent.tag in seen_surface_tags:
             continue
@@ -350,7 +350,7 @@ def _surface_preview(g: Any) -> dict:
 
 
 def _wireframe_payload(g: Any) -> dict:
-    """OCC wireframe — no meshing. Samples each boundary curve in parametric
+    """OCC wireframe, no meshing. Samples each boundary curve in parametric
     space and emits the resulting polylines per named entity. Renders the
     geometric outlines (filling will appear once the user runs g.mesh())."""
     gmsh.model.occ.synchronize()
@@ -413,7 +413,7 @@ def _wireframe_payload(g: Any) -> dict:
     raw_ents.sort(key=_key)
 
     # Cache sampled curves so we don't re-tessellate shared edges, but
-    # emit them under EACH entity that owns them — otherwise the first
+    # emit them under EACH entity that owns them, otherwise the first
     # face claims everything and the rest of the legend is empty.
     curve_cache: dict[int, list[float]] = {}
     def sample_cached(tag: int) -> list[float]:
@@ -475,7 +475,7 @@ def mesh_to_payload(g: Any, *, maxh: float) -> dict:
     import time
     t0 = time.perf_counter()
     # If the user already triggered meshing (e.g. via builder.from_geometry()
-    # in the same script), gmsh holds the mesh + physical groups — calling
+    # in the same script), gmsh holds the mesh + physical groups, calling
     # g.mesh() again collides on duplicate physical tags. Skip the re-mesh in
     # that case; otherwise generate now.
     name_to_tag: dict[str, int] = {}

@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! rapidfem-core — solver-agnostic substrate shared by the frequency-domain
+//! rapidfem-core, solver-agnostic substrate shared by the frequency-domain
 //! and time-domain backends: mesh, quadrature, and the material data model.
 
 pub mod constants;

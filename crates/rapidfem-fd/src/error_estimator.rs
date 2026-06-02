@@ -22,7 +22,7 @@ pub struct ErrorEstimate {
     pub volume_residuals: Vec<f64>,
     pub face_jumps: Vec<f64>,
     /// Per-tet element diameter (max edge length). Same h_K the
-    /// estimator scales the residual by — exposed so downstream
+    /// estimator scales the residual by, exposed so downstream
     /// refinement code can pick a target size relative to the current
     /// local mesh resolution.
     pub h_k: Vec<f64>,
@@ -85,7 +85,7 @@ pub fn write_size_field(
 }
 
 
-// `eval_curl_in_tet` lives in `crate::interp` — same analytic Nédélec-2
+// `eval_curl_in_tet` lives in `crate::interp`, same analytic Nédélec-2
 // curl, used by both the error estimator and the H-field visualisation.
 pub use crate::interp::eval_curl_in_tet;
 

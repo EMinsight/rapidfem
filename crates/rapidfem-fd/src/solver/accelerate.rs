@@ -45,12 +45,12 @@ pub struct AccelerateSolver {
 }
 
 // The shim and Apple's factor are not thread-shared, but a single owner can
-// move the solver across threads — same contract as `PardisoSolver`.
+// move the solver across threads, same contract as `PardisoSolver`.
 unsafe impl Send for AccelerateSolver {}
 
 impl AccelerateSolver {
     /// Probe whether the Accelerate path is available. The shim is linked
-    /// unconditionally on macOS so this always succeeds — kept for parity
+    /// unconditionally on macOS so this always succeeds, kept for parity
     /// with `PardisoSolver::try_new`.
     pub fn try_new() -> Option<Self> {
         Some(Self { handle: std::ptr::null_mut(), n: 0 })
@@ -197,11 +197,11 @@ fn build_real_block_upper_csc(
         if re != 0.0 {
             row_of.push(r + n); col_of.push(c + n); val_of.push(-re);
         }
-        // block(0,1): (r, c+N, -Im) — always upper since c+N > r
+        // block(0,1): (r, c+N, -Im), always upper since c+N > r
         if im != 0.0 {
             row_of.push(r);     col_of.push(c + n); val_of.push(-im);
             if r < c {
-                // mirror: (c, r+N, -Im) — also upper since r+N > c
+                // mirror: (c, r+N, -Im), also upper since r+N > c
                 row_of.push(c); col_of.push(r + n); val_of.push(-im);
             }
         }
@@ -241,7 +241,7 @@ fn build_real_block_upper_csc(
 mod tests {
     use super::*;
 
-    /// Smoke test on a tiny 3×3 complex-symmetric matrix — verifies the
+    /// Smoke test on a tiny 3×3 complex-symmetric matrix, verifies the
     /// real-block construction and Apple's solver round-trip.
     #[test]
     fn solve_3x3_round_trip() {

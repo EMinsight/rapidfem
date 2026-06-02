@@ -1,11 +1,11 @@
-"""WR-90 rectangular waveguide — 21-point sweep across the single-mode band.
+"""WR-90 rectangular waveguide, 21-point sweep across the single-mode band.
 
 Notebook-style flow:
 
     Parameters  ->  Geometry + Materials  ->  Mesh  ->  Problem
 
 Each `# %%` block is a cell. Run them top-to-bottom with Shift+Enter, or hit
-Run-All. The script also runs end-to-end as plain `python fd_wr90.py` — `# %%`
+Run-All. The script also runs end-to-end as plain `python fd_wr90.py`, `# %%`
 is just a comment.
 """
 
@@ -15,7 +15,7 @@ import rapidfem as rf
 
 A, B, L = 22.86e-3, 10.16e-3, 30.0e-3        # WR-90 width, height, length [m]
 FREQUENCIES = np.linspace(8.0e9, 12.0e9, 21) # 21-point sweep, single-mode band
-MAXH = rf.lambda_maxh(f_max=12.0e9)          # ~2.1 mm — air λ/12 at f_max
+MAXH = rf.lambda_maxh(f_max=12.0e9)          # ~2.1 mm, air λ/12 at f_max
 
 
 # %% Geometry + Materials

@@ -1,15 +1,15 @@
-//! Arnoldi orthogonalisation benchmark — MGS vs CGS2, on realistic meshes.
+//! Arnoldi orthogonalisation benchmark, MGS vs CGS2, on realistic meshes.
 //!
 //! The production Krylov stepper (`propagator::expmv_into`) orthogonalises
 //! with serial modified Gram-Schmidt (MGS). This pits it against classical
-//! Gram-Schmidt with one reorthogonalisation (CGS2) — serial, and
-//! rayon-parallel — on structured-box meshes large enough to be
+//! Gram-Schmidt with one reorthogonalisation (CGS2), serial, and
+//! rayon-parallel, on structured-box meshes large enough to be
 //! representative. (An earlier "CGS2 measured slower" note was taken on
-//! meshes of a few dozen tetrahedra — far too small to generalise from.)
+//! meshes of a few dozen tetrahedra, far too small to generalise from.)
 //!
 //! MGS issues `j+1` *sequential* dot/axpy pairs per Arnoldi step. CGS2
 //! batches the `j+1` projections into two passes whose dot products are
-//! independent — cache-friendly and parallelisable — at the cost of 2x the
+//! independent, cache-friendly and parallelisable, at the cost of 2x the
 //! orthogonalisation flops. The matvec is identical for both, so the
 //! `X - matvec` columns isolate the orthogonalisation itself.
 //!
@@ -40,14 +40,14 @@ fn time_median(reps: usize, mut f: impl FnMut()) -> f64 {
     ts[reps / 2]
 }
 
-/// `m` matvecs over a fixed basis — the cost both orthogonalisations share.
+/// `m` matvecs over a fixed basis, the cost both orthogonalisations share.
 fn matvec_only(op: &MaxwellOperator, basis: &[f64], n: usize, m: usize, w: &mut [f64]) {
     for j in 0..m {
         op.apply_into(&basis[j * n..j * n + n], w);
     }
 }
 
-/// One full `m`-step Arnoldi, modified Gram-Schmidt — the production path.
+/// One full `m`-step Arnoldi, modified Gram-Schmidt, the production path.
 fn arnoldi_mgs(op: &MaxwellOperator, v: &[f64], m: usize) -> f64 {
     let n = v.len();
     let mut basis = vec![0.0; (m + 1) * n];
@@ -84,7 +84,7 @@ fn arnoldi_mgs(op: &MaxwellOperator, v: &[f64], m: usize) -> f64 {
 
 /// One full `m`-step Arnoldi, classical GS with one reorthogonalisation
 /// (CGS2). `parallel` runs the batched projection on the rayon pool. The
-/// Hessenberg bookkeeping (`O(m²)` adds) is omitted — negligible against
+/// Hessenberg bookkeeping (`O(m²)` adds) is omitted, negligible against
 /// the `O(m²·n)` projection work this benchmark measures.
 fn arnoldi_cgs2(op: &MaxwellOperator, v: &[f64], m: usize, parallel: bool) -> f64 {
     let n = v.len();
@@ -100,7 +100,7 @@ fn arnoldi_cgs2(op: &MaxwellOperator, v: &[f64], m: usize, parallel: bool) -> f6
         let cols = j + 1;
         // Two projection passes against the `cols` prior basis vectors.
         for _pass in 0..2 {
-            // c[i] = <basis[i], w> — independent across i.
+            // c[i] = <basis[i], w>, independent across i.
             let c: Vec<f64> = if parallel {
                 (0..cols)
                     .into_par_iter()
@@ -159,7 +159,7 @@ fn main() {
     let order = 2;
     let m = 40;
     let reps = 7;
-    println!("rapidfem-td — Arnoldi orthogonalisation benchmark");
+    println!("rapidfem-td, Arnoldi orthogonalisation benchmark");
     println!(
         "order {order}, krylov m = {m}, rayon threads: {}\n",
         rayon::current_num_threads()
@@ -193,7 +193,7 @@ fn main() {
             arnoldi_cgs2(&op, &v, m, true);
         });
 
-        // Orthogonalisation only — the full Arnoldi minus the shared matvec.
+        // Orthogonalisation only, the full Arnoldi minus the shared matvec.
         let o_mgs = (t_mgs - t_mv).max(0.0);
         let o_cs = (t_cs - t_mv).max(0.0);
         let o_cp = (t_cp - t_mv).max(0.0);

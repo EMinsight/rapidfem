@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Geometric factors — the affine map from the reference tetrahedron to each
+//! Geometric factors, the affine map from the reference tetrahedron to each
 //! physical element.
 //!
 //! For a tet with vertices `v0..v3` the map is
@@ -20,11 +20,11 @@ use rapidfem_core::mesh::Mesh;
 /// Per-element geometric factors of the reference→physical affine map.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometricFactors {
-    /// `v0` — image of the reference origin.
+    /// `v0`, image of the reference origin.
     pub origin: [Field; 3],
     /// Jacobian `J[i][k] = ∂x_i/∂ξ_k`; column `k` is `v_{k+1} - v0`.
     pub jacobian: [[Field; 3]; 3],
-    /// Inverse Jacobian `J⁻¹` — the metric terms `∂ξ_k/∂x_i`.
+    /// Inverse Jacobian `J⁻¹`, the metric terms `∂ξ_k/∂x_i`.
     pub jacobian_inv: [[Field; 3]; 3],
     /// Signed determinant of `J`.
     pub det: Field,
@@ -37,7 +37,7 @@ impl GeometricFactors {
     pub fn for_tet(v: &[[Field; 3]; 4]) -> Self {
         let col = |a: [Field; 3]| [a[0] - v[0][0], a[1] - v[0][1], a[2] - v[0][2]];
         let (c0, c1, c2) = (col(v[1]), col(v[2]), col(v[3]));
-        // J[i][k] — row i, column k.
+        // J[i][k], row i, column k.
         let jacobian = [
             [c0[0], c1[0], c2[0]],
             [c0[1], c1[1], c2[1]],

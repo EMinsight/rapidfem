@@ -1,5 +1,5 @@
 """
-RFIC builder for rapidfem — PDK-grade stack definitions, GDS-driven extrusion
+RFIC builder for rapidfem, PDK-grade stack definitions, GDS-driven extrusion
 helpers, and hand-coded primitives (microstrip, via, GSG port).
 
 The `Stack` data model mirrors the schema used by ``rapidpassives`` so that
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stack data model — mirrors rapidpassives' PdkLayer / Pdk shape
+# Stack data model, mirrors rapidpassives' PdkLayer / Pdk shape
 # ─────────────────────────────────────────────────────────────────────────────
 
 LayerType = Literal["metal", "via", "poly", "diffusion", "substrate", "oxide", "other"]
@@ -266,7 +266,7 @@ class Stack:
         from the substrate top to the stack's top.
 
         Each block is created with a fully-instantiated ``rf.Dielectric``
-        derived from the stack constants — drop the returned objects straight
+        derived from the stack constants, drop the returned objects straight
         into the Problem API, no extra material wiring needed.
 
         Returns a dict of named GeoObjects (`substrate`, `oxide`). If
@@ -275,7 +275,7 @@ class Stack:
         they are fragmented into the new oxide slab so the resulting mesh is
         conformal at every interface.
         """
-        # Local import — avoids a circular at module load (rapidfem.__init__
+        # Local import, avoids a circular at module load (rapidfem.__init__
         # imports rapidfem.rfic).
         from rapidfem.materials import Dielectric
 
@@ -305,7 +305,7 @@ class Stack:
         # Fragment with all pre-existing 3D primitives so interfaces are conformal.
         # Critical: do this in ONE call. Two sequential fragment ops carve the
         # second target against the same tools but leave the first one in a
-        # half-resolved state — re-resolution by (cog, bbox) then misattributes
+        # half-resolved state, re-resolution by (cog, bbox) then misattributes
         # the first volume's name to the wrong sub-piece (#64).
         if fragment_existing and existing_3d:
             others = existing_3d + ([ox] if ox is not None else [])
@@ -315,7 +315,7 @@ class Stack:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hand-coded primitives — for layouts NOT coming from GDS
+# Hand-coded primitives, for layouts NOT coming from GDS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def microstrip(
@@ -403,13 +403,13 @@ def trace_port(
     PEC references on both ends.
 
     Geometry:
-      1. A small extension pad on the trace's `layer` (e.g. met5) at `position`
-         — guarantees the port plate's TOP edge sits fully on PEC.
-      2. A ground pad on `gnd_layer` (e.g. li1) directly below — anchor for
+      1. A small extension pad on the trace's `layer` (e.g. met5) at `position`,
+         guarantees the port plate's TOP edge sits fully on PEC.
+      2. A ground pad on `gnd_layer` (e.g. li1) directly below, anchor for
          the port plate's BOTTOM edge.
       3. A vertical port plate spanning from gnd_layer top to trace_layer bottom.
 
-    Pass any volumes that the port should fragment with via `fragment_with` —
+    Pass any volumes that the port should fragment with via `fragment_with`,
     typically the oxide block and the trace volume (so all three become
     conformal at the port boundary).
     """
@@ -420,7 +420,7 @@ def trace_port(
     cx, cy = position
     half = extension_size / 2
 
-    # 1. Extension pad on the trace layer — co-PEC with the rest of the trace,
+    # 1. Extension pad on the trace layer, co-PEC with the rest of the trace,
     # so the port plate's top edge always lands on metal.
     extension = g.box(extension_size, extension_size, pdk_trace.thickness,
                       position=(cx - half, cy - half, z_trace))
@@ -429,7 +429,7 @@ def trace_port(
     ground = g.xy_plate(extension_size, extension_size,
                         position=(cx - half, cy - half, z_gnd_top))
 
-    # 3. Port plate — a 2D rectangle in the yz-plane at x=cx, spanning the gap
+    # 3. Port plate, a 2D rectangle in the yz-plane at x=cx, spanning the gap
     port_plate = g.plate(
         p0=(cx, cy - half, z_gnd_top),
         width=(0, extension_size, 0),
@@ -508,7 +508,7 @@ def differential_port(
     pad_size: float = 50e-6,
     gap: float = 30e-6,
 ) -> DifferentialPort:
-    """Two coplanar pads with a lumped port between them — basic balanced feed."""
+    """Two coplanar pads with a lumped port between them, basic balanced feed."""
     pdk_layer = stack.by_name(layer)
     z_metal = pdk_layer.z
     cx, cy = center
@@ -527,14 +527,14 @@ def differential_port(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEM-JSON bridge — consume rapidpassives' exportForFEM() JSON
+# FEM-JSON bridge, consume rapidpassives' exportForFEM() JSON
 # ─────────────────────────────────────────────────────────────────────────────
 
 FEM_JSON_SCHEMA_VERSIONS = (1,)
 
 # Polygons coming out of mergeLayers may carry sliver edges (sub-nm jogs at
 # rectangle-to-rectangle joins). Drop any vertex closer than this to its
-# predecessor in xy — well below the geometric tolerance that gmsh OCC
+# predecessor in xy, well below the geometric tolerance that gmsh OCC
 # rejects on `addLine`, but large enough to wipe merge slivers.
 _FEM_JSON_VERTEX_TOL_UM = 0.01
 
@@ -544,7 +544,7 @@ def _clean_polygon_um(poly_um: list) -> list:
 
     rapidpassives' mergeLayers occasionally emits near-duplicate vertices at
     polygon joins (sub-nm slivers); gmsh's OCC kernel refuses to build a
-    line for those. Closing-vertex duplicates are also stripped — gmsh's
+    line for those. Closing-vertex duplicates are also stripped, gmsh's
     polygon helper closes the loop itself, an explicit trailing copy of
     the first vertex would produce a zero-length segment.
     """
@@ -568,7 +568,7 @@ def _clean_polygon_um(poly_um: list) -> list:
 
 @dataclass
 class FemLayoutResult:
-    """Output of :func:`from_fem_json` — a meshed-ready geometry plus the
+    """Output of :func:`from_fem_json`, a meshed-ready geometry plus the
     objects the caller needs to wire BCs/ports.
 
     Typical usage::
@@ -641,7 +641,7 @@ def from_fem_json(
         Port plate width (extent perpendicular to the integration line).
     port_inset_um : float, optional
         Distance to move each port plate inward from the JSON's port
-        location (toward layout centre). Default = ``port_tab_um / 2`` —
+        location (toward layout centre). Default = ``port_tab_um / 2``,
         far enough to land the plate top edge inside the conductor's bottom
         face instead of on a side wall.
 
@@ -676,10 +676,10 @@ def from_fem_json(
     conductors_doc = doc["conductors"]
     ports_doc      = doc["ports"]
 
-    # Layer lookup by id — used everywhere below.
+    # Layer lookup by id, used everywhere below.
     layer_by_id = {l["id"]: l for l in layers_doc}
 
-    # Resolve port layer ids — must already be valid stack-layer ids. Older
+    # Resolve port layer ids, must already be valid stack-layer ids. Older
     # exports (pre 2026-05-19) wrote generator-internal names like "m3" that
     # had no stable mapping to stack ids; those need to be re-exported.
     metals_by_z = sorted(
@@ -695,7 +695,7 @@ def from_fem_json(
             f"generator-internal names (e.g. 'm3'). Re-export the layout. "
             f"Known stack layers: {sorted(layer_by_id)}")
 
-    # Substrate + oxide constants — JSON wins unless the caller passed a stack.
+    # Substrate + oxide constants, JSON wins unless the caller passed a stack.
     sub_thickness_um = substrate_doc.get("thickness_um", 300.0) or 300.0
     sub_er           = substrate_doc.get("er", 11.7)
     sub_rho_ohm_cm   = substrate_doc.get("rho_ohm_cm", 10.0) or 10.0
@@ -727,13 +727,13 @@ def from_fem_json(
     cx_m   = (x_min_um + x_max_um) / 2 * 1e-6
     cy_m   = (y_min_um + y_max_um) / 2 * 1e-6
 
-    # Stack z range — bottom of lowest layer, top of highest layer.
+    # Stack z range, bottom of lowest layer, top of highest layer.
     layers_sorted = sorted(layers_doc, key=lambda l: l["z_um"])
     z_bottom_um = layers_sorted[0]["z_um"]
     z_top_um    = layers_sorted[-1]["z_um"] + layers_sorted[-1]["thickness_um"]
     z_top_m     = z_top_um * 1e-6
 
-    # Build the enclosure. Global maxh = ~10% of the smaller in-plane span —
+    # Build the enclosure. Global maxh = ~10% of the smaller in-plane span,
     # finer-than-bulk meshing of conductors is set per-volume via maxh.
     # scale=1e-6: gmsh OCC stores coords in µm internally (dilated back to
     # metres before meshing) so the kernel's relative tolerances apply to
@@ -768,12 +768,12 @@ def from_fem_json(
         if thick <= 0:
             continue
 
-        # Pick the polygon set — merged bbox, or per-cell array for vias.
+        # Pick the polygon set, merged bbox, or per-cell array for vias.
         polys = [c["polygon"]]
         if via_mode == "cells" and c.get("polygon_cells"):
             polys = c["polygon_cells"]
 
-        # Holes (annular conductors: rat-race ring, guard ring) — only the
+        # Holes (annular conductors: rat-race ring, guard ring), only the
         # primary `polygon` entry carries holes; per-cell arrays are
         # individual solid pieces with no holes.
         holes_um = c.get("holes") if polys is not c.get("polygon_cells") else None
@@ -800,7 +800,7 @@ def from_fem_json(
             all_conductors.append(vol)
 
     # Shared local ground patch + one port plate per JSON port.
-    # Ground sits on the lowest metal's TOP face — that's typically li1 in
+    # Ground sits on the lowest metal's TOP face, that's typically li1 in
     # sky130 and any other "ground shield" layer used by the generator.
     gnd_z = (metals_by_z[0]["z_um"] + metals_by_z[0]["thickness_um"]) * 1e-6
 
@@ -893,7 +893,7 @@ def from_fem_json(
 
         # Find this port's local ground: highest metal below the port's
         # metal that has a conductor covering (px, py). Fall back to the
-        # lowest metal (li1 / poly) if none — we synthesise a local gnd
+        # lowest metal (li1 / poly) if none, we synthesise a local gnd
         # patch on that.
         port_gnd_z = (metal_below_by_z[0]["z_um"]
                       + metal_below_by_z[0]["thickness_um"]) * 1e-6
@@ -908,7 +908,7 @@ def from_fem_json(
                 continue
             # Skip same-net candidates: a via polygon between port_metal and
             # cand that lands inside both polygons connects them
-            # electrically — using cand's top face as the port reference
+            # electrically, using cand's top face as the port reference
             # would short the lumped port.
             if _polygons_same_net(lay, port_xy_box, cand["id"], cand_xy_box):
                 continue

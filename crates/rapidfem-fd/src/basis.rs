@@ -13,16 +13,16 @@
 //! Mirrors emerge/_emerge/elements/nedelec2.py.
 //!
 //! DOF structure per tetrahedron (20 DOFs total):
-//!   [0..6]   = edge DOFs (mode 1) — mapped to tet_to_edge[0..6]
-//!   [6..10]  = face DOFs (mode 1) — mapped to tet_to_tri[0..4] + n_edges
-//!   [10..16] = edge DOFs (mode 2) — mapped to tet_to_edge[0..6] + (n_tris + n_edges)
-//!   [16..20] = face DOFs (mode 2) — mapped to tet_to_tri[0..4] + (n_tris + 2*n_edges)
+//!   [0..6]   = edge DOFs (mode 1), mapped to tet_to_edge[0..6]
+//!   [6..10]  = face DOFs (mode 1), mapped to tet_to_tri[0..4] + n_edges
+//!   [10..16] = edge DOFs (mode 2), mapped to tet_to_edge[0..6] + (n_tris + n_edges)
+//!   [16..20] = face DOFs (mode 2), mapped to tet_to_tri[0..4] + (n_tris + 2*n_edges)
 //!
 //! DOF structure per surface triangle (8 DOFs total):
-//!   [0..3] = edge DOFs (mode 1) — mapped to tri_to_edge[0..3]
-//!   [3]    = face DOF  (mode 1) — mapped to tri_index + n_edges
-//!   [4..7] = edge DOFs (mode 2) — mapped to tri_to_edge[0..3] + (n_tris + n_edges)
-//!   [7]    = face DOF  (mode 2) — mapped to tri_index + (n_tris + 2*n_edges)
+//!   [0..3] = edge DOFs (mode 1), mapped to tri_to_edge[0..3]
+//!   [3]    = face DOF  (mode 1), mapped to tri_index + n_edges
+//!   [4..7] = edge DOFs (mode 2), mapped to tri_to_edge[0..3] + (n_tris + n_edges)
+//!   [7]    = face DOF  (mode 2), mapped to tri_index + (n_tris + 2*n_edges)
 
 use crate::mesh::Mesh;
 
@@ -137,7 +137,7 @@ impl Nedelec2Basis {
         }
     }
 
-    /// Port of femdata.py:empty_tri_matrix() — returns flat zero array of size n_tris*64
+    /// Port of femdata.py:empty_tri_matrix(), returns flat zero array of size n_tris*64
     pub fn empty_tri_matrix(&self) -> Vec<num_complex::Complex64> {
         vec![num_complex::Complex64::new(0.0, 0.0); self.n_tris * 64]
     }

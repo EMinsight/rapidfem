@@ -40,7 +40,7 @@ pub struct RadiationPattern {
     pub e_phi: Vec<Vec<C64>>,
     /// Directivity in dBi
     pub directivity_dbi: Vec<Vec<f64>>,
-    /// Gain in dBi — accounts for input mismatch (= directivity × (1-|S11|²) when input_power is provided)
+    /// Gain in dBi, accounts for input mismatch (= directivity × (1-|S11|²) when input_power is provided)
     pub gain_dbi: Vec<Vec<f64>>,
     /// Axial ratio in dB. AR=0dB → circular polarization, AR=∞ → linear.
     pub axial_ratio_db: Vec<Vec<f64>>,
@@ -103,7 +103,7 @@ pub fn compute_farfield_with_input(
 /// Full-fidelity far-field with separate ABC (radiation) and PEC (image-closing) surfaces.
 ///
 /// On the ABC surface, both J_s = n̂×H and M_s = -n̂×E contribute (radiating equivalence).
-/// On PEC surfaces, tangential E = 0 by construction so M_s = 0 — only J_s = n̂×H from the
+/// On PEC surfaces, tangential E = 0 by construction so M_s = 0, only J_s = n̂×H from the
 /// air-side is included. Adding the PEC surface CLOSES the integration boundary around the
 /// antenna, eliminating the phantom back lobe that an open-surface NFFT produces over a
 /// half-space antenna with a finite ground plane.

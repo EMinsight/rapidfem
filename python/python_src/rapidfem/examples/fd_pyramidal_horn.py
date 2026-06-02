@@ -1,4 +1,4 @@
-"""Pyramidal horn antenna — WR-90 feed + PML in the main-beam direction.
+"""Pyramidal horn antenna, WR-90 feed + PML in the main-beam direction.
 
 A short WR-90 feed waveguide followed by an 80 mm taper to a 30×22 mm
 aperture. The +x face is terminated by a PML slab; the other five outer
@@ -63,7 +63,7 @@ g.fragment(air, feed, horn, pml_xp)
 # Physics
 rf.RectWaveguidePort(feed.faces.min(axis="x"), mode=(1, 0), power=1.0)
 
-# Feed waveguide PEC walls — four yz-side faces (skipping throat at x=0
+# Feed waveguide PEC walls, four yz-side faces (skipping throat at x=0
 # and port at x=-Lfeed).
 rf.PEC(feed.faces.min(axis="y"), feed.faces.max(axis="y"),
        feed.faces.min(axis="z"), feed.faces.max(axis="z"))
@@ -95,7 +95,7 @@ rf.show(prob)
 rf.show(result)
 
 print(f"DOFs: {prob.n_dofs}, tets: {prob.n_tets}")
-print(f"|S11| range: {min(abs(result.sparams[i, 0, 0]) for i in range(len(FREQUENCIES))):.3f} – "
+print(f"|S11| range: {min(abs(result.sparams[i, 0, 0]) for i in range(len(FREQUENCIES))):.3f}, "
       f"{max(abs(result.sparams[i, 0, 0]) for i in range(len(FREQUENCIES))):.3f}")
 
 fi0 = int(min(range(len(FREQUENCIES)), key=lambda i: abs(FREQUENCIES[i] - F0)))

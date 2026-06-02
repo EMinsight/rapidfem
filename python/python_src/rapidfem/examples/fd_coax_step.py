@@ -1,4 +1,4 @@
-"""Coaxial impedance step (50Ω → 75Ω) — quarter-wave matching section."""
+"""Coaxial impedance step (50Ω → 75Ω), quarter-wave matching section."""
 
 # %% Parameters
 import numpy as np

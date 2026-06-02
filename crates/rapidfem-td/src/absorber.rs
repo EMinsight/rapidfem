@@ -9,7 +9,7 @@
 //!
 //! A graded impedance-matched lossy layer (`σ/ε = σ*/μ`) absorbs outgoing
 //! waves with no reflection at the layer interface; ramping the loss from
-//! zero keeps the entry smooth. This is the matched-layer absorber — a true
+//! zero keeps the entry smooth. This is the matched-layer absorber, a true
 //! CFS-PML (reflectionless at *all* incidence angles, via auxiliary
 //! differential equations) is a further extension.
 
@@ -111,7 +111,7 @@ mod tests {
         };
 
         let vacuum = vec![ElemMaterial::VACUUM; mesh.n_tets()];
-        // absorber covers most of the channel — the small clean region holds
+        // absorber covers most of the channel, the small clean region holds
         // the disturbance, everything propagating into the layer is absorbed.
         let absorber = absorbing_layer(&mesh, 2, lz, 3.5, 6.0);
         let frac_vac = run(&vacuum);
@@ -119,14 +119,14 @@ mod tests {
 
         assert!(
             frac_vac > 0.9,
-            "vacuum must conserve energy — kept {frac_vac:.3}"
+            "vacuum must conserve energy, kept {frac_vac:.3}"
         );
         // The absorber drains the bulk of the energy; the residual is the
         // slow-decaying mode tail (modes with a field node in the layer).
         // What matters is the decisive contrast against the vacuum run.
         assert!(
             frac_abs < 0.4,
-            "absorbing layer must drain energy — kept {frac_abs:.3}"
+            "absorbing layer must drain energy, kept {frac_abs:.3}"
         );
         assert!(
             frac_vac / frac_abs > 2.5,

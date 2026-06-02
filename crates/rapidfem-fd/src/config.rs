@@ -122,7 +122,7 @@ pub enum PortConfig {
     #[serde(rename = "user_defined")]
     UserDefined {
         tag: i32,
-        /// Constant E-field vector across the port face (V/m, but normalized — magnitude is set by `power`)
+        /// Constant E-field vector across the port face (V/m, but normalized, magnitude is set by `power`)
         e_field: [f64; 3],
         #[serde(default = "default_one")]
         power: f64,
@@ -163,7 +163,7 @@ pub enum PortConfig {
     Abc {
         tag: i32,
     },
-    /// Perfect magnetic conductor — natural BC (n × H = 0). No-op during assembly.
+    /// Perfect magnetic conductor, natural BC (n × H = 0). No-op during assembly.
     /// Useful when users want to mark a surface explicitly as PMC for documentation.
     #[serde(rename = "pmc")]
     Pmc { tag: i32 },
@@ -184,7 +184,7 @@ pub enum PortConfig {
         /// Height (along field direction); auto-detected if 0
         #[serde(default)]
         height: f64,
-        /// Field direction unit vector — used for auto width/height detection
+        /// Field direction unit vector, used for auto width/height detection
         #[serde(default = "default_z_dir")]
         direction: [f64; 3],
     },
@@ -194,7 +194,7 @@ pub enum PortConfig {
     /// frequency `f0` by `rapidfem_core::port_eigen::{solve_modes, solve_vector_modes}`
     /// and cached. Three modes:
     /// - default (`mode_kind = "auto"` or omitted): full-vector hybrid for an
-    ///   inhomogeneous cross-section (substrate + air) — quasi-TEM microstrip.
+    ///   inhomogeneous cross-section (substrate + air), quasi-TEM microstrip.
     /// - `mode_kind = "te"` / `"tm"`: scalar Helmholtz on a homogeneously
     ///   filled hollow guide (rectangular / ridged / arbitrary shape).
     ///
@@ -214,7 +214,7 @@ pub enum PortConfig {
         /// Mode index, 0 = fundamental (descending n_eff / cutoff).
         #[serde(default)]
         mode_index: usize,
-        /// "auto" / "vector" — full hybrid solve (default). "te" / "tm" —
+        /// "auto" / "vector", full hybrid solve (default). "te" / "tm",
         /// scalar Helmholtz on the homogeneously-filled cross-section.
         #[serde(default = "default_wave_kind")]
         mode_kind: String,

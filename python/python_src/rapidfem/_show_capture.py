@@ -56,7 +56,7 @@ def classify(obj: Any) -> str:
     if cls == "Geometry" and mod.startswith("rapidfem"):
         return "geometry"
     # `Problem` is a backward-compatible alias of `ProblemFD`, so a
-    # `rf.Problem(g)` instance reports its class name as "ProblemFD" —
+    # `rf.Problem(g)` instance reports its class name as "ProblemFD",
     # match both. (The time-domain `ProblemTD` is not a UI "simulation":
     # its results render through the td_* wrappers instead.)
     if cls in ("Problem", "ProblemFD") and mod.startswith("rapidfem"):
@@ -65,7 +65,7 @@ def classify(obj: Any) -> str:
         return "simulation"
     if cls == "SweepResult":
         return "result"
-    # Time-domain result wrappers (rapidfem.problem.td) — thin objects the
+    # Time-domain result wrappers (rapidfem.problem.td), thin objects the
     # ProblemTD verbs hand back so show() can route them to a UI panel.
     if mod.startswith("rapidfem"):
         if cls == "TdScattering":
@@ -78,7 +78,7 @@ def classify(obj: Any) -> str:
             return "td_trajectory"
     if cls == "Eigenmode":
         return "eigenmode"
-    # `run_eigenmode()` returns a list — accept that as the typical user
+    # `run_eigenmode()` returns a list, accept that as the typical user
     # show() target so they don't have to unpack per-mode.
     if isinstance(obj, list) and obj and type(obj[0]).__name__ == "Eigenmode":
         return "eigenmodes"

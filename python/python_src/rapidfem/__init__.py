@@ -1,4 +1,4 @@
-"""rapidfem — frequency-domain electromagnetic FEM solver in Rust.
+"""rapidfem, frequency-domain electromagnetic FEM solver in Rust.
 
 Quick start::
 
@@ -17,14 +17,14 @@ problems), set the env var **before** importing rapidfem::
     os.environ["RAPIDFEM_SOLVER"] = "pardiso"   # or "auto"
     import rapidfem
 
-PARDISO additionally requires ``mkl_rt`` on the system PATH — see the
+PARDISO additionally requires ``mkl_rt`` on the system PATH, see the
 README for install options.
 """
 import os
 import sys
 
 # Make MKL loadable for PARDISO. Rust's libloading uses LoadLibraryA which
-# doesn't honour os.add_dll_directory — but if mkl_rt is already in the
+# doesn't honour os.add_dll_directory, but if mkl_rt is already in the
 # process's loaded-module table, LoadLibraryA returns that handle by name.
 # So we pre-load via ctypes after extending the DLL search to common
 # conda/anaconda locations.
@@ -86,7 +86,7 @@ def lambda_maxh(*, f_max: float, er_max: float = 1.0,
         }
 
     where the smallest local wavelength lives in the highest-εᵣ
-    material — that's what bounds the global cap.
+    material, that's what bounds the global cap.
 
 
     Note
@@ -135,7 +135,7 @@ def show(obj, name: str = "default"):
     """Hand an object to the rapidfem viewer (no-op outside ``rapidfem serve``).
 
     In a plain Python run, ``show`` prints a one-line summary and
-    returns ``obj`` unchanged — scripts behave the same on the command
+    returns ``obj`` unchanged, scripts behave the same on the command
     line. Under ``rapidfem serve`` (or during a static-demo bake), the
     kernel activates a capture slot; ``show`` forwards the object to
     the live 3-D viewer / S-parameter plot.
@@ -143,7 +143,7 @@ def show(obj, name: str = "default"):
 
     Note
     ----
-    Composes with assignment — ``show`` returns its argument unchanged,
+    Composes with assignment, ``show`` returns its argument unchanged,
     so the typical pattern is ``result = rf.show(prob.sweep(freqs))``.
 
 
@@ -166,7 +166,7 @@ def show(obj, name: str = "default"):
         coarse OCC surface preview, post-mesh ones render the FEM tet
         mesh; Problem + SweepResult render :math:`|\\mathbf{E}(t, r)|^2`
         point clouds plus an S-parameter plot. The :class:`ProblemTD`
-        verb results render too — a :meth:`~rapidfem.ProblemTD.transient`
+        verb results render too, a :meth:`~rapidfem.ProblemTD.transient`
         trajectory as a 3-D field animation,
         :meth:`~rapidfem.ProblemTD.sparams` as an S-parameter plot, and
         :meth:`~rapidfem.ProblemTD.driven_transient` /
@@ -185,7 +185,7 @@ def show(obj, name: str = "default"):
     if _show_capture.is_capturing():
         _show_capture.capture(name=name, obj=obj, kind=kind)
     else:
-        print(f"rapidfem.show({name}={type(obj).__name__}) [kind={kind}] — run via `rapidfem serve` to see it in the UI.")
+        print(f"rapidfem.show({name}={type(obj).__name__}) [kind={kind}], run via `rapidfem serve` to see it in the UI.")
     return obj
 
 

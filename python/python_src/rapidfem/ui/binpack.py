@@ -1,14 +1,14 @@
 """Binary packing for display-event payloads.
 
-A baked example — or a live display event — carries bulk numeric arrays:
+A baked example, or a live display event, carries bulk numeric arrays:
 mesh nodes / tris / tets, the geometry-preview triangulation, frequency-
 domain field data, time-domain trajectory frames. Serialised as JSON
 those are millions of numbers as text.
 
 :func:`pack` walks a list of display events and lifts every bulk array
-into one of **two** byte buffers — ``geo`` (mesh / geometry, needed as
+into one of **two** byte buffers, ``geo`` (mesh / geometry, needed as
 soon as the 3-D view opens) and ``field`` (field and trajectory data,
-fetched only when the field viewer is shown) — replacing each array with
+fetched only when the field viewer is shown), replacing each array with
 a compact ``$bin`` reference. The JSON that remains is pure structure.
 
 Both the static-demo bake and the live WebSocket protocol use this one
@@ -22,7 +22,7 @@ files vs. binary frames).
                      "off", "n", "n_freq", "n_port", "stride", "mask": [...]}``
 - frame block:   ``{"$bin": "field", "kind": "frames", "dtype": "u16",
                      "off", "n", "n_snap", "n_points"}``
-                  (``n_points`` is the per-frame row length — for a
+                  (``n_points`` is the per-frame row length, for a
                   trajectory it is the unique-node count ``n_node``)
 
 ``buf`` is ``"geo"`` or ``"field"``; ``off`` is a byte offset, 4-byte
@@ -34,7 +34,7 @@ from typing import Any
 
 import numpy as np
 
-# Format magic + version — written into the buffer header so a reader can
+# Format magic + version, written into the buffer header so a reader can
 # reject a stale or mismatched blob loudly.
 BIN_MAGIC = 0x52464250  # "RFBP"
 BIN_VERSION = 2
@@ -82,7 +82,7 @@ def _pack_array(buffer: _Buffer, buf_name: str, values: Any, dtype: str) -> dict
 
 
 def _pack_mesh(geo: _Buffer, payload: dict) -> None:
-    """Mesh payload — node coordinates and tet/tri connectivity."""
+    """Mesh payload, node coordinates and tet/tri connectivity."""
     if isinstance(payload.get("nodes"), list):
         payload["nodes"] = _pack_array(geo, "geo", payload["nodes"], "f32")
     for key in ("tris", "tri_phys", "tets", "tet_phys"):
@@ -92,7 +92,7 @@ def _pack_mesh(geo: _Buffer, payload: dict) -> None:
 
 
 def _pack_geometry(geo: _Buffer, payload: dict) -> None:
-    """OCC geometry-preview payload — per-entity triangulation / wireframe."""
+    """OCC geometry-preview payload, per-entity triangulation / wireframe."""
     for ent in payload.get("entities", []):
         if not isinstance(ent, dict):
             continue
@@ -125,7 +125,7 @@ def _pack_fields(field: _Buffer, fields: Any) -> Any:
                     stride = len(x)
                 flat.extend(x)
     if stride is None:
-        return fields  # all-null — nothing to pack, leave inline
+        return fields  # all-null, nothing to pack, leave inline
     off, n = field.put(flat, "f32")
     return {
         "$bin": "field", "kind": "fields", "dtype": "f32",
@@ -135,7 +135,7 @@ def _pack_fields(field: _Buffer, fields: Any) -> Any:
 
 
 def _pack_trajectory(field: _Buffer, payload: dict) -> None:
-    """Time-domain trajectory — the self-contained DG-corner mesh
+    """Time-domain trajectory, the self-contained DG-corner mesh
     (``nodes`` / ``tets``) and its per-node per-frame quantised
     magnitudes. The mesh is small but logically geo-like; it rides in the
     field buffer so the whole trajectory is one unit fetched together."""
@@ -159,7 +159,7 @@ def _pack_trajectory(field: _Buffer, payload: dict) -> None:
 def pack(events: list[dict]) -> tuple[bytes, bytes]:
     """Lift the bulk arrays out of `events` into two binary buffers.
 
-    Mutates each event's ``payload`` in place — bulk arrays become
+    Mutates each event's ``payload`` in place, bulk arrays become
     ``$bin`` references. Returns ``(geo_bytes, field_bytes)``; either may
     be header-only (16 bytes) when an event set carries no such data.
     """

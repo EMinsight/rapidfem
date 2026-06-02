@@ -53,7 +53,7 @@ enum DrivenMode<'a> {
 
 /// Target work-group size for the `apply` kernel. A work-group processes
 /// one block of `EPG = APPLY_TARGET_WG / NP` elements, its work-items the
-/// `NP` DG nodes of each — so the group holds `EPG * NP` work-items, close
+/// `NP` DG nodes of each, so the group holds `EPG * NP` work-items, close
 /// to this target.
 const APPLY_TARGET_WG: usize = 128;
 
@@ -108,14 +108,14 @@ pub struct GpuOperator {
     // Krylov exponential propagator (P3). The f64 kernels are created
     // lazily on the first `expmv`: a device without `cl_khr_fp64` (Apple
     // Silicon, many integrated GPUs) cannot instantiate them, but the f32
-    // explicit (LSERK4) path does not need them — building them eagerly in
+    // explicit (LSERK4) path does not need them, building them eagerly in
     // `new` would wrongly make the whole operator unconstructible there.
     _expmv_program: Program,
     /// Lazily-built f64 Krylov kernels; `None` until the first `expmv`.
     expmv_kernels: Option<ExpmvKernels>,
     /// Lazily-allocated f64 Krylov buffers, sized on the first `expmv`.
     krylov: Option<Krylov>,
-    // KCL RK4(3)5[2R+]C adaptive stepper — f32 like the LSERK4 path,
+    // KCL RK4(3)5[2R+]C adaptive stepper, f32 like the LSERK4 path,
     // stage updates and the embedded-error vector device-resident, with
     // the host running the PI controller on top of a per-substep
     // `weighted_err_sq` reduction. Built eagerly: no fp64 needed.
@@ -125,14 +125,14 @@ pub struct GpuOperator {
     kcl_stage_accum_kernel: Kernel,
     weighted_err_sq_kernel: Kernel,
     copy_vec_kernel: Kernel,
-    /// Stage state register `Y_i` — built fresh each interior stage.
+    /// Stage state register `Y_i`, built fresh each interior stage.
     kcl_stage_buf: Buffer<cl_float>,
     /// Carries `dt·F_{i-1}` between stages (and into the next stage's
     /// `kcl_build_stage` evaluation point).
     kcl_dtf: Buffer<cl_float>,
     /// Embedded-error accumulator `e = Σ_i (b̂_i - b_i)·dt·F_i`.
     kcl_err: Buffer<cl_float>,
-    /// Snapshot of `y` taken before each adaptive substep — the rollback
+    /// Snapshot of `y` taken before each adaptive substep, the rollback
     /// source on a rejected step. Restoring it costs one `copy_vec`.
     kcl_ybackup: Buffer<cl_float>,
     /// Per-workgroup partial sums of `(err/scale)²`, summed host-side into
@@ -165,7 +165,7 @@ struct ExpmvKernels {
 struct Krylov {
     /// Largest Krylov dimension the buffers are sized for.
     cap_dim: usize,
-    /// Arnoldi basis, flat — `(cap_dim+1)` vectors of length `n`.
+    /// Arnoldi basis, flat, `(cap_dim+1)` vectors of length `n`.
     basis: Buffer<cl_double>,
     /// Arnoldi working vector.
     w: Buffer<cl_double>,
@@ -304,7 +304,7 @@ impl GpuOperator {
                 .map_err(|e| format!("source_vec kernel create failed: {e}"))?;
 
         // Build the program (this succeeds even without fp64), but defer
-        // creating the f64 kernels themselves to the first `expmv` — see
+        // creating the f64 kernels themselves to the first `expmv`, see
         // the `expmv_kernels` field note.
         let expmv_program = gpu.build_program(EXPMV_SRC)?;
 
@@ -395,7 +395,7 @@ impl GpuOperator {
         let kern = |name: &str| {
             Kernel::create(&self._expmv_program, name).map_err(|e| {
                 format!(
-                    "{name} kernel create failed: {e} — the GPU exponential \
+                    "{name} kernel create failed: {e}, the GPU exponential \
                      propagator needs f64 (cl_khr_fp64), unavailable on this \
                      device; use the explicit stepper or the CPU path"
                 )
@@ -582,19 +582,19 @@ impl GpuOperator {
 
     // ── KCL RK4(3)5[2R+]C adaptive stepper ────────────────────────────────
 
-    /// Snapshot `self.y` into `self.kcl_ybackup` — the rollback source for
+    /// Snapshot `self.y` into `self.kcl_ybackup`, the rollback source for
     /// the next attempted substep. One copy_vec dispatch.
     fn enqueue_kcl_backup(&self, gpu: &GpuContext) -> Result<(), String> {
         self.enqueue_copy(gpu, &self.kcl_ybackup, &self.y)
     }
 
-    /// Restore `self.y` from `self.kcl_ybackup` — used when the controller
+    /// Restore `self.y` from `self.kcl_ybackup`, used when the controller
     /// rejects the most recent substep. One copy_vec dispatch.
     fn enqueue_kcl_restore(&self, gpu: &GpuContext) -> Result<(), String> {
         self.enqueue_copy(gpu, &self.y, &self.kcl_ybackup)
     }
 
-    /// Generic `dst[i] = src[i]` over `n_dof` — used both for backup and
+    /// Generic `dst[i] = src[i]` over `n_dof`, used both for backup and
     /// restore.
     fn enqueue_copy(
         &self,
@@ -617,7 +617,7 @@ impl GpuOperator {
         Ok(())
     }
 
-    /// Stage-0 update: `dtF = dt·k`, `y += b0·dtF`, `e = e0·dtF` — `k` is
+    /// Stage-0 update: `dtF = dt·k`, `y += b0·dtF`, `e = e0·dtF`, `k` is
     /// the matvec result `A·y_n` from the preceding [`Self::enqueue_apply`].
     fn enqueue_kcl_stage0(
         &self,
@@ -730,7 +730,7 @@ impl GpuOperator {
         self.enqueue_kcl_stage0(
             gpu, h, KCL_B[0] as f32, (KCL_BHAT[0] - KCL_B[0]) as f32,
         )?;
-        // Stages 1..s — build stage state, matvec, accumulate.
+        // Stages 1..s, build stage state, matvec, accumulate.
         for stage in 1..KCL_STAGES {
             let amb = (KCL_A[stage - 1] - KCL_B[stage - 1]) as f32;
             self.enqueue_kcl_build_stage(gpu, amb)?;
@@ -984,7 +984,7 @@ impl GpuOperator {
         let mut traj = Vec::with_capacity((steps + 1) * n);
         traj.extend_from_slice(y0);
 
-        // Controller state — carried across output frames.
+        // Controller state, carried across output frames.
         let mut h = dt;
         let mut prev_err = 0.0_f32;
         let h_min = min_step_factor * dt;
@@ -997,7 +997,7 @@ impl GpuOperator {
             let mut t_rel = 0.0_f32;
             // Per-frame source-hold value (zeroth-order hold across the
             // frame): for the point/vector driven cases, the controller's
-            // substep convention matches the LSERK4 driven GPU path —
+            // substep convention matches the LSERK4 driven GPU path,
             // waveform sampled once per output cadence.
             let g_val = match &mode {
                 DrivenMode::Free => 0.0_f32,
@@ -1410,8 +1410,8 @@ impl GpuOperator {
 
     /// Run an `m`-step Arnoldi process from `basis[0]` (unit-norm in slot
     /// 0). `h_dev` must be a zeroed `m*m` device buffer. The loop runs
-    /// entirely device-side — projections accumulate straight into the
-    /// device Hessenberg, the norm is finished on the device — so the
+    /// entirely device-side, projections accumulate straight into the
+    /// device Hessenberg, the norm is finished on the device, so the
     /// Hessenberg is the *only* thing the host reads back, once, at the
     /// end. Fixed dimension `m` (no breakdown check).
     #[allow(clippy::too_many_arguments)]
@@ -1556,7 +1556,7 @@ impl GpuOperator {
             }
             .map_err(|e| format!("scale_recip launch failed: {e}"))?;
         }
-        // The Hessenberg is the only host round-trip — downloaded once.
+        // The Hessenberg is the only host round-trip, downloaded once.
         let h = gpu.download_f64(h_dev, m * m)?;
         Ok((h, m))
     }
@@ -1593,7 +1593,7 @@ impl GpuOperator {
         Ok(())
     }
 
-    /// Matrix-free `exp(t*A)*v` via an `m`-step Krylov projection — the GPU
+    /// Matrix-free `exp(t*A)*v` via an `m`-step Krylov projection, the GPU
     /// counterpart of [`crate::propagator::expmv`].
     ///
     /// For `m` above [`KRYLOV_CHUNK`] the propagation is **sub-stepped**:
@@ -1688,7 +1688,7 @@ impl GpuOperator {
     /// (`s`) and the source column `b` is injected into the working vector
     /// by the f64 `axpy_src` device kernel. `b` may be a single-DOF point
     /// source (`b = e_dof·val`) or a full spatial pattern (modal-port
-    /// injection) — the path is identical.
+    /// injection), the path is identical.
     ///
     /// `m` caps the Krylov dimension; above [`KRYLOV_CHUNK`] the augmented
     /// propagation is sub-stepped just as [`expmv`](Self::expmv), the
@@ -1891,7 +1891,7 @@ impl GpuOperator {
         }
 
         // exp(tau·H) on the host; out_vec = beta·Σ_i basis_vec[i]·exp[i,0]
-        // — the first n components of the augmented result. The augmented
+        //, the first n components of the augmented result. The augmented
         // scalar component is preserved at 1 and discarded.
         let dim = m;
         let mut th = vec![0.0_f64; dim * dim];
@@ -1946,7 +1946,7 @@ mod tests {
 
     /// True if the error reports the device lacks f64 (`cl_khr_fp64`), so
     /// the exponential-propagator tests skip on Apple Silicon and similar
-    /// fp64-less GPUs rather than fail — the explicit f32 path is unaffected.
+    /// fp64-less GPUs rather than fail, the explicit f32 path is unaffected.
     fn fp64_unavailable(err: &str) -> bool {
         err.contains("fp64") || err.contains("f64")
     }
@@ -2033,7 +2033,7 @@ mod tests {
         let y0: Vec<Field> =
             (0..n).map(|i| (0.2 + i as Field * 0.011).sin()).collect();
 
-        // Sub-CFL frame cadence — the controller will mostly run at h≈dt.
+        // Sub-CFL frame cadence, the controller will mostly run at h≈dt.
         let mut v = y0.clone();
         let mut rho = 1.0;
         for _ in 0..30 {
@@ -2129,7 +2129,7 @@ mod tests {
             "GPU KCL adaptive: {n_acc} accepted, {n_rej} rejected; \
              h ∈ [{h_min:.3e}, {h_max:.3e}]"
         );
-        // Compare the final accepted snapshot — same controller, same
+        // Compare the final accepted snapshot, same controller, same
         // tolerances, so the two paths should match within f32 noise.
         let last_gpu = &traj_gpu[steps * n..(steps + 1) * n];
         let last_cpu = &traj_cpu[steps * n..(steps + 1) * n];
@@ -2140,7 +2140,7 @@ mod tests {
         );
         assert!(
             rel < 10.0 * GPU_REL_TOL,
-            "GPU KCL rel.err {rel:.3e} exceeds 10·GPU_REL_TOL — the f32 \
+            "GPU KCL rel.err {rel:.3e} exceeds 10·GPU_REL_TOL, the f32 \
              controller takes a different substep path",
         );
     }
@@ -2237,7 +2237,7 @@ mod tests {
         let src: Vec<Field> =
             (0..steps).map(|k| (0.3 * k as Field).sin()).collect();
 
-        // CPU reference — driven from rest.
+        // CPU reference, driven from rest.
         let mut y_cpu = vec![0.0; n];
         let mut ws = LserkWorkspace::new();
         for &g in &src {
@@ -2306,7 +2306,7 @@ mod tests {
         let gvals: Vec<Field> =
             (0..steps).map(|k| (0.3 * k as Field).sin()).collect();
 
-        // CPU reference — driven from rest with the full vector source.
+        // CPU reference, driven from rest with the full vector source.
         let mut y_cpu = vec![0.0; n];
         let mut ws = LserkWorkspace::new();
         for &g in &gvals {
@@ -2319,7 +2319,7 @@ mod tests {
             );
         }
 
-        // GPU — one substep per step, so the loops line up one-to-one.
+        // GPU, one substep per step, so the loops line up one-to-one.
         let mut gop = GpuOperator::new(&gpu, &op).expect("GpuOperator");
         let y0 = vec![0.0_f32; n];
         let b32: Vec<f32> = b.iter().map(|&v| v as f32).collect();

@@ -9,7 +9,7 @@
 //!
 //! Each backend (PARDISO, faer LU, Apple Accelerate Bunch-Kaufman, …) lives in
 //! its own submodule and implements `SparseSolver`. Callers don't care which
-//! backend they got — they assemble the COO triplets, hand them to the trait,
+//! backend they got, they assemble the COO triplets, hand them to the trait,
 //! and ask for solutions.
 //!
 //! Backend selection is via `SolverChoice::from_env()` (env var

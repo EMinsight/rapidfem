@@ -1,9 +1,9 @@
-//! TD backend performance benchmark — production-plan WP6.3.
+//! TD backend performance benchmark, production-plan WP6.3.
 //!
 //! Reports the three quantities the roadmap calls for: matrix-free `apply`
 //! throughput, exponential-propagation cost per step, and how both scale
 //! with mesh size. The propagation section additionally splits a step into
-//! its matvec and Krylov-orthogonalisation shares — the breakdown that
+//! its matvec and Krylov-orthogonalisation shares, the breakdown that
 //! decides where a tune (or an accelerator) pays off. Run in release for
 //! meaningful numbers:
 //!
@@ -32,7 +32,7 @@ fn time_median(reps: usize, mut f: impl FnMut()) -> f64 {
 
 fn main() {
     let order = 2;
-    println!("rapidfem-td — performance benchmark  (release, order {order})");
+    println!("rapidfem-td, performance benchmark  (release, order {order})");
     println!("rayon worker threads: {}\n", rayon::current_num_threads());
 
     // --- apply throughput + sparse-assembly scaling -----------------------
@@ -72,8 +72,8 @@ fn main() {
     // --- propagation cost: one exponential step, matvec vs orthogonalise --
     // A Krylov step of dimension `m` performs exactly `m` matvecs; whatever
     // the step costs beyond `m · apply` is the CGS2 orthogonalisation. The
-    // two scale differently — matvec linearly in `m`, orthogonalisation
-    // quadratically — so the split, not the total, is what a tune targets.
+    // two scale differently, matvec linearly in `m`, orthogonalisation
+    // quadratically, so the split, not the total, is what a tune targets.
     let mesh = structured_box(4, 4, 4, 1.0, 1.0, 1.0);
     let op = MaxwellOperator::new(&mesh, order, 1.0);
     let n = op.n_dof();

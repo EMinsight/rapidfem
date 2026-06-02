@@ -1,4 +1,4 @@
-"""Cell-runner backend for rapidfem serve — one worker subprocess per file.
+"""Cell-runner backend for rapidfem serve, one worker subprocess per file.
 
 Replaces the old in-process kernel + WebSocket protocol (which suffered
 from os.dup2 / Werkzeug-WS / wsproto-deflate / sendall races). Each open
@@ -45,7 +45,7 @@ from flask import Flask, jsonify, request
 # without burning CPU on empty polls.
 POLL_TIMEOUT_S = 0.1
 
-# Worker init must complete within this — covers rapidfem import + gmsh init.
+# Worker init must complete within this, covers rapidfem import + gmsh init.
 INIT_TIMEOUT_S = 30.0
 
 
@@ -79,7 +79,7 @@ class Session:
             target=self._read_stdout, daemon=True,
         )
         self._reader_thread.start()
-        # A separate thread to drain stderr — anything the worker writes there
+        # A separate thread to drain stderr, anything the worker writes there
         # is library noise (gmsh, native panics); surface it as a stream event.
         self._stderr_thread = threading.Thread(
             target=self._read_stderr, daemon=True,
@@ -105,7 +105,7 @@ class Session:
                     self._queue.put(json.loads(line))
                 except json.JSONDecodeError:
                     # Native libs occasionally bypass _ProtocolWriter and write
-                    # raw bytes to fd 1 — wrap them as stream events so the
+                    # raw bytes to fd 1, wrap them as stream events so the
                     # user still sees the output.
                     self._queue.put({
                         "type": "stream", "stream": "stdout", "value": line + "\n",
@@ -160,7 +160,7 @@ class Session:
                 )
             if t == "worker-exit":
                 raise RuntimeError("Worker process died during init")
-            # stdout/stream messages during init — surface them but keep waiting
+            # stdout/stream messages during init, surface them but keep waiting
         raise TimeoutError(f"Worker init timed out after {INIT_TIMEOUT_S:.0f}s")
 
     def is_alive(self) -> bool:
@@ -187,7 +187,7 @@ class Session:
         """Stop the worker's running cell.
 
         On POSIX, sends `SIGINT` so the worker's default handler raises
-        `KeyboardInterrupt` out of `exec()` — graceful, preserves kernel state
+        `KeyboardInterrupt` out of `exec()`, graceful, preserves kernel state
         (works for pure-Python loops; a native solve only checks the signal
         after the call returns, so it isn't interrupted mid-solve there
         either). On Windows there is no reliable signal path to a non-console
@@ -204,7 +204,7 @@ class Session:
         if os.name == "nt":
             self._queue.put({
                 "type": "stream", "stream": "stderr",
-                "value": "\n[kernel interrupted — worker stopped; state reset]\n",
+                "value": "\n[kernel interrupted, worker stopped; state reset]\n",
             })
             self.kill()
             return True
@@ -258,7 +258,7 @@ def _remove(file_key: str) -> None:
 
 
 def shutdown_all() -> None:
-    """Kill every worker — used by atexit so subprocesses don't linger."""
+    """Kill every worker, used by atexit so subprocesses don't linger."""
     with _sessions_lock:
         sessions = list(_sessions.values())
         _sessions.clear()
@@ -358,7 +358,7 @@ def _drain_until_ack(session: Session, ack_type: str, timeout: float) -> None:
     """Consume queue messages until we see ``ack_type`` (or time out).
 
     Used after reset so the ack doesn't pollute the next cell-run's poll
-    stream. Anything else read here is dropped — at reset time we don't
+    stream. Anything else read here is dropped, at reset time we don't
     care about lingering displays.
     """
     deadline = time.time() + timeout
@@ -370,4 +370,4 @@ def _drain_until_ack(session: Session, ack_type: str, timeout: float) -> None:
             continue
         if msg.get("type") == ack_type:
             return
-    # If we timed out, no big deal — caller proceeds without the ack.
+    # If we timed out, no big deal, caller proceeds without the ack.

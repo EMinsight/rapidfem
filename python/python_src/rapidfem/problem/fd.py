@@ -34,7 +34,7 @@ class ErrorIndicator:
 
     Note
     ----
-    The indicator is purely diagnostic — calling
+    The indicator is purely diagnostic, calling
     :meth:`ProblemFD.element_errors` does **not** re-mesh or re-solve.
     For an end-to-end adaptive sweep that consumes the indicator, pass
     an :class:`Adaptive` to :meth:`ProblemFD.sweep`.
@@ -53,7 +53,7 @@ class ErrorIndicator:
     face_jumps : np.ndarray
         face-jump contribution per tet (accumulated over its 4 faces)
     h_k : np.ndarray
-        per-tet element diameter (max edge length) — useful for
+        per-tet element diameter (max edge length), useful for
         choosing a refinement target relative to current local size
     tet_centroids : np.ndarray
         per-tet centroid coordinates, shape ``(n_tets, 3)``, m
@@ -87,7 +87,7 @@ class ErrorIndicator:
 class Adaptive:
     """Adaptive-mesh-refinement settings for :meth:`ProblemFD.sweep`.
 
-    Drives a Dörfler-marking loop on top of the driven sweep — elements
+    Drives a Dörfler-marking loop on top of the driven sweep, elements
     carrying the highest residual error get their local mesh size cut
     by ``refinement_ratio`` and the sweep is repeated. The default
     parameters mirror the rapidfem CLI's standard adaptive flow.
@@ -96,7 +96,7 @@ class Adaptive:
     Note
     ----
     The adaptive loop runs inside the Rust solver and is reported via
-    the regular ``stderr`` log stream — there's no separate Python
+    the regular ``stderr`` log stream, there's no separate Python
     progress callback yet.
 
 
@@ -143,7 +143,7 @@ class ProblemFD:
     Note
     ----
     The geometry must already be meshed (via ``g.mesh()``) before the
-    ProblemFD is constructed — the ProblemFD snapshot copies the mesh
+    ProblemFD is constructed, the ProblemFD snapshot copies the mesh
     bytes on init. Re-meshing the geometry afterwards has no effect on
     an existing ProblemFD; construct a new one instead.
 
@@ -187,7 +187,7 @@ class ProblemFD:
     def __init__(self, geometry: Geometry):
         if geometry._last_mesh is None:
             raise ValueError(
-                "geometry not meshed yet — call g.mesh() before constructing a ProblemFD")
+                "geometry not meshed yet, call g.mesh() before constructing a ProblemFD")
         self._geometry = geometry
         self._mesh_bytes, _ = geometry._last_mesh
         self._native: _NativeSimulation | None = None  # cached after first analysis
@@ -336,7 +336,7 @@ class ProblemFD:
         """
         if self._native is None:
             raise ValueError(
-                "call .sweep(...) before .farfield(...) — far-field needs a solved problem")
+                "call .sweep(...) before .farfield(...), far-field needs a solved problem")
         return self._native.compute_farfield(result, freq_idx, port_idx, n_theta, n_phi)
 
     def element_errors(self, result, *, freq_idx: int = 0, port_idx: int = 0,
@@ -380,14 +380,14 @@ class ProblemFD:
         """
         if self._native is None:
             raise ValueError(
-                "call .sweep(...) before .element_errors(...) — needs a solved problem")
+                "call .sweep(...) before .element_errors(...), needs a solved problem")
         d = self._native.element_errors(result, freq_idx, port_idx, theta)
         if d is None:
             raise IndexError(
                 f"no solution for (freq_idx={freq_idx}, port_idx={port_idx})")
         nodes = np.asarray(self._native.mesh_nodes)
         tets = np.asarray(self._native.mesh_tets)
-        # Per-tet centroid (n_tets, 3) — handy for sanity printing /
+        # Per-tet centroid (n_tets, 3), handy for sanity printing /
         # 3-D point-cloud rendering of the indicator.
         centroids = nodes[tets].mean(axis=1)
         freq_hz = float(np.asarray(result.frequencies)[freq_idx])
@@ -413,13 +413,13 @@ class ProblemFD:
         low-level mesh / field accessors (``mesh_nodes``,
         ``field_at_nodes``, ``current_density_at_nodes``,
         ``compute_farfield``, ...) that live on the Rust side. Raises
-        :class:`RuntimeError` if no analysis has run yet — show()ing a
+        :class:`RuntimeError` if no analysis has run yet, show()ing a
         ProblemFD before any ``.sweep()`` / ``.eigenmode()`` call has
         nothing to render.
         """
         if self._native is None:
             raise RuntimeError(
-                "ProblemFD.native is not available — run .sweep() or "
+                "ProblemFD.native is not available, run .sweep() or "
                 ".eigenmode() first to assemble the native solver")
         return self._native
 
@@ -477,7 +477,7 @@ class ProblemFD:
         freqs_str = ", ".join(_f64(f) for f in frequencies)
         parts.append(f"[frequency]\nvalues = [{freqs_str}]\n")
 
-        # Collect volume entities targeted by PML — they get a [[pml]] block
+        # Collect volume entities targeted by PML, they get a [[pml]] block
         # and must NOT also generate a [[materials]] entry (the PML carries
         # its own er_base/ur_base, and double-tagging volumes confuses the
         # Rust solver). Mirrors the old builder workflow where a PML volume
@@ -488,7 +488,7 @@ class ProblemFD:
                 for ent in phys._entities:
                     pml_volume_ids.add(id(ent))
 
-        # Materials — group volumes by Material instance; tag came from mesh().
+        # Materials, group volumes by Material instance; tag came from mesh().
         # Skip Material instances whose every-volume is a PML target.
         seen_materials: set[int] = set()
         for ent in g._entities:
@@ -504,16 +504,16 @@ class ProblemFD:
             tag = g._material_tags.get(mat_id)
             if tag is None:
                 raise RuntimeError(
-                    f"material {mat!r} has no tag — re-run g.mesh() after attaching it")
+                    f"material {mat!r} has no tag, re-run g.mesh() after attaching it")
             parts.append(mat._to_toml(tag))
 
-        # Physics — ports, BCs, PML. PEC tags get aggregated separately.
+        # Physics, ports, BCs, PML. PEC tags get aggregated separately.
         pec_tags: list[int] = []
         for phys in g._physics:
             tag = g._physics_tags.get(id(phys))
             if tag is None:
                 raise RuntimeError(
-                    f"physics object {phys!r} has no tag — re-run g.mesh() "
+                    f"physics object {phys!r} has no tag, re-run g.mesh() "
                     f"after constructing it")
             if isinstance(phys, PEC):
                 pec_tags.append(tag)

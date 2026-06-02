@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! DG mesh topology — per-element face adjacency, outward normals and areas.
+//! DG mesh topology, per-element face adjacency, outward normals and areas.
 //!
 //! The core [`Mesh`] already deduplicates triangular faces and records, per
 //! tet, its 4 faces (`tet_to_tri`) and, per face, its up-to-2 adjacent tets

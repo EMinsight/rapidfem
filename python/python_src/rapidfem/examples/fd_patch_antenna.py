@@ -1,4 +1,4 @@
-"""Edge-fed microstrip patch antenna on FR-4 — single frequency, with far-field.
+"""Edge-fed microstrip patch antenna on FR-4, single frequency, with far-field.
 
 A ~2.4 GHz patch with a lumped feed at the radiating edge, a full PML
 enclosure on four side walls + the +z cap, and a ground plane at the
@@ -46,7 +46,7 @@ g = rf.Geometry(maxh=MAXH)
 
 # Material-level sizing: one Dielectric for the substrate (FR-4),
 # one Air for the bulk near-field region, and one PML-side Air at 2×
-# coarser. The PML stretch makes a fine PML mesh wasteful — the
+# coarser. The PML stretch makes a fine PML mesh wasteful, the
 # absorber's accuracy is set by the polynomial profile, not the cell
 # count, so we relax it.
 fr4     = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)

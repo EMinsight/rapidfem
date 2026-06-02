@@ -1,4 +1,4 @@
-"""Dielectric resonator filter — eigenmode analysis.
+"""Dielectric resonator filter, eigenmode analysis.
 
 A high-εᵣ ceramic puck sits on a low-εᵣ alumina support inside a metal
 cavity. The PEC walls turn this into a resonator with bound eigenmodes;
@@ -40,7 +40,7 @@ g.fragment(air, support, resonator)
 
 # Only the 6 axis-aligned cavity walls are PEC. Selecting min/max along each
 # axis avoids tagging the cylinder-air interface faces that fragment exposes
-# — the air→puck and air→support interfaces must stay un-walled.
+#, the air→puck and air→support interfaces must stay un-walled.
 rf.PEC(air.faces.min(axis="x"), air.faces.max(axis="x"),
        air.faces.min(axis="y"), air.faces.max(axis="y"),
        air.faces.min(axis="z"), air.faces.max(axis="z"))
