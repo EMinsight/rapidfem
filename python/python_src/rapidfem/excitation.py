@@ -19,11 +19,12 @@ class GaussianPulse:
     Parameters
     ----------
     t0 : float
-        Pulse-centre time.
+        Pulse-centre time, in the simulation's time units (seconds in SI).
     tau : float
-        Gaussian width (the `1/e` half-width).
+        Gaussian width (the `1/e` half-width), in the same time units.
     f0 : float, optional
-        Carrier frequency; omit for a bare Gaussian.
+        Carrier frequency in the reciprocal units (Hz in SI); omit for a
+        bare Gaussian.
     """
 
     def __init__(self, *, t0, tau, f0=None):

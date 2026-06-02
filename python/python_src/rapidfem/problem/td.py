@@ -935,8 +935,8 @@ class ProblemTD:
     # -- mid level: stepping ------------------------------------------------
     def step(self, y, h, krylov_dim=40, tol=None):
         """Advance the state by ``h`` (in the same time units as ``c``) with
-        the matrix-free exponential propagator, exact for the linear
-        homogeneous system at any ``h``.
+        the matrix-free exponential propagator (a Krylov/Arnoldi exponential
+        integrator), exact for the linear homogeneous system at any ``h``.
 
         ``tol`` is the Krylov a-posteriori error tolerance; ``None`` keeps
         the solver default. A converged step uses far fewer than

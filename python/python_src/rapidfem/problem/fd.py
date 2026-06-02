@@ -331,8 +331,12 @@ class ProblemFD:
         Returns
         -------
         RadiationPattern
-            native pattern object with ``peak_directivity_dbi``,
-            ``peak_gain_dbi``, and per-direction arrays
+            native pattern object. Scalars: ``peak_directivity_dbi``,
+            ``peak_gain_dbi`` (dBi), ``radiated_power`` (W). Angle grids:
+            ``theta_rad`` ``[n_theta]``, ``phi_rad`` ``[n_phi]`` (radians).
+            Per-direction ``[n_phi, n_theta]`` arrays: ``directivity_dbi``,
+            ``gain_dbi``, ``lcp_dbi``, ``rcp_dbi`` (dBi), ``axial_ratio_db``
+            (dB), and complex ``e_theta`` / ``e_phi`` field components.
         """
         if self._native is None:
             raise ValueError(

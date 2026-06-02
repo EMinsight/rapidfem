@@ -336,26 +336,35 @@ impl PyRadiationPattern {
         self.inner.phi.clone().into_pyarray_bound(py)
     }
 
+    /// Directivity D(theta, phi) in dBi, shape `[n_phi, n_theta]`, float64.
     #[getter]
     fn directivity_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         flatten_2d(&self.inner.directivity_dbi, py)
     }
 
+    /// Realised gain G(theta, phi) in dBi (directivity minus mismatch/loss),
+    /// shape `[n_phi, n_theta]`, float64.
     #[getter]
     fn gain_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         flatten_2d(&self.inner.gain_dbi, py)
     }
 
+    /// Axial ratio in dB (0 = circular, large = linear polarisation),
+    /// shape `[n_phi, n_theta]`, float64.
     #[getter]
     fn axial_ratio_db<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         flatten_2d(&self.inner.axial_ratio_db, py)
     }
 
+    /// Left-hand circular polarisation gain in dBi, shape `[n_phi, n_theta]`,
+    /// float64.
     #[getter]
     fn lcp_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         flatten_2d(&self.inner.lcp_dbi, py)
     }
 
+    /// Right-hand circular polarisation gain in dBi, shape `[n_phi, n_theta]`,
+    /// float64.
     #[getter]
     fn rcp_dbi<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         flatten_2d(&self.inner.rcp_dbi, py)
@@ -373,12 +382,15 @@ impl PyRadiationPattern {
         flatten_2d_complex(&self.inner.e_phi, py)
     }
 
+    /// Peak directivity over the sampled sphere, in dBi.
     #[getter]
     fn peak_directivity_dbi(&self) -> f64 { self.inner.peak_directivity_dbi }
 
+    /// Peak realised gain over the sampled sphere, in dBi.
     #[getter]
     fn peak_gain_dbi(&self) -> f64 { self.inner.peak_gain_dbi }
 
+    /// Total radiated power integrated over the sphere, in watts.
     #[getter]
     fn radiated_power(&self) -> f64 { self.inner.radiated_power }
 }
