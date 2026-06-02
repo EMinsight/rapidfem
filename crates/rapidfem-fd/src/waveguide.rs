@@ -338,7 +338,7 @@ impl CoaxPort {
         // points slightly outside the geometric bounds would otherwise be cut, costing power).
         let (xl, yl, _) = self.cs.in_local_cs(x, y, z);
         let rho = (xl * xl + yl * yl).sqrt();
-        if rho < 1e-30 {
+        if rho < SINGULAR_EPS {
             return (0.0, 0.0, 0.0);
         }
         let phi = yl.atan2(xl);
@@ -361,7 +361,11 @@ pub fn cs_from_origin_zaxis(origin: [f64; 3], z_axis: [f64; 3]) -> CoordinateSys
     let zn = (z_axis[0].powi(2) + z_axis[1].powi(2) + z_axis[2].powi(2)).sqrt();
     let zhat = [z_axis[0] / zn, z_axis[1] / zn, z_axis[2] / zn];
     // Choose an x-axis reference that's not parallel to z
-    let xref = if zhat[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let xref = if zhat[0].abs() < AXIS_REF_PARALLEL_MAX {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
     let dot = xref[0] * zhat[0] + xref[1] * zhat[1] + xref[2] * zhat[2];
     let xraw = [xref[0] - dot * zhat[0], xref[1] - dot * zhat[1], xref[2] - dot * zhat[2]];
     let xn = (xraw[0].powi(2) + xraw[1].powi(2) + xraw[2].powi(2)).sqrt();

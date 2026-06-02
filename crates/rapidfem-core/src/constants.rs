@@ -37,3 +37,10 @@ pub const FARFIELD_DB_FLOOR: f64 = -100.0;
 
 /// Relative slack for the lumped-port voltage-integration axis projection.
 pub const LUMPED_PORT_PROJ_EPS: f64 = 1e-9;
+
+/// When building an orthonormal frame from a single axis, the global x hat is
+/// used as the Gram-Schmidt reference unless the axis is too close to x. A
+/// component magnitude above this (about 26 degrees off the axis) means x is
+/// too parallel, so the global y hat is used instead, keeping the reference
+/// well away from the axis and the cross product well conditioned.
+pub const AXIS_REF_PARALLEL_MAX: f64 = 0.9;

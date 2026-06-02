@@ -52,6 +52,11 @@ import numpy as np
 
 # TOLERANCES ============================================================================
 
+# After a gmsh boolean op entity tags get renumbered, so entities are
+# re-identified by geometry. 1e-9 m (1 nm) is the slack for those matches:
+# well below any realistic mesh feature (microns and up) yet far above the
+# float64 round-off gmsh introduces in O(1 m)..O(1 mm) coordinates, so it
+# never merges distinct features nor splits one that the kernel nudged.
 _COG_TOL = 1e-9   # distance tol for matching center-of-mass (m)
 _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
 
