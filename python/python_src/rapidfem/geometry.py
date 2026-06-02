@@ -43,7 +43,7 @@ import os
 import sys
 import tempfile
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Iterable
 
 import gmsh
