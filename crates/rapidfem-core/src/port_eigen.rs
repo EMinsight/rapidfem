@@ -887,6 +887,74 @@ fn build_edges(mesh: &PortMesh2D) -> (usize, Vec<TriEdges>, Vec<u32>) {
     (emap.len(), per_tri, use_count)
 }
 
+/// Mark the PEC-constrained nodes and edges of a port cross-section.
+///
+/// A node is constrained on the outer wall or an internal conductor. An edge
+/// is constrained if it is an outer-boundary edge (used by a single triangle)
+/// or if both endpoints lie on an internal conductor, in which case the edge
+/// runs along the trace surface where tangential E must vanish. The internal
+/// rule keys on `on_pec` (not the node mask) so two outer-boundary nodes
+/// joined by an interior chord are not spuriously constrained.
+fn vector_mode_pec_masks(
+    mesh: &PortMesh2D,
+    tri_edges: &[TriEdges],
+    edge_use: &[u32],
+) -> (Vec<bool>, Vec<bool>) {
+    let n_node = mesh.n_nodes();
+    let on_pec = |i: usize| mesh.on_pec.get(i).copied().unwrap_or(false);
+    let node_pec: Vec<bool> =
+        (0..n_node).map(|i| mesh.on_boundary[i] || on_pec(i)).collect();
+    let mut edge_pec = edge_use.iter().map(|&c| c == 1).collect::<Vec<_>>();
+    for (ti, &t) in mesh.tris.iter().enumerate() {
+        let te = &tri_edges[ti];
+        for e in 0..3 {
+            let a = t[(e + 1) % 3];
+            let b = t[(e + 2) % 3];
+            if on_pec(a) && on_pec(b) {
+                edge_pec[te.gidx[e]] = true;
+            }
+        }
+    }
+    (node_pec, edge_pec)
+}
+
+/// Whether the cross-section supports a (quasi-)TEM mode: `true` iff there are
+/// at least two electrically-isolated PEC conductors (e.g. a microstrip trace
+/// plus its enclosing ground). Found via union-find over PEC nodes joined by
+/// PEC edges. A single conductor (hollow guide, or a septum touching the wall)
+/// supports no TEM wave, so its curl-free modes are all spurious; with two or
+/// more, the genuinely curl-free TEM mode must survive the spurious filter.
+fn vector_mode_tem_supported(
+    mesh: &PortMesh2D,
+    tri_edges: &[TriEdges],
+    edge_pec: &[bool],
+    node_pec: &[bool],
+) -> bool {
+    let n_node = mesh.n_nodes();
+    let mut uf: Vec<usize> = (0..n_node).collect();
+    let find = |uf: &Vec<usize>, mut x: usize| -> usize {
+        while uf[x] != x { x = uf[x]; }
+        x
+    };
+    for (ti, &t) in mesh.tris.iter().enumerate() {
+        let te = &tri_edges[ti];
+        for e in 0..3 {
+            if edge_pec[te.gidx[e]] {
+                let a = t[(e + 1) % 3];
+                let b = t[(e + 2) % 3];
+                let ra = find(&uf, a);
+                let rb = find(&uf, b);
+                if ra != rb { uf[ra] = rb; }
+            }
+        }
+    }
+    let mut pec_roots = std::collections::HashSet::new();
+    for i in 0..n_node {
+        if node_pec[i] { pec_roots.insert(find(&uf, i)); }
+    }
+    pec_roots.len() >= 2
+}
+
 /// Solve the full-vector hybrid mode eigenproblem at a fixed operating
 /// wavenumber `k0`, returning up to `n_modes` modes by descending
 /// effective index (most-confined first).
@@ -912,56 +980,11 @@ pub fn solve_vector_modes(
     let n_node = mesh.n_nodes();
     let (n_edge, tri_edges, edge_use) = build_edges(mesh);
 
-    let on_pec = |i: usize| mesh.on_pec.get(i).copied().unwrap_or(false);
-    // A node is PEC-constrained on the outer wall OR an internal conductor.
-    let node_pec: Vec<bool> =
-        (0..n_node).map(|i| mesh.on_boundary[i] || on_pec(i)).collect();
-    // Edge is PEC if (a) an outer-boundary edge (used by one triangle), or
-    // (b) both endpoints lie on an INTERNAL conductor, the edge then runs
-    // along the trace surface and its tangential E must vanish. The
-    // internal rule uses `on_pec` (not `node_pec`) so two outer-boundary
-    // nodes joined by an interior chord are not spuriously constrained.
-    let mut edge_pec = edge_use.iter().map(|&c| c == 1).collect::<Vec<_>>();
-    for (ti, &t) in mesh.tris.iter().enumerate() {
-        let te = &tri_edges[ti];
-        for e in 0..3 {
-            let a = t[(e + 1) % 3];
-            let b = t[(e + 2) % 3];
-            if on_pec(a) && on_pec(b) {
-                edge_pec[te.gidx[e]] = true;
-            }
-        }
-    }
-
-    // Count electrically-isolated PEC conductors via union-find over PEC
-    // nodes joined by PEC edges. A TEM / quasi-TEM mode exists iff there are
-    // ≥ 2 conductors (e.g. a stripline / microstrip trace plus the enclosing
-    // ground): that mode is genuinely curl-free (a pure-TEM line) yet
-    // physical, so the curl-energy spurious filter must NOT reject it. A
-    // single conductor (hollow guide, or a septum touching the wall) supports
-    // no TEM, so its curl-free modes are all spurious and are rejected.
-    let mut uf: Vec<usize> = (0..n_node).collect();
-    let find = |uf: &Vec<usize>, mut x: usize| -> usize {
-        while uf[x] != x { x = uf[x]; }
-        x
-    };
-    for (ti, &t) in mesh.tris.iter().enumerate() {
-        let te = &tri_edges[ti];
-        for e in 0..3 {
-            if edge_pec[te.gidx[e]] {
-                let a = t[(e + 1) % 3];
-                let b = t[(e + 2) % 3];
-                let ra = find(&uf, a);
-                let rb = find(&uf, b);
-                if ra != rb { uf[ra] = rb; }
-            }
-        }
-    }
-    let mut pec_roots = std::collections::HashSet::new();
-    for i in 0..n_node {
-        if node_pec[i] { pec_roots.insert(find(&uf, i)); }
-    }
-    let tem_supported = pec_roots.len() >= 2;
+    // PEC masks (outer wall + internal conductors) and whether the section
+    // carries a (quasi-)TEM mode that the spurious filter must spare.
+    let (node_pec, edge_pec) = vector_mode_pec_masks(mesh, &tri_edges, &edge_use);
+    let tem_supported =
+        vector_mode_tem_supported(mesh, &tri_edges, &edge_pec, &node_pec);
 
     // DOF numbering for the Ned-2 + P2 hybrid eigenproblem.
     //
