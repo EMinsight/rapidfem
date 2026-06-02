@@ -58,6 +58,24 @@ _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
 
 # INTERNAL ENTITY TRACKING ==============================================================
 
+
+def _position_with_center_alias(position, center, *, what):
+    """Back-compat shim: accept the legacy ``center=`` keyword for ``position=``.
+
+    ``sphere`` and ``torus`` historically took ``center=``; every other
+    primitive takes ``position=``. ``position`` is now canonical, ``center``
+    stays as a deprecated alias.
+    """
+    if center is not None:
+        warnings.warn(
+            f"{what}: 'center' is deprecated, use 'position' instead",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return center
+    return position
+
+
 @dataclass
 class _Entity:
     """A tracked gmsh entity with stable identity through boolean ops.
@@ -1050,29 +1068,33 @@ class Geometry:
                                          s(ax), s(ay), s(az), s(radius), angle=angle)
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
-    def sphere(self, radius: float, center: tuple[float, float, float] = (0, 0, 0),
+    def sphere(self, radius: float, position: tuple[float, float, float] = (0, 0, 0),
                *,
                material=None,
-               maxh: float | None = None) -> GeoObject:
+               maxh: float | None = None,
+               center: tuple[float, float, float] | None = None) -> GeoObject:
         """add a sphere primitive
 
         Parameters
         ----------
         radius : float
             sphere radius in metres
-        center : tuple[float, float, float]
+        position : tuple[float, float, float]
             sphere centre (defaults to origin)
         material : rapidfem.Material, optional
             volume material
         maxh : float, optional
             per-volume mesh size override
+        center : tuple[float, float, float], optional
+            deprecated alias for ``position``
 
         Returns
         -------
         GeoObject
             volume
         """
-        cx, cy, cz = center
+        position = _position_with_center_alias(position, center, what="sphere()")
+        cx, cy, cz = position
         s = self._s
         tag = gmsh.model.occ.addSphere(s(cx), s(cy), s(cz), s(radius))
         return self._wrap_volume(tag, material=material, maxh=maxh)
@@ -1153,11 +1175,12 @@ class Geometry:
         return self._wrap_volume(tag, material=material, maxh=maxh)
 
     def torus(self, major_radius: float, minor_radius: float,
-              center: tuple[float, float, float] = (0, 0, 0),
+              position: tuple[float, float, float] = (0, 0, 0),
               angle: float = 2 * math.pi,
               *,
               material=None,
-              maxh: float | None = None) -> GeoObject:
+              maxh: float | None = None,
+              center: tuple[float, float, float] | None = None) -> GeoObject:
         """add a torus primitive
 
         Parameters
@@ -1166,7 +1189,7 @@ class Geometry:
             donut radius (tube-centre to torus-axis distance) in metres
         minor_radius : float
             tube radius in metres
-        center : tuple[float, float, float]
+        position : tuple[float, float, float]
             torus centre (defaults to origin); axis is along +z
         angle : float
             sweep angle in radians; :math:`<2\\pi` gives a partial torus
@@ -1174,13 +1197,16 @@ class Geometry:
             volume material
         maxh : float, optional
             per-volume mesh size override
+        center : tuple[float, float, float], optional
+            deprecated alias for ``position``
 
         Returns
         -------
         GeoObject
             volume
         """
-        cx, cy, cz = center
+        position = _position_with_center_alias(position, center, what="torus()")
+        cx, cy, cz = position
         s = self._s
         tag = gmsh.model.occ.addTorus(s(cx), s(cy), s(cz), s(major_radius), s(minor_radius),
                                       angle=angle)
