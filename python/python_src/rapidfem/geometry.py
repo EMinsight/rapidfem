@@ -62,6 +62,15 @@ from ._geometry_primitives import _PrimitivesMixin
 # never merges distinct features nor splits one that the kernel nudged.
 _COG_TOL = 1e-9   # distance tol for matching center-of-mass (m)
 _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
+# Tolerance for matching a face against a bounding-box extremum. Coarser than
+# _BBOX_TOL on purpose: gmsh's getBoundingBox inflates the box by ~1e-7 m on
+# each side, so "zero-extent" face coordinates come back as ±1e-7. Comparing
+# against an extremum (not two getBoundingBox results, where the fluff cancels)
+# must absorb that inflation, hence 1e-6 m.
+_HULL_TOL = 1e-6
+# gmsh.getBoundingBox(-1, -1) returns ±1e106 when the model holds a degenerate
+# or unbounded entity; treat anything past this as "no usable bbox".
+_UNBOUNDED = 1e10
 
 
 # INTERNAL ENTITY TRACKING ==============================================================
@@ -390,7 +399,6 @@ class EntityCollection:
         # .outer, ...)` wiring downstream. Fall back to the union of every
         # tracked entity's bbox, those are real getBoundingBox results for
         # specific entities so they don't carry the infinity.
-        _UNBOUNDED = 1e10
         def _is_finite_bbox(b):
             return all(abs(v) < _UNBOUNDED for v in b)
         if not _is_finite_bbox((xmin, ymin, zmin, xmax, ymax, zmax)):
@@ -420,29 +428,7 @@ class EntityCollection:
             if math.isfinite(xs0):
                 xmin, ymin, zmin = xs0, ys0, zs0
                 xmax, ymax, zmax = xs1, ys1, zs1
-        # gmsh's getBoundingBox inflates the box by ~1e-7 m on each side, so
-        # face-bbox extents that should be "zero" come back as ±1e-7. The
-        # COG/BBOX matcher used elsewhere can keep its 1e-9 tolerance (it's
-        # comparing two getBoundingBox results to each other, where the fluff
-        # cancels). Here we compare against the actual model bbox extremum,
-        # so use a tolerance large enough to absorb that fluff.
-        tol = 1e-6
-        kept = []
-        for e in self._entities:
-            ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
-            on_outer = False
-            if abs(ex1 - ex0) < tol:
-                if abs(ex0 - xmin) < tol or abs(ex0 - xmax) < tol:
-                    on_outer = True
-            if abs(ey1 - ey0) < tol:
-                if abs(ey0 - ymin) < tol or abs(ey0 - ymax) < tol:
-                    on_outer = True
-            if abs(ez1 - ez0) < tol:
-                if abs(ez0 - zmin) < tol or abs(ez0 - zmax) < tol:
-                    on_outer = True
-            if on_outer:
-                kept.append(e)
-        return EntityCollection(self._geometry, kept)
+        return self._faces_on_box(xmin, ymin, zmin, xmax, ymax, zmax)
 
     @property
     def hull(self) -> "EntityCollection":
@@ -483,18 +469,28 @@ class EntityCollection:
             ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
             xmin, ymin, zmin = min(xmin, ex0), min(ymin, ey0), min(zmin, ez0)
             xmax, ymax, zmax = max(xmax, ex1), max(ymax, ey1), max(zmax, ez1)
-        tol = 1e-6
+        return self._faces_on_box(xmin, ymin, zmin, xmax, ymax, zmax)
+
+    def _faces_on_box(self, xmin, ymin, zmin, xmax, ymax, zmax) -> "EntityCollection":
+        """faces in this collection lying on the given axis-aligned box
+
+        Shared core of :attr:`outer` (box = model bbox) and :attr:`hull`
+        (box = this collection's own bbox). A face is kept iff one of its
+        axes is degenerate (zero extent) and its coordinate along that
+        axis matches that box's min or max within :data:`_HULL_TOL`.
+        """
         kept = []
         for e in self._entities:
             ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
-            on_hull = False
-            if abs(ex1 - ex0) < tol and (abs(ex0 - xmin) < tol or abs(ex0 - xmax) < tol):
-                on_hull = True
-            if abs(ey1 - ey0) < tol and (abs(ey0 - ymin) < tol or abs(ey0 - ymax) < tol):
-                on_hull = True
-            if abs(ez1 - ez0) < tol and (abs(ez0 - zmin) < tol or abs(ez0 - zmax) < tol):
-                on_hull = True
-            if on_hull:
+            on_box = (
+                (abs(ex1 - ex0) < _HULL_TOL
+                 and (abs(ex0 - xmin) < _HULL_TOL or abs(ex0 - xmax) < _HULL_TOL))
+                or (abs(ey1 - ey0) < _HULL_TOL
+                    and (abs(ey0 - ymin) < _HULL_TOL or abs(ey0 - ymax) < _HULL_TOL))
+                or (abs(ez1 - ez0) < _HULL_TOL
+                    and (abs(ez0 - zmin) < _HULL_TOL or abs(ez0 - zmax) < _HULL_TOL))
+            )
+            if on_box:
                 kept.append(e)
         return EntityCollection(self._geometry, kept)
 

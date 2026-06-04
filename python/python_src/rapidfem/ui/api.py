@@ -537,48 +537,6 @@ def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
     return {"min": mn, "max": mx}
 
 
-def _abc_phasor(vec_complex) -> list[float] | None:
-    """(n_nodes, 3) complex → flat [A, B, C, ...] per node.
-
-    Encodes |E(t)|² = A·cos²(ωt) + B·sin²(ωt) − 2·C·sin·cos with
-    A = |Re|², B = |Im|², C = Re·Im, the same animation-friendly form the
-    splat shader composites against a phase uniform. Returns `None` if the
-    backend produced no field for this (freq, port).
-    """
-    if vec_complex is None:
-        return None
-    import numpy as np
-    re = np.asarray(vec_complex.real)
-    im = np.asarray(vec_complex.imag)
-    A = np.sum(re * re, axis=1)
-    B = np.sum(im * im, axis=1)
-    C = np.sum(re * im, axis=1)
-    return np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
-
-
-def _build_channel_payloads(sim, result, n_freq: int, n_p: int) -> dict[str, list]:
-    """Build per-channel `[freq][port][flat_abc]` payloads for E, J, H.
-
-    Each channel uses the same (A, B, C) phasor encoding, the frontend picks
-    one channel at a time and feeds the flat array straight into the splat
-    sampler. Channels are computed eagerly so a UI toggle is a zero-roundtrip
-    switch.
-    """
-    out: dict[str, list] = {"E": [], "J": [], "H": []}
-    for fi in range(n_freq):
-        e_freq: list = []
-        j_freq: list = []
-        h_freq: list = []
-        for pi in range(n_p):
-            e_freq.append(_abc_phasor(sim.field_at_nodes(result, fi, pi)))
-            j_freq.append(_abc_phasor(sim.current_density_at_nodes(result, fi, pi)))
-            h_freq.append(_abc_phasor(sim.h_field_at_nodes(result, fi, pi)))
-        out["E"].append(e_freq)
-        out["J"].append(j_freq)
-        out["H"].append(h_freq)
-    return out
-
-
 def register(app: Flask) -> None:
     workdir: Path = app.config["RAPIDFEM_WORKDIR"]
 

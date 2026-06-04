@@ -662,6 +662,12 @@ class ProblemFD:
             if isinstance(phys, PEC):
                 pec_tags.append(tag)
             elif isinstance(phys, FarFieldSurface):
+                if nfft_tag is not None:
+                    raise RuntimeError(
+                        "multiple FarFieldSurface objects, but only one "
+                        "near-field-to-far-field surface is supported. Pass "
+                        "every face to a single FarFieldSurface(...) call "
+                        "(e.g. rf.FarFieldSurface(*air.faces.hull)).")
                 nfft_tag = tag
             else:
                 block = phys._to_toml(tag)

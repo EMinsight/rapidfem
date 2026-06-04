@@ -294,6 +294,28 @@ def _remove(file_key: str) -> None:
         s.kill()
 
 
+def _rename(old_key: str, new_key: str) -> bool:
+    """Re-key a live session so its kernel state (namespace + the stashed
+    sweep result that backs /api/field) survives a Save As of an unsaved
+    buffer. No-op (returns False) if no session exists under ``old_key``.
+    If ``new_key`` already has a session, that one is killed and replaced
+    (the buffer being saved owns the name now).
+    """
+    if old_key == new_key:
+        return True
+    with _sessions_lock:
+        s = _sessions.get(old_key)
+        if s is None:
+            return False
+        existing = _sessions.pop(new_key, None)
+        _sessions.pop(old_key, None)
+        s.file_key = new_key
+        _sessions[new_key] = s
+    if existing:
+        existing.kill()
+    return True
+
+
 def shutdown_all() -> None:
     """Kill every worker, used by atexit so subprocesses don't linger."""
     with _sessions_lock:
@@ -389,6 +411,18 @@ def register(app: Flask) -> None:
         file_key = body.get("file", "<unnamed>")
         _remove(file_key)
         return jsonify({"ok": True})
+
+    @app.post("/api/kernel/rename")
+    def api_kernel_rename():
+        """Re-key a session on Save As so its kernel state (and the stashed
+        sweep result behind /api/field) follows the buffer to its new name."""
+        body = request.get_json(silent=True) or {}
+        old_key = body.get("old", "<unnamed>")
+        new_key = body.get("new")
+        if not isinstance(new_key, str) or not new_key:
+            return jsonify({"ok": False, "error": "new key required"}), 400
+        renamed = _rename(old_key, new_key)
+        return jsonify({"ok": True, "renamed": renamed})
 
     @app.get("/api/field")
     def api_field():

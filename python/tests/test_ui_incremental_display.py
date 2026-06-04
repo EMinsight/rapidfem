@@ -94,9 +94,11 @@ def test_active_sweep_callback_only_while_capturing():
     assert _show_capture.active_sweep_callback() is None  # cleared on stop
 
 
-def test_sweep_progress_emits_growing_partial_results():
-    # The worker's per-frequency callback accumulates S-parameters and emits a
-    # growing partial 'result' display each frequency; freq_idx 0 resets.
+def test_sweep_progress_emits_one_sweep_point_per_frequency():
+    # The worker's per-frequency callback streams one lightweight 'sweep_point'
+    # display per frequency carrying just that frequency's S-matrix (no
+    # cumulative payload, no field push); the frontend appends it. freq_idx 0
+    # marks the start of a (re)run.
     import numpy as np
     import rapidfem.ui.worker as worker
 
@@ -109,15 +111,16 @@ def test_sweep_progress_emits_growing_partial_results():
         cb(0, 4e9, s)
         cb(1, 5e9, s * 0.9)
         cb(2, 6e9, s * 0.8)
-        cb(0, 7e9, s)  # new sweep: resets
+        cb(0, 7e9, s)  # new sweep: freq_idx resets to 0
     finally:
         worker.send = orig_send
 
     assert [e["type"] for e in emitted] == ["display"] * 4
-    assert [e["kind"] for e in emitted] == ["result"] * 4
-    # frequencies grow 1,2,3 then reset to 1 on the next freq_idx 0.
-    assert [len(e["payload"]["frequencies"]) for e in emitted] == [1, 2, 3, 1]
-    assert all(e["payload"]["partial"] for e in emitted)
-    assert emitted[-1]["payload"]["frequencies"] == [7e9]
-    # S-matrix re/im are carried through (second emit, freq 5 GHz, scaled 0.9).
-    assert emitted[1]["payload"]["sparams"][1][0][0] == pytest.approx([0.9, 0.0])
+    assert [e["kind"] for e in emitted] == ["sweep_point"] * 4
+    # Each emit carries only its own freq_idx + freq, no accumulation.
+    assert [e["payload"]["freq_idx"] for e in emitted] == [0, 1, 2, 0]
+    assert [e["payload"]["freq"] for e in emitted] == [4e9, 5e9, 6e9, 7e9]
+    # S-matrix re/im carried through as nested [row][col][re, im] (second emit,
+    # 5 GHz, scaled 0.9): S00 = 0.9 + 0j, S10 = 0 + 0.09j.
+    assert emitted[1]["payload"]["s"][0][0] == pytest.approx([0.9, 0.0])
+    assert emitted[1]["payload"]["s"][1][0] == pytest.approx([0.0, 0.09])

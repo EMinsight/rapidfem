@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		readFile, writeFile, readExample, fetchFieldBuffer,
+		readFile, writeFile, readExample, fetchFieldBuffer, renameKernel,
 		meshPayloadToMeshData, sparamsToSMatrices, health,
 		type MeshPayload, type GeometryPayload, type SMatrix,
 		type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
@@ -162,10 +162,18 @@
 	// field viewer is opened.
 	$effect(() => {
 		if (!fields_lazy || !show_field) return;
-		const file = active_path ?? '<unnamed>';
-		const ch = field_channel;
 		const fi = field_freq_idx;
 		const pi = field_port_idx;
+		// Skip out-of-range selections. While a re-run sweep is streaming, the
+		// worker still holds the *previous* sweep's stashed result and
+		// field_meta is not refreshed until the terminal `result` arrives, so a
+		// stale or over-range index would just waste a round-trip (or fetch the
+		// wrong field). The bounds come from the still-current field_meta.
+		const nfreq = field_meta?.n_freq ?? 0;
+		const nport = field_meta?.n_port ?? 0;
+		if (fi < 0 || fi >= nfreq || pi < 0 || pi >= nport) return;
+		const file = active_path ?? '<unnamed>';
+		const ch = field_channel;
 		let cancelled = false;
 		void (async () => {
 			try {
@@ -833,6 +841,12 @@
 		}
 		try {
 			await writeFile(path, code);
+			// Re-key the live kernel so its state (and the stashed sweep result
+			// behind the field viewer) follows the buffer to its new name;
+			// otherwise the field fetch would query a session that no longer
+			// exists under the new key and the viewer would blank.
+			const old_key = active_path ?? '<unnamed>';
+			try { await renameKernel(old_key, path); } catch { /* best-effort */ }
 			active_path = path;
 			untitled_label = null;
 			dirty = false;
