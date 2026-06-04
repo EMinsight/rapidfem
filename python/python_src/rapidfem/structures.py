@@ -482,3 +482,146 @@ def cpw(g: "Geometry", *,
         line.ports = [p0, p1]
 
     return line
+
+
+@dataclass
+class Stripline:
+    """Result of :func:`stripline`.
+
+    The dielectric is split into a lower and an upper half meeting at the
+    trace plane, so the trace plate lies on the shared interface (no
+    embedded floating sheet); both halves carry the same fill material.
+
+    Attributes
+    ----------
+    lower, upper : GeoObject
+        the lower and upper dielectric halves (below / above the trace)
+    trace : GeoObject
+        the centre signal trace on the mid-height interface
+    port_a, port_b : tuple[EntityCollection, EntityCollection]
+        the (lower, upper) cross-section faces at each end
+    pec : object or None
+        the PEC over trace + both grounds + side walls when ``add_ports``
+    ports : list
+        the two wave ports when ``add_ports`` (else empty)
+    """
+
+    lower: "GeoObject"
+    upper: "GeoObject"
+    trace: "GeoObject"
+    port_a: "tuple[EntityCollection, EntityCollection]"
+    port_b: "tuple[EntityCollection, EntityCollection]"
+    pec: object = None
+    ports: list = field(default_factory=list)
+
+
+def stripline(g: "Geometry", *,
+              line_w: float, line_l: float,
+              sub_w: float, sub_h: float,
+              er: float, tand: float = 0.0,
+              origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+              sub_maxh: float | None = None,
+              add_ports: bool = False,
+              f0: float | None = None,
+              power: float = 1.0) -> Stripline:
+    """build a stripline: a signal trace centred at mid-height in a
+    homogeneous dielectric, fully enclosed by top, bottom and side ground
+    walls (boxed, shielded TEM line).
+
+    Same fixed layout convention as :func:`microstrip` (propagation +y,
+    width +x, stack +z). The trace sits at ``z = sub_h / 2`` above the
+    dielectric's lower face, centred on x = 0.
+
+    With ``add_ports`` a full-vector :class:`rapidfem.WavePort` is placed on
+    the dielectric cross-section at each end (``f0`` required); the trace,
+    both ground planes and both side walls ride on one PEC, so the line is
+    fully shielded.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        sl = st.stripline(g, line_w=0.3e-3, line_l=20e-3,
+                          sub_w=8e-3, sub_h=1.0e-3, er=3.38,
+                          add_ports=True, f0=5e9)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    line_w : float
+        trace width along x in metres
+    line_l : float
+        line length along y in metres
+    sub_w : float
+        dielectric width along x in metres
+    sub_h : float
+        total dielectric height along z in metres (trace sits at sub_h/2)
+    er : float
+        dielectric relative permittivity
+    tand : float
+        dielectric loss tangent (defaults to 0)
+    origin : tuple[float, float, float]
+        dielectric lower-corner reference; spans x about it
+    sub_maxh : float, optional
+        dielectric mesh size (defaults to ``sub_h / 3``)
+    add_ports : bool
+        attach the two wave ports and the full shielding PEC
+    f0 : float, optional
+        band-centre frequency in Hz, required when ``add_ports``
+    power : float
+        port excitation power in watts (only when ``add_ports``)
+
+    Returns
+    -------
+    Stripline
+        the built stripline and its port faces
+
+    Raises
+    ------
+    ValueError
+        if ``add_ports`` is set without ``f0``
+    """
+    if add_ports and f0 is None:
+        raise ValueError("stripline: add_ports=True needs f0 (band-centre Hz)")
+
+    ox, oy, oz = origin
+    eff_sub_maxh = sub_maxh if sub_maxh is not None else sub_h / _SUBSTRATE_MESH_DIVISIONS
+    half_h = sub_h / 2
+
+    # Split the fill into a lower and an upper half meeting at the trace plane.
+    # The trace then lies on the shared interface (a full partition surface),
+    # not as a floating embedded sheet, which would crash the mesh optimizer.
+    diel_lo = Dielectric(er=er, tand=tand, maxh=eff_sub_maxh)
+    diel_hi = Dielectric(er=er, tand=tand, maxh=eff_sub_maxh)
+    lower = g.box(sub_w, line_l, half_h, position=(ox - sub_w / 2, oy, oz),
+                  material=diel_lo)
+    upper = g.box(sub_w, line_l, half_h,
+                  position=(ox - sub_w / 2, oy, oz + half_h), material=diel_hi)
+    trace = g.xy_plate(line_w, line_l, position=(ox - line_w / 2, oy, oz + half_h))
+
+    g.fragment(lower, upper, trace)
+
+    port_a = (lower.faces.min(axis="y"), upper.faces.min(axis="y"))
+    port_b = (lower.faces.max(axis="y"), upper.faces.max(axis="y"))
+    line = Stripline(lower=lower, upper=upper, trace=trace,
+                     port_a=port_a, port_b=port_b)
+
+    if add_ports:
+        # Trace + the four enclosing walls: bottom ground (lower z-min), top
+        # ground (upper z-max), and the side walls on both halves.
+        strip = PEC(trace,
+                    lower.faces.min(axis="z"), upper.faces.max(axis="z"),
+                    lower.faces.min(axis="x"), lower.faces.max(axis="x"),
+                    upper.faces.min(axis="x"), upper.faces.max(axis="x"))
+        p0 = WavePort(port_a[0], port_a[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        p1 = WavePort(port_b[0], port_b[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        line.pec = strip
+        line.ports = [p0, p1]
+
+    return line

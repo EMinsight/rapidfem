@@ -127,3 +127,32 @@ def test_cpw_rejects_oversized_gap():
     with pytest.raises(ValueError):
         st.cpw(g, signal_w=0.4 * MM, gap=10 * MM, line_l=20 * MM,
                sub_w=10 * MM, sub_h=0.635 * MM, air_h=6 * MM, er=9.9)
+
+
+def _sl_kwargs():
+    return dict(line_w=0.3 * MM, line_l=20 * MM, sub_w=8 * MM,
+                sub_h=1.0 * MM, er=3.38)
+
+
+def test_stripline_geometry_only():
+    g = rf.Geometry(maxh=4 * MM)
+    sl = st.stripline(g, **_sl_kwargs())
+    assert sl.lower is not None and sl.upper is not None and sl.trace is not None
+    assert len(sl.port_a) == 2 and len(sl.port_b) == 2
+    assert sl.ports == []
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_stripline_add_ports_meshes():
+    g = rf.Geometry(maxh=4 * MM)
+    sl = st.stripline(g, add_ports=True, f0=5e9, **_sl_kwargs())
+    assert len(sl.ports) == 2 and sl.pec is not None
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_stripline_requires_f0():
+    g = rf.Geometry(maxh=4 * MM)
+    with pytest.raises(ValueError):
+        st.stripline(g, add_ports=True, **_sl_kwargs())
