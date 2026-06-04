@@ -1163,6 +1163,208 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         gmsh.model.occ.synchronize()
         self._refresh_descendants(obj)
 
+    def translate(self, obj: GeoObject,
+                  dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> None:
+        """move ``obj`` (and all its child faces / edges) in place by ``(dx, dy, dz)``
+
+        Like :meth:`rotate`, gmsh dimtags survive the transform, only
+        the geometric attributes (COG, bbox) of every tracked entity
+        descending from ``obj`` are refreshed, so named selectors keep
+        resolving to the moved entities.
+
+
+        Example
+        -------
+        Lift a feed line 0.5 mm in z:
+
+        .. code-block:: python
+
+            g.translate(feed, dz=0.5e-3)
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume or face to move
+        dx, dy, dz : float
+            translation along each axis in metres (default 0 = no move)
+        """
+        s = self._s
+        gmsh.model.occ.translate([(obj.dim, obj._entity.tag)], s(dx), s(dy), s(dz))
+        gmsh.model.occ.synchronize()
+        self._refresh_descendants(obj)
+
+    def mirror(self, obj: GeoObject,
+               normal: tuple[float, float, float] = (1, 0, 0),
+               point: tuple[float, float, float] = (0, 0, 0)) -> None:
+        """reflect ``obj`` in place across the plane through ``point`` with ``normal``
+
+        Useful for building symmetric structures (one half plus its
+        mirror image) without re-deriving coordinates. The reflection is
+        in place: dimtags survive, COG/bbox of every descendant are
+        refreshed, so named selectors keep working.
+
+
+        Note
+        ----
+        A reflection flips orientation. For a closed solid this is
+        harmless (the volume is still valid), but if you mirror and then
+        :meth:`fuse` the two halves, set face names AFTER the fuse (see
+        :meth:`fuse`).
+
+
+        Example
+        -------
+        Mirror a horn arm across the x = 0 plane (yz-plane):
+
+        .. code-block:: python
+
+            g.mirror(arm, normal=(1, 0, 0))
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume or face to reflect
+        normal : tuple[float, float, float]
+            plane normal (need not be unit length); defaults to +x,
+            i.e. the yz-plane
+        point : tuple[float, float, float]
+            a point the plane passes through (defaults to origin)
+        """
+        nx, ny, nz = normal
+        px, py, pz = point
+        s = self._s
+        # Plane a*x + b*y + c*z + d = 0 through `point` with the given normal.
+        # a,b,c are dimensionless; d carries length units, so build it from the
+        # scaled point coordinates (everything inside gmsh lives in scaled space).
+        d = -(nx * s(px) + ny * s(py) + nz * s(pz))
+        gmsh.model.occ.mirror([(obj.dim, obj._entity.tag)], nx, ny, nz, d)
+        gmsh.model.occ.synchronize()
+        self._refresh_descendants(obj)
+
+    def copy(self, obj: GeoObject, *,
+             material=None,
+             maxh: float | None = None) -> GeoObject:
+        """duplicate ``obj`` into a new, independent :class:`GeoObject`
+
+        The copy is a fresh body at the same location; move it with
+        :meth:`translate` / :meth:`rotate` afterwards (or use
+        :meth:`array`, which does this for you). Material and per-entity
+        ``maxh`` are inherited from the source unless overridden.
+
+
+        Note
+        ----
+        The copy's ``name`` is intentionally **not** inherited: two
+        entities sharing a name would make named-face resolution
+        ambiguous. Name the copy yourself (or attach physics directly)
+        after placing it.
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            via2 = g.copy(via1)
+            g.translate(via2, dx=1e-3)
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume or face to duplicate
+        material : rapidfem.Material, optional
+            material for the copy (defaults to the source's material;
+            volumes only)
+        maxh : float, optional
+            per-entity mesh size for the copy (defaults to the source's)
+
+        Returns
+        -------
+        GeoObject
+            the new, independent duplicate
+        """
+        out = gmsh.model.occ.copy([(obj.dim, obj._entity.tag)])
+        gmsh.model.occ.synchronize()
+        new_dim, new_tag = out[0]
+        eff_maxh = maxh if maxh is not None else obj.maxh
+        if new_dim == 3:
+            eff_material = material if material is not None else obj.material
+            return self._wrap_volume(new_tag, material=eff_material, maxh=eff_maxh)
+        return self._wrap_face(new_tag, maxh=eff_maxh)
+
+    def array(self, obj: GeoObject, count: int, *,
+              spacing: tuple[float, float, float] | None = None,
+              rotation: float | None = None,
+              axis: tuple[float, float, float] = (0, 0, 1),
+              center: tuple[float, float, float] = (0, 0, 0)) -> list[GeoObject]:
+        """replicate ``obj`` into a linear or polar array of ``count`` instances
+
+        Pass exactly one of ``spacing`` (linear array) or ``rotation``
+        (polar array). The returned list has length ``count`` with the
+        original ``obj`` as element ``0`` and the fresh copies after it,
+        so a 4-element array yields 3 new bodies plus the original.
+
+        Pairs naturally with :class:`rapidfem.FloquetPort` /
+        :class:`rapidfem.PeriodicBoundary` for antenna arrays, frequency
+        selective surfaces, and metamaterial unit-cell tilings.
+
+
+        Example
+        -------
+        A 1x8 linear patch array on a 12 mm pitch, and a 6-fold polar ring:
+
+        .. code-block:: python
+
+            patches = g.array(patch, 8, spacing=(12e-3, 0, 0))
+            petals  = g.array(petal, 6, rotation=2 * math.pi / 6)
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume or face to replicate
+        count : int
+            total number of instances including the original (>= 1)
+        spacing : tuple[float, float, float], optional
+            per-step translation in metres for a linear array
+        rotation : float, optional
+            per-step rotation angle in radians for a polar array
+        axis : tuple[float, float, float]
+            rotation axis for the polar case (defaults to +z)
+        center : tuple[float, float, float]
+            a point on the rotation axis for the polar case (defaults
+            to origin)
+
+        Returns
+        -------
+        list[GeoObject]
+            ``count`` instances, ``[0]`` being the original ``obj``
+
+        Raises
+        ------
+        ValueError
+            if ``count < 1`` or not exactly one of ``spacing`` / ``rotation``
+        """
+        if count < 1:
+            raise ValueError(f"array: count must be >= 1, got {count}")
+        if (spacing is None) == (rotation is None):
+            raise ValueError(
+                "array: pass exactly one of spacing= (linear) or rotation= (polar)")
+        instances = [obj]
+        for i in range(1, count):
+            inst = self.copy(obj)
+            if spacing is not None:
+                # Place each copy at i steps from the original (no cumulative
+                # drift: always derived from the un-moved source).
+                inst_shift = (spacing[0] * i, spacing[1] * i, spacing[2] * i)
+                self.translate(inst, *inst_shift)
+            else:
+                self.rotate(inst, rotation * i, axis=axis, center=center)
+            instances.append(inst)
+        return instances
+
     def _refresh_descendants(self, obj: GeoObject) -> None:
         """Refresh COG/bbox for every tracked entity in ``obj``'s boundary
         tree (plus ``obj`` itself). In-place transforms keep dimtags but
@@ -1257,6 +1459,127 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         inputs = [target] + list(tools)
         self._apply_out_map(inputs, out_map)
         self._reresolve_children(top_level=set(id(o._entity) for o in inputs))
+
+    def fillet(self, obj: GeoObject, radius: float,
+               edges: "EntityCollection | None" = None) -> GeoObject:
+        """round the edges of a volume with a constant-radius fillet
+
+        Rounds either every edge of ``obj`` (``edges=None``) or just the
+        ones in a selected :class:`EntityCollection`, replacing the
+        volume with the filleted result. Realistic conductor edges and
+        rounded housings need this; sharp edges also concentrate the
+        field and stress the mesh.
+
+
+        Note
+        ----
+        Filleting reshapes the boundary: the original flat faces and
+        sharp edges are replaced by new rounded surfaces, so names /
+        materials / ``maxh`` set on the *child faces or edges* of ``obj``
+        may not survive (the top-level volume identity does). Select
+        faces for physics **after** filleting, or fillet before naming.
+
+
+        Example
+        -------
+        Round all 12 edges of a box by 0.2 mm; or just its vertical edges:
+
+        .. code-block:: python
+
+            g.fillet(housing, 0.2e-3)
+            g.fillet(post, 50e-6, edges=post.edges.where(
+                lambda c, b: b[5] - b[2] > 1e-6))  # tall (z-extent) edges
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume to fillet (dim must be 3)
+        radius : float
+            fillet radius in metres
+        edges : EntityCollection, optional
+            edges to round (defaults to every edge of ``obj``)
+
+        Returns
+        -------
+        GeoObject
+            the same ``obj``, now pointing at the filleted volume
+
+        Raises
+        ------
+        ValueError
+            if ``obj`` is not a volume or has no edges to round
+        """
+        if obj.dim != 3:
+            raise ValueError(f"fillet expects a volume (dim=3), got dim={obj.dim}")
+        edge_tags = [e.tag for e in (edges if edges is not None else obj.edges)]
+        if not edge_tags:
+            raise ValueError("fillet: no edges to round")
+        s = self._s
+        # A single radius is broadcast by gmsh across every supplied curve.
+        out = gmsh.model.occ.fillet([obj._entity.tag], edge_tags, [s(radius)],
+                                    removeVolume=True)
+        gmsh.model.occ.synchronize()
+        self._apply_out_map([obj], [out])
+        self._reresolve_children(top_level={id(obj._entity)})
+        return obj
+
+    def chamfer(self, obj: GeoObject, distance: float,
+                edges: "EntityCollection | None" = None) -> GeoObject:
+        """bevel the edges of a volume with a constant chamfer
+
+        The flat-bevel counterpart to :meth:`fillet`: each selected edge
+        is replaced by a planar facet set back ``distance`` from the
+        edge. Same boundary-reshaping caveat as :meth:`fillet` (child
+        face / edge names may not survive).
+
+
+        Example
+        -------
+        .. code-block:: python
+
+            g.chamfer(connector_body, 0.1e-3)
+
+
+        Parameters
+        ----------
+        obj : GeoObject
+            volume to chamfer (dim must be 3)
+        distance : float
+            chamfer setback in metres
+        edges : EntityCollection, optional
+            edges to bevel (defaults to every edge of ``obj``)
+
+        Returns
+        -------
+        GeoObject
+            the same ``obj``, now pointing at the chamfered volume
+
+        Raises
+        ------
+        ValueError
+            if ``obj`` is not a volume or has no edges to bevel
+        """
+        if obj.dim != 3:
+            raise ValueError(f"chamfer expects a volume (dim=3), got dim={obj.dim}")
+        edge_tags = [e.tag for e in (edges if edges is not None else obj.edges)]
+        if not edge_tags:
+            raise ValueError("chamfer: no edges to bevel")
+        # gmsh's chamfer measures the setback from a reference surface per
+        # curve, so pair each edge with one of its adjacent faces.
+        surf_tags: list[int] = []
+        for et in edge_tags:
+            up, _down = gmsh.model.getAdjacencies(1, et)
+            if len(up) == 0:
+                raise RuntimeError(f"chamfer: edge {et} has no adjacent surface")
+            surf_tags.append(int(up[0]))
+        s = self._s
+        out = gmsh.model.occ.chamfer([obj._entity.tag], edge_tags, surf_tags,
+                                     [s(distance)], removeVolume=True)
+        gmsh.model.occ.synchronize()
+        self._apply_out_map([obj], [out])
+        self._reresolve_children(top_level={id(obj._entity)})
+        return obj
 
     # MESH EMIT ────────────────────────────────────────────────────────────
 
