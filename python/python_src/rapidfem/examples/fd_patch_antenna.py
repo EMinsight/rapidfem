@@ -96,6 +96,14 @@ rf.PEC(*pml_xp.faces.outer, *pml_xm.faces.outer,
        *pml_yp.faces.outer, *pml_ym.faces.outer,
        *pml_zp.faces.outer)
 
+# Near-field-to-far-field surface. With a PML there is no ABC Huygens surface
+# to auto-detect, so mark the bulk-air box boundary for the NFFT integral.
+# .hull (not .outer): the air box is PML-wrapped on five sides, so only its
+# z = 0 bottom face touches the model bbox; .outer would return that single
+# face, not the closed box. .hull keys off air's own bbox and returns all six.
+# The solver closes the surface on the z = 0 ground plane via the PEC faces.
+rf.FarFieldSurface(*air.faces.hull)
+
 rf.show(g)
 
 

@@ -2,10 +2,10 @@
   "schema": 2,
   "name": "fd_microstrip_line",
   "filename": "fd_microstrip_line.py",
-  "src_hash": "a67d6ce049990418af509aab2fc7744facbbddac1c01f746f846913ed95e14e5",
-  "package_hash": "3261e941fe2d19304ba96ea5b9fa44a5b4a95f619f1fa1e9d54c773a9f566c3f",
-  "baked_at": 1780236417,
-  "bake_seconds": 0.0,
+  "src_hash": "c10d63ed3b17e9a6152e198fa58ccb9cac8325f58287f1907296471d88d8fcc3",
+  "package_hash": "020c191fb9d45fe8e90e2a7bbbab53d742a04461b395928ef83be5e1fa880171",
+  "baked_at": 1780604369,
+  "bake_seconds": 61.74,
   "status": "ok",
   "exit_code": 0,
   "n_cells": 5,
@@ -45,13 +45,13 @@
         "mesh",
         "result"
       ],
-      "stream_lines": 36
+      "stream_lines": 38
     }
   ],
   "bin_files": [
-    "fd_microstrip_line.field.bin",
-    "fd_microstrip_line.geo.bin"
+    "fd_microstrip_line.geo.bin",
+    "fd_microstrip_line.field.bin"
   ],
-  "json_bytes": 20018,
-  "bin_bytes": 29285816
+  "json_bytes": 21476,
+  "bin_bytes": 22442512
 }

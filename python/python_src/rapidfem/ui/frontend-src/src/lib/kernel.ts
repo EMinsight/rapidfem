@@ -21,7 +21,7 @@ export type StreamKind = 'stdout' | 'stderr';
 
 /** Display-event `kind`s the kernel forwards to `onDisplay`. */
 export type DisplayKind =
-	| 'geometry' | 'mesh' | 'result'
+	| 'geometry' | 'mesh' | 'result' | 'sweep_point'
 	| 'td_result' | 'td_timeseries' | 'td_transfer' | 'td_trajectory';
 
 export type KernelEvent =
@@ -29,6 +29,7 @@ export type KernelEvent =
 	| { type: 'display'; kind: 'geometry'; name: string; payload: GeometryPayload }
 	| { type: 'display'; kind: 'mesh'; name: string; payload: MeshPayload }
 	| { type: 'display'; kind: 'result'; name: string; payload: SolveResultPayload }
+	| { type: 'display'; kind: 'sweep_point'; name: string; payload: SweepPointPayload }
 	| { type: 'display'; kind: 'td_result'; name: string; payload: TdResultPayload }
 	| { type: 'display'; kind: 'td_timeseries'; name: string; payload: TdTimeSeriesPayload }
 	| { type: 'display'; kind: 'td_transfer'; name: string; payload: TdTimeSeriesPayload }
@@ -58,6 +59,17 @@ export interface SolveResultPayload {
 	fields_j?: (number[] | null)[][] | null;
 	/** Magnetic field H = ∇×E / (jωμ) per (freq, port), same shape as `fields`. */
 	fields_h?: (number[] | null)[][] | null;
+	/** Driven-sweep fields are fetched on demand (binary) via /api/field rather
+	 *  than inlined; this carries the available shape instead of the arrays. */
+	field_meta?: { n_freq: number; n_port: number; channels: string[]; lazy?: boolean };
+}
+
+/** One frequency's S-matrix, streamed live during a sweep. `s[obs][exc]` is
+ *  `[re, im]`. The viewer appends these incrementally (no full-result rebuild). */
+export interface SweepPointPayload {
+	freq_idx: number;
+	freq: number;
+	s: number[][][];
 }
 
 export interface ExecuteOptions {

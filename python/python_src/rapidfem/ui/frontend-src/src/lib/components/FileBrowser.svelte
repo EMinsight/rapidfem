@@ -2,6 +2,7 @@
 	import { listFiles, listExamples, deleteFile, renameFile, type FileEntry } from '$lib/api';
 	import { IS_STATIC_MODE, DEMO_BASE } from '$lib/static_mode';
 	import { openConfirm, openPrompt } from '$lib/modals';
+	import Icon from '$lib/docs/components/common/Icon.svelte';
 
 	let {
 		active_path = $bindable<string | null>(null),
@@ -9,12 +10,25 @@
 		onNew,
 		onOpenExample,
 		onClosed,
+		onSave,
+		onSaveAs,
+		can_save = false,
+		dirty = false,
+		reload = 0,
 	}: {
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
 		onOpenExample?: (name: string) => void;
 		onClosed?: (path: string) => void;
+		onSave?: () => void;
+		onSaveAs?: () => void;
+		/** Whether there is an open buffer to save (enables Save / Save As). */
+		can_save?: boolean;
+		/** Unsaved changes in the open buffer (Save icon shows an accent dot). */
+		dirty?: boolean;
+		/** Bump to force a workdir re-list (e.g. after Save As creates a file). */
+		reload?: number;
 	} = $props();
 
 	let files = $state<FileEntry[]>([]);
@@ -81,7 +95,7 @@
 		}
 	}
 
-	$effect(() => { void refresh(); });
+	$effect(() => { reload; void refresh(); });
 
 	// ── Tree from flat paths ──────────────────────────────────────────────
 	type TreeNode = {
@@ -230,19 +244,29 @@
 	<div class="head">
 		<span class="title">{IS_STATIC_MODE ? 'Demo' : 'Files'}</span>
 		{#if !IS_STATIC_MODE}
-			<button class="tb" onclick={onNew} title="New .py file" aria-label="New file">
+			<button class="tb has-tip" onclick={onNew} aria-label="New file">
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
 					<path d="M8 3v10" />
 					<path d="M3 8h10" />
 				</svg>
+				<span class="tip left">New .py file</span>
 			</button>
-			<button class="tb" onclick={refresh} title="Refresh" aria-label="Refresh" disabled={loading}>
+			<button class="tb has-tip" class:dirty onclick={() => onSave?.()} disabled={!can_save} aria-label="Save">
+				<Icon name="save" size={14} />
+				<span class="tip left">Save<kbd>Ctrl+S</kbd></span>
+			</button>
+			<button class="tb has-tip" onclick={() => onSaveAs?.()} disabled={!can_save} aria-label="Save As">
+				<Icon name="file-plus" size={14} />
+				<span class="tip left">Save as new file</span>
+			</button>
+			<button class="tb has-tip" onclick={refresh} aria-label="Refresh" disabled={loading}>
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 					<path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8" />
 					<polyline points="12.5,2 12.5,4.5 10,4.5" />
 					<path d="M13.5 8a5.5 5.5 0 0 1-9.5 3.8" />
 					<polyline points="3.5,14 3.5,11.5 6,11.5" />
 				</svg>
+				<span class="tip left">Refresh files</span>
 			</button>
 		{/if}
 	</div>
@@ -305,14 +329,15 @@
 						ondblclick={(e) => on_rename(e, row.path)}
 					>
 						<button
-							class="item"
+							class="item has-tip"
 							onclick={() => onOpen(row.path)}
-							title={`${row.path}  ·  ${row.entry?.size ?? 0} bytes  ·  double-click row to rename`}
 						>
 							<span class="indent"></span>
 							<span class="name">{row.name}</span>
+							<span class="tip left">{row.path}<kbd>{row.entry?.size ?? 0} B</kbd></span>
 						</button>
-						<button class="row-act" onclick={(e) => on_delete(e, row.path)} title="Delete" aria-label="Delete">
+						<button class="row-act has-tip" onclick={(e) => on_delete(e, row.path)} aria-label="Delete">
+							<span class="tip left">Delete file</span>
 							<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
 								<polyline points="3,5 13,5" />
 								<path d="M6 5V3h4v2" />
@@ -351,11 +376,11 @@
 			{#if open_sections.has('examples')}
 				{#each examples as e (e.name)}
 					<button
-						class="item example"
+						class="item example has-tip"
 						onclick={() => onOpenExample?.(e.name)}
-						title={`Bundled example — ${e.name}`}
 					>
 						<span class="name">{e.name}</span>
+						<span class="tip left">Open example (unsaved)<kbd>{e.name}</kbd></span>
 					</button>
 				{/each}
 			{/if}
@@ -413,6 +438,11 @@
 		background: var(--bg-surface);
 		border-color: var(--border);
 		color: var(--text-dim);
+	}
+	/* Unsaved changes: tint the Save icon with the accent colour. */
+	.tb.dirty:not(:disabled) {
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 	.tb svg { display: block; }
 

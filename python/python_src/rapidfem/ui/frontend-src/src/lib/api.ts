@@ -120,6 +120,20 @@ export async function listFiles(): Promise<{ workdir: string; files: FileEntry[]
 	return get_json<{ workdir: string; files: FileEntry[] }>('/api/files');
 }
 
+/** Fetch one (freq, port, channel) field as a packed f32 ABC buffer from the
+ *  worker's stashed sweep result. Returns null when there is no field for that
+ *  selection (e.g. an out-of-range frequency, or no sweep run yet). */
+export async function fetchFieldBuffer(
+	file: string, freq: number, port: number, channel: string,
+): Promise<Float32Array | null> {
+	const q = `file=${encodeURIComponent(file)}&freq=${freq}&port=${port}&channel=${channel}`;
+	const r = await fetch(`${api_base()}/api/field?${q}`);
+	if (!r.ok) return null;
+	const buf = await r.arrayBuffer();
+	if (buf.byteLength === 0) return null;
+	return new Float32Array(buf);
+}
+
 export async function readFile(path: string): Promise<string> {
 	const r = await get_json<{ ok: boolean; content?: string; error?: string }>(
 		`/api/files/${encodeURI(path)}`,
@@ -144,6 +158,13 @@ export async function deleteFile(path: string): Promise<void> {
 
 export async function renameFile(from: string, to: string): Promise<void> {
 	return post_json('/api/files/rename', { from, to });
+}
+
+/** Re-key the live kernel session on Save As so its state (namespace + the
+ *  stashed sweep result behind /api/field) follows the buffer to its new
+ *  name. A no-op on the backend if no session exists under `old`. */
+export async function renameKernel(old: string, next: string): Promise<void> {
+	await post_json('/api/kernel/rename', { old, new: next });
 }
 
 export async function health(): Promise<{ ok: boolean; workdir: string; frontend_bundled: boolean }> {

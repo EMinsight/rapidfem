@@ -777,6 +777,19 @@ class ProblemTD:
         tag_periodic = _collect_periodic(geometry)
         tag_abc = _collect_abc(geometry)
         tag_pec = _collect_pec(geometry)
+        # Near-field-to-far-field is a frequency-domain post-process; the TD
+        # operator has no NFFT path, so a FarFieldSurface here is silently
+        # meshed/tagged but never consumed. Warn rather than mislead.
+        from ..physics import FarFieldSurface
+        if any(isinstance(p, FarFieldSurface)
+               for p in getattr(geometry, "_physics", [])):
+            import warnings
+            warnings.warn(
+                "FarFieldSurface is ignored by the time-domain backend "
+                "(near-field-to-far-field is frequency-domain only); it has "
+                "no effect on a ProblemTD analysis.",
+                stacklevel=2,
+            )
         # The TD operator runs in normalised units (c = 1, time measured in
         # the mesh's length units), so a Debye relaxation time given in
         # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /

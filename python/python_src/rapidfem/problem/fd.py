@@ -16,7 +16,7 @@ import numpy as np
 from .._native import Simulation as _NativeSimulation
 from .._fmt import _f64
 from ..geometry import Geometry
-from ..physics import PEC, PML
+from ..physics import PEC, PML, FarFieldSurface
 
 
 # HELPERS ===============================================================================
@@ -196,7 +196,8 @@ class ProblemFD:
 
     def sweep(self, frequencies: Iterable[float], *,
               z0: float = 50.0,
-              adaptive: Adaptive | None = None):
+              adaptive: Adaptive | None = None,
+              on_frequency=None):
         """run a driven frequency sweep and return the SweepResult
 
         Assembles the FEM operator from the geometry's material /
@@ -221,6 +222,13 @@ class ProblemFD:
             reference impedance for S-parameter normalisation in ohms
         adaptive : Adaptive, optional
             adaptive-mesh-refinement settings (``None`` disables it)
+        on_frequency : callable, optional
+            called after each frequency's solve as
+            ``on_frequency(freq_idx, freq_hz, s_matrix)`` where ``s_matrix`` is
+            the ``(n_driven, n_driven)`` complex S-block for that frequency.
+            Useful for progress reporting. When ``None`` and running inside the
+            UI, a callback that streams partial results to the viewer is used
+            automatically.
 
         Returns
         -------
@@ -232,7 +240,20 @@ class ProblemFD:
             raise ValueError("sweep needs at least one frequency")
         toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive)
         self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
-        return self._native.run_sweep()
+        # The native callback is (freq_idx, freq, s_matrix). Compose an optional
+        # user `on_frequency` with the UI's per-frequency streaming callback.
+        from rapidfem import _show_capture
+        ui_cb = _show_capture.active_sweep_callback()
+        user_cb = on_frequency
+        if ui_cb is None and user_cb is None:
+            callback = None
+        else:
+            def callback(freq_idx, freq, s_matrix):
+                if user_cb is not None:
+                    user_cb(freq_idx, freq, s_matrix)
+                if ui_cb is not None:
+                    ui_cb(freq_idx, freq, s_matrix)
+        return self._native.run_sweep(callback)
 
     def eigenmode(self, target_frequency: float, *,
                   n_modes: int = 6,
@@ -628,8 +649,10 @@ class ProblemFD:
                     f"material {mat!r} has no tag, re-run g.mesh() after attaching it")
             parts.append(mat._to_toml(tag))
 
-        # Physics, ports, BCs, PML. PEC tags get aggregated separately.
+        # Physics, ports, BCs, PML. PEC tags get aggregated separately;
+        # a FarFieldSurface tag is consumed by the [output] block.
         pec_tags: list[int] = []
+        nfft_tag: int | None = None
         for phys in g._physics:
             tag = g._physics_tags.get(id(phys))
             if tag is None:
@@ -638,6 +661,14 @@ class ProblemFD:
                     f"after constructing it")
             if isinstance(phys, PEC):
                 pec_tags.append(tag)
+            elif isinstance(phys, FarFieldSurface):
+                if nfft_tag is not None:
+                    raise RuntimeError(
+                        "multiple FarFieldSurface objects, but only one "
+                        "near-field-to-far-field surface is supported. Pass "
+                        "every face to a single FarFieldSurface(...) call "
+                        "(e.g. rf.FarFieldSurface(*air.faces.hull)).")
+                nfft_tag = tag
             else:
                 block = phys._to_toml(tag)
                 if block:
@@ -659,7 +690,10 @@ class ProblemFD:
                 f"refinement_ratio = {_f64(adaptive.refinement_ratio)}\n"
             )
 
-        parts.append(f"[output]\nz0 = {_f64(z0)}\n")
+        output = f"[output]\nz0 = {_f64(z0)}\n"
+        if nfft_tag is not None:
+            output += f"nfft_tag = {nfft_tag}\n"
+        parts.append(output)
         return "\n".join(parts)
 
 

@@ -60,7 +60,7 @@ fn main() {
     }
 
     // ── Frequency sweep ─────────────────────────────────────────────────────
-    let result = sim.run_sweep().expect("frequency sweep failed");
+    let result = sim.run_sweep(None).expect("frequency sweep failed");
     eprintln!("\nTotal: {:.3}s for {} frequency points",
         result.solve_time_s, result.frequencies.len());
 

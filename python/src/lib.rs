@@ -72,17 +72,72 @@ impl PySimulation {
     /// Run the configured frequency sweep. Returns a SweepResult with frequencies
     /// (float64 array, shape `[n_freq]`) and S-parameters (complex128 array,
     /// shape `[n_freq, n_driven, n_driven]`).
-    fn run_sweep(&self) -> PyResult<PySweepResult> {
-        // Release the GIL so log-streaming reader threads + WS workers run
-        // during the (potentially long) sweep. `Python::allow_threads`
-        // wants `Send`, but Simulation is `unsendable` (Box<dyn Port> is
-        // not Send). Drop down to PyO3's ffi — same effect, no Send bound.
-        let inner = unsafe {
-            let save = pyo3::ffi::PyEval_SaveThread();
-            let r = self.inner.run_sweep();
-            pyo3::ffi::PyEval_RestoreThread(save);
-            r
-        }.map_err(PyRuntimeError::new_err)?;
+    ///
+    /// `callback`, if given, is called after each frequency's solve as
+    /// `callback(freq_idx, freq_hz, s_matrix)` where `s_matrix` is a
+    /// `(n_driven, n_driven)` complex128 numpy array. Used by the UI to stream
+    /// partial results; it does not change the returned SweepResult.
+    #[pyo3(signature = (callback=None))]
+    fn run_sweep(&self, callback: Option<PyObject>) -> PyResult<PySweepResult> {
+        // No callback: release the GIL for the (potentially long) sweep so
+        // other Python threads run. `Python::allow_threads` wants `Send`, but
+        // Simulation is `unsendable` (Box<dyn Port> is not Send), so we drop to
+        // PyO3's ffi for the same effect without the Send bound.
+        let Some(cb) = callback else {
+            let inner = unsafe {
+                let save = pyo3::ffi::PyEval_SaveThread();
+                let r = self.inner.run_sweep(None);
+                pyo3::ffi::PyEval_RestoreThread(save);
+                r
+            }
+            .map_err(PyRuntimeError::new_err)?;
+            return Ok(PySweepResult { inner });
+        };
+
+        // With a callback we must call back into Python per frequency, so keep
+        // the GIL held for the whole sweep (mixing PyEval_SaveThread with
+        // re-acquiring the GIL on the same thread is unsound). The hook
+        // re-enters via `Python::with_gil`, which is cheap when the GIL is
+        // already held. A genuine exception from the callback (anything other
+        // than KeyboardInterrupt) is stashed here, stops the sweep, and is
+        // re-raised after run_sweep returns rather than silently swallowed.
+        let cb_err: std::cell::RefCell<Option<PyErr>> = std::cell::RefCell::new(None);
+        let hook = |fi: usize, freq: f64, s: &[Vec<Complex64>]| -> bool {
+            Python::with_gil(|py| {
+                let n = s.len();
+                let mut flat: Vec<NpC64> = Vec::with_capacity(n * n);
+                for row in s {
+                    for v in row {
+                        flat.push(NpC64::new(v.re, v.im));
+                    }
+                }
+                let arr = numpy::ndarray::Array2::from_shape_vec((n, n), flat)
+                    .expect("square s-matrix")
+                    .into_pyarray_bound(py);
+                match cb.call1(py, (fi, freq, arr)) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // A KeyboardInterrupt through the callback means "stop"
+                        // (no error); any other exception is a real callback
+                        // bug, so stash it and stop the sweep.
+                        if !e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                            *cb_err.borrow_mut() = Some(e);
+                        }
+                        return false;
+                    }
+                }
+                // Also honour a Ctrl-C / UI interrupt that landed between
+                // callbacks (check_signals clears it on Err).
+                !py.check_signals().is_err()
+            })
+        };
+        let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) -> bool = &hook;
+        let r = self.inner.run_sweep(Some(hook_dyn));
+        // Surface a stashed callback exception ahead of any solver error.
+        if let Some(e) = cb_err.borrow_mut().take() {
+            return Err(e);
+        }
+        let inner = r.map_err(PyRuntimeError::new_err)?;
         Ok(PySweepResult { inner })
     }
 

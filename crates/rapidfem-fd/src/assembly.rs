@@ -251,7 +251,7 @@ pub fn frequency_sweep(
     frequencies: &[f64],
     materials: Option<&[crate::materials::Material]>,
 ) -> Result<Vec<SolveResult>, String> {
-    frequency_sweep_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, frequencies, materials, None)
+    frequency_sweep_with_pml(mesh, basis, ports, port_tri_indices, pec_tri_indices, frequencies, materials, None, None)
 }
 
 pub fn frequency_sweep_with_pml(
@@ -263,6 +263,12 @@ pub fn frequency_sweep_with_pml(
     frequencies: &[f64],
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
+    // Optional per-frequency hook, called after each frequency's solve with
+    // (freq_idx, freq_hz, &SolveResult). Lets a caller stream partial results
+    // (e.g. progressive S-parameters in the UI) without changing the output.
+    // Returns `false` to stop the sweep early (e.g. on a user interrupt); the
+    // frequencies solved so far are returned.
+    mut on_solve: Option<&mut dyn FnMut(usize, f64, &SolveResult) -> bool>,
 ) -> Result<Vec<SolveResult>, String> {
     // Detect if any material is frequency-dependent, if so, K must be rebuilt every frequency
     let materials_dispersive = materials
@@ -446,6 +452,15 @@ pub fn frequency_sweep_with_pml(
             solver.name(),
         );
         results.push(SolveResult { solutions, n_field });
+        if let Some(cb) = on_solve.as_deref_mut() {
+            if !cb(fi, freq, results.last().unwrap()) {
+                eprintln!(
+                    "  sweep stopped early after frequency {}/{} (interrupt)",
+                    fi + 1, frequencies.len(),
+                );
+                break;
+            }
+        }
     }
 
     Ok(results)

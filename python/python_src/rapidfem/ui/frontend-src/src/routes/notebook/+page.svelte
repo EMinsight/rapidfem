@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		readFile, writeFile, readExample,
+		readFile, writeFile, readExample, fetchFieldBuffer, renameKernel,
 		meshPayloadToMeshData, sparamsToSMatrices, health,
 		type MeshPayload, type GeometryPayload, type SMatrix,
 		type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
@@ -9,6 +9,7 @@
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
 	import { isBinRef, type BinRef } from '$lib/binpack';
+	import Icon from '$lib/docs/components/common/Icon.svelte';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -25,8 +26,19 @@
 	let status = $state('idle');
 	let workdir = $state('');
 	let active_path = $state<string | null>(null);
+	// Suggested name for an unsaved buffer (e.g. an example opened in place).
+	// Non-null only while active_path is null; drives the header label and the
+	// Save As default. Cleared once the buffer is saved to a real workdir file.
+	let untitled_label = $state<string | null>(null);
+	// Bump to force the FileBrowser to re-list the workdir (after Save As).
+	let fb_reload = $state(0);
 	let code = $state('');
 	let dirty = $state(false);
+	// Whether the Save affordance (FileBrowser icon dot) should signal "unsaved".
+	// An untitled buffer (an opened example, never written to the workdir) is
+	// unsaved by definition, so it always needs saving; a real file tracks edits
+	// via `dirty`. This keeps the toolbar dot consistent with the header dot.
+	let needs_save = $derived(active_path === null ? untitled_label !== null : dirty);
 	let log_lines = $state<string[]>([]);
 	let output_body_el: HTMLElement | undefined = $state();
 	let _stick_to_bottom = $state(true);
@@ -64,6 +76,12 @@
 	let field_channel = $state<'E' | 'J' | 'H'>('E');
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
+	// Live mode: fields are not inlined in the result; the one being viewed is
+	// fetched on demand as a binary buffer from /api/field. `field_meta` holds
+	// the available shape; `lazy_field_abc` is the currently-fetched field.
+	let fields_lazy = $state(false);
+	let field_meta = $state<{ n_freq: number; n_port: number; channels: ('E' | 'J' | 'H')[] } | null>(null);
+	let lazy_field_abc = $state<Float32Array | null>(null);
 	// Eigenmode mode: ResultsPanel S-param plots are hidden, the freq slider
 	// becomes a mode-index slider, and each entry of `freqs` is a resonant
 	// frequency instead of a sweep sample.
@@ -85,15 +103,34 @@
 			? (active_channel_raw as (number[] | null)[][])
 			: null,
 	);
-	let available_channels = $derived<('E' | 'J' | 'H')[]>([
-		...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
-		...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
-		...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
-	]);
+	let available_channels = $derived<('E' | 'J' | 'H')[]>(
+		fields_lazy
+			? (field_meta?.channels ?? ['E'])
+			: [
+				...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
+				...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
+				...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
+			],
+	);
 	let field_abc = $derived<Float32Array | null>(
-		active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
-			? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
-			: null,
+		fields_lazy
+			? lazy_field_abc
+			: (active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
+				? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
+				: null),
+	);
+	// Number of ports the field viewer can switch between. The pull path knows
+	// the count from the result metadata; the inline path reads it off the
+	// nested arrays.
+	let field_n_port = $derived<number>(
+		fields_lazy ? (field_meta?.n_port ?? 1)
+			: (active_channel_data?.[field_freq_idx]?.length ?? 1),
+	);
+	// Whether the field viewer has anything to drive its controls (inline data
+	// or a lazy pull source). Keeps the freq/port controls visible when fields
+	// are fetched on demand instead of inlined.
+	let has_field_source = $derived<boolean>(
+		!!active_channel_raw || fields_lazy,
 	);
 
 	// Lazily fetch + resolve a channel's `$bin` field ref the first time
@@ -122,6 +159,39 @@
 				_field_resolving = false;
 			}
 		})();
+	});
+
+	// Fetch the one field currently shown (channel/freq/port) as a binary buffer
+	// from /api/field. Re-runs whenever the selection changes, so scrubbing the
+	// frequency slider fetches just that field. Nothing is fetched until the
+	// field viewer is opened.
+	$effect(() => {
+		if (!fields_lazy || !show_field) return;
+		const fi = field_freq_idx;
+		const pi = field_port_idx;
+		// Skip out-of-range selections. While a re-run sweep is streaming, the
+		// worker still holds the *previous* sweep's stashed result and
+		// field_meta is not refreshed until the terminal `result` arrives, so a
+		// stale or over-range index would just waste a round-trip (or fetch the
+		// wrong field). The bounds come from the still-current field_meta.
+		const nfreq = field_meta?.n_freq ?? 0;
+		const nport = field_meta?.n_port ?? 0;
+		if (fi < 0 || fi >= nfreq || pi < 0 || pi >= nport) return;
+		const file = active_path ?? '<unnamed>';
+		const ch = field_channel;
+		let cancelled = false;
+		void (async () => {
+			try {
+				const arr = await fetchFieldBuffer(file, fi, pi, ch);
+				if (!cancelled) lazy_field_abc = arr;
+			} catch (e) {
+				if (!cancelled) {
+					lazy_field_abc = null;
+					log_lines = [...log_lines, `[field] fetch failed: ${e}`];
+				}
+			}
+		})();
+		return () => { cancelled = true; };
 	});
 
 	let last_geom_stats = $state<{ n_entities: number; n_triangles: number } | null>(null);
@@ -401,6 +471,7 @@
 			const prev_path = active_path;
 			code = content;
 			active_path = path;
+			untitled_label = null;
 			dirty = false;
 			localStorage.setItem('rapidfem.active_path', path);
 			clear_stale_results();
@@ -447,20 +518,23 @@
 				queueMicrotask(() => { void notebook?.run_all_cells(); });
 				return;
 			}
-			// Live mode: if the example file is already in the workdir
-			// (the default — `rapidfem serve` auto-populates them on first
-			// run), just open it. Never overwrite user edits, never spawn
-			// `_1.py` clones.
-			try {
-				await readFile(name);
-				await open_file(name);
-				return;
-			} catch (e) {
-				if (!String(e).includes('HTTP 404')) throw e;
+			// Live mode: open the example as an *unsaved buffer*. It is NOT
+			// written to the workdir — the user persists it explicitly via
+			// Save As. This keeps the workdir clean and avoids surprise copies.
+			const prev_path = active_path;
+			code = content;
+			active_path = null;
+			untitled_label = name;
+			dirty = false;
+			localStorage.removeItem('rapidfem.active_path');
+			clear_stale_results();
+			mesh_data = null;
+			log_lines = [];
+			// Unsaved buffers run under the shared '<unnamed>' kernel; reset it
+			// so the example starts from a clean namespace.
+			if (prev_path !== null) {
+				try { get_kernel().reset('<unnamed>'); } catch {}
 			}
-			// File missing → write it once.
-			await writeFile(name, content);
-			await open_file(name);
 		} catch (e) {
 			log_lines = [...log_lines, `[example ${name}] ${e}`];
 		}
@@ -501,6 +575,9 @@
 		fields_raw = null;
 		fields_j_raw = null;
 		fields_h_raw = null;
+		fields_lazy = false;
+		field_meta = null;
+		lazy_field_abc = null;
 		smats = [];
 		freqs = [];
 		eigenmode_mode = false;
@@ -527,6 +604,9 @@
 		fields_raw = null;
 		fields_j_raw = null;
 		fields_h_raw = null;
+		fields_lazy = false;
+		field_meta = null;
+		lazy_field_abc = null;
 		show_field = false;
 		last_solve_stats = null;
 		td_trajectory_payload = null;
@@ -616,17 +696,43 @@
 						n_tris: m.stats.n_tris,
 						mesh_time_s: m.stats.mesh_time_s,
 					};
+				} else if (kind === 'sweep_point') {
+					// Lightweight per-frequency S-parameter update during a sweep:
+					// just this frequency's S-matrix. Append it (reset on the first
+					// point of a new sweep). The field viewer is untouched — fields
+					// are fetched on demand once the sweep finishes.
+					const p = payload as { freq_idx: number; freq: number; s: number[][][] };
+					if (p.freq_idx === 0) { freqs = []; smats = []; }
+					const nf = [...freqs]; nf[p.freq_idx] = p.freq; freqs = nf;
+					const nm = [...smats]; nm[p.freq_idx] = sparamsToSMatrices([p.s])[0]; smats = nm;
 				} else if (kind === 'result') {
 					const res = payload as SolveResultPayload;
 					freqs = res.frequencies;
 					smats = res.eigenmode ? [] : sparamsToSMatrices(res.sparams);
-					fields_raw = res.fields ?? null;
-					fields_j_raw = res.fields_j ?? null;
-					fields_h_raw = res.fields_h ?? null;
+					if (res.field_meta) {
+						// Driven sweep: fields are fetched on demand (binary) from
+						// /api/field, not inlined. Mark the channels available.
+						fields_lazy = true;
+						field_meta = {
+							n_freq: res.field_meta.n_freq,
+							n_port: res.field_meta.n_port,
+							channels: (res.field_meta.channels ?? ['E']) as ('E' | 'J' | 'H')[],
+						};
+						fields_raw = null;
+						fields_j_raw = null;
+						fields_h_raw = null;
+						lazy_field_abc = null;
+					} else {
+						// Eigenmode / time-domain: fields arrive inline.
+						fields_lazy = false;
+						field_meta = null;
+						lazy_field_abc = null;
+						fields_raw = res.fields ?? null;
+						fields_j_raw = res.fields_j ?? null;
+						fields_h_raw = res.fields_h ?? null;
+					}
 					field_freq_idx = 0;
 					field_port_idx = 0;
-					// Snap back to E whenever a new result arrives — and avoid
-					// being stuck on J / H if the new run didn't compute them.
 					field_channel = 'E';
 					eigenmode_mode = !!res.eigenmode;
 					mode_q_factors = res.q_factors ?? [];
@@ -664,13 +770,6 @@
 		log_lines = [...log_lines, `[kernel] reset`];
 	}
 
-	/** Wipe kernel state, then run every cell top-to-bottom. The combined
-	 *  flow you almost always want after a non-trivial edit. */
-	async function on_restart_and_run_all() {
-		await on_reset_kernel();
-		await notebook?.run_all_cells();
-	}
-
 	/** SIGINT the worker subprocess — raises KeyboardInterrupt inside the
 	 *  running cell, which surfaces as an error event through the normal
 	 *  poll stream. */
@@ -701,10 +800,18 @@
 	let saved_pulse = $state(false);
 	let saved_pulse_t: ReturnType<typeof setTimeout> | null = null;
 
+	function flash_saved() {
+		saved_pulse = true;
+		if (saved_pulse_t) clearTimeout(saved_pulse_t);
+		saved_pulse_t = setTimeout(() => { saved_pulse = false; }, 900);
+	}
+
 	/** Flush the debounce timer and persist immediately. Triggered by
-	 *  Ctrl/Cmd+S and the toolbar Save button. */
+	 *  Ctrl/Cmd+S and the toolbar Save button. An unsaved buffer (no
+	 *  active_path, e.g. a freshly opened example) routes to Save As. */
 	async function save_now() {
-		if (!active_path || IS_STATIC_MODE) return;
+		if (IS_STATIC_MODE) return;
+		if (!active_path) { await save_as(); return; }
 		if (dirty_save_t) {
 			clearTimeout(dirty_save_t);
 			dirty_save_t = null;
@@ -712,11 +819,47 @@
 		try {
 			await writeFile(active_path, code);
 			dirty = false;
-			saved_pulse = true;
-			if (saved_pulse_t) clearTimeout(saved_pulse_t);
-			saved_pulse_t = setTimeout(() => { saved_pulse = false; }, 900);
+			flash_saved();
 		} catch (e) {
 			log_lines = [...log_lines, `[save] ${e}`];
+		}
+	}
+
+	/** Persist the current buffer under a chosen name and adopt it as the
+	 *  active file. The only way an example (or any unsaved buffer) reaches
+	 *  the workdir. */
+	async function save_as() {
+		if (IS_STATIC_MODE) return;
+		const suggested = untitled_label ?? active_path ?? 'notebook.py';
+		const name = await openPrompt({
+			title: 'Save As',
+			label: 'File name',
+			placeholder: suggested,
+			confirmLabel: 'Save',
+			validate: (v) => (v ? null : 'Name cannot be empty'),
+		});
+		if (!name) return;
+		const path = name.endsWith('.py') ? name : `${name}.py`;
+		if (dirty_save_t) {
+			clearTimeout(dirty_save_t);
+			dirty_save_t = null;
+		}
+		try {
+			await writeFile(path, code);
+			// Re-key the live kernel so its state (and the stashed sweep result
+			// behind the field viewer) follows the buffer to its new name;
+			// otherwise the field fetch would query a session that no longer
+			// exists under the new key and the viewer would blank.
+			const old_key = active_path ?? '<unnamed>';
+			try { await renameKernel(old_key, path); } catch { /* best-effort */ }
+			active_path = path;
+			untitled_label = null;
+			dirty = false;
+			localStorage.setItem('rapidfem.active_path', path);
+			fb_reload += 1;  // surface the new file in the browser
+			flash_saved();
+		} catch (e) {
+			log_lines = [...log_lines, `[save as ${path}] ${e}`];
 		}
 	}
 
@@ -786,6 +929,11 @@
 				{#if saved_pulse}<span class="saved-badge">saved</span>{/if}
 				<span class="tip right">{workdir}</span>
 			</span>
+		{:else if untitled_label}
+			<span class="active-file untitled has-tip">
+				{untitled_label} •
+				<span class="tip right">Unsaved buffer, Save As to keep it</span>
+			</span>
 		{:else}
 			<span class="workdir-only">{workdir}</span>
 		{/if}
@@ -811,6 +959,11 @@
 						onNew={new_file}
 						onOpenExample={open_example}
 						onClosed={on_file_closed}
+						onSave={save_now}
+						onSaveAs={save_as}
+						can_save={active_path !== null || untitled_label !== null}
+						dirty={needs_save}
+						reload={fb_reload}
 					/>
 				</div>
 			{/if}
@@ -839,13 +992,9 @@
 							Run Cell
 							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Run current cell'}<kbd>Shift+Enter</kbd></span>
 						</button>
-						<button class="primary subtle has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE}>
-							Restart Kernel
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Wipe namespace + gmsh state'}</span>
-						</button>
-						<button class="primary subtle has-tip" onclick={on_restart_and_run_all} disabled={IS_STATIC_MODE}>
-							Restart & Run All
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Reset kernel then run every cell'}</span>
+						<button class="primary subtle icon-btn has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE} aria-label="Restart kernel">
+							<Icon name="rotate" size={15} />
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Restart kernel, wipe namespace + gmsh state'}</span>
 						</button>
 					</div>
 					<div class="editor-wrap">
@@ -996,7 +1145,7 @@
 							<ResultsPanel {freqs} {smats} metrics={[]} />
 						{/if}
 					</div>
-					{#if display === 'view3d' && show_field && active_channel_raw && freqs.length}
+					{#if display === 'view3d' && show_field && has_field_source && freqs.length}
 						<div class="field-controls">
 							<label class="field-ctrl">
 								<span class="lbl">{eigenmode_mode ? 'Mode' : 'Freq'}</span>
@@ -1018,13 +1167,13 @@
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
 								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
-							{#if active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx]!.length > 1}
+							{#if field_n_port > 1}
 								<div class="field-ctrl">
 									<span class="lbl">Excitation</span>
 									<Select
 										bind:value={field_port_idx}
 										open_up
-										options={active_channel_data[field_freq_idx]!.map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
+										options={Array.from({ length: field_n_port }, (_v, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
 									/>
 								</div>
 							{/if}
@@ -1186,6 +1335,10 @@
 		70%  { opacity: 1; }
 		100% { opacity: 0; }
 	}
+	header .active-file.untitled {
+		color: var(--text-dim);
+		font-style: italic;
+	}
 	header .workdir-only {
 		color: var(--text-dim);
 		font-family: var(--font-mono);
@@ -1293,6 +1446,13 @@
 		background: var(--bg-panel);
 		color: var(--text-dim);
 		cursor: default;
+	}
+	.toolbar button.icon-btn {
+		width: 24px;
+		padding: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 	}
 
 	.editor-wrap {

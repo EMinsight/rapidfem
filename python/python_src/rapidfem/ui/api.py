@@ -308,15 +308,69 @@ def _td_trajectory_payload(
     }
 
 
-def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
-    """Render captured Geometry/Problem/Result into a flat list of display
-    events (`{kind, payload, name}`) for the WS kernel protocol.
+# Capture kinds whose display payload is built from a single item, with no
+# sim+result pairing, so they can be streamed the instant show() runs.
+_STREAMABLE_KINDS = frozenset({
+    "geometry", "td_result", "td_timeseries", "td_transfer", "td_trajectory",
+})
+
+
+def _serialize_streamable(item) -> dict[str, Any] | None:
+    """Serialise a single self-contained capture into one display event.
+
+    Handles the kinds in :data:`_STREAMABLE_KINDS` (geometry / mesh preview
+    and the time-domain wrappers), which need no cross-item pairing and can
+    therefore be emitted mid-cell. Returns the event dict (or an ``error``
+    event on failure), or ``None`` for kinds deferred to
+    :func:`_serialize_paired`. Never raises.
+    """
+    from rapidfem.ui.serialize import geometry_to_payload
+
+    if item.kind == "geometry":
+        try:
+            p = geometry_to_payload(item.obj)
+        except Exception as e:  # noqa: BLE001
+            return {"kind": "error", "name": item.name, "error": _format_exception(e)}
+        kind = "mesh" if p.get("kind") == "mesh" else "geometry"
+        return {"kind": kind, "name": item.name, "payload": p}
+
+    if item.kind in ("td_result", "td_timeseries", "td_transfer", "td_trajectory"):
+        # A transfer function reuses the time-series payload builder (it sets
+        # domain="freq" itself).
+        _td_builder = {
+            "td_result": _td_result_payload,
+            "td_timeseries": _td_timeseries_payload,
+            "td_transfer": _td_timeseries_payload,
+            "td_trajectory": _td_trajectory_payload,
+        }[item.kind]
+        try:
+            return {"kind": item.kind, "name": item.name,
+                    "payload": _td_builder(item.obj)}
+        except Exception as e:  # noqa: BLE001
+            return {"kind": "error", "name": item.name, "error": _format_exception(e)}
+
+    return None
+
+
+def _serialize_paired(captures: list, *, eager_fields: bool = False) -> list[dict[str, Any]]:
+    """Serialise the deferred sim+result pairing into mesh + field/result
+    displays. Must run after the whole cell, the ``result`` payload needs the
+    ``Problem``'s native handle (n_dofs, field_at_nodes). Geometry / td_* are
+    handled per-item by :func:`_serialize_streamable`; here we only scan them
+    to track ``last_geo`` for the mesh fallback.
+
+    ``eager_fields`` controls how a driven-sweep ``result`` carries its E/J/H
+    fields. The live ``rapidfem serve`` path leaves them out (``None``) and the
+    viewer pulls the one field it shows from ``/api/field`` on demand. The
+    offline bake (``scripts/bake_demo.py``) has no worker to answer that, so it
+    passes ``eager_fields=True`` to embed every field inline; ``binpack`` then
+    lifts them into ``<name>.field.bin`` for the static web demo.
 
     ``kind="simulation"`` covers :class:`rapidfem.Problem`; we extract its
     ``.native`` here once, so the rest of the function works with the
     Rust-side accessors directly (``mesh_nodes``, ``field_at_nodes``, ...).
     """
-    from rapidfem.ui.serialize import geometry_to_payload, mesh_to_payload
+    from rapidfem.ui.serialize import mesh_to_payload
     import numpy as np
 
     out: list[dict[str, Any]] = []
@@ -328,15 +382,6 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     for item in captures:
         if item.kind == "geometry":
             last_geo = item.obj
-            try:
-                p = geometry_to_payload(item.obj)
-            except Exception as e:  # noqa: BLE001
-                out.append({"kind": "error", "name": item.name, "error": _format_exception(e)})
-                continue
-            if p.get("kind") == "mesh":
-                out.append({"kind": "mesh", "name": item.name, "payload": p})
-            else:
-                out.append({"kind": "geometry", "name": item.name, "payload": p})
         elif item.kind == "simulation":
             # Captured object is a rapidfem.Problem; reach into its native
             # solver for mesh + field accessors. If the user show()ed the
@@ -355,23 +400,6 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
             # Single mode → wrap in a list so the downstream serialiser
             # always sees a uniform shape.
             last_modes = [item.obj]
-        elif item.kind in ("td_result", "td_timeseries", "td_transfer",
-                            "td_trajectory"):
-            # Time-domain results are self-contained, emit directly,
-            # no sim/result pairing needed. A transfer function reuses the
-            # time-series payload builder (it sets domain="freq" itself).
-            _td_builder = {
-                "td_result": _td_result_payload,
-                "td_timeseries": _td_timeseries_payload,
-                "td_transfer": _td_timeseries_payload,
-                "td_trajectory": _td_trajectory_payload,
-            }[item.kind]
-            try:
-                out.append({"kind": item.kind, "name": item.name,
-                            "payload": _td_builder(item.obj)})
-            except Exception as e:  # noqa: BLE001
-                out.append({"kind": "error", "name": item.name,
-                            "error": _format_exception(e)})
 
     # Pair sim+result into mesh+field displays.
     if last_sim is not None:
@@ -459,23 +487,62 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
                         row.append([float(v.real), float(v.imag)])
                     f_mat.append(row)
                 sparams_payload.append(f_mat)
-            ch = _build_channel_payloads(last_sim, last_result, n_freq, n_p)
-            out.append({
-                "kind": "result", "name": "result",
-                "payload": {
-                    "frequencies": last_result.frequencies.tolist(),
-                    "sparams": sparams_payload,
-                    "n_driven": n_p, "n_freq": n_freq,
-                    "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
-                    "solve_time_s": last_result.solve_time_s,
-                    "fields": ch["E"],
-                    "fields_j": ch["J"],
-                    "fields_h": ch["H"],
-                },
-            })
+            payload = {
+                "frequencies": last_result.frequencies.tolist(),
+                "sparams": sparams_payload,
+                "n_driven": n_p, "n_freq": n_freq,
+                "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
+                "solve_time_s": last_result.solve_time_s,
+            }
+            if eager_fields:
+                # Offline bake: embed every field so the static demo (no
+                # worker) can show them; binpack packs these into field.bin.
+                ch = _build_channel_payloads(last_sim, last_result, n_freq, n_p)
+                payload["fields"] = ch["E"]
+                payload["fields_j"] = ch["J"]
+                payload["fields_h"] = ch["H"]
+                payload["field_meta"] = None
+            else:
+                # Live serve: fields are NOT inlined (they were tens of MB of
+                # JSON). The viewer fetches the one field it shows on demand
+                # via GET /api/field (binary); the worker keeps this result
+                # alive to serve those queries.
+                payload["fields"] = None
+                payload["fields_j"] = None
+                payload["fields_h"] = None
+                payload["field_meta"] = {
+                    "n_freq": n_freq,
+                    "n_port": n_p,
+                    "channels": _available_field_channels(last_sim, last_result),
+                    "lazy": True,
+                }
+            out.append({"kind": "result", "name": "result", "payload": payload})
         except Exception as e:  # noqa: BLE001
             out.append({"kind": "error", "name": "result", "error": _format_exception(e)})
 
+    return out
+
+
+def _serialize_captures_for_protocol(
+        captures: list, *, eager_fields: bool = False) -> list[dict[str, Any]]:
+    """Render a whole batch of captures into display events (`{kind, payload,
+    name}`) for the kernel protocol.
+
+    Combines the per-item streamable events (geometry / td_*) with the
+    deferred sim+result pairing. Used by callers that serialise a complete
+    capture list at once; the streaming worker path instead calls
+    :func:`_serialize_streamable` per item (mid-cell) and
+    :func:`_serialize_paired` once at cell end.
+
+    ``eager_fields`` is forwarded to :func:`_serialize_paired`; the offline
+    bake sets it so driven-sweep fields are embedded for the static demo.
+    """
+    out: list[dict[str, Any]] = []
+    for item in captures:
+        evt = _serialize_streamable(item)
+        if evt is not None:
+            out.append(evt)
+    out.extend(_serialize_paired(captures, eager_fields=eager_fields))
     return out
 
 
@@ -486,6 +553,25 @@ def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
     mn = nodes_np.min(axis=0).tolist()
     mx = nodes_np.max(axis=0).tolist()
     return {"min": mn, "max": mx}
+
+
+def _available_field_channels(sim, result) -> list[str]:
+    """Which of E / J / H the backend can actually produce for this result.
+
+    E is always present for a solved sweep; J (current density) and H come
+    back as None for configurations the native solver doesn't derive them
+    for. Probe each once at (freq 0, port 0) so the viewer only offers
+    channels that will render something instead of blanking on selection.
+    """
+    chans = ["E"]
+    for name, getter in (("J", sim.current_density_at_nodes),
+                          ("H", sim.h_field_at_nodes)):
+        try:
+            if getter(result, 0, 0) is not None:
+                chans.append(name)
+        except Exception:  # noqa: BLE001
+            pass
+    return chans
 
 
 def _abc_phasor(vec_complex) -> list[float] | None:
@@ -508,12 +594,14 @@ def _abc_phasor(vec_complex) -> list[float] | None:
 
 
 def _build_channel_payloads(sim, result, n_freq: int, n_p: int) -> dict[str, list]:
-    """Build per-channel `[freq][port][flat_abc]` payloads for E, J, H.
+    """Build per-channel ``[freq][port][flat_abc]`` payloads for E, J, H.
 
-    Each channel uses the same (A, B, C) phasor encoding, the frontend picks
-    one channel at a time and feeds the flat array straight into the splat
-    sampler. Channels are computed eagerly so a UI toggle is a zero-roundtrip
-    switch.
+    Each channel uses the same (A, B, C) phasor encoding; the frontend's
+    non-lazy field path feeds the flat array straight into the splat sampler.
+    Used by the offline bake (``scripts/bake_demo.py``), which has no live
+    worker to answer ``/api/field`` on demand, so the static web demo needs
+    the fields embedded eagerly and packed into ``<name>.field.bin``. The
+    live ``rapidfem serve`` path keeps them lazy instead.
     """
     out: dict[str, list] = {"E": [], "J": [], "H": []}
     for fi in range(n_freq):

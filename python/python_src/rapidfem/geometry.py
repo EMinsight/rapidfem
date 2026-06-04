@@ -62,6 +62,15 @@ from ._geometry_primitives import _PrimitivesMixin
 # never merges distinct features nor splits one that the kernel nudged.
 _COG_TOL = 1e-9   # distance tol for matching center-of-mass (m)
 _BBOX_TOL = 1e-9  # tol for matching bounding-box corners (m)
+# Tolerance for matching a face against a bounding-box extremum. Coarser than
+# _BBOX_TOL on purpose: gmsh's getBoundingBox inflates the box by ~1e-7 m on
+# each side, so "zero-extent" face coordinates come back as ±1e-7. Comparing
+# against an extremum (not two getBoundingBox results, where the fluff cancels)
+# must absorb that inflation, hence 1e-6 m.
+_HULL_TOL = 1e-6
+# gmsh.getBoundingBox(-1, -1) returns ±1e106 when the model holds a degenerate
+# or unbounded entity; treat anything past this as "no usable bbox".
+_UNBOUNDED = 1e10
 
 
 # INTERNAL ENTITY TRACKING ==============================================================
@@ -390,7 +399,6 @@ class EntityCollection:
         # .outer, ...)` wiring downstream. Fall back to the union of every
         # tracked entity's bbox, those are real getBoundingBox results for
         # specific entities so they don't carry the infinity.
-        _UNBOUNDED = 1e10
         def _is_finite_bbox(b):
             return all(abs(v) < _UNBOUNDED for v in b)
         if not _is_finite_bbox((xmin, ymin, zmin, xmax, ymax, zmax)):
@@ -420,27 +428,69 @@ class EntityCollection:
             if math.isfinite(xs0):
                 xmin, ymin, zmin = xs0, ys0, zs0
                 xmax, ymax, zmax = xs1, ys1, zs1
-        # gmsh's getBoundingBox inflates the box by ~1e-7 m on each side, so
-        # face-bbox extents that should be "zero" come back as ±1e-7. The
-        # COG/BBOX matcher used elsewhere can keep its 1e-9 tolerance (it's
-        # comparing two getBoundingBox results to each other, where the fluff
-        # cancels). Here we compare against the actual model bbox extremum,
-        # so use a tolerance large enough to absorb that fluff.
-        tol = 1e-6
+        return self._faces_on_box(xmin, ymin, zmin, xmax, ymax, zmax)
+
+    @property
+    def hull(self) -> "EntityCollection":
+        """axis-aligned faces lying on *this collection's own* bounding box
+
+        Like :attr:`outer`, but the reference box is the bounding box of
+        the entities in *this* collection, not the whole gmsh model. A
+        face is kept iff one of its axes is degenerate and its coordinate
+        along that axis matches this collection's extremum.
+
+        This is what you want for a closed surface around an object that
+        is itself wrapped by something else. ``air.faces.outer`` returns
+        nothing once ``air`` is surrounded by PML on every side (none of
+        air's faces touch the *model* bbox any more, they are all interior
+        air↔PML interfaces); ``air.faces.hull`` returns those six interface
+        faces, the natural near-field-to-far-field (Huygens) surface.
+
+
+        Example
+        -------
+        Far-field surface on the air / PML interface:
+
+        .. code-block:: python
+
+            rf.FarFieldSurface(*air.faces.hull)
+
+
+        Returns
+        -------
+        EntityCollection
+            entities on this collection's bounding box
+        """
+        if not self._entities:
+            return EntityCollection(self._geometry, [])
+        xmin = ymin = zmin = math.inf
+        xmax = ymax = zmax = -math.inf
+        for e in self._entities:
+            ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
+            xmin, ymin, zmin = min(xmin, ex0), min(ymin, ey0), min(zmin, ez0)
+            xmax, ymax, zmax = max(xmax, ex1), max(ymax, ey1), max(zmax, ez1)
+        return self._faces_on_box(xmin, ymin, zmin, xmax, ymax, zmax)
+
+    def _faces_on_box(self, xmin, ymin, zmin, xmax, ymax, zmax) -> "EntityCollection":
+        """faces in this collection lying on the given axis-aligned box
+
+        Shared core of :attr:`outer` (box = model bbox) and :attr:`hull`
+        (box = this collection's own bbox). A face is kept iff one of its
+        axes is degenerate (zero extent) and its coordinate along that
+        axis matches that box's min or max within :data:`_HULL_TOL`.
+        """
         kept = []
         for e in self._entities:
             ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
-            on_outer = False
-            if abs(ex1 - ex0) < tol:
-                if abs(ex0 - xmin) < tol or abs(ex0 - xmax) < tol:
-                    on_outer = True
-            if abs(ey1 - ey0) < tol:
-                if abs(ey0 - ymin) < tol or abs(ey0 - ymax) < tol:
-                    on_outer = True
-            if abs(ez1 - ez0) < tol:
-                if abs(ez0 - zmin) < tol or abs(ez0 - zmax) < tol:
-                    on_outer = True
-            if on_outer:
+            on_box = (
+                (abs(ex1 - ex0) < _HULL_TOL
+                 and (abs(ex0 - xmin) < _HULL_TOL or abs(ex0 - xmax) < _HULL_TOL))
+                or (abs(ey1 - ey0) < _HULL_TOL
+                    and (abs(ey0 - ymin) < _HULL_TOL or abs(ey0 - ymax) < _HULL_TOL))
+                or (abs(ez1 - ez0) < _HULL_TOL
+                    and (abs(ez0 - zmin) < _HULL_TOL or abs(ez0 - zmax) < _HULL_TOL))
+            )
+            if on_box:
                 kept.append(e)
         return EntityCollection(self._geometry, kept)
 
@@ -1721,7 +1771,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         maxh: float | None = None,
         transition_distance: float | None = None,
         algorithm: str = "hxt",
-        optimize: bool = True,
+        optimize: bool | str = True,
     ) -> tuple[bytes, dict[str, int]]:
         """generate the 3-D tet mesh of the current geometry
 
@@ -2141,37 +2191,37 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
 
         gmsh.model.mesh.generate(3)
 
-        # Sliver-killing post-pass. Gmsh's built-in "Netgen" optimizer runs
-        # edge-swap + node-smoothing sweeps targeting low-quality tets;
-        # cheap (a few seconds even on million-DoF meshes) and zero risk of
-        # breaking topology when it succeeds. We do this BEFORE writing the
-        # .msh so every downstream consumer sees the optimised mesh.
+        # Sliver-killing post-pass, run BEFORE writing the .msh so every
+        # downstream consumer sees the optimised mesh.
         #
-        # On a Netgen crash the mesh state is poisoned (boundary-face
-        # physical groups silently lose elements, verified on the patch
-        # antenna's five-PML-slab + substrate + plate stack, where the
-        # post-crash mesh kept its volume tets but dropped every port and
-        # PEC triangle). A bare try/except is not enough; we re-generate
-        # the mesh so downstream code sees a coherent mesh with port faces
-        # intact. The trade is one extra ``mesh.generate(3)`` call and
-        # losing the slivers we'd have liked to remove, both acceptable.
-        # Off entirely via ``optimize=False`` for benchmarking or
-        # debugging a raw-mesher symptom.
+        # Default (``optimize=True``) uses gmsh's BUILT-IN optimiser (edge-swap
+        # + node-smoothing): cheap and, crucially, crash-safe on degenerate
+        # geometry. Netgen's optimiser removes slivers more aggressively but
+        # HARD-CRASHES the process (a native segfault, NOT a catchable Python
+        # exception) on geometry with embedded thin sheets or boolean slivers,
+        # e.g. the Vivaldi feed/stub/port sheets plus the tapered-slot cut.
+        # Opt into it with ``optimize="netgen"`` only when the geometry is
+        # known to be well-behaved; ``optimize=False`` skips the pass.
+        #
+        # The try/except + re-mesh recovery below catches a *Python-level*
+        # optimiser failure (the mesh state is then poisoned: boundary-face
+        # physical groups silently drop elements, seen on the patch antenna's
+        # PML+substrate+plate stack), but cannot catch a Netgen segfault, hence
+        # the safe default.
         if optimize:
+            optimizer = "Netgen" if str(optimize).lower() == "netgen" else ""
             try:
-                gmsh.model.mesh.optimize("Netgen")
+                gmsh.model.mesh.optimize(optimizer)
             except Exception as e:
                 print(
-                    f"warning: gmsh.optimize('Netgen') crashed "
-                    f"({type(e).__name__}); regenerating the mesh "
-                    f"without optimisation to keep port / PEC physical "
-                    f"groups intact",
+                    f"warning: gmsh.optimize({optimizer!r}) failed "
+                    f"({type(e).__name__}); regenerating the mesh without "
+                    f"optimisation to keep port / PEC physical groups intact",
                     file=sys.stderr,
                 )
-                # Wipe + re-mesh. The size fields and Algorithm3D are
-                # still set from above, so the second pass is parameter-
-                # identical to the first, just without the failed
-                # post-pass.
+                # Wipe + re-mesh. The size fields and Algorithm3D are still set
+                # from above, so the second pass is parameter-identical, just
+                # without the failed post-pass.
                 gmsh.model.mesh.clear()
                 gmsh.model.mesh.generate(3)
 

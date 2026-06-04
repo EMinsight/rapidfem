@@ -85,12 +85,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             print(f"error: workdir is not a directory: {workdir}", file=sys.stderr)
             return 2
 
-    # Populate bundled examples on a fresh workdir so users see the demos
-    # the first time they open the UI. Skipped if any *.py is already
-    # present, never overwrites user edits.
-    n_copied = _populate_examples(workdir)
-    if n_copied:
-        print(f"rapidfem serve, populated {n_copied} example scripts in {workdir}")
+    # Examples are NOT copied into the workdir: they stay browsable read-only
+    # in the UI's "Examples" section and open as unsaved buffers, so the
+    # workdir is only ever populated by what the user explicitly saves.
+    # (`_populate_examples` is kept for opt-in / scripted use.)
 
     app = create_app(workdir=workdir, debug=args.debug)
     run(app, host=args.host, port=args.port, open_browser=not args.no_browser)
