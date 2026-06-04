@@ -9,6 +9,10 @@
 		onNew,
 		onOpenExample,
 		onClosed,
+		onSave,
+		onSaveAs,
+		can_save = false,
+		dirty = false,
 		reload = 0,
 	}: {
 		active_path: string | null;
@@ -16,6 +20,12 @@
 		onNew: () => void;
 		onOpenExample?: (name: string) => void;
 		onClosed?: (path: string) => void;
+		onSave?: () => void;
+		onSaveAs?: () => void;
+		/** Whether there is an open buffer to save (enables Save / Save As). */
+		can_save?: boolean;
+		/** Unsaved changes in the open buffer (Save icon shows an accent dot). */
+		dirty?: boolean;
 		/** Bump to force a workdir re-list (e.g. after Save As creates a file). */
 		reload?: number;
 	} = $props();
@@ -239,6 +249,21 @@
 					<path d="M3 8h10" />
 				</svg>
 			</button>
+			<button class="tb" class:dirty onclick={() => onSave?.()} disabled={!can_save} title="Save (Ctrl+S)" aria-label="Save">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M3 2.5h7.2L13.5 5.8V13a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5z" />
+					<path d="M5 2.5v3.2h4.6V2.5" />
+					<rect x="5" y="9" width="6" height="4.5" />
+				</svg>
+			</button>
+			<button class="tb" onclick={() => onSaveAs?.()} disabled={!can_save} title="Save As…" aria-label="Save As">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M3 2.5h6.2L12 5.3V8" />
+					<path d="M3 2.5V13a.5.5 0 0 0 .5.5H8" />
+					<path d="M5 2.5v3.2h3.6V2.5" />
+					<path d="M12 10v4M10 12h4" />
+				</svg>
+			</button>
 			<button class="tb" onclick={refresh} title="Refresh" aria-label="Refresh" disabled={loading}>
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 					<path d="M2.5 8a5.5 5.5 0 0 1 9.5-3.8" />
@@ -416,6 +441,11 @@
 		background: var(--bg-surface);
 		border-color: var(--border);
 		color: var(--text-dim);
+	}
+	/* Unsaved changes: tint the Save icon with the accent colour. */
+	.tb.dirty:not(:disabled) {
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 	.tb svg { display: block; }
 

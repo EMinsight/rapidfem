@@ -812,13 +812,6 @@
 		log_lines = [...log_lines, `[kernel] reset`];
 	}
 
-	/** Wipe kernel state, then run every cell top-to-bottom. The combined
-	 *  flow you almost always want after a non-trivial edit. */
-	async function on_restart_and_run_all() {
-		await on_reset_kernel();
-		await notebook?.run_all_cells();
-	}
-
 	/** SIGINT the worker subprocess — raises KeyboardInterrupt inside the
 	 *  running cell, which surfaces as an error event through the normal
 	 *  poll stream. */
@@ -1003,6 +996,10 @@
 						onNew={new_file}
 						onOpenExample={open_example}
 						onClosed={on_file_closed}
+						onSave={save_now}
+						onSaveAs={save_as}
+						can_save={active_path !== null || untitled_label !== null}
+						{dirty}
 						reload={fb_reload}
 					/>
 				</div>
@@ -1032,22 +1029,12 @@
 							Run Cell
 							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Run current cell'}<kbd>Shift+Enter</kbd></span>
 						</button>
-						<button class="primary subtle has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE}>
-							Restart Kernel
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Wipe namespace + gmsh state'}</span>
-						</button>
-						<button class="primary subtle has-tip" onclick={on_restart_and_run_all} disabled={IS_STATIC_MODE}>
-							Restart & Run All
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Reset kernel then run every cell'}</span>
-						</button>
-						<span class="nav-sep"></span>
-						<button class="primary subtle has-tip" onclick={save_now} disabled={IS_STATIC_MODE}>
-							Save
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Save to the workdir'}<kbd>Ctrl+S</kbd></span>
-						</button>
-						<button class="primary subtle has-tip" onclick={save_as} disabled={IS_STATIC_MODE}>
-							Save As
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Save under a new name in the workdir'}</span>
+						<button class="primary subtle icon-btn has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE} aria-label="Restart kernel">
+							<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M3 8a5 5 0 1 1 1.5 3.6" />
+								<polyline points="3,12 3,9 6,9" />
+							</svg>
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Restart kernel — wipe namespace + gmsh state'}</span>
 						</button>
 					</div>
 					<div class="editor-wrap">
@@ -1506,6 +1493,14 @@
 		color: var(--text-dim);
 		cursor: default;
 	}
+	.toolbar button.icon-btn {
+		width: 24px;
+		padding: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.toolbar button.icon-btn svg { display: block; }
 
 	.editor-wrap {
 		flex: 1;
