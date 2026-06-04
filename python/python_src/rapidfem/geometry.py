@@ -1721,7 +1721,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         maxh: float | None = None,
         transition_distance: float | None = None,
         algorithm: str = "hxt",
-        optimize: bool = True,
+        optimize: bool | str = True,
     ) -> tuple[bytes, dict[str, int]]:
         """generate the 3-D tet mesh of the current geometry
 
@@ -2141,37 +2141,37 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
 
         gmsh.model.mesh.generate(3)
 
-        # Sliver-killing post-pass. Gmsh's built-in "Netgen" optimizer runs
-        # edge-swap + node-smoothing sweeps targeting low-quality tets;
-        # cheap (a few seconds even on million-DoF meshes) and zero risk of
-        # breaking topology when it succeeds. We do this BEFORE writing the
-        # .msh so every downstream consumer sees the optimised mesh.
+        # Sliver-killing post-pass, run BEFORE writing the .msh so every
+        # downstream consumer sees the optimised mesh.
         #
-        # On a Netgen crash the mesh state is poisoned (boundary-face
-        # physical groups silently lose elements, verified on the patch
-        # antenna's five-PML-slab + substrate + plate stack, where the
-        # post-crash mesh kept its volume tets but dropped every port and
-        # PEC triangle). A bare try/except is not enough; we re-generate
-        # the mesh so downstream code sees a coherent mesh with port faces
-        # intact. The trade is one extra ``mesh.generate(3)`` call and
-        # losing the slivers we'd have liked to remove, both acceptable.
-        # Off entirely via ``optimize=False`` for benchmarking or
-        # debugging a raw-mesher symptom.
+        # Default (``optimize=True``) uses gmsh's BUILT-IN optimiser (edge-swap
+        # + node-smoothing): cheap and, crucially, crash-safe on degenerate
+        # geometry. Netgen's optimiser removes slivers more aggressively but
+        # HARD-CRASHES the process (a native segfault, NOT a catchable Python
+        # exception) on geometry with embedded thin sheets or boolean slivers,
+        # e.g. the Vivaldi feed/stub/port sheets plus the tapered-slot cut.
+        # Opt into it with ``optimize="netgen"`` only when the geometry is
+        # known to be well-behaved; ``optimize=False`` skips the pass.
+        #
+        # The try/except + re-mesh recovery below catches a *Python-level*
+        # optimiser failure (the mesh state is then poisoned: boundary-face
+        # physical groups silently drop elements, seen on the patch antenna's
+        # PML+substrate+plate stack), but cannot catch a Netgen segfault, hence
+        # the safe default.
         if optimize:
+            optimizer = "Netgen" if str(optimize).lower() == "netgen" else ""
             try:
-                gmsh.model.mesh.optimize("Netgen")
+                gmsh.model.mesh.optimize(optimizer)
             except Exception as e:
                 print(
-                    f"warning: gmsh.optimize('Netgen') crashed "
-                    f"({type(e).__name__}); regenerating the mesh "
-                    f"without optimisation to keep port / PEC physical "
-                    f"groups intact",
+                    f"warning: gmsh.optimize({optimizer!r}) failed "
+                    f"({type(e).__name__}); regenerating the mesh without "
+                    f"optimisation to keep port / PEC physical groups intact",
                     file=sys.stderr,
                 )
-                # Wipe + re-mesh. The size fields and Algorithm3D are
-                # still set from above, so the second pass is parameter-
-                # identical to the first, just without the failed
-                # post-pass.
+                # Wipe + re-mesh. The size fields and Algorithm3D are still set
+                # from above, so the second pass is parameter-identical, just
+                # without the failed post-pass.
                 gmsh.model.mesh.clear()
                 gmsh.model.mesh.generate(3)
 
