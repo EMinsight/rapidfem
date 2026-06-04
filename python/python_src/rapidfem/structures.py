@@ -31,6 +31,17 @@ from .physics import ABC, CoaxPort, PEC, RectWaveguidePort, WavePort
 if TYPE_CHECKING:
     from .geometry import EntityCollection, GeoObject, Geometry
 
+__all__ = [
+    "coax", "CoaxLine",
+    "microstrip", "MicrostripLine",
+    "cpw", "CpwLine",
+    "stripline", "Stripline",
+    "rect_waveguide", "RectWaveguide",
+    "circ_waveguide", "CircWaveguide",
+    "sweep_along_path",
+    "helix",
+]
+
 
 # Map the axis label a builder is laid out along to its unit direction. Used
 # both for the cylinder sweep direction and for selecting the end-cap faces.
