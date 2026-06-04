@@ -19,8 +19,11 @@ solvable; otherwise use the returned port faces to wire your own physics.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+import gmsh
 
 from .materials import Air, Dielectric
 from .physics import ABC, CoaxPort, PEC, RectWaveguidePort, WavePort
@@ -835,3 +838,150 @@ def circ_waveguide(g: "Geometry", *,
         wg.ports = [p0, p1]
 
     return wg
+
+
+def sweep_along_path(g: "Geometry", profile: "GeoObject",
+                     points: "list[tuple[float, float, float]]",
+                     *,
+                     material=None,
+                     maxh: float | None = None) -> "GeoObject":
+    """sweep a 2-D ``profile`` face along the spline through ``points`` into
+    a 3-D solid.
+
+    The workhorse behind curved conductors: bond wires, bent traces, coax
+    bends, helices. The ``profile`` face (e.g. from :meth:`Geometry.disc`)
+    must be positioned at ``points[0]`` with its normal along the initial
+    path tangent, so the swept tube starts flush with the profile.
+
+
+    Example
+    -------
+    A round bond wire arcing between two pads:
+
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        pts = [(0, 0, 0), (0.5e-3, 0, 0.4e-3), (1e-3, 0, 0)]
+        prof = g.disc(50e-6, position=pts[0], axis=(0, 0, 1))
+        wire = st.sweep_along_path(g, prof, pts)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    profile : GeoObject
+        the 2-D cross-section face to sweep (dim must be 2)
+    points : list[tuple[float, float, float]]
+        path control points in metres; a spline is fitted through them (a
+        straight segment for two points)
+    material : rapidfem.Material, optional
+        material for the swept solid
+    maxh : float, optional
+        per-volume mesh size override
+
+    Returns
+    -------
+    GeoObject
+        the swept volume
+
+    Raises
+    ------
+    ValueError
+        if ``profile`` is not a face or fewer than two points are given
+    """
+    if profile.dim != 2:
+        raise ValueError(f"sweep_along_path expects a 2D profile, got dim={profile.dim}")
+    if len(points) < 2:
+        raise ValueError("sweep_along_path needs at least two path points")
+    s = g._s
+    pt_tags = [gmsh.model.occ.addPoint(s(p[0]), s(p[1]), s(p[2])) for p in points]
+    spline = gmsh.model.occ.addSpline(pt_tags)
+    wire = gmsh.model.occ.addWire([spline])
+    out = gmsh.model.occ.addPipe([(profile.dim, profile._entity.tag)], wire)
+    gmsh.model.occ.synchronize()
+    vol_tag = next((t for d, t in out if d == 3), None)
+    if vol_tag is None:
+        raise RuntimeError("sweep_along_path produced no volume")
+    return g._wrap_volume(vol_tag, material=material, maxh=maxh)
+
+
+def helix(g: "Geometry", *,
+          radius: float, pitch: float, turns: float, wire_radius: float,
+          position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+          points_per_turn: int = 24,
+          material=None,
+          maxh: float | None = None) -> "GeoObject":
+    """build a circular-cross-section helix (coil) wound about the +z axis.
+
+    A round wire of radius ``wire_radius`` is swept along a helical path of
+    the given coil ``radius``, axial ``pitch`` (rise per full turn) and
+    number of ``turns``. The helix climbs along +z starting at
+    ``position + (radius, 0, 0)``. For another orientation, build it here
+    and reorient with :meth:`Geometry.rotate` / :meth:`Geometry.translate`.
+
+    Useful for inductors and helical antennas. Built on
+    :func:`sweep_along_path`.
+
+
+    Example
+    -------
+    A 5-turn coil, 2 mm radius, 1 mm pitch, 0.1 mm wire:
+
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        coil = st.helix(g, radius=2e-3, pitch=1e-3, turns=5, wire_radius=0.1e-3)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    radius : float
+        coil (helix) radius in metres
+    pitch : float
+        axial rise per full turn in metres
+    turns : float
+        number of turns (may be fractional)
+    wire_radius : float
+        radius of the round wire cross-section in metres
+    position : tuple[float, float, float]
+        helix-axis base point; the wire starts at ``position + (radius,0,0)``
+    points_per_turn : int
+        path-sampling density per turn (higher = smoother, defaults to 24)
+    material : rapidfem.Material, optional
+        wire material
+    maxh : float, optional
+        per-volume mesh size override
+
+    Returns
+    -------
+    GeoObject
+        the swept helical wire
+
+    Raises
+    ------
+    ValueError
+        if ``turns`` or ``points_per_turn`` are non-positive
+    """
+    if turns <= 0:
+        raise ValueError(f"helix: turns must be > 0, got {turns}")
+    if points_per_turn < 2:
+        raise ValueError(f"helix: points_per_turn must be >= 2, got {points_per_turn}")
+    cx, cy, cz = position
+    n = max(2, int(round(turns * points_per_turn)))
+    t_end = turns * 2.0 * math.pi
+    points = []
+    for i in range(n + 1):
+        t = t_end * i / n
+        points.append((
+            cx + radius * math.cos(t),
+            cy + radius * math.sin(t),
+            cz + pitch * t / (2.0 * math.pi),
+        ))
+    # Profile disc at the start, normal along the initial path tangent
+    # d/dt(r cos t, r sin t, pitch t / 2pi) at t=0 = (0, r, pitch/2pi).
+    tangent = (0.0, radius, pitch / (2.0 * math.pi))
+    prof = g.disc(wire_radius, position=points[0], axis=tangent)
+    return sweep_along_path(g, prof, points, material=material, maxh=maxh)

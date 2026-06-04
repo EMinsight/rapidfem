@@ -189,3 +189,34 @@ def test_circ_waveguide_requires_f0():
     g = rf.Geometry(maxh=5 * MM)
     with pytest.raises(ValueError):
         st.circ_waveguide(g, radius=10 * MM, length=30 * MM, add_ports=True)
+
+
+def test_sweep_along_path_arc_meshes():
+    g = rf.Geometry(maxh=0.5 * MM)
+    pts = [(0, 0, 0), (0.5 * MM, 0, 0.4 * MM), (1 * MM, 0, 0)]
+    prof = g.disc(50e-6, position=pts[0], axis=(0, 0, 1))
+    wire = st.sweep_along_path(g, prof, pts, material=rf.Air())
+    assert wire.dim == 3
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_sweep_along_path_rejects_short_path():
+    g = rf.Geometry(maxh=MM)
+    prof = g.disc(50e-6, position=(0, 0, 0))
+    with pytest.raises(ValueError):
+        st.sweep_along_path(g, prof, [(0, 0, 0)])
+
+
+def test_helix_meshes():
+    g = rf.Geometry(maxh=0.6 * MM)
+    coil = st.helix(g, radius=2 * MM, pitch=1 * MM, turns=3, wire_radius=0.15 * MM)
+    assert coil.dim == 3
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_helix_rejects_bad_turns():
+    g = rf.Geometry(maxh=MM)
+    with pytest.raises(ValueError):
+        st.helix(g, radius=2 * MM, pitch=1 * MM, turns=0, wire_radius=0.15 * MM)
