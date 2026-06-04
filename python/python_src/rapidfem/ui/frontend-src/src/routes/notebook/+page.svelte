@@ -9,6 +9,7 @@
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
 	import { isBinRef, type BinRef } from '$lib/binpack';
+	import Icon from '$lib/docs/components/common/Icon.svelte';
 	import type { MeshData } from '$lib/msh';
 	import MeshViewer from '$lib/components/MeshViewer.svelte';
 	import ResultsPanel from '$lib/components/ResultsPanel.svelte';
@@ -1030,10 +1031,7 @@
 							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Run current cell'}<kbd>Shift+Enter</kbd></span>
 						</button>
 						<button class="primary subtle icon-btn has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE} aria-label="Restart kernel">
-							<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-								<path d="M3 8a5 5 0 1 1 1.5 3.6" />
-								<polyline points="3,12 3,9 6,9" />
-							</svg>
+							<Icon name="rotate" size={15} />
 							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Restart kernel — wipe namespace + gmsh state'}</span>
 						</button>
 					</div>
@@ -1500,7 +1498,6 @@
 		align-items: center;
 		justify-content: center;
 	}
-	.toolbar button.icon-btn svg { display: block; }
 
 	.editor-wrap {
 		flex: 1;
