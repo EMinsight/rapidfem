@@ -24,15 +24,27 @@ class CapturedItem(NamedTuple):
 _state = threading.local()
 
 
-def start_capture() -> None:
+def start_capture(on_item=None) -> None:
+    """Begin capturing rapidfem.show() calls.
+
+    ``on_item`` (optional) is a callback invoked with each
+    :class:`CapturedItem` the moment it is captured, letting the UI worker
+    stream a display the instant ``show()`` runs instead of waiting for the
+    whole cell to finish. The item is still appended to the batch list, so
+    :func:`stop_capture` returns the full set as before (the worker uses it
+    for the deferred sim+result pairing). The callback must be self-contained
+    (never raise) so it cannot break user code.
+    """
     _state.active = True
     _state.items = []
+    _state.on_item = on_item
 
 
 def stop_capture() -> list[CapturedItem]:
     items: list[CapturedItem] = list(getattr(_state, "items", []))
     _state.active = False
     _state.items = []
+    _state.on_item = None
     return items
 
 
@@ -47,7 +59,11 @@ def is_capturing() -> bool:
 def capture(name: str, obj: Any, kind: str) -> None:
     if not is_capturing():
         return
-    _state.items.append(CapturedItem(name=name, obj=obj, kind=kind))
+    item = CapturedItem(name=name, obj=obj, kind=kind)
+    _state.items.append(item)
+    on_item = getattr(_state, "on_item", None)
+    if on_item is not None:
+        on_item(item)
 
 
 def classify(obj: Any) -> str:

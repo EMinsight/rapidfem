@@ -167,29 +167,59 @@ def initialize() -> None:
 
 # ── Cell execution ──────────────────────────────────────────────────────────
 
-def _emit_displays(captured) -> None:
-    """Serialise each rapidfem.show() capture and send as a `display` event.
+def _repr_display(item) -> None:
+    """Last-resort fallback: announce a capture by repr when rich
+    serialisation is unavailable."""
+    send({
+        "type": "display",
+        "kind": item.kind,
+        "name": item.name,
+        "payload": {"kind": item.kind, "repr": repr(item.obj)[:200]},
+    })
 
-    Heavy lifting (Geometry → wireframe payload, SweepResult → fields +
-    sparams etc.) reuses the existing api._serialize_captures_for_protocol
-    helper, which already knows the wire format the frontend expects.
+
+def _stream_display(item) -> None:
+    """Capture callback: serialise and send a self-contained display the
+    instant ``rapidfem.show()`` runs (geometry / mesh preview, time-domain
+    results). Kinds that need sim+result pairing return None here and are
+    emitted at cell end by :func:`_emit_paired_displays`.
+
+    Must never raise, it runs inside the user's ``show()`` call; failures are
+    reported as display-level error events instead of crashing the cell.
     """
     try:
-        # Lazy import, keeps worker startup fast and decouples from server.
-        from rapidfem.ui.api import _serialize_captures_for_protocol
-    except Exception:
-        # Fall back: no rich serialisation, just announce what was captured.
+        from rapidfem.ui.api import _serialize_streamable
+        evt = _serialize_streamable(item)
+    except ImportError:
+        # No rich serialisation available, announce by repr so the user at
+        # least sees that something was shown.
+        _repr_display(item)
+        return
+    except Exception as e:  # noqa: BLE001
+        send({"type": "display", "kind": "error", "name": item.name,
+              "error": f"display serialisation failed: {e}"})
+        return
+    if evt is not None:
+        send({"type": "display", **evt})
+
+
+def _emit_paired_displays(captured) -> None:
+    """Emit the deferred sim+result displays (mesh + S-params / fields) after
+    the cell finishes. The streamable kinds were already sent live via
+    :func:`_stream_display`, so only the paired ones are produced here.
+    """
+    try:
+        from rapidfem.ui.api import _serialize_paired
+    except ImportError:
+        # Fall back: announce the un-streamed (sim/result/eigenmode) captures.
         for item in captured:
-            send({
-                "type": "display",
-                "kind": item.kind,
-                "name": item.name,
-                "payload": {"kind": item.kind, "repr": repr(item.obj)[:200]},
-            })
+            from rapidfem.ui.api import _STREAMABLE_KINDS  # may also fail below
+            if item.kind not in _STREAMABLE_KINDS:
+                _repr_display(item)
         return
 
     try:
-        events = _serialize_captures_for_protocol(captured)
+        events = _serialize_paired(captured)
     except Exception as e:
         send({
             "type": "error",
@@ -203,13 +233,19 @@ def _emit_displays(captured) -> None:
 
 
 def run_cell(msg_id: str, code: str) -> None:
-    """Exec a cell in the persistent namespace, emit displays + done/error."""
+    """Exec a cell in the persistent namespace, emit displays + done/error.
+
+    Self-contained displays (geometry / mesh / time-domain) stream live as
+    each ``show()`` runs (via the ``_stream_display`` capture callback) so the
+    frontend unlocks their tabs the instant the first data lands; the
+    sim+result pairing is emitted once at cell end.
+    """
     if not _initialized:
         send({"type": "error", "id": msg_id, "error": "Worker not initialized"})
         return
 
     from rapidfem import _show_capture
-    _show_capture.start_capture()
+    _show_capture.start_capture(on_item=_stream_display)
     try:
         try:
             exec(compile(code, "<cell>", "exec"), _namespace)
@@ -224,7 +260,7 @@ def run_cell(msg_id: str, code: str) -> None:
     finally:
         captured = _show_capture.stop_capture()
 
-    _emit_displays(captured)
+    _emit_paired_displays(captured)
     send({"type": "done", "id": msg_id, "ok": True})
 
 
