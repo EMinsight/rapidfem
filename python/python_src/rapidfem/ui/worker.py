@@ -241,39 +241,18 @@ def _emit_paired_displays(captured) -> None:
 
 
 def _make_sweep_progress():
-    """Build a per-frequency sweep callback that streams partial S-parameter
-    results. Accumulates frequencies + S-matrices and emits a growing ``result``
-    display after each frequency; resets on ``freq_idx == 0`` so multiple sweeps
-    in one cell each start fresh. Self-contained: never raises into the solver.
+    """Build a per-frequency sweep callback that streams one lightweight
+    ``sweep_point`` per frequency: just that frequency's S-matrix. The frontend
+    appends it (no cumulative payload, no field push). Self-contained: never
+    raises into the solver.
     """
-    state = {"freqs": [], "sparams": []}
-
-    def cb(fi, freq, s, e_abc):
+    def cb(fi, freq, s):
         try:
-            import base64
-            import numpy as np
-            from rapidfem.ui.api import _partial_result_payload
-            if fi == 0:
-                state["freqs"] = []
-                state["sparams"] = []
-            state["freqs"].append(float(freq))
             n = int(s.shape[0])
             mat = [[[float(s[r, c].real), float(s[r, c].imag)] for c in range(n)]
                    for r in range(n)]
-            state["sparams"].append(mat)
-            send({"type": "display",
-                  **_partial_result_payload(state["freqs"], state["sparams"], n)})
-            # Live E-field preview (port 0) for immediate visual verification:
-            # the worker is busy solving, so the field is pushed (not pulled)
-            # as a compact f32 ABC buffer for the frequency just solved.
-            buf = np.asarray(e_abc, dtype=np.float32)
-            if buf.size:
-                send({"type": "display", "kind": "field_live", "name": "result",
-                      "payload": {
-                          "freq_idx": int(fi),
-                          "n_port": n,  # ABC is port-major: n_port × (n_nodes*3)
-                          "abc": base64.b64encode(buf.tobytes()).decode("ascii"),
-                      }})
+            send({"type": "display", "kind": "sweep_point", "name": "result",
+                  "payload": {"freq_idx": int(fi), "freq": float(freq), "s": mat}})
         except Exception:
             pass  # streaming is best-effort; never disturb the solve
 

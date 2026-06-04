@@ -240,20 +240,19 @@ class ProblemFD:
             raise ValueError("sweep needs at least one frequency")
         toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive)
         self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
-        # The native callback is (freq_idx, freq, s_matrix, e_abc). A user
-        # `on_frequency` only wants (freq_idx, freq, s_matrix); the UI sweep
-        # callback also consumes the live E-field preview `e_abc`. Compose them.
+        # The native callback is (freq_idx, freq, s_matrix). Compose an optional
+        # user `on_frequency` with the UI's per-frequency streaming callback.
         from rapidfem import _show_capture
         ui_cb = _show_capture.active_sweep_callback()
         user_cb = on_frequency
         if ui_cb is None and user_cb is None:
             callback = None
         else:
-            def callback(freq_idx, freq, s_matrix, e_abc):
+            def callback(freq_idx, freq, s_matrix):
                 if user_cb is not None:
                     user_cb(freq_idx, freq, s_matrix)
                 if ui_cb is not None:
-                    ui_cb(freq_idx, freq, s_matrix, e_abc)
+                    ui_cb(freq_idx, freq, s_matrix)
         return self._native.run_sweep(callback)
 
     def eigenmode(self, target_frequency: float, *,
