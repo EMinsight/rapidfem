@@ -271,6 +271,7 @@ def _make_sweep_progress():
                 send({"type": "display", "kind": "field_live", "name": "result",
                       "payload": {
                           "freq_idx": int(fi),
+                          "n_port": n,  # ABC is port-major: n_port × (n_nodes*3)
                           "abc": base64.b64encode(buf.tobytes()).decode("ascii"),
                       }})
         except Exception:

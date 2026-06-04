@@ -247,12 +247,14 @@ impl Simulation {
                 let s = self.extract_sparams_one(&ctx, &port_dyn, &port_tri_refs, freq, sr, n_driven);
                 let keep_going = match on_freq {
                     Some(cb) => {
-                        // Live E-field preview for the first driven port, so the
-                        // UI can show the field the instant a frequency solves.
-                        let abc = match sr.solutions.first() {
-                            Some(sol) => self.field_abc_from_solution(sol),
-                            None => Vec::new(),
-                        };
+                        // Live E-field preview for ALL driven ports of the
+                        // just-solved frequency, concatenated (port-major), so
+                        // the UI can scrub frequencies and switch ports during
+                        // the sweep. n_port = sr.solutions.len().
+                        let mut abc = Vec::new();
+                        for sol in &sr.solutions {
+                            abc.extend_from_slice(&self.field_abc_from_solution(sol));
+                        }
                         cb(fi, freq, &s, &abc)
                     }
                     None => true,

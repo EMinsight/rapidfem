@@ -81,7 +81,10 @@
 	// immediate visual verification. The full pull path takes over once the
 	// sweep finishes and the result (field_meta) lands.
 	let fields_live = $state(false);
-	let live_field_abc = $state<Float32Array | null>(null);
+	// Accumulated live E-fields, indexed [freq][port], so the slider can scrub
+	// already-solved frequencies and the port selector works during the sweep.
+	let live_fields = $state<Float32Array[][]>([]);
+	let live_n_port = $state(1);
 
 	function _decode_f32_b64(b64: string): Float32Array {
 		const bin = atob(b64);
@@ -123,18 +126,18 @@
 	);
 	let field_abc = $derived<Float32Array | null>(
 		fields_live
-			? live_field_abc
+			? (live_fields[field_freq_idx]?.[field_port_idx] ?? null)
 			: fields_lazy
 				? lazy_field_abc
 				: (active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
 					? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
 					: null),
 	);
-	// Number of ports the field viewer can switch between. Live preview is
-	// port 0 only; the pull path knows the count from the result metadata; the
-	// inline path reads it off the nested arrays.
+	// Number of ports the field viewer can switch between. Live preview pushes
+	// every driven port; the pull path knows the count from the result
+	// metadata; the inline path reads it off the nested arrays.
 	let field_n_port = $derived<number>(
-		fields_live ? 1
+		fields_live ? live_n_port
 			: fields_lazy ? (field_meta?.n_port ?? 1)
 				: (active_channel_data?.[field_freq_idx]?.length ?? 1),
 	);
@@ -585,7 +588,8 @@
 		field_meta = null;
 		lazy_field_abc = null;
 		fields_live = false;
-		live_field_abc = null;
+		live_fields = [];
+		live_n_port = 1;
 		smats = [];
 		freqs = [];
 		eigenmode_mode = false;
@@ -616,7 +620,8 @@
 		field_meta = null;
 		lazy_field_abc = null;
 		fields_live = false;
-		live_field_abc = null;
+		live_fields = [];
+		live_n_port = 1;
 		show_field = false;
 		last_solve_stats = null;
 		td_trajectory_payload = null;
@@ -714,7 +719,7 @@
 					// on-demand pull path takes over for full scrub / all channels.
 					if (!res.partial) {
 						fields_live = false;
-						live_field_abc = null;
+						live_fields = [];
 					}
 					if (res.field_meta?.lazy) {
 						// Driven sweep: fields are fetched on demand (binary) from
@@ -771,13 +776,28 @@
 				} else if (kind === 'td_trajectory') {
 					void hydrate_trajectory(payload as TdTrajectoryPayload);
 				} else if (kind === 'field_live') {
-					// Live E-field preview pushed per frequency during a sweep.
-					const p = payload as { freq_idx: number; abc: string };
+					// Live E-field preview pushed per frequency during a sweep,
+					// port-major (n_port × n_nodes*3). Accumulate per (freq, port)
+					// so the slider scrubs solved frequencies and ports switch;
+					// do NOT move the slider, the user controls it.
+					const p = payload as { freq_idx: number; n_port: number; abc: string };
+					if (p.freq_idx === 0) {
+						// New sweep: reset the accumulator and the selection.
+						live_fields = [];
+						field_freq_idx = 0;
+						field_port_idx = 0;
+						field_channel = 'E';
+					}
 					fields_live = true;
-					field_channel = 'E';
-					field_port_idx = 0;
-					field_freq_idx = p.freq_idx;
-					live_field_abc = _decode_f32_b64(p.abc);
+					live_n_port = p.n_port;
+					const flat = _decode_f32_b64(p.abc);
+					const stride = p.n_port > 0 ? flat.length / p.n_port : flat.length;
+					const ports: Float32Array[] = [];
+					for (let pi = 0; pi < p.n_port; pi++) {
+						ports.push(flat.subarray(pi * stride, (pi + 1) * stride));
+					}
+					live_fields[p.freq_idx] = ports;
+					live_fields = live_fields;  // nudge reactivity for the derived
 				}
 			},
 		});
