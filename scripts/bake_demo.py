@@ -218,7 +218,10 @@ def _bake_cell(cell: Cell, kernel) -> dict:
         return record
 
     try:
-        display_events = _serialize_captures_for_protocol(captured)
+        # eager_fields=True: the static demo has no worker to answer
+        # /api/field, so driven-sweep E/J/H must be embedded here and packed
+        # into <name>.field.bin (the live serve path keeps them lazy).
+        display_events = _serialize_captures_for_protocol(captured, eager_fields=True)
     except Exception as e:  # noqa: BLE001
         record["status"] = "error"
         record["error"] = _format_exception(e)

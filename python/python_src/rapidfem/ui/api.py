@@ -352,12 +352,19 @@ def _serialize_streamable(item) -> dict[str, Any] | None:
     return None
 
 
-def _serialize_paired(captures: list) -> list[dict[str, Any]]:
+def _serialize_paired(captures: list, *, eager_fields: bool = False) -> list[dict[str, Any]]:
     """Serialise the deferred sim+result pairing into mesh + field/result
     displays. Must run after the whole cell, the ``result`` payload needs the
     ``Problem``'s native handle (n_dofs, field_at_nodes). Geometry / td_* are
     handled per-item by :func:`_serialize_streamable`; here we only scan them
     to track ``last_geo`` for the mesh fallback.
+
+    ``eager_fields`` controls how a driven-sweep ``result`` carries its E/J/H
+    fields. The live ``rapidfem serve`` path leaves them out (``None``) and the
+    viewer pulls the one field it shows from ``/api/field`` on demand. The
+    offline bake (``scripts/bake_demo.py``) has no worker to answer that, so it
+    passes ``eager_fields=True`` to embed every field inline; ``binpack`` then
+    lifts them into ``<name>.field.bin`` for the static web demo.
 
     ``kind="simulation"`` covers :class:`rapidfem.Problem`; we extract its
     ``.native`` here once, so the rest of the function works with the
@@ -480,36 +487,44 @@ def _serialize_paired(captures: list) -> list[dict[str, Any]]:
                         row.append([float(v.real), float(v.imag)])
                     f_mat.append(row)
                 sparams_payload.append(f_mat)
-            out.append({
-                "kind": "result", "name": "result",
-                "payload": {
-                    "frequencies": last_result.frequencies.tolist(),
-                    "sparams": sparams_payload,
-                    "n_driven": n_p, "n_freq": n_freq,
-                    "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
-                    "solve_time_s": last_result.solve_time_s,
-                    # Fields are NOT inlined (they were tens of MB of JSON).
-                    # The viewer fetches the one field it shows on demand via
-                    # GET /api/field (binary); the worker keeps this result
-                    # alive to serve those queries.
-                    "fields": None,
-                    "fields_j": None,
-                    "fields_h": None,
-                    "field_meta": {
-                        "n_freq": n_freq,
-                        "n_port": n_p,
-                        "channels": _available_field_channels(last_sim, last_result),
-                        "lazy": True,
-                    },
-                },
-            })
+            payload = {
+                "frequencies": last_result.frequencies.tolist(),
+                "sparams": sparams_payload,
+                "n_driven": n_p, "n_freq": n_freq,
+                "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
+                "solve_time_s": last_result.solve_time_s,
+            }
+            if eager_fields:
+                # Offline bake: embed every field so the static demo (no
+                # worker) can show them; binpack packs these into field.bin.
+                ch = _build_channel_payloads(last_sim, last_result, n_freq, n_p)
+                payload["fields"] = ch["E"]
+                payload["fields_j"] = ch["J"]
+                payload["fields_h"] = ch["H"]
+                payload["field_meta"] = None
+            else:
+                # Live serve: fields are NOT inlined (they were tens of MB of
+                # JSON). The viewer fetches the one field it shows on demand
+                # via GET /api/field (binary); the worker keeps this result
+                # alive to serve those queries.
+                payload["fields"] = None
+                payload["fields_j"] = None
+                payload["fields_h"] = None
+                payload["field_meta"] = {
+                    "n_freq": n_freq,
+                    "n_port": n_p,
+                    "channels": _available_field_channels(last_sim, last_result),
+                    "lazy": True,
+                }
+            out.append({"kind": "result", "name": "result", "payload": payload})
         except Exception as e:  # noqa: BLE001
             out.append({"kind": "error", "name": "result", "error": _format_exception(e)})
 
     return out
 
 
-def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
+def _serialize_captures_for_protocol(
+        captures: list, *, eager_fields: bool = False) -> list[dict[str, Any]]:
     """Render a whole batch of captures into display events (`{kind, payload,
     name}`) for the kernel protocol.
 
@@ -518,13 +533,16 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     capture list at once; the streaming worker path instead calls
     :func:`_serialize_streamable` per item (mid-cell) and
     :func:`_serialize_paired` once at cell end.
+
+    ``eager_fields`` is forwarded to :func:`_serialize_paired`; the offline
+    bake sets it so driven-sweep fields are embedded for the static demo.
     """
     out: list[dict[str, Any]] = []
     for item in captures:
         evt = _serialize_streamable(item)
         if evt is not None:
             out.append(evt)
-    out.extend(_serialize_paired(captures))
+    out.extend(_serialize_paired(captures, eager_fields=eager_fields))
     return out
 
 
@@ -554,6 +572,50 @@ def _available_field_channels(sim, result) -> list[str]:
         except Exception:  # noqa: BLE001
             pass
     return chans
+
+
+def _abc_phasor(vec_complex) -> list[float] | None:
+    """(n_nodes, 3) complex → flat [A, B, C, ...] per node.
+
+    Encodes |E(t)|² = A·cos²(ωt) + B·sin²(ωt) − 2·C·sin·cos with
+    A = |Re|², B = |Im|², C = Re·Im, the same animation-friendly form the
+    splat shader composites against a phase uniform. Returns `None` if the
+    backend produced no field for this (freq, port).
+    """
+    if vec_complex is None:
+        return None
+    import numpy as np
+    re = np.asarray(vec_complex.real)
+    im = np.asarray(vec_complex.imag)
+    A = np.sum(re * re, axis=1)
+    B = np.sum(im * im, axis=1)
+    C = np.sum(re * im, axis=1)
+    return np.stack([A, B, C], axis=1).astype(np.float32).ravel().tolist()
+
+
+def _build_channel_payloads(sim, result, n_freq: int, n_p: int) -> dict[str, list]:
+    """Build per-channel ``[freq][port][flat_abc]`` payloads for E, J, H.
+
+    Each channel uses the same (A, B, C) phasor encoding; the frontend's
+    non-lazy field path feeds the flat array straight into the splat sampler.
+    Used by the offline bake (``scripts/bake_demo.py``), which has no live
+    worker to answer ``/api/field`` on demand, so the static web demo needs
+    the fields embedded eagerly and packed into ``<name>.field.bin``. The
+    live ``rapidfem serve`` path keeps them lazy instead.
+    """
+    out: dict[str, list] = {"E": [], "J": [], "H": []}
+    for fi in range(n_freq):
+        e_freq: list = []
+        j_freq: list = []
+        h_freq: list = []
+        for pi in range(n_p):
+            e_freq.append(_abc_phasor(sim.field_at_nodes(result, fi, pi)))
+            j_freq.append(_abc_phasor(sim.current_density_at_nodes(result, fi, pi)))
+            h_freq.append(_abc_phasor(sim.h_field_at_nodes(result, fi, pi)))
+        out["E"].append(e_freq)
+        out["J"].append(j_freq)
+        out["H"].append(h_freq)
+    return out
 
 
 def register(app: Flask) -> None:
