@@ -25,6 +25,12 @@
 	let status = $state('idle');
 	let workdir = $state('');
 	let active_path = $state<string | null>(null);
+	// Suggested name for an unsaved buffer (e.g. an example opened in place).
+	// Non-null only while active_path is null; drives the header label and the
+	// Save As default. Cleared once the buffer is saved to a real workdir file.
+	let untitled_label = $state<string | null>(null);
+	// Bump to force the FileBrowser to re-list the workdir (after Save As).
+	let fb_reload = $state(0);
 	let code = $state('');
 	let dirty = $state(false);
 	let log_lines = $state<string[]>([]);
@@ -401,6 +407,7 @@
 			const prev_path = active_path;
 			code = content;
 			active_path = path;
+			untitled_label = null;
 			dirty = false;
 			localStorage.setItem('rapidfem.active_path', path);
 			clear_stale_results();
@@ -447,20 +454,23 @@
 				queueMicrotask(() => { void notebook?.run_all_cells(); });
 				return;
 			}
-			// Live mode: if the example file is already in the workdir
-			// (the default — `rapidfem serve` auto-populates them on first
-			// run), just open it. Never overwrite user edits, never spawn
-			// `_1.py` clones.
-			try {
-				await readFile(name);
-				await open_file(name);
-				return;
-			} catch (e) {
-				if (!String(e).includes('HTTP 404')) throw e;
+			// Live mode: open the example as an *unsaved buffer*. It is NOT
+			// written to the workdir — the user persists it explicitly via
+			// Save As. This keeps the workdir clean and avoids surprise copies.
+			const prev_path = active_path;
+			code = content;
+			active_path = null;
+			untitled_label = name;
+			dirty = false;
+			localStorage.removeItem('rapidfem.active_path');
+			clear_stale_results();
+			mesh_data = null;
+			log_lines = [];
+			// Unsaved buffers run under the shared '<unnamed>' kernel; reset it
+			// so the example starts from a clean namespace.
+			if (prev_path !== null) {
+				try { get_kernel().reset('<unnamed>'); } catch {}
 			}
-			// File missing → write it once.
-			await writeFile(name, content);
-			await open_file(name);
 		} catch (e) {
 			log_lines = [...log_lines, `[example ${name}] ${e}`];
 		}
@@ -706,10 +716,18 @@
 	let saved_pulse = $state(false);
 	let saved_pulse_t: ReturnType<typeof setTimeout> | null = null;
 
+	function flash_saved() {
+		saved_pulse = true;
+		if (saved_pulse_t) clearTimeout(saved_pulse_t);
+		saved_pulse_t = setTimeout(() => { saved_pulse = false; }, 900);
+	}
+
 	/** Flush the debounce timer and persist immediately. Triggered by
-	 *  Ctrl/Cmd+S and the toolbar Save button. */
+	 *  Ctrl/Cmd+S and the toolbar Save button. An unsaved buffer (no
+	 *  active_path, e.g. a freshly opened example) routes to Save As. */
 	async function save_now() {
-		if (!active_path || IS_STATIC_MODE) return;
+		if (IS_STATIC_MODE) return;
+		if (!active_path) { await save_as(); return; }
 		if (dirty_save_t) {
 			clearTimeout(dirty_save_t);
 			dirty_save_t = null;
@@ -717,11 +735,41 @@
 		try {
 			await writeFile(active_path, code);
 			dirty = false;
-			saved_pulse = true;
-			if (saved_pulse_t) clearTimeout(saved_pulse_t);
-			saved_pulse_t = setTimeout(() => { saved_pulse = false; }, 900);
+			flash_saved();
 		} catch (e) {
 			log_lines = [...log_lines, `[save] ${e}`];
+		}
+	}
+
+	/** Persist the current buffer under a chosen name and adopt it as the
+	 *  active file. The only way an example (or any unsaved buffer) reaches
+	 *  the workdir. */
+	async function save_as() {
+		if (IS_STATIC_MODE) return;
+		const suggested = untitled_label ?? active_path ?? 'notebook.py';
+		const name = await openPrompt({
+			title: 'Save As',
+			label: 'File name',
+			placeholder: suggested,
+			confirmLabel: 'Save',
+			validate: (v) => (v ? null : 'Name cannot be empty'),
+		});
+		if (!name) return;
+		const path = name.endsWith('.py') ? name : `${name}.py`;
+		if (dirty_save_t) {
+			clearTimeout(dirty_save_t);
+			dirty_save_t = null;
+		}
+		try {
+			await writeFile(path, code);
+			active_path = path;
+			untitled_label = null;
+			dirty = false;
+			localStorage.setItem('rapidfem.active_path', path);
+			fb_reload += 1;  // surface the new file in the browser
+			flash_saved();
+		} catch (e) {
+			log_lines = [...log_lines, `[save as ${path}] ${e}`];
 		}
 	}
 
@@ -791,6 +839,12 @@
 				{#if saved_pulse}<span class="saved-badge">saved</span>{/if}
 				<span class="tip right">{workdir}</span>
 			</span>
+		{:else if untitled_label}
+			<span class="active-file has-tip">
+				{untitled_label} <span class="unsaved-tag">unsaved</span>
+				{#if saved_pulse}<span class="saved-badge">saved</span>{/if}
+				<span class="tip right">Not in the workdir — use Save As to keep it</span>
+			</span>
 		{:else}
 			<span class="workdir-only">{workdir}</span>
 		{/if}
@@ -816,6 +870,7 @@
 						onNew={new_file}
 						onOpenExample={open_example}
 						onClosed={on_file_closed}
+						reload={fb_reload}
 					/>
 				</div>
 			{/if}
@@ -851,6 +906,15 @@
 						<button class="primary subtle has-tip" onclick={on_restart_and_run_all} disabled={IS_STATIC_MODE}>
 							Restart & Run All
 							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Reset kernel then run every cell'}</span>
+						</button>
+						<span class="nav-sep"></span>
+						<button class="primary subtle has-tip" onclick={save_now} disabled={IS_STATIC_MODE}>
+							Save
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Save to the workdir'}<kbd>Ctrl+S</kbd></span>
+						</button>
+						<button class="primary subtle has-tip" onclick={save_as} disabled={IS_STATIC_MODE}>
+							Save As
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Save under a new name in the workdir'}</span>
 						</button>
 					</div>
 					<div class="editor-wrap">
@@ -1190,6 +1254,16 @@
 		0%   { opacity: 1; }
 		70%  { opacity: 1; }
 		100% { opacity: 0; }
+	}
+	header .unsaved-tag {
+		margin-left: var(--space-sm);
+		padding: 1px 6px;
+		font-size: 9px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-dim);
+		border: 1px solid var(--text-dim);
+		border-radius: 3px;
 	}
 	header .workdir-only {
 		color: var(--text-dim);

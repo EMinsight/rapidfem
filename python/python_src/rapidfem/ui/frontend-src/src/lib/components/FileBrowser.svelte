@@ -9,12 +9,15 @@
 		onNew,
 		onOpenExample,
 		onClosed,
+		reload = 0,
 	}: {
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
 		onOpenExample?: (name: string) => void;
 		onClosed?: (path: string) => void;
+		/** Bump to force a workdir re-list (e.g. after Save As creates a file). */
+		reload?: number;
 	} = $props();
 
 	let files = $state<FileEntry[]>([]);
@@ -81,7 +84,7 @@
 		}
 	}
 
-	$effect(() => { void refresh(); });
+	$effect(() => { reload; void refresh(); });
 
 	// ── Tree from flat paths ──────────────────────────────────────────────
 	type TreeNode = {
