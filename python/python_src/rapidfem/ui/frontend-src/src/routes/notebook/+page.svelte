@@ -76,6 +76,19 @@
 	let fields_lazy = $state(false);
 	let field_meta = $state<{ n_freq: number; n_port: number; channels: ('E' | 'J' | 'H')[] } | null>(null);
 	let lazy_field_abc = $state<Float32Array | null>(null);
+	// Live preview during a sweep: the worker is busy solving (can't answer
+	// pulls), so it pushes the just-solved frequency's E-field; we show it for
+	// immediate visual verification. The full pull path takes over once the
+	// sweep finishes and the result (field_meta) lands.
+	let fields_live = $state(false);
+	let live_field_abc = $state<Float32Array | null>(null);
+
+	function _decode_f32_b64(b64: string): Float32Array {
+		const bin = atob(b64);
+		const bytes = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+		return new Float32Array(bytes.buffer);
+	}
 	// Eigenmode mode: ResultsPanel S-param plots are hidden, the freq slider
 	// becomes a mode-index slider, and each entry of `freqs` is a resonant
 	// frequency instead of a sweep sample.
@@ -98,20 +111,24 @@
 			: null,
 	);
 	let available_channels = $derived<('E' | 'J' | 'H')[]>(
-		fields_lazy
-			? (field_meta?.channels ?? ['E'])
-			: [
-				...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
-				...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
-				...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
-			],
+		fields_live
+			? ['E']  // live preview pushes E (port 0) only; J/H after the sweep
+			: fields_lazy
+				? (field_meta?.channels ?? ['E'])
+				: [
+					...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
+					...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
+					...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
+				],
 	);
 	let field_abc = $derived<Float32Array | null>(
-		fields_lazy
-			? lazy_field_abc
-			: (active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
-				? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
-				: null),
+		fields_live
+			? live_field_abc
+			: fields_lazy
+				? lazy_field_abc
+				: (active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
+					? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
+					: null),
 	);
 
 	// Lazily fetch + resolve a channel's `$bin` field ref the first time
@@ -147,7 +164,9 @@
 	// scrubbing the frequency slider streams just that field. Nothing is
 	// fetched until the field viewer is opened.
 	$effect(() => {
-		if (!fields_lazy || !show_field) return;
+		// Skip while a sweep is live (worker is busy solving, can't serve pulls;
+		// the live preview is pushed instead).
+		if (!fields_lazy || fields_live || !show_field) return;
 		const file = active_path ?? '<unnamed>';
 		const ch = field_channel;
 		const fi = field_freq_idx;
@@ -225,7 +244,7 @@
 			case 'g': case 'G': show_geometry = !show_geometry; e.preventDefault(); break;
 			case 'm': case 'M': show_wireframe = !show_wireframe; e.preventDefault(); break;
 			case 'e': case 'E':
-				if (last_solve_stats) { show_field = !show_field; e.preventDefault(); }
+				if (last_solve_stats || fields_live) { show_field = !show_field; e.preventDefault(); }
 				break;
 		}
 	}
@@ -551,6 +570,8 @@
 		fields_lazy = false;
 		field_meta = null;
 		lazy_field_abc = null;
+		fields_live = false;
+		live_field_abc = null;
 		smats = [];
 		freqs = [];
 		eigenmode_mode = false;
@@ -580,6 +601,8 @@
 		fields_lazy = false;
 		field_meta = null;
 		lazy_field_abc = null;
+		fields_live = false;
+		live_field_abc = null;
 		show_field = false;
 		last_solve_stats = null;
 		td_trajectory_payload = null;
@@ -673,6 +696,12 @@
 					const res = payload as SolveResultPayload;
 					freqs = res.frequencies;
 					smats = res.eigenmode ? [] : sparamsToSMatrices(res.sparams);
+					// The final (non-partial) result ends the live preview; the
+					// on-demand pull path takes over for full scrub / all channels.
+					if (!res.partial) {
+						fields_live = false;
+						live_field_abc = null;
+					}
 					if (res.field_meta?.lazy) {
 						// Driven sweep: fields are fetched on demand (binary) from
 						// /api/field, not inlined. Mark the channels available.
@@ -727,6 +756,14 @@
 					td_transfer_payload = payload as TdTimeSeriesPayload;
 				} else if (kind === 'td_trajectory') {
 					void hydrate_trajectory(payload as TdTrajectoryPayload);
+				} else if (kind === 'field_live') {
+					// Live E-field preview pushed per frequency during a sweep.
+					const p = payload as { freq_idx: number; abc: string };
+					fields_live = true;
+					field_channel = 'E';
+					field_port_idx = 0;
+					field_freq_idx = p.freq_idx;
+					live_field_abc = _decode_f32_b64(p.abc);
 				}
 			},
 		});
@@ -1074,7 +1111,7 @@
 								<span class="tip left">Toggle tet wireframe<kbd>M</kbd></span>
 							</button>
 							<span class="nav-sep"></span>
-							<button class="tab-btn small has-tip" class:active={show_field} disabled={!last_solve_stats && !td_trajectory_payload} onclick={() => (show_field = !show_field)}>
+							<button class="tab-btn small has-tip" class:active={show_field} disabled={!last_solve_stats && !td_trajectory_payload && !fields_live} onclick={() => (show_field = !show_field)}>
 								Field
 								<span class="tip left">Toggle field cloud<kbd>E</kbd></span>
 							</button>
