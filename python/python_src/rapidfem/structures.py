@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .materials import Air, Dielectric
-from .physics import ABC, CoaxPort, PEC, WavePort
+from .physics import ABC, CoaxPort, PEC, RectWaveguidePort, WavePort
 
 if TYPE_CHECKING:
     from .geometry import EntityCollection, GeoObject, Geometry
@@ -625,3 +625,213 @@ def stripline(g: "Geometry", *,
         line.ports = [p0, p1]
 
     return line
+
+
+# Box dimension order per propagation axis: which (width, depth, height) slot
+# the two transverse sizes (a, b) and the length fill. Keeps the cross-section
+# (a, b) transverse to the chosen propagation axis.
+def _box_dims_for_axis(a: float, b: float, length: float, axis: str):
+    if axis == "z":
+        return (a, b, length)          # transverse x, y
+    if axis == "y":
+        return (a, length, b)          # transverse x, z
+    if axis == "x":
+        return (length, a, b)          # transverse y, z
+    raise ValueError(f"axis must be 'x', 'y' or 'z', got {axis!r}")
+
+
+@dataclass
+class RectWaveguide:
+    """Result of :func:`rect_waveguide`.
+
+    Attributes
+    ----------
+    body : GeoObject
+        the waveguide fill volume
+    port_a, port_b : EntityCollection
+        the end-cap faces (the two waveguide ports)
+    ports : list
+        the two :class:`rapidfem.RectWaveguidePort` objects when
+        ``add_ports`` (else empty)
+    """
+
+    body: "GeoObject"
+    port_a: "EntityCollection"
+    port_b: "EntityCollection"
+    ports: list = field(default_factory=list)
+
+
+def rect_waveguide(g: "Geometry", *,
+                   a: float, b: float, length: float,
+                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                   axis: str = "z",
+                   er: float = 1.0,
+                   material=None,
+                   mode: tuple[int, int] = (1, 0),
+                   add_ports: bool = False,
+                   power: float = 1.0) -> RectWaveguide:
+    """build a straight rectangular waveguide section of cross-section
+    ``a`` x ``b`` and the given ``length`` along ``axis``.
+
+    With ``add_ports`` a :class:`rapidfem.RectWaveguidePort` (default mode
+    TE10) is placed at each end and the four side walls become PEC.
+
+
+    Example
+    -------
+    A WR-90 (X-band) section, 30 mm long:
+
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        wg = st.rect_waveguide(g, a=22.86e-3, b=10.16e-3, length=30e-3,
+                               add_ports=True)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    a, b : float
+        broad-wall and narrow-wall cross-section dimensions in metres
+    length : float
+        section length in metres along ``axis``
+    origin : tuple[float, float, float]
+        lower corner of the body box (defaults to the origin)
+    axis : str
+        propagation direction, one of ``"x"`` / ``"y"`` / ``"z"`` (z default)
+    er : float
+        relative permittivity of the fill (defaults to 1, air); ignored
+        when ``material`` is given
+    material : rapidfem.Material, optional
+        explicit fill material; overrides ``er``
+    mode : tuple[int, int]
+        waveguide mode (m, n) for the ports (defaults to TE10)
+    add_ports : bool
+        attach a waveguide port at each end and PEC on the four side walls
+    power : float
+        port excitation power in watts (only when ``add_ports``)
+
+    Returns
+    -------
+    RectWaveguide
+        the built section and its port faces
+    """
+    fill = material if material is not None else (
+        Air() if er == 1.0 else Dielectric(er=er))
+    w, d, h = _box_dims_for_axis(a, b, length, axis)
+    body = g.box(w, d, h, position=origin, material=fill)
+
+    port_a = body.faces.min(axis=axis)
+    port_b = body.faces.max(axis=axis)
+    wg = RectWaveguide(body=body, port_a=port_a, port_b=port_b)
+
+    if add_ports:
+        p0 = RectWaveguidePort(port_a, mode=mode, er=er, power=power)
+        p1 = RectWaveguidePort(port_b, mode=mode, er=er, power=power)
+        PEC(*body.faces.unassigned)
+        wg.ports = [p0, p1]
+
+    return wg
+
+
+@dataclass
+class CircWaveguide:
+    """Result of :func:`circ_waveguide`.
+
+    Attributes
+    ----------
+    body : GeoObject
+        the cylindrical fill volume
+    port_a, port_b : EntityCollection
+        the end-cap faces (the two waveguide ports)
+    ports : list
+        the two :class:`rapidfem.WavePort` objects when ``add_ports``
+    """
+
+    body: "GeoObject"
+    port_a: "EntityCollection"
+    port_b: "EntityCollection"
+    ports: list = field(default_factory=list)
+
+
+def circ_waveguide(g: "Geometry", *,
+                   radius: float, length: float,
+                   origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                   axis: str = "z",
+                   er: float = 1.0,
+                   material=None,
+                   add_ports: bool = False,
+                   f0: float | None = None,
+                   power: float = 1.0) -> CircWaveguide:
+    """build a straight circular waveguide section of the given ``radius``
+    and ``length`` along ``axis``.
+
+    Circular guides have no closed-form rectangular port, so with
+    ``add_ports`` a numerically solved full-vector :class:`rapidfem.WavePort`
+    is placed at each end (``f0`` required) and the curved wall becomes PEC.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        wg = st.circ_waveguide(g, radius=10e-3, length=30e-3,
+                               add_ports=True, f0=12e9)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    radius : float
+        guide radius in metres
+    length : float
+        section length in metres along ``axis``
+    origin : tuple[float, float, float]
+        base-cap centre (defaults to the origin)
+    axis : str
+        propagation direction, one of ``"x"`` / ``"y"`` / ``"z"`` (z default)
+    er : float
+        relative permittivity of the fill (defaults to 1, air); ignored
+        when ``material`` is given
+    material : rapidfem.Material, optional
+        explicit fill material; overrides ``er``
+    add_ports : bool
+        attach a wave port at each end and PEC on the curved wall
+    f0 : float, optional
+        band-centre frequency in Hz, required when ``add_ports``
+    power : float
+        port excitation power in watts (only when ``add_ports``)
+
+    Returns
+    -------
+    CircWaveguide
+        the built section and its port faces
+
+    Raises
+    ------
+    ValueError
+        if ``axis`` is invalid, or ``add_ports`` is set without ``f0``
+    """
+    if axis not in _AXIS_VEC:
+        raise ValueError(f"circ_waveguide: axis must be 'x', 'y' or 'z', got {axis!r}")
+    if add_ports and f0 is None:
+        raise ValueError("circ_waveguide: add_ports=True needs f0 (band-centre Hz)")
+    av = _AXIS_VEC[axis]
+    fill = material if material is not None else (
+        Air() if er == 1.0 else Dielectric(er=er))
+    body = g.cylinder(radius, length, position=origin, axis=av, material=fill)
+
+    port_a = body.faces.min(axis=axis)
+    port_b = body.faces.max(axis=axis)
+    wg = CircWaveguide(body=body, port_a=port_a, port_b=port_b)
+
+    if add_ports:
+        p0 = WavePort(port_a, f0=f0, mode_kind="auto", power=power)
+        p1 = WavePort(port_b, f0=f0, mode_kind="auto", power=power)
+        PEC(*body.faces.unassigned)
+        wg.ports = [p0, p1]
+
+    return wg

@@ -156,3 +156,36 @@ def test_stripline_requires_f0():
     g = rf.Geometry(maxh=4 * MM)
     with pytest.raises(ValueError):
         st.stripline(g, add_ports=True, **_sl_kwargs())
+
+
+def test_rect_waveguide_add_ports_meshes():
+    g = rf.Geometry(maxh=6 * MM)
+    wg = st.rect_waveguide(g, a=22.86 * MM, b=10.16 * MM, length=30 * MM,
+                           add_ports=True)
+    assert len(wg.ports) == 2
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_rect_waveguide_axis_y():
+    g = rf.Geometry(maxh=6 * MM)
+    wg = st.rect_waveguide(g, a=22.86 * MM, b=10.16 * MM, length=30 * MM,
+                           axis="y", add_ports=True)
+    assert len(wg.ports) == 2
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_circ_waveguide_add_ports_meshes():
+    g = rf.Geometry(maxh=5 * MM)
+    wg = st.circ_waveguide(g, radius=10 * MM, length=30 * MM,
+                           add_ports=True, f0=12e9)
+    assert len(wg.ports) == 2
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_circ_waveguide_requires_f0():
+    g = rf.Geometry(maxh=5 * MM)
+    with pytest.raises(ValueError):
+        st.circ_waveguide(g, radius=10 * MM, length=30 * MM, add_ports=True)
