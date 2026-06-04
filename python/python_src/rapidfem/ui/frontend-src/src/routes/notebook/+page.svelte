@@ -130,6 +130,20 @@
 					? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
 					: null),
 	);
+	// Number of ports the field viewer can switch between. Live preview is
+	// port 0 only; the pull path knows the count from the result metadata; the
+	// inline path reads it off the nested arrays.
+	let field_n_port = $derived<number>(
+		fields_live ? 1
+			: fields_lazy ? (field_meta?.n_port ?? 1)
+				: (active_channel_data?.[field_freq_idx]?.length ?? 1),
+	);
+	// Whether the field viewer has anything to drive its controls (inline data,
+	// or a lazy/live source). Used to keep the freq/port controls visible when
+	// fields are fetched on demand instead of inlined.
+	let has_field_source = $derived<boolean>(
+		!!active_channel_raw || fields_lazy || fields_live,
+	);
 
 	// Lazily fetch + resolve a channel's `$bin` field ref the first time
 	// its channel is shown — an example browsed for geometry + S-parameters
@@ -1164,7 +1178,7 @@
 							<ResultsPanel {freqs} {smats} metrics={[]} />
 						{/if}
 					</div>
-					{#if display === 'view3d' && show_field && active_channel_raw && freqs.length}
+					{#if display === 'view3d' && show_field && has_field_source && freqs.length}
 						<div class="field-controls">
 							<label class="field-ctrl">
 								<span class="lbl">{eigenmode_mode ? 'Mode' : 'Freq'}</span>
@@ -1186,13 +1200,13 @@
 								<input class="slider" type="range" min="1" max="10" step="1" bind:value={field_density} />
 								<span class="val">{(field_density * 50).toLocaleString()}k pts</span>
 							</label>
-							{#if active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx]!.length > 1}
+							{#if field_n_port > 1}
 								<div class="field-ctrl">
 									<span class="lbl">Excitation</span>
 									<Select
 										bind:value={field_port_idx}
 										open_up
-										options={active_channel_data[field_freq_idx]!.map((_f, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
+										options={Array.from({ length: field_n_port }, (_v, pi) => ({ value: pi, label: `Port ${pi + 1}` }))}
 									/>
 								</div>
 							{/if}
