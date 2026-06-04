@@ -59,3 +59,41 @@ def test_coax_rejects_bad_axis():
     g = rf.Geometry(maxh=3 * MM)
     with pytest.raises(ValueError):
         st.coax(g, ri=1.0 * MM, ro=2.0 * MM, length=10 * MM, axis="w")
+
+
+def _ms_kwargs():
+    return dict(line_w=1.13 * MM, line_l=30 * MM, sub_w=20 * MM,
+                sub_h=0.508 * MM, air_h=10 * MM, er=3.55, tand=0.0027)
+
+
+def test_microstrip_geometry_only():
+    g = rf.Geometry(maxh=5 * MM)
+    ms = st.microstrip(g, **_ms_kwargs())
+    assert ms.substrate is not None and ms.air is not None and ms.trace is not None
+    assert len(ms.ground) >= 1
+    assert len(ms.port_a) == 2 and len(ms.port_b) == 2
+    assert ms.ports == [] and ms.pec is None
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_microstrip_add_ports_meshes():
+    g = rf.Geometry(maxh=5 * MM)
+    ms = st.microstrip(g, add_ports=True, f0=3.0e9, **_ms_kwargs())
+    assert len(ms.ports) == 2
+    assert ms.pec is not None
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_microstrip_add_ports_requires_f0():
+    g = rf.Geometry(maxh=5 * MM)
+    with pytest.raises(ValueError):
+        st.microstrip(g, add_ports=True, **_ms_kwargs())
+
+
+def test_microstrip_substrate_mesh_default():
+    g = rf.Geometry(maxh=5 * MM)
+    ms = st.microstrip(g, **_ms_kwargs())
+    # Substrate material maxh defaults to sub_h / 3.
+    assert ms.substrate.material.maxh == pytest.approx(0.508 * MM / 3)

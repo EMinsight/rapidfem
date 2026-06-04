@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .materials import Air, Dielectric
-from .physics import CoaxPort, PEC
+from .physics import ABC, CoaxPort, PEC, WavePort
 
 if TYPE_CHECKING:
     from .geometry import EntityCollection, GeoObject, Geometry
@@ -36,6 +36,12 @@ _AXIS_VEC = {
     "y": (0.0, 1.0, 0.0),
     "z": (0.0, 0.0, 1.0),
 }
+
+# Microstrip substrate ports: a single-element-thick substrate slab is too
+# coarse for the vector wave-port eigensolve to resolve the inhomogeneous
+# quasi-TEM mode, so the substrate is meshed at this fraction of its
+# thickness by default. Matches the fd_microstrip_line.py example.
+_SUBSTRATE_MESH_DIVISIONS = 3
 
 
 @dataclass
@@ -155,6 +161,164 @@ def coax(g: "Geometry", *,
                       er=er, power=power)
         # Everything left (inner-conductor surface + outer shield) is PEC.
         PEC(*outer.faces.unassigned)
+        line.ports = [p0, p1]
+
+    return line
+
+
+@dataclass
+class MicrostripLine:
+    """Result of :func:`microstrip`.
+
+    Attributes
+    ----------
+    substrate : GeoObject
+        the dielectric substrate slab
+    air : GeoObject
+        the air region above the substrate
+    trace : GeoObject
+        the signal trace (a thin plate on top of the substrate)
+    ground : EntityCollection
+        the substrate's bottom face (the ground plane; PEC when
+        ``add_ports``)
+    port_a : tuple[EntityCollection, EntityCollection]
+        the (substrate, air) cross-section faces at the line's near end
+    port_b : tuple[EntityCollection, EntityCollection]
+        the (substrate, air) cross-section faces at the line's far end
+    pec : object or None
+        the :class:`rapidfem.PEC` object covering trace + ground when
+        ``add_ports`` was set (else None)
+    ports : list
+        the two :class:`rapidfem.WavePort` objects when ``add_ports`` was
+        set (else empty)
+    """
+
+    substrate: "GeoObject"
+    air: "GeoObject"
+    trace: "GeoObject"
+    ground: "EntityCollection"
+    port_a: "tuple[EntityCollection, EntityCollection]"
+    port_b: "tuple[EntityCollection, EntityCollection]"
+    pec: object = None
+    ports: list = field(default_factory=list)
+
+
+def microstrip(g: "Geometry", *,
+               line_w: float, line_l: float,
+               sub_w: float, sub_h: float, air_h: float,
+               er: float, tand: float = 0.0,
+               origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+               sub_maxh: float | None = None,
+               add_ports: bool = False,
+               f0: float | None = None,
+               power: float = 1.0) -> MicrostripLine:
+    """build a microstrip line: a signal trace on a dielectric substrate
+    over a ground plane, in an air region.
+
+    Layout convention (fixed): the line propagates along **+y**, its width
+    runs along **x**, and the substrate / air stack rises along **+z**. The
+    substrate is centred on x = 0 at ``origin``; the trace sits on top of
+    the substrate, centred over it.
+
+    With ``add_ports`` the canonical full-vector :class:`rapidfem.WavePort`
+    is placed on the substrate-plus-air cross-section at each end (which
+    de-embeds the inhomogeneous quasi-TEM mode), the trace and ground plane
+    are tied to one PEC, and a first-order :class:`rapidfem.ABC` opens the
+    lateral x-walls and the air top. The wave-port eigensolve needs the band
+    centre, so ``f0`` is required in that case.
+
+
+    Example
+    -------
+    A 50 ohm line on 0.508 mm RO4003C, solvable around 3 GHz:
+
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        ms = st.microstrip(g, line_w=1.13e-3, line_l=30e-3,
+                           sub_w=20e-3, sub_h=0.508e-3, air_h=10e-3,
+                           er=3.55, tand=0.0027,
+                           add_ports=True, f0=3.0e9)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    line_w, line_l : float
+        trace width (along x) and length (along y) in metres
+    sub_w : float
+        substrate width along x in metres
+    sub_h : float
+        substrate thickness along z in metres
+    air_h : float
+        air-region height above the substrate along z in metres
+    er : float
+        substrate relative permittivity
+    tand : float
+        substrate loss tangent (defaults to 0)
+    origin : tuple[float, float, float]
+        the substrate's lower corner reference; the substrate spans
+        ``x in [-sub_w/2, sub_w/2]`` about it (defaults to the origin)
+    sub_maxh : float, optional
+        substrate mesh size; defaults to ``sub_h / 3`` so the wave-port
+        eigensolve resolves the cross-section
+    add_ports : bool
+        when True, attach the two wave ports, the trace + ground PEC, and
+        the open-wall ABC
+    f0 : float, optional
+        band-centre frequency in Hz for the wave-port phase reference;
+        required when ``add_ports`` is True
+    power : float
+        port excitation power in watts (only used when ``add_ports``)
+
+    Returns
+    -------
+    MicrostripLine
+        the built line, its conductors, and its port faces
+
+    Raises
+    ------
+    ValueError
+        if ``add_ports`` is True but ``f0`` was not given
+    """
+    if add_ports and f0 is None:
+        raise ValueError(
+            "microstrip: add_ports=True needs f0 (band-centre Hz) for the "
+            "wave-port phase reference")
+
+    ox, oy, oz = origin
+    eff_sub_maxh = sub_maxh if sub_maxh is not None else sub_h / _SUBSTRATE_MESH_DIVISIONS
+    fr4 = Dielectric(er=er, tand=tand, maxh=eff_sub_maxh)
+
+    sub = g.box(sub_w, line_l, sub_h, position=(ox - sub_w / 2, oy, oz),
+                material=fr4)
+    air = g.box(sub_w, line_l, air_h, position=(ox - sub_w / 2, oy, oz + sub_h),
+                material=Air())
+    trace = g.xy_plate(line_w, line_l, position=(ox - line_w / 2, oy, oz + sub_h))
+
+    g.fragment(sub, air, trace)
+
+    ground = sub.faces.min(axis="z")
+    port_a = (sub.faces.min(axis="y"), air.faces.min(axis="y"))
+    port_b = (sub.faces.max(axis="y"), air.faces.max(axis="y"))
+    line = MicrostripLine(substrate=sub, air=air, trace=trace, ground=ground,
+                          port_a=port_a, port_b=port_b)
+
+    if add_ports:
+        # Trace + ground plane on one PEC so the wave-port eigensolve can mark
+        # the conductor nodes via pec=[strip].
+        strip = PEC(trace, ground)
+        p0 = WavePort(port_a[0], port_a[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        p1 = WavePort(port_b[0], port_b[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        # Open the enclosure: ABC on the lateral x-walls (substrate + air) and
+        # the air top. The y-extreme faces are the ports, so they are excluded.
+        ABC(sub.faces.min(axis="x"), sub.faces.max(axis="x"),
+            air.faces.min(axis="x"), air.faces.max(axis="x"),
+            air.faces.max(axis="z"))
+        line.pec = strip
         line.ports = [p0, p1]
 
     return line
