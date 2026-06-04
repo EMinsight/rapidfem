@@ -61,6 +61,9 @@ export interface SolveResultPayload {
 	fields_j?: (number[] | null)[][] | null;
 	/** Magnetic field H = ∇×E / (jωμ) per (freq, port), same shape as `fields`. */
 	fields_h?: (number[] | null)[][] | null;
+	/** Driven-sweep fields are fetched on demand (binary) via /api/field rather
+	 *  than inlined; this carries the available shape instead of the arrays. */
+	field_meta?: { n_freq: number; n_port: number; channels: string[]; lazy?: boolean };
 }
 
 export interface ExecuteOptions {

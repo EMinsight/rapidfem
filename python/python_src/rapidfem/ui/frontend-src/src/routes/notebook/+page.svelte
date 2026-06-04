@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		readFile, writeFile, readExample,
+		readFile, writeFile, readExample, fetchFieldBuffer,
 		meshPayloadToMeshData, sparamsToSMatrices, health,
 		type MeshPayload, type GeometryPayload, type SMatrix,
 		type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
@@ -70,6 +70,12 @@
 	let field_channel = $state<'E' | 'J' | 'H'>('E');
 	let field_freq_idx = $state(0);
 	let field_port_idx = $state(0);
+	// Live mode: fields are not inlined in the result; the one being viewed is
+	// fetched on demand as a binary buffer from /api/field. `field_meta` holds
+	// the available shape; `lazy_field_abc` is the currently-fetched field.
+	let fields_lazy = $state(false);
+	let field_meta = $state<{ n_freq: number; n_port: number; channels: ('E' | 'J' | 'H')[] } | null>(null);
+	let lazy_field_abc = $state<Float32Array | null>(null);
 	// Eigenmode mode: ResultsPanel S-param plots are hidden, the freq slider
 	// becomes a mode-index slider, and each entry of `freqs` is a resonant
 	// frequency instead of a sweep sample.
@@ -91,15 +97,21 @@
 			? (active_channel_raw as (number[] | null)[][])
 			: null,
 	);
-	let available_channels = $derived<('E' | 'J' | 'H')[]>([
-		...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
-		...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
-		...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
-	]);
+	let available_channels = $derived<('E' | 'J' | 'H')[]>(
+		fields_lazy
+			? (field_meta?.channels ?? ['E'])
+			: [
+				...((fields_raw ? ['E'] : []) as ('E' | 'J' | 'H')[]),
+				...((fields_j_raw ? ['J'] : []) as ('E' | 'J' | 'H')[]),
+				...((fields_h_raw ? ['H'] : []) as ('E' | 'J' | 'H')[]),
+			],
+	);
 	let field_abc = $derived<Float32Array | null>(
-		active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
-			? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
-			: null,
+		fields_lazy
+			? lazy_field_abc
+			: (active_channel_data && active_channel_data[field_freq_idx] && active_channel_data[field_freq_idx][field_port_idx]
+				? new Float32Array(active_channel_data[field_freq_idx][field_port_idx] as number[])
+				: null),
 	);
 
 	// Lazily fetch + resolve a channel's `$bin` field ref the first time
@@ -128,6 +140,31 @@
 				_field_resolving = false;
 			}
 		})();
+	});
+
+	// Live mode: fetch the one field currently shown (channel/freq/port) as a
+	// binary buffer from /api/field. Re-runs whenever the selection changes, so
+	// scrubbing the frequency slider streams just that field. Nothing is
+	// fetched until the field viewer is opened.
+	$effect(() => {
+		if (!fields_lazy || !show_field) return;
+		const file = active_path ?? '<unnamed>';
+		const ch = field_channel;
+		const fi = field_freq_idx;
+		const pi = field_port_idx;
+		let cancelled = false;
+		void (async () => {
+			try {
+				const arr = await fetchFieldBuffer(file, fi, pi, ch);
+				if (!cancelled) lazy_field_abc = arr;
+			} catch (e) {
+				if (!cancelled) {
+					lazy_field_abc = null;
+					log_lines = [...log_lines, `[field] fetch failed: ${e}`];
+				}
+			}
+		})();
+		return () => { cancelled = true; };
 	});
 
 	let last_geom_stats = $state<{ n_entities: number; n_triangles: number } | null>(null);
@@ -511,6 +548,9 @@
 		fields_raw = null;
 		fields_j_raw = null;
 		fields_h_raw = null;
+		fields_lazy = false;
+		field_meta = null;
+		lazy_field_abc = null;
 		smats = [];
 		freqs = [];
 		eigenmode_mode = false;
@@ -537,6 +577,9 @@
 		fields_raw = null;
 		fields_j_raw = null;
 		fields_h_raw = null;
+		fields_lazy = false;
+		field_meta = null;
+		lazy_field_abc = null;
 		show_field = false;
 		last_solve_stats = null;
 		td_trajectory_payload = null;
@@ -630,9 +673,28 @@
 					const res = payload as SolveResultPayload;
 					freqs = res.frequencies;
 					smats = res.eigenmode ? [] : sparamsToSMatrices(res.sparams);
-					fields_raw = res.fields ?? null;
-					fields_j_raw = res.fields_j ?? null;
-					fields_h_raw = res.fields_h ?? null;
+					if (res.field_meta?.lazy) {
+						// Driven sweep: fields are fetched on demand (binary) from
+						// /api/field, not inlined. Mark the channels available.
+						fields_lazy = true;
+						field_meta = {
+							n_freq: res.field_meta.n_freq,
+							n_port: res.field_meta.n_port,
+							channels: (res.field_meta.channels ?? ['E']) as ('E' | 'J' | 'H')[],
+						};
+						fields_raw = null;
+						fields_j_raw = null;
+						fields_h_raw = null;
+						lazy_field_abc = null;
+					} else {
+						// Eigenmode / time-domain: fields still arrive inline.
+						fields_lazy = false;
+						field_meta = null;
+						lazy_field_abc = null;
+						fields_raw = res.fields ?? null;
+						fields_j_raw = res.fields_j ?? null;
+						fields_h_raw = res.fields_h ?? null;
+					}
 					field_freq_idx = 0;
 					field_port_idx = 0;
 					// Snap back to E whenever a new result arrives — and avoid
