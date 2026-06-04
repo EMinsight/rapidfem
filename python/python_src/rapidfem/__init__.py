@@ -202,4 +202,4 @@ __all__ = [
     "Problem", "ProblemFD", "ProblemTD", "Adaptive", "ErrorIndicator", "GaussianPulse",
     "io", "rfic", "structures", "show", "lambda_maxh",
 ]
-__version__ = "0.10.2"
+__version__ = "0.11.0"

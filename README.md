@@ -49,7 +49,7 @@ print(result.frequencies.shape, result.sparams.shape)
 ```
 
 See `python_src/rapidfem/examples/` for end-to-end runs of microstrip lines,
-patch antennas (with PML enclosure + far-field), pyramidal horns, iris
+patch and Vivaldi antennas (PML enclosure + far-field), pyramidal horns, iris
 filters, dielectric resonators, and more.
 
 ## Local UI
@@ -69,16 +69,27 @@ Opens a browser window with:
 The geometry view updates automatically every time you save the file
 (`Ctrl+S`). Mesh and solver runs are explicit.
 
+Results stream in as the solve runs (geometry and mesh as they are built,
+S-parameters per frequency during a sweep); fields are fetched on demand as
+you scrub frequency and port. Files are managed in the browser with
+Save / Save As, and bundled examples open as unsaved buffers (nothing is
+written to the working directory until you save it).
+
 Use `rapidfem.show(g)` at the bottom of your script to send a geometry to
 the viewer.
 
 ## Features
 
+- **Geometry builder** — OpenCASCADE primitives (box, cylinder, plate,
+  polygon, disc, ...) with boolean ops, transforms (translate, mirror, copy,
+  array) and fillet/chamfer; ready-made RF structures in `rf.structures`
+  (coax, microstrip, CPW, stripline, rectangular / circular waveguide, helix)
+  build geometry and optional ports in one call
 - **Nedelec-2 elements** — 20 DOFs per tetrahedron, vector edge basis for the
   curl–curl form of Maxwell's equations
 - **Excitations** — rectangular waveguide ports (arbitrary TE modes), lumped
-  ports (TEM, multi-line voltage integral), and absorbing boundary conditions
-  of order 1 and 2 (selectable coefficient types A–E)
+  ports (TEM, multi-line voltage integral), coax and wave ports, and a
+  first-order absorbing boundary condition
 - **PML** — anisotropic stretched-coordinate perfectly matched layer
 - **Lossy materials** — complex permittivity with loss tangent + conductivity;
   frequency-independent caching speeds up sweeps
@@ -92,6 +103,8 @@ the viewer.
 - **Adaptive refinement** — residual error estimator (volume residual + face
   jumps) with Dörfler marking, exports a size field for gmsh re-meshing
 - **Output** — Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT
+  (Huygens surface auto-detected from an ABC boundary, or marked with
+  `rf.FarFieldSurface` for a PML-truncated open region)
 - **Parallel assembly** — rayon-based element matrix evaluation
 
 ## Time-domain backend (DGTD)
