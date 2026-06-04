@@ -967,10 +967,9 @@
 				<span class="tip right">{workdir}</span>
 			</span>
 		{:else if untitled_label}
-			<span class="active-file has-tip">
-				{untitled_label} <span class="unsaved-tag">unsaved</span>
-				{#if saved_pulse}<span class="saved-badge">saved</span>{/if}
-				<span class="tip right">Not in the workdir — use Save As to keep it</span>
+			<span class="active-file untitled has-tip">
+				{untitled_label} •
+				<span class="tip right">Unsaved buffer, Save As to keep it</span>
 			</span>
 		{:else}
 			<span class="workdir-only">{workdir}</span>
@@ -1373,15 +1372,9 @@
 		70%  { opacity: 1; }
 		100% { opacity: 0; }
 	}
-	header .unsaved-tag {
-		margin-left: var(--space-sm);
-		padding: 1px 6px;
-		font-size: 9px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
+	header .active-file.untitled {
 		color: var(--text-dim);
-		border: 1px solid var(--text-dim);
-		border-radius: 3px;
+		font-style: italic;
 	}
 	header .workdir-only {
 		color: var(--text-dim);
