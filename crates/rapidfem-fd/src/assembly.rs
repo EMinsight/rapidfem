@@ -266,7 +266,9 @@ pub fn frequency_sweep_with_pml(
     // Optional per-frequency hook, called after each frequency's solve with
     // (freq_idx, freq_hz, &SolveResult). Lets a caller stream partial results
     // (e.g. progressive S-parameters in the UI) without changing the output.
-    mut on_solve: Option<&mut dyn FnMut(usize, f64, &SolveResult)>,
+    // Returns `false` to stop the sweep early (e.g. on a user interrupt); the
+    // frequencies solved so far are returned.
+    mut on_solve: Option<&mut dyn FnMut(usize, f64, &SolveResult) -> bool>,
 ) -> Result<Vec<SolveResult>, String> {
     // Detect if any material is frequency-dependent, if so, K must be rebuilt every frequency
     let materials_dispersive = materials
@@ -451,7 +453,13 @@ pub fn frequency_sweep_with_pml(
         );
         results.push(SolveResult { solutions, n_field });
         if let Some(cb) = on_solve.as_deref_mut() {
-            cb(fi, freq, results.last().unwrap());
+            if !cb(fi, freq, results.last().unwrap()) {
+                eprintln!(
+                    "  sweep stopped early after frequency {}/{} (interrupt)",
+                    fi + 1, frequencies.len(),
+                );
+                break;
+            }
         }
     }
 

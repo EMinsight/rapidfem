@@ -220,14 +220,15 @@ impl Simulation {
     ///
     /// `on_freq`, if given, is invoked after each frequency's solve with
     /// `(freq_idx, freq_hz, s_matrix)` where `s_matrix[obs][exc]` is the
-    /// S-parameter block for that frequency. This lets a UI stream partial
-    /// results as the sweep progresses; it does not affect the returned
-    /// `SweepResult`, which is identical with or without the callback.
+    /// S-parameter block for that frequency, and returns `false` to stop the
+    /// sweep early (e.g. on a user interrupt). This lets a UI stream partial
+    /// results as the sweep progresses; the returned `SweepResult` covers only
+    /// the frequencies actually solved.
     pub fn run_sweep(
         &self,
-        on_freq: Option<&dyn Fn(usize, f64, &[Vec<C64>])>,
+        on_freq: Option<&dyn Fn(usize, f64, &[Vec<C64>]) -> bool>,
     ) -> Result<SweepResult, String> {
-        let frequencies = self.frequencies();
+        let mut frequencies = self.frequencies();
         let port_dyn = self.ports_dyn();
         let port_tri_refs = self.port_tris_slices();
         let n_driven = port_dyn.iter().filter(|p| p.is_driven()).count();
@@ -236,17 +237,20 @@ impl Simulation {
 
         // S-parameters are accumulated per frequency inside the solve callback
         // (so the streaming `on_freq` sees the same matrix that lands in the
-        // result), instead of a separate batch pass afterwards.
+        // result), instead of a separate batch pass afterwards. The callback
+        // returns whether the sweep should continue (false = interrupt).
         let mut all_sparams: Vec<Vec<Vec<C64>>> = Vec::with_capacity(frequencies.len());
         let t0 = web_time::Instant::now();
         let results;
         {
-            let mut on_solve = |fi: usize, freq: f64, sr: &crate::assembly::SolveResult| {
+            let mut on_solve = |fi: usize, freq: f64, sr: &crate::assembly::SolveResult| -> bool {
                 let s = self.extract_sparams_one(&ctx, &port_dyn, &port_tri_refs, freq, sr, n_driven);
-                if let Some(cb) = on_freq {
-                    cb(fi, freq, &s);
-                }
+                let keep_going = match on_freq {
+                    Some(cb) => cb(fi, freq, &s),
+                    None => true,
+                };
                 all_sparams.push(s);
+                keep_going
             };
             results = crate::assembly::frequency_sweep_with_pml(
                 &self.mesh,
@@ -261,6 +265,10 @@ impl Simulation {
             )?;
         }
         let solve_time_s = t0.elapsed().as_secs_f64();
+
+        // An early interrupt leaves fewer solved frequencies than requested;
+        // truncate so frequencies / sparams / solutions stay the same length.
+        frequencies.truncate(results.len());
 
         let solutions: Vec<Vec<Vec<C64>>> = results
             .into_iter()

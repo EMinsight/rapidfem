@@ -96,7 +96,7 @@ impl PySimulation {
             // hook re-enters via `Python::with_gil`, which is cheap when the
             // GIL is already held.
             Some(cb) => {
-                let hook = move |fi: usize, freq: f64, s: &[Vec<Complex64>]| {
+                let hook = move |fi: usize, freq: f64, s: &[Vec<Complex64>]| -> bool {
                     Python::with_gil(|py| {
                         let n = s.len();
                         let mut flat: Vec<NpC64> = Vec::with_capacity(n * n);
@@ -108,11 +108,20 @@ impl PySimulation {
                         let arr = numpy::ndarray::Array2::from_shape_vec((n, n), flat)
                             .expect("square s-matrix")
                             .into_pyarray_bound(py);
-                        // Best-effort: a raising callback must not abort the sweep.
-                        let _ = cb.call1(py, (fi, freq, arr));
-                    });
+                        // Call the Python callback (best-effort), but treat a
+                        // KeyboardInterrupt raised through it as "stop".
+                        let interrupted_in_cb = match cb.call1(py, (fi, freq, arr)) {
+                            Ok(_) => false,
+                            Err(e) => e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py),
+                        };
+                        // Also honour a Ctrl-C / UI interrupt that landed
+                        // between callbacks (check_signals clears it on Err).
+                        let pending = py.check_signals().is_err();
+                        // Return whether the sweep should continue.
+                        !(interrupted_in_cb || pending)
+                    })
                 };
-                let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) = &hook;
+                let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) -> bool = &hook;
                 self.inner.run_sweep(Some(hook_dyn))
             }
         }
