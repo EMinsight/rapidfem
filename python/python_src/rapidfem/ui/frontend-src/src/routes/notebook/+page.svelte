@@ -1032,7 +1032,7 @@
 						</button>
 						<button class="primary subtle icon-btn has-tip" onclick={on_reset_kernel} disabled={IS_STATIC_MODE} aria-label="Restart kernel">
 							<Icon name="rotate" size={15} />
-							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Restart kernel — wipe namespace + gmsh state'}</span>
+							<span class="tip">{IS_STATIC_MODE ? 'Disabled in static demo' : 'Restart kernel, wipe namespace + gmsh state'}</span>
 						</button>
 					</div>
 					<div class="editor-wrap">
