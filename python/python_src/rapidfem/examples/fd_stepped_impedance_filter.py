@@ -1,8 +1,19 @@
-"""Microstrip stepped-impedance low-pass filter.
+"""Microstrip stepped-impedance low-pass filter, wave-port driven.
 
 A 7-section trace of alternating wide / narrow strips on a thin substrate
 acts as a classic Richards-style LPF. Cutoff around 2 GHz. Adapted from
 EMerge's ``demo1_stepped_imp_filter.py``.
+
+Both ends are excited by a full-vector wave port, so the quasi-TEM mode is
+de-embedded directly. The single-mode projection is only energy-conserving
+while the lowest transverse box resonance of the *port cross-section* stays
+above the sweep top. Rather than shrink the ground plane to push that
+resonance up (which would distort the filter), the port here is a boxed
+aperture: a small ``PORT_W`` x ``PORT_H`` window over the trace at each
+end, cut into the otherwise full-width end face by a fragmented plate. The
+aperture is narrow enough to keep its transverse resonance above the 8 GHz
+stop-band while the ground plane itself stays full-width, and the end face
+outside the window stays PEC (a shielding wall with a port window).
 """
 
 # %% Parameters
@@ -21,6 +32,15 @@ ER_SUB = 2.2
 AIR_H = 15 * mm
 PAD_Y = 12 * mm
 
+# Boxed wave-port aperture. The ports do not span the full ground-plane
+# width: a small rectangle over the trace at each end keeps the aperture's
+# lowest transverse box resonance above the 8 GHz sweep top, while the
+# ground plane itself stays full-width. PORT_W must hold the quasi-TEM mode
+# (a few substrate heights of air each side of the widest strip) yet stay
+# narrow enough that c / (2 * PORT_W * sqrt(ER_SUB)) sits above the band.
+PORT_W = 12.0 * mm
+PORT_H = 6.0 * SUB_H         # aperture height: substrate + fringing air above
+
 FREQUENCIES = np.linspace(0.2e9, 8.0e9, 41)
 MAXH = rf.lambda_maxh(f_max=8.0e9)
 
@@ -34,10 +54,10 @@ sub_W   = max(WIDTHS) + 2 * PAD_Y
 g = rf.Geometry(maxh=MAXH)
 
 # Substrate is RO-style 62-mil. The narrow 8-mil trace section drives the
-# surface refinement separately via auto_refine_features; for the
-# substrate volume itself ~1.5× thickness gives 3-4 cells through the
-# board.
-ro = rf.Dielectric(er=ER_SUB, maxh=1.5 * SUB_H)
+# surface refinement separately via auto_refine_features; the substrate
+# mesh is fixed at ~1/3 of its thickness so the wave-port eigensolve at the
+# x-min / x-max cross-section resolves the inhomogeneous quasi-TEM mode.
+ro = rf.Dielectric(er=ER_SUB, maxh=SUB_H / 3)
 
 sub = g.box(total_L, sub_W, SUB_H, position=(-total_L / 2, -sub_W / 2, 0),
             material=ro)
@@ -51,24 +71,50 @@ for L_seg, W_seg in zip(LENGTHS, WIDTHS):
     trace_plates.append(plate)
     x_cursor += L_seg
 
-W_IN = WIDTHS[0]
-port_in = g.plate(
-    p0=(-total_L / 2, -W_IN / 2, 0),
-    width=(0, W_IN, 0),
-    height=(0, 0, SUB_H),
-)
-port_out = g.plate(
-    p0=(total_L / 2, -W_IN / 2, 0),
-    width=(0, W_IN, 0),
-    height=(0, 0, SUB_H),
-)
+# Vertical cutting plate at each x-end, centred on the line and spanning the
+# substrate plus PORT_H of air above it. Fragmenting it into the end faces
+# imprints the aperture outline, splitting the full-width end face into the
+# narrow aperture window plus the side strips that flank it.
+x_lo, x_hi = -total_L / 2, total_L / 2
+port_cut_in = g.plate(p0=(x_lo, -PORT_W / 2, 0),
+                      width=(0, PORT_W, 0), height=(0, 0, PORT_H))
+port_cut_out = g.plate(p0=(x_hi, -PORT_W / 2, 0),
+                       width=(0, PORT_W, 0), height=(0, 0, PORT_H))
 
-g.fragment(sub, air, *trace_plates, port_in, port_out)
+g.fragment(sub, air, *trace_plates, port_cut_in, port_cut_out)
 
-rf.LumpedPort(port_in,  direction=(0, 0, 1), z0=50.0)
-rf.LumpedPort(port_out, direction=(0, 0, 1), z0=50.0)
-rf.PEC(sub.faces.min(axis="z"), *trace_plates)
-rf.ABC(*air.faces.outer)
+# Trace sections + ground plane on one PEC object so the wave-port
+# eigensolve marks the internal conductor nodes via pec=[pec_strip].
+pec_strip = rf.PEC(sub.faces.min(axis="z"), *trace_plates)
+
+
+def _aperture(obj, x_plane):
+    """The boxed-port sub-face of ``obj`` at ``x_plane``: degenerate in x,
+    on the end plane, and bounded by the aperture in y (the flanking side
+    strips run out to +-sub_W/2, so they fail the y-bounds test)."""
+    # 1e-6 m tolerance absorbs gmsh getBoundingBox inflation (~1e-7 m/side),
+    # the same slack rf.ABC(*faces.outer) relies on.
+    return obj.faces.where(
+        lambda c, b: abs(b[3] - b[0]) < 1e-6
+        and abs(b[0] - x_plane) < 1e-6
+        and b[1] >= -PORT_W / 2 - 1e-6
+        and b[4] <= PORT_W / 2 + 1e-6)
+
+
+# Wave ports on the boxed apertures: substrate + air aperture sub-faces at
+# each end. f0 at band centre fixes beta = n_eff(f0) * k0 for the sweep.
+F0 = 0.5 * (FREQUENCIES[0] + FREQUENCIES[-1])
+rf.WavePort(_aperture(sub, x_lo), _aperture(air, x_lo),
+            f0=F0, mode_kind="auto", pec=[pec_strip])
+rf.WavePort(_aperture(sub, x_hi), _aperture(air, x_hi),
+            f0=F0, mode_kind="auto", pec=[pec_strip])
+
+# Open the enclosure: first-order ABC on the lateral y-walls (substrate and
+# air) and the air top. The x-end faces outside the apertures stay PEC (a
+# shielding end wall with a port window, the classic wave-port backing).
+rf.ABC(sub.faces.min(axis="y"), sub.faces.max(axis="y"),
+       air.faces.min(axis="y"), air.faces.max(axis="y"),
+       air.faces.max(axis="z"))
 
 rf.show(g)
 

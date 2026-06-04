@@ -1,9 +1,16 @@
-"""50 ohm microstrip line on RO4003C — Z0 sweet-spot extraction.
+"""50 ohm microstrip line on RO4003C, driven by hybrid wave ports.
 
 A straight 30 mm microstrip section on 0.508 mm Rogers RO4003C
-(er = 3.55), with lumped ports at both ends. The sweep is centred on the
-half-wavelength resonance near 3 GHz where lumped ports see a clean
-travelling-wave impedance.
+(er = 3.55). Both ends are excited by a full-vector wave port on the
+substrate-plus-air cross-section, so the inhomogeneous quasi-TEM mode is
+de-embedded directly and the line sees its proper modal reference
+impedance at every frequency (no need to centre the sweep on a
+travelling-wave resonance the way a lumped gap source would).
+
+The 20 mm substrate width keeps the lowest transverse box resonance of
+the cross-section (~4 GHz dielectric estimate, higher once the air region
+pulls it up) above the 3.3 GHz top of the sweep, so the single-mode
+wave-port projection stays energy-conserving across the band.
 """
 
 # %% Parameters
@@ -30,10 +37,11 @@ MAXH = rf.lambda_maxh(f_max=3.3e9, er_max=ER_SUB)
 # %% Geometry + Materials
 g = rf.Geometry(maxh=MAXH)
 
-# Substrate is the thin feature — fix its mesh at ~1.5× its own thickness so
-# the dielectric carries 3-4 cells through. Air can stay on the global
-# wavelength cap.
-fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=1.5 * SUB_H)
+# Substrate carries the wave-port cross-section: at the y-min / y-max ends
+# a 1-element-thick slab is too coarse for the vector eigensolve to see the
+# inhomogeneous quasi-TEM mode, so fix the substrate mesh at ~1/3 of its
+# thickness. Air can stay on the global wavelength cap.
+fr4 = rf.Dielectric(er=ER_SUB, tand=TAND, maxh=SUB_H / 3)
 
 sub = g.box(SUB_W, LINE_L, SUB_H, position=(-SUB_W / 2, 0, 0), material=fr4)
 air = g.box(SUB_W, LINE_L, AIR_H, position=(-SUB_W / 2, 0, SUB_H),
@@ -41,23 +49,28 @@ air = g.box(SUB_W, LINE_L, AIR_H, position=(-SUB_W / 2, 0, SUB_H),
 
 trace = g.xy_plate(LINE_W, LINE_L, position=(-LINE_W / 2, 0, SUB_H))
 
-port_in = g.plate(
-    p0=(-LINE_W / 2, 0, 0),
-    width=(LINE_W, 0, 0),
-    height=(0, 0, SUB_H),
-)
-port_out = g.plate(
-    p0=(-LINE_W / 2, LINE_L, 0),
-    width=(LINE_W, 0, 0),
-    height=(0, 0, SUB_H),
-)
+g.fragment(sub, air, trace)
 
-g.fragment(sub, air, trace, port_in, port_out)
+# Trace + ground plane: the cross-section's internal conductor plus its
+# outer PEC. Both ride on one PEC object so the wave-port eigensolve can
+# mark the right nodes via pec=[pec_strip].
+pec_strip = rf.PEC(trace, sub.faces.min(axis="z"))
 
-rf.LumpedPort(port_in,  direction=(0, 0, 1), z0=50.0)
-rf.LumpedPort(port_out, direction=(0, 0, 1), z0=50.0)
-rf.PEC(trace, sub.faces.min(axis="z"))   # trace + ground plane
-rf.ABC(*air.faces.outer)
+# Wave ports on the full microstrip cross-section at each end of the line
+# (it runs along y, so the port faces are the substrate + air y-extremes).
+# f0 at band centre fixes beta = n_eff(f0) * k0 for the sweep.
+F0 = 0.5 * (FREQUENCIES[0] + FREQUENCIES[-1])
+rf.WavePort(sub.faces.min(axis="y"), air.faces.min(axis="y"),
+            f0=F0, mode_kind="auto", pec=[pec_strip])
+rf.WavePort(sub.faces.max(axis="y"), air.faces.max(axis="y"),
+            f0=F0, mode_kind="auto", pec=[pec_strip])
+
+# Open the enclosure: first-order ABC on the lateral x-walls (substrate and
+# air) and the air top. The y-extreme faces are the wave ports, so they are
+# excluded here.
+rf.ABC(sub.faces.min(axis="x"), sub.faces.max(axis="x"),
+       air.faces.min(axis="x"), air.faces.max(axis="x"),
+       air.faces.max(axis="z"))
 
 rf.show(g)
 
