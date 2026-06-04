@@ -1,27 +1,31 @@
-"""Slotted Vivaldi (exponentially-tapered slot) antenna, ported from
-``EMerge/examples/demo19_vivaldi_antenna.py``.
+"""Slotted Vivaldi (exponentially-tapered slot) antenna, open-region with PML.
 
-A microstrip line on the top copper layer of a thin FR-4 board crosses an
+A microstrip line on the top copper of a thin FR-4 board crosses an
 exponentially-tapered slot etched into the bottom ground plane. The slot
 flares from a narrow ``g`` gap at the feed to a wide ``W`` aperture, giving
-the travelling-wave radiation of a Vivaldi (tapered-slot) antenna. The
-ground-plane edges are *corrugated* with periodic slots to broaden the
-band.
+the travelling-wave radiation of a Vivaldi (tapered-slot) antenna. The slot
+line is terminated by a circular open-circuit cavity cut into the ground; the
+microstrip is terminated by a radial stub on top.
 
-The point of the port is the **parametric curve**: rapidfem has no
-``XYPolygon().parametric`` helper, so the taper
+This is the rigorous reference setup (geometry ported from EMerge demo19):
 
-    fx(t) = L·t
-    fy(t) = (g/2)·Kᵗ + (W − g·K)/(2 − 2K)·(1 − Kᵗ),   t ∈ [0, 1]
+* **Parametric taper.** rapidfem has no ``parametric`` curve helper, so the
+  taper ``fy(t) = (g/2)·Kᵗ + (W − g·K)/(2 − 2K)·(1 − Kᵗ)``, ``t ∈ [0,1]`` is
+  discretised into a point list for :meth:`Geometry.polygon`.
+* **Open-region truncation by PML, not ABC.** A first-order ABC is only
+  accurate near normal incidence and must sit ≳ λ/4 from the radiator (≈ 25 mm
+  at the 3 GHz band edge), which balloons the air box. A PML absorbs oblique
+  incidence and can sit close, so a modest air pad + a PML shell keeps the
+  mesh small *and* the far field trustworthy. The Vivaldi radiates endfire and
+  through the slot to both sides, so all six faces get a PML.
+* **Mesh budget.** The bulk air is meshed at λ/10 of the top frequency; the PML
+  is 2× coarser (its accuracy comes from the stretch profile, not cell count);
+  only the feed / stub / port / taper get a fine local size. That keeps the
+  tet count in check despite the padded, six-sided enclosure.
 
-is discretised here into a point list and handed to :meth:`Geometry.polygon`.
-The tapered slot, the open-circuit disc and the corrugation slots are
-``cut`` out of the ground plane; the feed line and a radial (sector) stub
-are plates on the top layer. A lumped port drives the line, an order-2 ABC
-closes the air box, and the far-field at 6 GHz reports directivity / gain.
-
-Wideband (3-8 GHz), the sweep is the slow part; drop ``N_FREQ`` for a quick
-look.
+Wideband (3-8 GHz); the sweep is the slow part. Drop ``N_FREQ`` for a quick
+look, or raise ``PER_LAMBDA`` / shrink ``PAD`` only if you understand the
+accuracy trade.
 """
 
 # %% Parameters
@@ -42,15 +46,18 @@ ER_SUB = 4.4          # FR-4
 L_STUB = 7.0 * mm     # radial stub length
 STUB_ANG = 80.0       # radial stub opening angle [deg]
 STUB_ANG_OFF = 20.0   # stub rotation off the feed axis [deg]
-SLOT_MARGIN = 5.0 * mm  # keep-out margin of the corrugations around the taper
-W_SLOT = 4.0 * mm     # corrugation slot width
-W_GAP = 4.0 * mm      # corrugation slot pitch gap
-W_PERIOD = W_SLOT + W_GAP
-N_SLOTS = 7
 
 # PCB plan bounds (the taper aperture sticks out past the dielectric edge).
 PCB_XMIN, PCB_XMAX = -25.0 * mm, 70.0 * mm
 PCB_YMIN, PCB_YMAX = -30.0 * mm, 30.0 * mm
+
+# Open-region truncation. PAD is the near-field buffer between the antenna and
+# the PML; PML_T is the absorber thickness. With a PML, PAD can stay small
+# (the absorber, not the distance, kills the outgoing wave) which is what keeps
+# the mesh affordable.
+PAD = 12.0 * mm
+PML_T = 18.0 * mm
+
 
 # 50 Ω microstrip width on FR-4, th = 0.5 mm (Hammerstad synthesis).
 def _ms_width_50(z0: float, er: float, h: float) -> float:
@@ -67,102 +74,115 @@ W0 = _ms_width_50(50.0, ER_SUB, TH)   # ≈ 0.95 mm
 N_FREQ = 6
 FREQUENCIES = np.linspace(3.0e9, 8.0e9, N_FREQ)
 F_FF = 6.0e9                          # far-field frequency
-MAXH = rf.lambda_maxh(f_max=8.0e9)
+PER_LAMBDA = 10                       # air cells per wavelength at f_max
+MAXH = rf.lambda_maxh(f_max=8.0e9, per_lambda=PER_LAMBDA)
 TAPER_N = 48                          # parametric-curve sampling
 
 
-# %% Parametric taper curves
+# %% Parametric taper curve
 # fy(t): half-width of the slot; fy(0)=g/2 (gap), fy(1)=W/2 (aperture).
 def fy(t):
     return (G_GAP / 2.0) * K**t + (W_AP - G_GAP * K) / (2.0 - 2.0 * K) * (1.0 - K**t)
 
 
-def taper_points(half, x0=0.0):
+def taper_points(x0=0.0):
     """CCW outline of the tapered slot: top edge t:0→1, bottom edge t:1→0."""
     ts = np.linspace(0.0, 1.0, TAPER_N)
-    top = [(x0 + t * L_SLOT, half(t)) for t in ts]
-    bot = [(x0 + t * L_SLOT, -half(t)) for t in reversed(ts)]
+    top = [(x0 + t * L_SLOT, fy(t)) for t in ts]
+    bot = [(x0 + t * L_SLOT, -fy(t)) for t in reversed(ts)]
     return top + bot
-
-
-# Dilated taper (taper offset outward by SLOT_MARGIN along its normal), the
-# keep-out used to carve the corrugations away from the taper itself.
-A_COEF = (G_GAP / 2.0) - (W_AP - G_GAP * K) / (2.0 - 2.0 * K)
-
-
-def _dfx(t):
-    return A_COEF * math.log(K) / L_SLOT * K**t
-
-
-def fy_dilated(t):
-    r = 1.0 / math.sqrt(1.0 + _dfx(t) ** 2)
-    return fy(t) + SLOT_MARGIN * r
 
 
 # %% Geometry + Materials
 g = rf.Geometry(maxh=MAXH)
-fr4 = rf.Dielectric(er=ER_SUB, tand=0.02, maxh=2.0 * TH)
 
-# Substrate slab z ∈ [-TH, 0]; air box enclosing everything.
+# One material per region for size control: substrate (fine), bulk near-field
+# air (λ/10), and a 2× coarser air inside the PML (the stretch profile sets the
+# absorber's accuracy, so a fine PML mesh is wasted).
+fr4 = rf.Dielectric(er=ER_SUB, tand=0.02, maxh=2.0 * TH)
+bulk_air = rf.Air()
+pml_air = rf.Air(maxh=2.0 * MAXH)
+
+# Bulk air box: PCB bounds padded by PAD on every side.
+X0, X1 = PCB_XMIN - PAD, PCB_XMAX + PAD
+Y0, Y1 = PCB_YMIN - PAD, PCB_YMAX + PAD
+Z0, Z1 = -TH - PAD, PAD
+AW, AL, AH = X1 - X0, Y1 - Y0, Z1 - Z0
+T = PML_T
+
+air = g.box(AW, AL, AH, position=(X0, Y0, Z0), material=bulk_air)
+
+# Six non-overlapping PML slabs tiling the shell. The ±z slabs span the full
+# padded footprint (covering the top/bottom corners); the ±x slabs cover the
+# y-edges (extended in y); the ±y slabs fill the remaining mid-band. Every
+# outgoing ray exits through exactly one PML.
+pml_zp = g.box(AW + 2 * T, AL + 2 * T, T, position=(X0 - T, Y0 - T, Z1), material=pml_air)
+pml_zm = g.box(AW + 2 * T, AL + 2 * T, T, position=(X0 - T, Y0 - T, Z0 - T), material=pml_air)
+pml_xp = g.box(T, AL + 2 * T, AH, position=(X1, Y0 - T, Z0), material=pml_air)
+pml_xm = g.box(T, AL + 2 * T, AH, position=(X0 - T, Y0 - T, Z0), material=pml_air)
+pml_yp = g.box(AW, T, AH, position=(X0, Y1, Z0), material=pml_air)
+pml_ym = g.box(AW, T, AH, position=(X0, Y0 - T, Z0), material=pml_air)
+
+# Substrate slab z ∈ [-TH, 0].
 sub = g.box(PCB_XMAX - PCB_XMIN, PCB_YMAX - PCB_YMIN, TH,
             position=(PCB_XMIN, PCB_YMIN, -TH), material=fr4)
 
-PAD = 12.0 * mm
-air = g.box(PCB_XMAX - PCB_XMIN + 2 * PAD, PCB_YMAX - PCB_YMIN + 2 * PAD,
-            TH + 2 * PAD,
-            position=(PCB_XMIN - PAD, PCB_YMIN - PAD, -TH - PAD),
-            material=rf.Air())
-
-# Ground plane (bottom copper, z = -TH) with the taper + disc + corrugations
-# cut out. Build each opening as a face, then boolean-subtract from the plate.
+# Ground plane (bottom copper, z = -TH) with the taper slot + open-circuit disc
+# cut out. (The EMerge demo also corrugates the ground edges to widen the band;
+# dropped here, the thin boolean slivers wreck tet quality.)
 ground = g.xy_plate(PCB_XMAX - PCB_XMIN, PCB_YMAX - PCB_YMIN,
                     position=(PCB_XMIN, PCB_YMIN, -TH))
-
-taper = g.polygon([(x, y, -TH) for (x, y) in taper_points(fy)],
-                  maxh=2.0 * mm)
+taper = g.polygon([(x, y, -TH) for (x, y) in taper_points()], maxh=2.0 * mm)
 disc = g.disc(RADIUS / 2.0, position=(-RADIUS / 2.0 + 1.0 * mm, 0.0, -TH))
-
-# Cut the tapered slot + open-circuit disc out of the ground plane. (The
-# EMerge demo also corrugates the ground edges with periodic slots to widen
-# the band; those are dropped here, the thin boolean slivers they create
-# wreck tet quality and balloon the solve. The bare tapered slot is still a
-# recognisable, well-behaved Vivaldi; see fy_dilated/N_SLOTS for the hook.)
 g.cut(ground, taper, disc)
 
-# Feed: 50 Ω microstrip on the top copper (z = 0), running +y across the slot,
-# terminated in a radial (sector) stub for the slot-line transition.
+# Feed: 50 Ω microstrip on the top copper (z = 0), running +y across the slot.
 FEED_X, FEED_Y0 = 2.0 * mm, -10.0 * mm
 FEED_LEN = 10.5 * mm
 feed = g.xy_plate(W0, FEED_LEN, position=(FEED_X - W0 / 2.0, FEED_Y0, 0.0),
                   maxh=0.5 * mm)
 
-# Radial stub: circular sector of radius L_STUB at the line end, opening
-# STUB_ANG wide, its bisector rotated STUB_ANG_OFF off the +y feed axis.
+# Radial (sector) stub at the line end for the slot-line transition.
 stub_cx, stub_cy = FEED_X, FEED_Y0 + FEED_LEN - 0.2 * mm
-base = math.radians(90.0 + STUB_ANG_OFF)   # +y axis is 90°, rotate off it
+base = math.radians(90.0 + STUB_ANG_OFF)
 half = math.radians(STUB_ANG / 2.0)
 arc = [(stub_cx, stub_cy, 0.0)]
 for a in np.linspace(base - half, base + half, 24):
     arc.append((stub_cx + L_STUB * math.cos(a), stub_cy + L_STUB * math.sin(a), 0.0))
 stub = g.polygon(arc, maxh=0.6 * mm)
 
-# Lumped feed: a vertical sheet at the line input bridging the ground plane
-# (z = -TH) to the microstrip trace (z = 0), driven through the substrate,
-# the standard rapidfem microstrip feed (cf. fd_patch_antenna.py).
+# Lumped feed: a vertical sheet bridging the ground plane (z = -TH) to the
+# microstrip trace (z = 0) through the substrate.
 port = g.plate(p0=(FEED_X - W0 / 2.0, FEED_Y0, -TH),
                width=(W0, 0.0, 0.0), height=(0.0, 0.0, TH), maxh=0.4 * mm)
 
-g.fragment(air, sub, ground, feed, stub, port)
+g.fragment(air, pml_zp, pml_zm, pml_xp, pml_xm, pml_yp, pml_ym,
+           sub, ground, feed, stub, port)
 
-# Physics
+# %% Physics
 rf.LumpedPort(port, direction=(0, 0, 1), z0=50.0)
 rf.PEC(ground, feed, stub)
-rf.ABC(*air.faces.outer)
+
+rf.PML(pml_zp, direction=(0, 0, 1), inner_face=Z1, thickness=T)
+rf.PML(pml_zm, direction=(0, 0, -1), inner_face=Z0, thickness=T)
+rf.PML(pml_xp, direction=(1, 0, 0), inner_face=X1, thickness=T)
+rf.PML(pml_xm, direction=(-1, 0, 0), inner_face=X0, thickness=T)
+rf.PML(pml_yp, direction=(0, 1, 0), inner_face=Y1, thickness=T)
+rf.PML(pml_ym, direction=(0, -1, 0), inner_face=Y0, thickness=T)
+
+# Terminate every PML with PEC on its outer hull.
+rf.PEC(*pml_zp.faces.outer, *pml_zm.faces.outer,
+       *pml_xp.faces.outer, *pml_xm.faces.outer,
+       *pml_yp.faces.outer, *pml_ym.faces.outer)
 
 rf.show(g)
 
 
 # %% Mesh
+# NB: no auto_refine_features here. The feed / stub / port / taper already carry
+# explicit local sizes and the substrate gets its size from the FR-4 material;
+# auto-refining the 0.5 mm-thin substrate on top of that (and grading it into
+# the padded air box) blows the tet count up ~4× for no accuracy gain.
 g.mesh()
 rf.show(g)
 
