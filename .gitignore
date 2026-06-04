@@ -60,3 +60,10 @@ python/python_src/rapidfem/ui/frontend-src/build/
 
 # Static demo bake artefacts (regenerated locally by scripts/bake_demo.py
 # and committed to git, so CI can deploy without re-running FEM solves)
+
+# Local test-report harness + scratch sweep outputs (regenerated locally,
+# never committed)
+_report/
+_sheet_test/
+_spiral_sweep_out/
+scripts/spiral_sweep_smoke.py
