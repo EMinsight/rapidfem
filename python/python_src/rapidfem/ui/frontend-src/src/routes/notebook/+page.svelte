@@ -34,6 +34,11 @@
 	let fb_reload = $state(0);
 	let code = $state('');
 	let dirty = $state(false);
+	// Whether the Save affordance (FileBrowser icon dot) should signal "unsaved".
+	// An untitled buffer (an opened example, never written to the workdir) is
+	// unsaved by definition, so it always needs saving; a real file tracks edits
+	// via `dirty`. This keeps the toolbar dot consistent with the header dot.
+	let needs_save = $derived(active_path === null ? untitled_label !== null : dirty);
 	let log_lines = $state<string[]>([]);
 	let output_body_el: HTMLElement | undefined = $state();
 	let _stick_to_bottom = $state(true);
@@ -957,7 +962,7 @@
 						onSave={save_now}
 						onSaveAs={save_as}
 						can_save={active_path !== null || untitled_label !== null}
-						{dirty}
+						dirty={needs_save}
 						reload={fb_reload}
 					/>
 				</div>

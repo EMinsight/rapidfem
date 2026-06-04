@@ -498,7 +498,7 @@ def _serialize_paired(captures: list) -> list[dict[str, Any]]:
                     "field_meta": {
                         "n_freq": n_freq,
                         "n_port": n_p,
-                        "channels": ["E", "J", "H"],
+                        "channels": _available_field_channels(last_sim, last_result),
                         "lazy": True,
                     },
                 },
@@ -535,6 +535,25 @@ def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
     mn = nodes_np.min(axis=0).tolist()
     mx = nodes_np.max(axis=0).tolist()
     return {"min": mn, "max": mx}
+
+
+def _available_field_channels(sim, result) -> list[str]:
+    """Which of E / J / H the backend can actually produce for this result.
+
+    E is always present for a solved sweep; J (current density) and H come
+    back as None for configurations the native solver doesn't derive them
+    for. Probe each once at (freq 0, port 0) so the viewer only offers
+    channels that will render something instead of blanking on selection.
+    """
+    chans = ["E"]
+    for name, getter in (("J", sim.current_density_at_nodes),
+                          ("H", sim.h_field_at_nodes)):
+        try:
+            if getter(result, 0, 0) is not None:
+                chans.append(name)
+        except Exception:  # noqa: BLE001
+            pass
+    return chans
 
 
 def register(app: Flask) -> None:

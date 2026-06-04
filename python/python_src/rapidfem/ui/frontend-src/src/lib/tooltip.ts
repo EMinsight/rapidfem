@@ -91,20 +91,34 @@ export function initTooltips(): () => void {
 		hide();
 	};
 
+	// On scroll/resize the trigger moves, so re-anchor the open tip to it
+	// rather than dismissing (a stationary cursor fires no new mouseover, so
+	// a dismissed tip would not reappear until the user moves the mouse).
+	// If the trigger has scrolled out of view, dismiss instead.
+	const reposition = () => {
+		if (!current) return;
+		const tip = tipOf(current);
+		const r = current.getBoundingClientRect();
+		const offscreen =
+			r.bottom < 0 || r.top > window.innerHeight ||
+			r.right < 0 || r.left > window.innerWidth;
+		if (!tip || offscreen) { hide(); return; }
+		show(current, tip);
+	};
+
 	document.addEventListener('mouseover', onOver, true);
 	document.addEventListener('mouseout', onOut, true);
 	document.addEventListener('focusin', onOver, true);
 	document.addEventListener('focusout', () => hide(), true);
-	// Positions go stale on scroll/resize; just dismiss.
-	window.addEventListener('scroll', hide, true);
-	window.addEventListener('resize', hide);
+	window.addEventListener('scroll', reposition, true);
+	window.addEventListener('resize', reposition);
 
 	return () => {
 		document.removeEventListener('mouseover', onOver, true);
 		document.removeEventListener('mouseout', onOut, true);
 		document.removeEventListener('focusin', onOver, true);
-		window.removeEventListener('scroll', hide, true);
-		window.removeEventListener('resize', hide);
+		window.removeEventListener('scroll', reposition, true);
+		window.removeEventListener('resize', reposition);
 		if (box) { box.remove(); box = null; }
 		current = null;
 	};

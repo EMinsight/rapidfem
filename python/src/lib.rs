@@ -79,53 +79,65 @@ impl PySimulation {
     /// partial results; it does not change the returned SweepResult.
     #[pyo3(signature = (callback=None))]
     fn run_sweep(&self, callback: Option<PyObject>) -> PyResult<PySweepResult> {
-        let inner = match callback {
-            // No callback: release the GIL for the (potentially long) sweep so
-            // other Python threads run. `Python::allow_threads` wants `Send`,
-            // but Simulation is `unsendable` (Box<dyn Port> is not Send), so we
-            // drop to PyO3's ffi for the same effect without the Send bound.
-            None => unsafe {
+        // No callback: release the GIL for the (potentially long) sweep so
+        // other Python threads run. `Python::allow_threads` wants `Send`, but
+        // Simulation is `unsendable` (Box<dyn Port> is not Send), so we drop to
+        // PyO3's ffi for the same effect without the Send bound.
+        let Some(cb) = callback else {
+            let inner = unsafe {
                 let save = pyo3::ffi::PyEval_SaveThread();
                 let r = self.inner.run_sweep(None);
                 pyo3::ffi::PyEval_RestoreThread(save);
                 r
-            },
-            // With a callback we must call back into Python per frequency, so
-            // keep the GIL held for the whole sweep (mixing PyEval_SaveThread
-            // with re-acquiring the GIL on the same thread is unsound). The
-            // hook re-enters via `Python::with_gil`, which is cheap when the
-            // GIL is already held.
-            Some(cb) => {
-                let hook = move |fi: usize, freq: f64, s: &[Vec<Complex64>]| -> bool {
-                    Python::with_gil(|py| {
-                        let n = s.len();
-                        let mut flat: Vec<NpC64> = Vec::with_capacity(n * n);
-                        for row in s {
-                            for v in row {
-                                flat.push(NpC64::new(v.re, v.im));
-                            }
-                        }
-                        let arr = numpy::ndarray::Array2::from_shape_vec((n, n), flat)
-                            .expect("square s-matrix")
-                            .into_pyarray_bound(py);
-                        // Call the Python callback (best-effort), but treat a
-                        // KeyboardInterrupt raised through it as "stop".
-                        let interrupted_in_cb = match cb.call1(py, (fi, freq, arr)) {
-                            Ok(_) => false,
-                            Err(e) => e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py),
-                        };
-                        // Also honour a Ctrl-C / UI interrupt that landed
-                        // between callbacks (check_signals clears it on Err).
-                        let pending = py.check_signals().is_err();
-                        // Return whether the sweep should continue.
-                        !(interrupted_in_cb || pending)
-                    })
-                };
-                let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) -> bool = &hook;
-                self.inner.run_sweep(Some(hook_dyn))
             }
+            .map_err(PyRuntimeError::new_err)?;
+            return Ok(PySweepResult { inner });
+        };
+
+        // With a callback we must call back into Python per frequency, so keep
+        // the GIL held for the whole sweep (mixing PyEval_SaveThread with
+        // re-acquiring the GIL on the same thread is unsound). The hook
+        // re-enters via `Python::with_gil`, which is cheap when the GIL is
+        // already held. A genuine exception from the callback (anything other
+        // than KeyboardInterrupt) is stashed here, stops the sweep, and is
+        // re-raised after run_sweep returns rather than silently swallowed.
+        let cb_err: std::cell::RefCell<Option<PyErr>> = std::cell::RefCell::new(None);
+        let hook = |fi: usize, freq: f64, s: &[Vec<Complex64>]| -> bool {
+            Python::with_gil(|py| {
+                let n = s.len();
+                let mut flat: Vec<NpC64> = Vec::with_capacity(n * n);
+                for row in s {
+                    for v in row {
+                        flat.push(NpC64::new(v.re, v.im));
+                    }
+                }
+                let arr = numpy::ndarray::Array2::from_shape_vec((n, n), flat)
+                    .expect("square s-matrix")
+                    .into_pyarray_bound(py);
+                match cb.call1(py, (fi, freq, arr)) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // A KeyboardInterrupt through the callback means "stop"
+                        // (no error); any other exception is a real callback
+                        // bug, so stash it and stop the sweep.
+                        if !e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                            *cb_err.borrow_mut() = Some(e);
+                        }
+                        return false;
+                    }
+                }
+                // Also honour a Ctrl-C / UI interrupt that landed between
+                // callbacks (check_signals clears it on Err).
+                !py.check_signals().is_err()
+            })
+        };
+        let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) -> bool = &hook;
+        let r = self.inner.run_sweep(Some(hook_dyn));
+        // Surface a stashed callback exception ahead of any solver error.
+        if let Some(e) = cb_err.borrow_mut().take() {
+            return Err(e);
         }
-        .map_err(PyRuntimeError::new_err)?;
+        let inner = r.map_err(PyRuntimeError::new_err)?;
         Ok(PySweepResult { inner })
     }
 

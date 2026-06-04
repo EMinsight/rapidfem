@@ -607,10 +607,6 @@ impl Simulation {
             }
             2
         });
-        let nfft_tris = self.mesh.tris_for_tag(nfft_tag).to_vec();
-        if nfft_tris.is_empty() {
-            return None;
-        }
         let pec_nfft: Vec<usize> = self
             .config
             .pec
@@ -618,6 +614,22 @@ impl Simulation {
             .iter()
             .flat_map(|&t| self.mesh.tris_for_tag(t).to_vec())
             .collect();
+        // A face can carry both the NFFT tag and a PEC tag (e.g. a ground
+        // plane the user also marked as part of the Huygens surface). Drop
+        // those tris from the NFFT set so they aren't integrated twice; the
+        // PEC pass already covers them (with M_s = 0, the correct treatment
+        // of tangential E on a conductor).
+        let pec_set: std::collections::HashSet<usize> = pec_nfft.iter().copied().collect();
+        let nfft_tris: Vec<usize> = self
+            .mesh
+            .tris_for_tag(nfft_tag)
+            .iter()
+            .copied()
+            .filter(|t| !pec_set.contains(t))
+            .collect();
+        if nfft_tris.is_empty() {
+            return None;
+        }
         let efficiency = self.radiation_efficiency(result, freq_idx);
 
         Some(crate::farfield::compute_farfield_full(

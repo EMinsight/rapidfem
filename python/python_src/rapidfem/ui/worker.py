@@ -304,9 +304,11 @@ def handle_field_query(msg: dict) -> None:
         else:
             arr = sim.field_at_nodes(result, fi, pi)
         if arr is None:
-            send({"type": "field-result", "qid": qid, "ok": True, "data": "", "n": 0})
+            send({"type": "field-result", "qid": qid, "ok": True, "data": ""})
             return
         # ABC phasor (A=Σre², B=Σim², C=Σre·im per node), packed f32 → base64.
+        # The backend serves the decoded buffer raw; the viewer reads its
+        # byteLength, so no element count needs to ride along.
         re = np.asarray(arr.real)
         im = np.asarray(arr.imag)
         a = np.sum(re * re, axis=1)
@@ -314,7 +316,7 @@ def handle_field_query(msg: dict) -> None:
         c = np.sum(re * im, axis=1)
         buf = np.stack([a, b, c], axis=1).astype(np.float32).tobytes()
         send({"type": "field-result", "qid": qid, "ok": True,
-              "data": base64.b64encode(buf).decode("ascii"), "n": len(a) * 3})
+              "data": base64.b64encode(buf).decode("ascii")})
     except Exception as e:  # noqa: BLE001
         send({"type": "field-result", "qid": qid, "ok": False, "error": str(e)})
 
