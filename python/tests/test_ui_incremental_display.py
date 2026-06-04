@@ -82,3 +82,42 @@ def test_on_item_resets_after_stop():
     rf.show(g)
     _show_capture.stop_capture()
     assert fired == []  # the first run's callback never fired
+
+
+def test_active_sweep_callback_only_while_capturing():
+    # ProblemFD.sweep picks up this hook to stream partial results.
+    assert _show_capture.active_sweep_callback() is None  # not capturing
+    sentinel = lambda fi, freq, s: None
+    _show_capture.start_capture(sweep_cb=sentinel)
+    assert _show_capture.active_sweep_callback() is sentinel
+    _show_capture.stop_capture()
+    assert _show_capture.active_sweep_callback() is None  # cleared on stop
+
+
+def test_sweep_progress_emits_growing_partial_results():
+    # The worker's per-frequency callback accumulates S-parameters and emits a
+    # growing partial 'result' display each frequency; freq_idx 0 resets.
+    import numpy as np
+    import rapidfem.ui.worker as worker
+
+    emitted = []
+    orig_send = worker.send
+    worker.send = lambda msg: emitted.append(msg)
+    try:
+        cb = worker._make_sweep_progress()
+        s = np.array([[1 + 0j, 0.1j], [0.1j, 1 + 0j]])
+        cb(0, 4e9, s)
+        cb(1, 5e9, s * 0.9)
+        cb(2, 6e9, s * 0.8)
+        cb(0, 7e9, s)  # new sweep: resets
+    finally:
+        worker.send = orig_send
+
+    assert [e["type"] for e in emitted] == ["display"] * 4
+    assert [e["kind"] for e in emitted] == ["result"] * 4
+    # frequencies grow 1,2,3 then reset to 1 on the next freq_idx 0.
+    assert [len(e["payload"]["frequencies"]) for e in emitted] == [1, 2, 3, 1]
+    assert all(e["payload"]["partial"] for e in emitted)
+    assert emitted[-1]["payload"]["frequencies"] == [7e9]
+    # S-matrix re/im are carried through (second emit, freq 5 GHz, scaled 0.9).
+    assert emitted[1]["payload"]["sparams"][1][0][0] == pytest.approx([0.9, 0.0])

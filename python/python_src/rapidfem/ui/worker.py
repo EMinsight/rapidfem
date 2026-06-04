@@ -232,20 +232,49 @@ def _emit_paired_displays(captured) -> None:
         send({"type": "display", **evt})
 
 
+def _make_sweep_progress():
+    """Build a per-frequency sweep callback that streams partial S-parameter
+    results. Accumulates frequencies + S-matrices and emits a growing ``result``
+    display after each frequency; resets on ``freq_idx == 0`` so multiple sweeps
+    in one cell each start fresh. Self-contained: never raises into the solver.
+    """
+    state = {"freqs": [], "sparams": []}
+
+    def cb(fi, freq, s):
+        try:
+            from rapidfem.ui.api import _partial_result_payload
+            if fi == 0:
+                state["freqs"] = []
+                state["sparams"] = []
+            state["freqs"].append(float(freq))
+            n = int(s.shape[0])
+            mat = [[[float(s[r, c].real), float(s[r, c].imag)] for c in range(n)]
+                   for r in range(n)]
+            state["sparams"].append(mat)
+            send({"type": "display",
+                  **_partial_result_payload(state["freqs"], state["sparams"], n)})
+        except Exception:
+            pass  # streaming is best-effort; never disturb the solve
+
+    return cb
+
+
 def run_cell(msg_id: str, code: str) -> None:
     """Exec a cell in the persistent namespace, emit displays + done/error.
 
     Self-contained displays (geometry / mesh / time-domain) stream live as
     each ``show()`` runs (via the ``_stream_display`` capture callback) so the
-    frontend unlocks their tabs the instant the first data lands; the
-    sim+result pairing is emitted once at cell end.
+    frontend unlocks their tabs the instant the first data lands; partial
+    S-parameters stream per frequency during a sweep (``_make_sweep_progress``);
+    the sim+result pairing (with fields) is emitted once at cell end.
     """
     if not _initialized:
         send({"type": "error", "id": msg_id, "error": "Worker not initialized"})
         return
 
     from rapidfem import _show_capture
-    _show_capture.start_capture(on_item=_stream_display)
+    _show_capture.start_capture(on_item=_stream_display,
+                                sweep_cb=_make_sweep_progress())
     try:
         try:
             exec(compile(code, "<cell>", "exec"), _namespace)

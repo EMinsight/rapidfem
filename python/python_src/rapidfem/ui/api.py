@@ -519,6 +519,31 @@ def _serialize_captures_for_protocol(captures: list) -> list[dict[str, Any]]:
     return out
 
 
+def _partial_result_payload(frequencies, sparams, n_driven: int) -> dict[str, Any]:
+    """Build a partial ``result`` display event for a sweep still in progress.
+
+    Carries the S-parameters accumulated so far (no fields); the frontend's
+    result handler grows the S-parameter plot and unlocks its tab. The full
+    result, with fields, is emitted by :func:`_serialize_paired` when
+    ``show(result)`` runs at cell end. The ``partial`` flag lets the frontend
+    skip enabling the field viewer until then.
+    """
+    return {
+        "kind": "result",
+        "name": "result",
+        "payload": {
+            "frequencies": list(frequencies),
+            "sparams": sparams,
+            "n_driven": int(n_driven),
+            "n_freq": len(frequencies),
+            "fields": None,
+            "fields_j": None,
+            "fields_h": None,
+            "partial": True,
+        },
+    }
+
+
 def _bbox_for_nodes(nodes_np) -> dict[str, list[float]]:
     """Bounding box from a (n_nodes, 3) array."""
     if nodes_np is None or len(nodes_np) == 0:

@@ -24,7 +24,7 @@ class CapturedItem(NamedTuple):
 _state = threading.local()
 
 
-def start_capture(on_item=None) -> None:
+def start_capture(on_item=None, sweep_cb=None) -> None:
     """Begin capturing rapidfem.show() calls.
 
     ``on_item`` (optional) is a callback invoked with each
@@ -34,10 +34,16 @@ def start_capture(on_item=None) -> None:
     :func:`stop_capture` returns the full set as before (the worker uses it
     for the deferred sim+result pairing). The callback must be self-contained
     (never raise) so it cannot break user code.
+
+    ``sweep_cb`` (optional) is a per-frequency callback ``(freq_idx, freq_hz,
+    s_matrix)`` that :meth:`ProblemFD.sweep` forwards to the native solver so
+    the UI can stream partial S-parameters during a sweep. Retrieved via
+    :func:`active_sweep_callback`. Must also be self-contained.
     """
     _state.active = True
     _state.items = []
     _state.on_item = on_item
+    _state.sweep_cb = sweep_cb
 
 
 def stop_capture() -> list[CapturedItem]:
@@ -45,7 +51,17 @@ def stop_capture() -> list[CapturedItem]:
     _state.active = False
     _state.items = []
     _state.on_item = None
+    _state.sweep_cb = None
     return items
+
+
+def active_sweep_callback():
+    """Return the registered per-frequency sweep callback while capturing, else
+    None. ``ProblemFD.sweep`` uses this to stream partial results to the UI
+    without the user wiring anything up."""
+    if not is_capturing():
+        return None
+    return getattr(_state, "sweep_cb", None)
 
 
 def get_captured() -> list[CapturedItem]:

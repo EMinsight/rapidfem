@@ -52,6 +52,9 @@ export interface SolveResultPayload {
 	eigenmode?: boolean;
 	/** Per-mode Q factor (only present when eigenmode=true). */
 	q_factors?: number[];
+	/** True while a sweep is still in progress: S-parameters so far, no fields
+	 *  yet. The viewer grows the plot but holds off enabling the field cloud. */
+	partial?: boolean;
 	solve_time_s: number;
 	fields?: (number[] | null)[][];
 	/** Conduction current density J = σE per (freq, port), same shape as `fields`. */

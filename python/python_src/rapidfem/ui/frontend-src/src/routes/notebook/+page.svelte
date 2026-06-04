@@ -630,11 +630,16 @@
 					field_channel = 'E';
 					eigenmode_mode = !!res.eigenmode;
 					mode_q_factors = res.q_factors ?? [];
-					last_solve_stats = {
-						n_freq: res.n_freq,
-						n_dofs: res.n_dofs,
-						solve_time_s: res.solve_time_s,
-					};
+					// Partial sweep results stream S-parameters only (no fields):
+					// grow the plot but hold off enabling the field viewer until
+					// the full result arrives at cell end.
+					if (!res.partial) {
+						last_solve_stats = {
+							n_freq: res.n_freq,
+							n_dofs: res.n_dofs,
+							solve_time_s: res.solve_time_s,
+						};
+					}
 				} else if (kind === 'td_result') {
 					// Time-domain S-parameters reuse the S-parameter panel.
 					const res = payload as TdResultPayload;

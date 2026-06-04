@@ -196,7 +196,8 @@ class ProblemFD:
 
     def sweep(self, frequencies: Iterable[float], *,
               z0: float = 50.0,
-              adaptive: Adaptive | None = None):
+              adaptive: Adaptive | None = None,
+              on_frequency=None):
         """run a driven frequency sweep and return the SweepResult
 
         Assembles the FEM operator from the geometry's material /
@@ -221,6 +222,13 @@ class ProblemFD:
             reference impedance for S-parameter normalisation in ohms
         adaptive : Adaptive, optional
             adaptive-mesh-refinement settings (``None`` disables it)
+        on_frequency : callable, optional
+            called after each frequency's solve as
+            ``on_frequency(freq_idx, freq_hz, s_matrix)`` where ``s_matrix`` is
+            the ``(n_driven, n_driven)`` complex S-block for that frequency.
+            Useful for progress reporting. When ``None`` and running inside the
+            UI, a callback that streams partial results to the viewer is used
+            automatically.
 
         Returns
         -------
@@ -232,7 +240,12 @@ class ProblemFD:
             raise ValueError("sweep needs at least one frequency")
         toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive)
         self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
-        return self._native.run_sweep()
+        callback = on_frequency
+        if callback is None:
+            # In the UI, stream partial S-parameters as each frequency lands.
+            from rapidfem import _show_capture
+            callback = _show_capture.active_sweep_callback()
+        return self._native.run_sweep(callback)
 
     def eigenmode(self, target_frequency: float, *,
                   n_modes: int = 6,
