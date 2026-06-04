@@ -97,3 +97,33 @@ def test_microstrip_substrate_mesh_default():
     ms = st.microstrip(g, **_ms_kwargs())
     # Substrate material maxh defaults to sub_h / 3.
     assert ms.substrate.material.maxh == pytest.approx(0.508 * MM / 3)
+
+
+def _cpw_kwargs():
+    return dict(signal_w=0.4 * MM, gap=0.2 * MM, line_l=20 * MM,
+                sub_w=10 * MM, sub_h=0.635 * MM, air_h=6 * MM, er=9.9)
+
+
+def test_cpw_geometry_only():
+    g = rf.Geometry(maxh=4 * MM)
+    cw = st.cpw(g, **_cpw_kwargs())
+    assert cw.signal is not None
+    assert cw.ground_left is not None and cw.ground_right is not None
+    assert cw.ports == []
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_cpw_add_ports_meshes():
+    g = rf.Geometry(maxh=4 * MM)
+    cw = st.cpw(g, add_ports=True, f0=10e9, backside_ground=True, **_cpw_kwargs())
+    assert len(cw.ports) == 2
+    mesh_bytes, _ = g.mesh()
+    assert len(mesh_bytes) > 0
+
+
+def test_cpw_rejects_oversized_gap():
+    g = rf.Geometry(maxh=4 * MM)
+    with pytest.raises(ValueError):
+        st.cpw(g, signal_w=0.4 * MM, gap=10 * MM, line_l=20 * MM,
+               sub_w=10 * MM, sub_h=0.635 * MM, air_h=6 * MM, er=9.9)

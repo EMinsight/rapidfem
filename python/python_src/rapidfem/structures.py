@@ -322,3 +322,163 @@ def microstrip(g: "Geometry", *,
         line.ports = [p0, p1]
 
     return line
+
+
+@dataclass
+class CpwLine:
+    """Result of :func:`cpw`.
+
+    Attributes
+    ----------
+    substrate, air : GeoObject
+        the dielectric substrate and the air region above it
+    signal : GeoObject
+        the centre signal trace
+    ground_left, ground_right : GeoObject
+        the two coplanar ground strips flanking the signal
+    port_a, port_b : tuple[EntityCollection, EntityCollection]
+        the (substrate, air) cross-section faces at each end
+    pec : object or None
+        the PEC over all conductors when ``add_ports`` (else None)
+    ports : list
+        the two wave ports when ``add_ports`` (else empty)
+    """
+
+    substrate: "GeoObject"
+    air: "GeoObject"
+    signal: "GeoObject"
+    ground_left: "GeoObject"
+    ground_right: "GeoObject"
+    port_a: "tuple[EntityCollection, EntityCollection]"
+    port_b: "tuple[EntityCollection, EntityCollection]"
+    pec: object = None
+    ports: list = field(default_factory=list)
+
+
+def cpw(g: "Geometry", *,
+        signal_w: float, gap: float, line_l: float,
+        sub_w: float, sub_h: float, air_h: float,
+        er: float, tand: float = 0.0,
+        origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        sub_maxh: float | None = None,
+        backside_ground: bool = False,
+        add_ports: bool = False,
+        f0: float | None = None,
+        power: float = 1.0) -> CpwLine:
+    """build a coplanar waveguide: a centre signal trace flanked by two
+    coplanar ground strips across a ``gap``, all on top of a substrate.
+
+    Same fixed layout convention as :func:`microstrip` (propagation +y,
+    width +x, stack +z). The signal is centred on x = 0; each ground strip
+    runs from the gap edge out to the substrate edge. Pass
+    ``backside_ground=True`` for conductor-backed CPW (adds the substrate
+    bottom face to the PEC).
+
+    With ``add_ports`` a full-vector :class:`rapidfem.WavePort` is placed on
+    the cross-section at each end (``f0`` required), all three conductors
+    ride on one PEC, and an ABC opens the air top.
+
+
+    Example
+    -------
+    .. code-block:: python
+
+        from rapidfem import structures as st
+        cw = st.cpw(g, signal_w=0.4e-3, gap=0.2e-3, line_l=20e-3,
+                    sub_w=10e-3, sub_h=0.635e-3, air_h=6e-3,
+                    er=9.9, add_ports=True, f0=10e9)
+
+
+    Parameters
+    ----------
+    g : Geometry
+        geometry to build into
+    signal_w : float
+        signal-trace width along x in metres
+    gap : float
+        gap between the signal and each ground strip in metres
+    line_l : float
+        line length along y in metres
+    sub_w : float
+        substrate width along x in metres
+    sub_h : float
+        substrate thickness along z in metres
+    air_h : float
+        air-region height above the substrate along z in metres
+    er : float
+        substrate relative permittivity
+    tand : float
+        substrate loss tangent (defaults to 0)
+    origin : tuple[float, float, float]
+        substrate lower-corner reference; substrate spans x about it
+    sub_maxh : float, optional
+        substrate mesh size (defaults to ``sub_h / 3``)
+    backside_ground : bool
+        add the substrate bottom face to the PEC (conductor-backed CPW)
+    add_ports : bool
+        attach the two wave ports, the conductor PEC, and the ABC top
+    f0 : float, optional
+        band-centre frequency in Hz, required when ``add_ports``
+    power : float
+        port excitation power in watts (only when ``add_ports``)
+
+    Returns
+    -------
+    CpwLine
+        the built CPW and its port faces
+
+    Raises
+    ------
+    ValueError
+        if the ground strips would have non-positive width, or
+        ``add_ports`` is set without ``f0``
+    """
+    ground_w = sub_w / 2 - signal_w / 2 - gap
+    if ground_w <= 0:
+        raise ValueError(
+            f"cpw: signal_w/2 + gap ({signal_w / 2 + gap}) must be < sub_w/2 "
+            f"({sub_w / 2}); ground strips have width {ground_w}")
+    if add_ports and f0 is None:
+        raise ValueError("cpw: add_ports=True needs f0 (band-centre Hz)")
+
+    ox, oy, oz = origin
+    eff_sub_maxh = sub_maxh if sub_maxh is not None else sub_h / _SUBSTRATE_MESH_DIVISIONS
+    diel = Dielectric(er=er, tand=tand, maxh=eff_sub_maxh)
+
+    sub = g.box(sub_w, line_l, sub_h, position=(ox - sub_w / 2, oy, oz),
+                material=diel)
+    air = g.box(sub_w, line_l, air_h, position=(ox - sub_w / 2, oy, oz + sub_h),
+                material=Air())
+
+    top_z = oz + sub_h
+    signal = g.xy_plate(signal_w, line_l, position=(ox - signal_w / 2, oy, top_z))
+    # Left ground: from the substrate's left edge to the left gap edge.
+    gl_x0 = ox - sub_w / 2
+    ground_left = g.xy_plate(ground_w, line_l, position=(gl_x0, oy, top_z))
+    # Right ground: from the right gap edge to the substrate's right edge.
+    gr_x0 = ox + signal_w / 2 + gap
+    ground_right = g.xy_plate(ground_w, line_l, position=(gr_x0, oy, top_z))
+
+    g.fragment(sub, air, signal, ground_left, ground_right)
+
+    port_a = (sub.faces.min(axis="y"), air.faces.min(axis="y"))
+    port_b = (sub.faces.max(axis="y"), air.faces.max(axis="y"))
+    line = CpwLine(substrate=sub, air=air, signal=signal,
+                   ground_left=ground_left, ground_right=ground_right,
+                   port_a=port_a, port_b=port_b)
+
+    if add_ports:
+        conductors = [signal, ground_left, ground_right]
+        if backside_ground:
+            conductors.append(sub.faces.min(axis="z"))
+        strip = PEC(*conductors)
+        p0 = WavePort(port_a[0], port_a[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        p1 = WavePort(port_b[0], port_b[1], f0=f0, mode_kind="auto",
+                      pec=[strip], power=power)
+        # Lateral x-walls touch the ground strips; only the air top stays open.
+        ABC(air.faces.max(axis="z"))
+        line.pec = strip
+        line.ports = [p0, p1]
+
+    return line
