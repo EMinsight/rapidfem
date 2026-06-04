@@ -480,7 +480,6 @@ def _serialize_paired(captures: list) -> list[dict[str, Any]]:
                         row.append([float(v.real), float(v.imag)])
                     f_mat.append(row)
                 sparams_payload.append(f_mat)
-            ch = _build_channel_payloads(last_sim, last_result, n_freq, n_p)
             out.append({
                 "kind": "result", "name": "result",
                 "payload": {
@@ -489,9 +488,19 @@ def _serialize_paired(captures: list) -> list[dict[str, Any]]:
                     "n_driven": n_p, "n_freq": n_freq,
                     "n_dofs": last_sim.n_dofs, "n_tets": last_sim.n_tets,
                     "solve_time_s": last_result.solve_time_s,
-                    "fields": ch["E"],
-                    "fields_j": ch["J"],
-                    "fields_h": ch["H"],
+                    # Fields are NOT inlined (they were tens of MB of JSON).
+                    # The viewer fetches the one field it shows on demand via
+                    # GET /api/field (binary); the worker keeps this result
+                    # alive to serve those queries.
+                    "fields": None,
+                    "fields_j": None,
+                    "fields_h": None,
+                    "field_meta": {
+                        "n_freq": n_freq,
+                        "n_port": n_p,
+                        "channels": ["E", "J", "H"],
+                        "lazy": True,
+                    },
                 },
             })
         except Exception as e:  # noqa: BLE001

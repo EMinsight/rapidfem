@@ -38,7 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 
 # Per-cell stream poll long-poll timeout. 100 ms keeps the UI responsive
@@ -74,6 +74,12 @@ class Session:
         )
 
         self._queue: queue.Queue[dict] = queue.Queue()
+        # Request/response channel: messages carrying a `qid` we issued are
+        # routed to the matching waiter instead of the poll queue. Used for
+        # synchronous worker queries (on-demand field fetch, future
+        # introspection) that must not leak into the cell event stream.
+        self._pending: dict[str, queue.Queue] = {}
+        self._pending_lock = threading.Lock()
         self._reader_alive = True
         self._reader_thread = threading.Thread(
             target=self._read_stdout, daemon=True,
@@ -102,7 +108,15 @@ class Session:
                 if not line:
                     continue
                 try:
-                    self._queue.put(json.loads(line))
+                    m = json.loads(line)
+                    qid = m.get("qid")
+                    if qid is not None:
+                        with self._pending_lock:
+                            waiter = self._pending.get(qid)
+                        if waiter is not None:
+                            waiter.put(m)
+                            continue
+                    self._queue.put(m)
                 except json.JSONDecodeError:
                     # Native libs occasionally bypass _ProtocolWriter and write
                     # raw bytes to fd 1, wrap them as stream events so the
@@ -135,6 +149,29 @@ class Session:
             self.process.stdin.flush()
         except (BrokenPipeError, OSError):
             self._queue.put({"type": "worker-exit"})
+
+    def query(self, msg: dict, timeout: float = 30.0) -> dict:
+        """Send a request tagged with a fresh `qid` and block until the worker
+        replies with the matching `qid`. The reply is routed past the poll
+        queue by `_read_stdout`, so it never appears in the cell stream.
+
+        Note: the worker handles this between cells (its main loop reads the
+        next stdin message only after a cell finishes), so a query issued
+        while a long cell runs waits until that cell completes.
+        """
+        qid = uuid.uuid4().hex
+        waiter: queue.Queue = queue.Queue(maxsize=1)
+        with self._pending_lock:
+            self._pending[qid] = waiter
+        try:
+            self.send({**msg, "qid": qid})
+            try:
+                return waiter.get(timeout=timeout)
+            except queue.Empty:
+                raise TimeoutError("worker query timed out")
+        finally:
+            with self._pending_lock:
+                self._pending.pop(qid, None)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -352,6 +389,31 @@ def register(app: Flask) -> None:
         file_key = body.get("file", "<unnamed>")
         _remove(file_key)
         return jsonify({"ok": True})
+
+    @app.get("/api/field")
+    def api_field():
+        """On-demand field fetch: compute one (freq, port, channel) field in
+        the worker (from the last sweep's stashed result) and return it as a
+        raw f32 ABC buffer. Only the field currently shown is ever fetched."""
+        import base64
+        file_key = request.args.get("file", "<unnamed>")
+        with _sessions_lock:
+            session = _sessions.get(file_key)
+        if session is None or not session.is_alive():
+            return jsonify({"ok": False, "error": "no active kernel"}), 404
+        try:
+            resp = session.query({
+                "type": "field-query",
+                "freq": int(request.args.get("freq", 0)),
+                "port": int(request.args.get("port", 0)),
+                "channel": request.args.get("channel", "E"),
+            }, timeout=30.0)
+        except TimeoutError:
+            return jsonify({"ok": False, "error": "field query timed out"}), 504
+        if not resp.get("ok"):
+            return jsonify({"ok": False, "error": resp.get("error", "field error")}), 404
+        raw = base64.b64decode(resp.get("data", "") or "")
+        return Response(raw, mimetype="application/octet-stream")
 
 
 def _drain_until_ack(session: Session, ack_type: str, timeout: float) -> None:

@@ -98,6 +98,12 @@ class _ProtocolWriter:
 _namespace: dict[str, Any] = {}
 _initialized = False
 
+# Last driven-sweep solver handle + result, kept alive so the UI can fetch
+# field data on demand (binary, per viewed freq/port/channel) via `field-query`
+# without re-solving and without inlining megabytes of field arrays in the
+# result payload. Populated after each cell that show()s a Problem + result.
+_field_store: dict[str, Any] = {"sim": None, "result": None}
+
 
 def _reset_namespace() -> None:
     """Wipe the worker's Python namespace and any gmsh model state."""
@@ -108,6 +114,8 @@ def _reset_namespace() -> None:
         "__builtins__": __builtins__,
         "rapidfem": rapidfem,
     }
+    _field_store["sim"] = None
+    _field_store["result"] = None
     try:
         import gmsh
         if gmsh.isInitialized():
@@ -259,6 +267,66 @@ def _make_sweep_progress():
     return cb
 
 
+def _stash_field_sources(captured) -> None:
+    """Remember the Problem's native solver + SweepResult from a cell's
+    show() captures so `field-query` can interpolate fields on demand. Only
+    updates when both are present (a driven sweep was shown), so a later
+    geometry-only cell does not wipe a still-viewable result."""
+    sim = None
+    result = None
+    for item in captured:
+        if item.kind == "simulation":
+            try:
+                sim = item.obj.native
+            except Exception:
+                sim = None
+        elif item.kind == "result":
+            result = item.obj
+    if sim is not None and result is not None:
+        _field_store["sim"] = sim
+        _field_store["result"] = result
+
+
+def handle_field_query(msg: dict) -> None:
+    """Compute one (freq, port, channel) field from the stashed result and
+    reply with the ABC-phasor buffer as base64. The backend decodes it and
+    serves raw binary to the viewer (only the field actually being shown is
+    ever transferred)."""
+    qid = msg.get("qid")
+    sim = _field_store.get("sim")
+    result = _field_store.get("result")
+    if sim is None or result is None:
+        send({"type": "field-result", "qid": qid, "ok": False,
+              "error": "no field data (run a sweep first)"})
+        return
+    try:
+        import base64
+        import numpy as np
+        fi = int(msg.get("freq", 0))
+        pi = int(msg.get("port", 0))
+        channel = str(msg.get("channel", "E"))
+        if channel in ("J", "j"):
+            arr = sim.current_density_at_nodes(result, fi, pi)
+        elif channel in ("H", "h"):
+            arr = sim.h_field_at_nodes(result, fi, pi)
+        else:
+            arr = sim.field_at_nodes(result, fi, pi)
+        if arr is None:
+            send({"type": "field-result", "qid": qid, "ok": True, "data": "", "n": 0})
+            return
+        # ABC phasor (A=Σre², B=Σim², C=Σre·im per node), packed f32 → base64.
+        re = np.asarray(arr.real)
+        im = np.asarray(arr.imag)
+        a = np.sum(re * re, axis=1)
+        b = np.sum(im * im, axis=1)
+        c = np.sum(re * im, axis=1)
+        buf = np.stack([a, b, c], axis=1).astype(np.float32).tobytes()
+        send({"type": "field-result", "qid": qid, "ok": True,
+              "data": base64.b64encode(buf).decode("ascii"), "n": len(a) * 3})
+    except Exception as e:  # noqa: BLE001
+        send({"type": "field-result", "qid": qid, "ok": False, "error": str(e)})
+
+
 def run_cell(msg_id: str, code: str) -> None:
     """Exec a cell in the persistent namespace, emit displays + done/error.
 
@@ -290,6 +358,7 @@ def run_cell(msg_id: str, code: str) -> None:
         captured = _show_capture.stop_capture()
 
     _emit_paired_displays(captured)
+    _stash_field_sources(captured)
     send({"type": "done", "id": msg_id, "ok": True})
 
 
@@ -309,6 +378,8 @@ def main() -> None:
             elif t == "reset":
                 _reset_namespace()
                 send({"type": "reset-ack"})
+            elif t == "field-query":
+                handle_field_query(msg)
             else:
                 send({"type": "error", "error": f"Unknown message type: {t!r}"})
         except KeyboardInterrupt:
