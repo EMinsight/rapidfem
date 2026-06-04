@@ -96,7 +96,7 @@ impl PySimulation {
             // hook re-enters via `Python::with_gil`, which is cheap when the
             // GIL is already held.
             Some(cb) => {
-                let hook = move |fi: usize, freq: f64, s: &[Vec<Complex64>]| -> bool {
+                let hook = move |fi: usize, freq: f64, s: &[Vec<Complex64>], abc: &[f32]| -> bool {
                     Python::with_gil(|py| {
                         let n = s.len();
                         let mut flat: Vec<NpC64> = Vec::with_capacity(n * n);
@@ -108,9 +108,13 @@ impl PySimulation {
                         let arr = numpy::ndarray::Array2::from_shape_vec((n, n), flat)
                             .expect("square s-matrix")
                             .into_pyarray_bound(py);
+                        // Live E-field ABC preview (3 f32 per node, port 0) so the
+                        // UI can show the field as each frequency solves.
+                        let abc_arr = numpy::ndarray::Array1::from(abc.to_vec())
+                            .into_pyarray_bound(py);
                         // Call the Python callback (best-effort), but treat a
                         // KeyboardInterrupt raised through it as "stop".
-                        let interrupted_in_cb = match cb.call1(py, (fi, freq, arr)) {
+                        let interrupted_in_cb = match cb.call1(py, (fi, freq, arr, abc_arr)) {
                             Ok(_) => false,
                             Err(e) => e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py),
                         };
@@ -121,7 +125,7 @@ impl PySimulation {
                         !(interrupted_in_cb || pending)
                     })
                 };
-                let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>]) -> bool = &hook;
+                let hook_dyn: &dyn Fn(usize, f64, &[Vec<Complex64>], &[f32]) -> bool = &hook;
                 self.inner.run_sweep(Some(hook_dyn))
             }
         }

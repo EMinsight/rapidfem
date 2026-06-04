@@ -226,7 +226,7 @@ impl Simulation {
     /// the frequencies actually solved.
     pub fn run_sweep(
         &self,
-        on_freq: Option<&dyn Fn(usize, f64, &[Vec<C64>]) -> bool>,
+        on_freq: Option<&dyn Fn(usize, f64, &[Vec<C64>], &[f32]) -> bool>,
     ) -> Result<SweepResult, String> {
         let mut frequencies = self.frequencies();
         let port_dyn = self.ports_dyn();
@@ -246,7 +246,15 @@ impl Simulation {
             let mut on_solve = |fi: usize, freq: f64, sr: &crate::assembly::SolveResult| -> bool {
                 let s = self.extract_sparams_one(&ctx, &port_dyn, &port_tri_refs, freq, sr, n_driven);
                 let keep_going = match on_freq {
-                    Some(cb) => cb(fi, freq, &s),
+                    Some(cb) => {
+                        // Live E-field preview for the first driven port, so the
+                        // UI can show the field the instant a frequency solves.
+                        let abc = match sr.solutions.first() {
+                            Some(sol) => self.field_abc_from_solution(sol),
+                            None => Vec::new(),
+                        };
+                        cb(fi, freq, &s, &abc)
+                    }
                     None => true,
                 };
                 all_sparams.push(s);
@@ -430,6 +438,30 @@ impl Simulation {
     pub fn field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         Some(self.eval_dofs_at_nodes(solution))
+    }
+
+    /// E-field ABC phasor for a raw solution DOF vector: 3 f32 per node
+    /// `(A=Σ Re², B=Σ Im², C=Σ Re·Im)` over the (Ex, Ey, Ez) components. This
+    /// is the same encoding the viewer's splat shader animates, computed here
+    /// so a live field preview can be pushed per frequency during a sweep
+    /// (the worker is busy solving and cannot answer on-demand fetches then).
+    pub fn field_abc_from_solution(&self, solution: &[C64]) -> Vec<f32> {
+        let e = self.eval_dofs_at_nodes(solution); // flat [Ex,Ey,Ez,...] per node
+        let n_nodes = self.mesh.n_nodes();
+        let mut abc = Vec::with_capacity(n_nodes * 3);
+        for ni in 0..n_nodes {
+            let (mut a, mut b, mut c) = (0.0_f64, 0.0_f64, 0.0_f64);
+            for k in 0..3 {
+                let v = e[ni * 3 + k];
+                a += v.re * v.re;
+                b += v.im * v.im;
+                c += v.re * v.im;
+            }
+            abc.push(a as f32);
+            abc.push(b as f32);
+            abc.push(c as f32);
+        }
+        abc
     }
 
     /// Same shape as `field_at_nodes` but for an eigenmode's DOF vector.
