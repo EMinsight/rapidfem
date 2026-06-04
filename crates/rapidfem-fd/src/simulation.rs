@@ -47,6 +47,17 @@ pub struct SweepResult {
     pub solve_time_s: f64,
 }
 
+/// Frequency-independent context for per-frequency S-parameter extraction.
+/// Built once per sweep (the tet-locating grid and material weights do not
+/// depend on frequency), then reused for every frequency so the extraction
+/// can run inside the per-frequency streaming callback.
+struct SParamCtx {
+    grid: interp::TetGrid,
+    eps_tet: Vec<f64>,
+    mur_tet: Vec<f64>,
+    driven_indices: Vec<usize>,
+}
+
 /// Simulation context: a mesh + parsed config + pre-built BC objects.
 pub struct Simulation {
     pub mesh: Mesh,
@@ -206,26 +217,50 @@ impl Simulation {
     }
 
     /// Run a frequency sweep and extract S-parameters.
-    pub fn run_sweep(&self) -> Result<SweepResult, String> {
+    ///
+    /// `on_freq`, if given, is invoked after each frequency's solve with
+    /// `(freq_idx, freq_hz, s_matrix)` where `s_matrix[obs][exc]` is the
+    /// S-parameter block for that frequency. This lets a UI stream partial
+    /// results as the sweep progresses; it does not affect the returned
+    /// `SweepResult`, which is identical with or without the callback.
+    pub fn run_sweep(
+        &self,
+        on_freq: Option<&dyn Fn(usize, f64, &[Vec<C64>])>,
+    ) -> Result<SweepResult, String> {
         let frequencies = self.frequencies();
         let port_dyn = self.ports_dyn();
         let port_tri_refs = self.port_tris_slices();
         let n_driven = port_dyn.iter().filter(|p| p.is_driven()).count();
+        // Build the frequency-independent extraction context once.
+        let ctx = self.sparam_ctx(&port_dyn);
 
+        // S-parameters are accumulated per frequency inside the solve callback
+        // (so the streaming `on_freq` sees the same matrix that lands in the
+        // result), instead of a separate batch pass afterwards.
+        let mut all_sparams: Vec<Vec<Vec<C64>>> = Vec::with_capacity(frequencies.len());
         let t0 = web_time::Instant::now();
-        let results = crate::assembly::frequency_sweep_with_pml(
-            &self.mesh,
-            &self.basis,
-            &port_dyn,
-            &port_tri_refs,
-            &self.pec_tris,
-            &frequencies,
-            self.materials_opt(),
-            self.pml_opt(),
-        )?;
+        let results;
+        {
+            let mut on_solve = |fi: usize, freq: f64, sr: &crate::assembly::SolveResult| {
+                let s = self.extract_sparams_one(&ctx, &port_dyn, &port_tri_refs, freq, sr, n_driven);
+                if let Some(cb) = on_freq {
+                    cb(fi, freq, &s);
+                }
+                all_sparams.push(s);
+            };
+            results = crate::assembly::frequency_sweep_with_pml(
+                &self.mesh,
+                &self.basis,
+                &port_dyn,
+                &port_tri_refs,
+                &self.pec_tris,
+                &frequencies,
+                self.materials_opt(),
+                self.pml_opt(),
+                Some(&mut on_solve),
+            )?;
+        }
         let solve_time_s = t0.elapsed().as_secs_f64();
-
-        let sparams = self.extract_sparams(&port_dyn, &port_tri_refs, &frequencies, &results, n_driven);
 
         let solutions: Vec<Vec<Vec<C64>>> = results
             .into_iter()
@@ -234,27 +269,22 @@ impl Simulation {
 
         Ok(SweepResult {
             frequencies,
-            sparams,
+            sparams: all_sparams,
             solutions,
             n_driven,
             solve_time_s,
         })
     }
 
-    fn extract_sparams(
-        &self,
-        port_dyn: &[&dyn Port],
-        port_tri_refs: &[&[usize]],
-        frequencies: &[f64],
-        results: &[crate::assembly::SolveResult],
-        n_driven: usize,
-    ) -> Vec<Vec<Vec<C64>>> {
+    /// Build the frequency-independent S-parameter extraction context (tet
+    /// grid + per-tet material weights + driven-port indices). Reused for
+    /// every frequency by :meth:`extract_sparams_one`.
+    fn sparam_ctx(&self, port_dyn: &[&dyn Port]) -> SParamCtx {
         let driven_indices: Vec<usize> = (0..port_dyn.len())
             .filter(|&i| port_dyn[i].is_driven())
             .collect();
 
-        // The tet-locating grid depends only on the mesh, not the
-        // frequency - build it once for the whole sweep.
+        // The tet-locating grid depends only on the mesh, not the frequency.
         let grid = interp::TetGrid::new(&self.mesh);
 
         // Local wave-admittance weight √(εᵣ/μᵣ) per tet, for the power-overlap
@@ -272,51 +302,62 @@ impl Simulation {
             };
             for &ti in &mat.tet_indices { mur_tet[ti] = ur; }
         }
+        SParamCtx { grid, eps_tet, mur_tet, driven_indices }
+    }
+
+    /// Extract the S-parameter block for a single frequency from its solved
+    /// field, using the prebuilt `ctx`. Pulled out of the old batch
+    /// `extract_sparams` so it can run inside the per-frequency callback.
+    fn extract_sparams_one(
+        &self,
+        ctx: &SParamCtx,
+        port_dyn: &[&dyn Port],
+        port_tri_refs: &[&[usize]],
+        freq: f64,
+        freq_result: &crate::assembly::SolveResult,
+        n_driven: usize,
+    ) -> Vec<Vec<C64>> {
         let weight = |x: f64, y: f64, z: f64| -> f64 {
-            match grid.find_containing_tet(&self.mesh, x, y, z) {
-                Some(tet) => (eps_tet[tet] / mur_tet[tet]).sqrt(),
+            match ctx.grid.find_containing_tet(&self.mesh, x, y, z) {
+                Some(tet) => (ctx.eps_tet[tet] / ctx.mur_tet[tet]).sqrt(),
                 None => 1.0,
             }
         };
 
-        let mut all_sparams = Vec::with_capacity(frequencies.len());
-        for (fi, freq_result) in results.iter().enumerate() {
-            let k0 = 2.0 * PI * frequencies[fi] / C0;
-            let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
+        let k0 = 2.0 * PI * freq / C0;
+        let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
 
-            for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
-                let fieldf = |x: f64, y: f64, z: f64| -> (C64, C64, C64) {
-                    match grid.find_containing_tet(&self.mesh, x, y, z) {
-                        Some(tet) => interp::eval_field_in_tet(&self.mesh, &self.basis, sol, tet, x, y, z),
-                        None => (C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)),
-                    }
-                };
-                for (obs_idx, &obs_pi) in driven_indices.iter().enumerate() {
-                    let active = obs_idx == exc_idx;
-                    let s = if let (true, Some(lines), Some((_, z0, v_inc))) = (
-                        port_dyn[obs_pi].is_lumped(),
-                        self.lumped_lines.get(&obs_pi),
-                        port_dyn[obs_pi].lumped_voltage_params(),
-                    ) {
-                        let n_lines = lines.len() as f64;
-                        let mut s_sum = C64::new(0.0, 0.0);
-                        for line_pts in lines {
-                            s_sum += sparam_voltage_line(v_inc, z0, active, &fieldf, line_pts);
-                        }
-                        s_sum / C64::from(n_lines)
-                    } else {
-                        let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi]
-                            .iter()
-                            .map(|&ti| self.mesh.tris[ti])
-                            .collect();
-                        sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, &weight, 4)
-                    };
-                    freq_s[obs_idx][exc_idx] = s;
+        for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
+            let fieldf = |x: f64, y: f64, z: f64| -> (C64, C64, C64) {
+                match ctx.grid.find_containing_tet(&self.mesh, x, y, z) {
+                    Some(tet) => interp::eval_field_in_tet(&self.mesh, &self.basis, sol, tet, x, y, z),
+                    None => (C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)),
                 }
+            };
+            for (obs_idx, &obs_pi) in ctx.driven_indices.iter().enumerate() {
+                let active = obs_idx == exc_idx;
+                let s = if let (true, Some(lines), Some((_, z0, v_inc))) = (
+                    port_dyn[obs_pi].is_lumped(),
+                    self.lumped_lines.get(&obs_pi),
+                    port_dyn[obs_pi].lumped_voltage_params(),
+                ) {
+                    let n_lines = lines.len() as f64;
+                    let mut s_sum = C64::new(0.0, 0.0);
+                    for line_pts in lines {
+                        s_sum += sparam_voltage_line(v_inc, z0, active, &fieldf, line_pts);
+                    }
+                    s_sum / C64::from(n_lines)
+                } else {
+                    let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi]
+                        .iter()
+                        .map(|&ti| self.mesh.tris[ti])
+                        .collect();
+                    sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, &weight, 4)
+                };
+                freq_s[obs_idx][exc_idx] = s;
             }
-            all_sparams.push(freq_s);
         }
-        all_sparams
+        freq_s
     }
 
     /// Run an eigenmode analysis (requires `config.eigenmode` to be set).
