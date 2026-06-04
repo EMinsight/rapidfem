@@ -64,6 +64,7 @@ from rapidfem.problem import Problem, ProblemFD, ProblemTD, Adaptive, ErrorIndic
 from rapidfem.excitation import GaussianPulse
 from rapidfem import io  # registers .to_network/.to_touchstone/.to_hdf5 on SweepResult
 from rapidfem import rfic  # RFIC builder helpers (Stack, microstrip, via, gsg_port, ...)
+from rapidfem import structures  # general RF structure builders (coax, microstrip, ...)
 from rapidfem import _show_capture
 
 
@@ -198,6 +199,6 @@ __all__ = [
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
     "PeriodicBoundary",
     "Problem", "ProblemFD", "ProblemTD", "Adaptive", "ErrorIndicator", "GaussianPulse",
-    "io", "rfic", "show", "lambda_maxh",
+    "io", "rfic", "structures", "show", "lambda_maxh",
 ]
 __version__ = "0.10.2"
