@@ -125,16 +125,21 @@ label {
 	background: var(--border);
 }
 
-/* ── Hover tooltips (rapidpassives pattern) ──────────────────────────────
- * Mark a hoverable element with `.has-tip` and put a `<span class="tip">…</span>`
- * inside. Use `<kbd>` for keyboard hints in the accent color. */
+/* ── Hover tooltips ───────────────────────────────────────────────────────
+ * Mark a hoverable element `.has-tip` with a child `<span class="tip">…</span>`
+ * (use `<kbd>` for keyboard hints; add `.up` to prefer placement above). The
+ * `.tip` spans are the content source only: lib/tooltip.ts renders a single
+ * body-level `.smart-tip` with fixed positioning, flipped / clamped to the
+ * viewport, so tooltips never clip against an `overflow` ancestor or edge. */
 .has-tip { position: relative; }
-.has-tip > .tip {
+.has-tip > .tip { display: none; }
+
+.smart-tip {
 	display: none;
-	position: absolute;
-	top: calc(100% + 6px);
-	left: 50%;
-	transform: translateX(-50%);
+	position: fixed;
+	z-index: 1000;
+	align-items: center;
+	gap: 4px;
 	white-space: nowrap;
 	font-size: var(--fs-xs);
 	font-family: var(--font-mono);
@@ -144,11 +149,10 @@ label {
 	border: 1px solid var(--border);
 	padding: 3px 8px;
 	pointer-events: none;
-	z-index: 100;
 	letter-spacing: 0;
 	text-transform: none;
 }
-.has-tip > .tip kbd {
+.smart-tip kbd {
 	margin-left: 6px;
 	color: var(--accent);
 	font-family: var(--font-mono);
@@ -158,11 +162,3 @@ label {
 	border: 0;
 	padding: 0;
 }
-.has-tip:hover > .tip {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-}
-.has-tip > .tip.left { left: auto; right: 0; transform: none; }
-.has-tip > .tip.right { left: 0; transform: none; }
-.has-tip > .tip.up { top: auto; bottom: calc(100% + 6px); }
