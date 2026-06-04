@@ -175,6 +175,13 @@ rf.PEC(*pml_zp.faces.outer, *pml_zm.faces.outer,
        *pml_xp.faces.outer, *pml_xm.faces.outer,
        *pml_yp.faces.outer, *pml_ym.faces.outer)
 
+# Near-field-to-far-field surface. A PML domain has no ABC Huygens surface
+# for the solver to auto-detect, so mark the bulk-air / PML interface (a closed
+# box enclosing the antenna, just inside the absorber) for the NFFT integral.
+# (.hull, not .outer: once air is wrapped in PML on all six sides none of its
+# faces touch the model bbox, so .outer is empty; .hull keys off air's own box.)
+rf.FarFieldSurface(*air.faces.hull)
+
 rf.show(g)
 
 

@@ -59,6 +59,7 @@ from rapidfem.physics import (
     RectWaveguidePort, LumpedPort, CoaxPort, WavePort, UserDefinedPort,
     FloquetPort,
     PEC, PMC, ABC, SurfaceImpedance, LumpedElement, PML, PeriodicBoundary,
+    FarFieldSurface,
 )
 from rapidfem.problem import Problem, ProblemFD, ProblemTD, Adaptive, ErrorIndicator
 from rapidfem.excitation import GaussianPulse
@@ -197,7 +198,7 @@ __all__ = [
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
     "UserDefinedPort", "FloquetPort",
     "PEC", "PMC", "ABC", "SurfaceImpedance", "LumpedElement", "PML",
-    "PeriodicBoundary",
+    "PeriodicBoundary", "FarFieldSurface",
     "Problem", "ProblemFD", "ProblemTD", "Adaptive", "ErrorIndicator", "GaussianPulse",
     "io", "rfic", "structures", "show", "lambda_maxh",
 ]

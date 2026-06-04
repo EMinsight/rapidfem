@@ -96,6 +96,12 @@ rf.PEC(*pml_xp.faces.outer, *pml_xm.faces.outer,
        *pml_yp.faces.outer, *pml_ym.faces.outer,
        *pml_zp.faces.outer)
 
+# Near-field-to-far-field surface. With a PML there is no ABC Huygens surface
+# to auto-detect, so mark the bulk-air / PML interface (.hull keys off air's own
+# box; .outer would be empty as air is wrapped in PML) for the NFFT integral.
+# The solver closes the surface on the z = 0 ground plane via the PEC faces.
+rf.FarFieldSurface(*air.faces.hull)
+
 rf.show(g)
 
 

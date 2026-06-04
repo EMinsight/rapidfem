@@ -724,6 +724,61 @@ class ABC(_Physics):
         return f'[[ports]]\ntype = "abc"\ntag = {tag}\n'
 
 
+class FarFieldSurface(_Physics):
+    """Near-field-to-far-field (Huygens) integration surface.
+
+    Marks a *closed* surface enclosing the radiator on which the
+    equivalent electric and magnetic currents
+    :math:`\\mathbf{J}_s = \\hat{\\mathbf{n}} \\times \\mathbf{H}`,
+    :math:`\\mathbf{M}_s = -\\hat{\\mathbf{n}} \\times \\mathbf{E}` are
+    sampled. :meth:`rapidfem.Problem.farfield` propagates those currents
+    to the far zone via the Stratton-Chu integral.
+
+    When the domain is truncated by an :class:`ABC`, the ABC face is
+    already a closed Huygens surface and the solver auto-detects it, so
+    no ``FarFieldSurface`` is needed. With a :class:`PML` there is no such
+    surface (the outer hull is PEC-backed absorber, not free space), so
+    you must mark one explicitly: the bulk-air / PML interface is the
+    natural choice, a closed box sitting just inside the absorber.
+
+
+    Note
+    ----
+    The surface must be closed and must fully enclose every radiating
+    feature. Use :attr:`~rapidfem.geometry.EntityCollection.hull` (not
+    ``outer``) to grab the air-box boundary: once the air box is wrapped
+    in PML on every side none of its faces touch the model bounding box,
+    so ``air.faces.outer`` is empty, while ``air.faces.hull`` keys off the
+    air box's own bounding box and returns the air / PML interface faces.
+
+
+    Example
+    -------
+    Far-field surface on the air / PML interface of a PML-truncated
+    antenna problem:
+
+    .. code-block:: python
+
+        air = g.box(AW, AL, AH, material=rf.Air())
+        # ... PML slabs around it ...
+        rf.FarFieldSurface(*air.faces.hull)
+
+
+    Parameters
+    ----------
+    targets : GeoObject or EntityCollection
+        face(s) forming the closed integration surface, variadic
+    """
+
+    def __init__(self, *targets):
+        super().__init__(*targets)
+
+    def _to_toml(self, tag: int) -> str:
+        # No [[ports]] block; the tag is consumed by Problem into
+        # [output] nfft_tag instead.
+        return ""
+
+
 class SurfaceImpedance(_Physics):
     """Surface impedance boundary for thin lossy conductors.
 

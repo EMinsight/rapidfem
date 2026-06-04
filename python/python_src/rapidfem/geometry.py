@@ -444,6 +444,60 @@ class EntityCollection:
                 kept.append(e)
         return EntityCollection(self._geometry, kept)
 
+    @property
+    def hull(self) -> "EntityCollection":
+        """axis-aligned faces lying on *this collection's own* bounding box
+
+        Like :attr:`outer`, but the reference box is the bounding box of
+        the entities in *this* collection, not the whole gmsh model. A
+        face is kept iff one of its axes is degenerate and its coordinate
+        along that axis matches this collection's extremum.
+
+        This is what you want for a closed surface around an object that
+        is itself wrapped by something else. ``air.faces.outer`` returns
+        nothing once ``air`` is surrounded by PML on every side (none of
+        air's faces touch the *model* bbox any more, they are all interior
+        air↔PML interfaces); ``air.faces.hull`` returns those six interface
+        faces, the natural near-field-to-far-field (Huygens) surface.
+
+
+        Example
+        -------
+        Far-field surface on the air / PML interface:
+
+        .. code-block:: python
+
+            rf.FarFieldSurface(*air.faces.hull)
+
+
+        Returns
+        -------
+        EntityCollection
+            entities on this collection's bounding box
+        """
+        if not self._entities:
+            return EntityCollection(self._geometry, [])
+        xmin = ymin = zmin = math.inf
+        xmax = ymax = zmax = -math.inf
+        for e in self._entities:
+            ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
+            xmin, ymin, zmin = min(xmin, ex0), min(ymin, ey0), min(zmin, ez0)
+            xmax, ymax, zmax = max(xmax, ex1), max(ymax, ey1), max(zmax, ez1)
+        tol = 1e-6
+        kept = []
+        for e in self._entities:
+            ex0, ey0, ez0, ex1, ey1, ez1 = e.bbox
+            on_hull = False
+            if abs(ex1 - ex0) < tol and (abs(ex0 - xmin) < tol or abs(ex0 - xmax) < tol):
+                on_hull = True
+            if abs(ey1 - ey0) < tol and (abs(ey0 - ymin) < tol or abs(ey0 - ymax) < tol):
+                on_hull = True
+            if abs(ez1 - ez0) < tol and (abs(ez0 - zmin) < tol or abs(ez0 - zmax) < tol):
+                on_hull = True
+            if on_hull:
+                kept.append(e)
+        return EntityCollection(self._geometry, kept)
+
 
 # Back-compat aliases (and clearer naming for users)
 FaceCollection = EntityCollection
