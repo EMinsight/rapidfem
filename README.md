@@ -1,3 +1,7 @@
+
+
+[![PySimHub](https://pysimhub.io/badge.svg)](https://pysimhub.io/projects/rapidfem)
+
 # RapidFEM
 
 Electromagnetic FEM solver written in Rust, distributed as a Python package
