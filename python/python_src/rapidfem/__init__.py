@@ -168,8 +168,7 @@ def show(obj, name: str = "default"):
         mesh; Problem + SweepResult render :math:`|\\mathbf{E}(t, r)|^2`
         point clouds plus an S-parameter plot. The :class:`ProblemTD`
         verb results render too, a :meth:`~rapidfem.ProblemTD.transient`
-        trajectory as a 3-D field animation,
-        :meth:`~rapidfem.ProblemTD.sparams` as an S-parameter plot, and
+        trajectory as a 3-D field animation, and
         :meth:`~rapidfem.ProblemTD.driven_transient` /
         :meth:`~rapidfem.ProblemTD.transfer_function` as time-series plots
     name : str
