@@ -478,6 +478,39 @@ def _point_label(spec):
     return f"{f}_{c} @ ({coords})"
 
 
+class TdScattering:
+    """Modal-port scattering matrix container for the UI display path.
+
+    Iterates as ``(frequencies, sparams)`` so tuple unpacking,
+    ``freqs, S = result``, works; the named attributes additionally let
+    :func:`rapidfem.show` route it to the S-parameter panel (the
+    ``td_result`` display kind).
+
+    Attributes
+    ----------
+    frequencies : ndarray
+        frequency axis, shape ``[n_freq]``
+    sparams : ndarray of complex
+        scattering matrix, shape ``[n_freq, n_port, n_port]``
+    """
+
+    def __init__(self, frequencies, sparams):
+        self.frequencies = np.asarray(frequencies)
+        self.sparams = np.asarray(sparams)
+
+    @property
+    def n_ports(self):
+        """Number of ports, the side length of the S-matrix."""
+        return self.sparams.shape[1] if self.sparams.ndim == 3 else 0
+
+    def __iter__(self):
+        return iter((self.frequencies, self.sparams))
+
+    def __repr__(self):
+        return (f"TdScattering(n_ports={self.n_ports}, "
+                f"n_freq={self.frequencies.size})")
+
+
 class TdResponse:
     """Probe time series from :meth:`ProblemTD.driven_transient`.
 

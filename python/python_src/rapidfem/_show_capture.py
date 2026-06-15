@@ -100,6 +100,8 @@ def classify(obj: Any) -> str:
     # Time-domain result wrappers (rapidfem.problem.td), thin objects the
     # ProblemTD verbs hand back so show() can route them to a UI panel.
     if mod.startswith("rapidfem"):
+        if cls == "TdScattering":
+            return "td_result"
         if cls == "TdResponse":
             return "td_timeseries"
         if cls == "TdTransfer":
