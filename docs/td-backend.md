@@ -91,7 +91,6 @@ The API exposes the model at every level — pick the abstraction you need.
 | `transient(y0, dt, steps)` | trajectory `[steps+1, n_dof]` | turnkey free propagation |
 | `driven_transient(source, waveform, probes, ...)` | `(times, responses)` | soft source + field probes |
 | `transfer_function(source, probe, pulse, ...)` | `(freqs, H)` | scalar frequency response by RFT |
-| `sparams(freqs, dt, steps)` | `(freqs, S)` | modal-port scattering matrix |
 | `probe_dof(point, field, comp)` | DOF index | place a source or probe |
 | `reduce(start, dim)` | `TdReducedModel` | Krylov model-order reduction |
 | `resonances(n)` | frequencies (Hz) | cavity modes from the spectrum |
@@ -133,8 +132,7 @@ ptd.export_vtk(traj, "out/cavity")
 
 Runnable scripts in `rapidfem/examples/`: `td_cavity.py`,
 `td_model_reduction.py`, `td_field_export.py`, `td_transfer_function.py`,
-`td_dielectric_cavity.py` (geometry-based), `td_waveguide_sparams.py`
-(WR-90 S-parameters vs FD), `td_fd_crossvalidation.py`.
+`td_dielectric_cavity.py` (geometry-based), `td_fd_crossvalidation.py`.
 
 ## Waveguide ports
 
@@ -166,23 +164,12 @@ parallel-plate gap, and undercounts `|S21|` on a concentrated quasi-TEM
 line — the `WavePort` is the correct path for such geometries.
 (`LumpedPort` remains in the frequency-domain backend via its Robin BC.)
 
-`ProblemTD.sparams(freqs, dt, steps)` drives each port in turn with a
-broadband pulse, projects the port-face field onto the mode profile to
-extract the incident / scattered modal amplitudes (the forward/backward
-split uses the modal impedance `Z(ω)` per frequency), and assembles
-`S_ij(f) = B_i(f)/A_j(f)`. Validated in the suite: the matched
-rectangular guide to ~2 %, and the numerical `WavePort` reproduces the
-analytic `TE_mn` transmission `|S21|` (both scalar and vector paths) to
-within a few percent.
-`td_waveguide_sparams.py` cross-checks a WR-90 guide against the
-frequency-domain backend — TD↔FD `|S₂₁|` agrees to ≤ 4 % over the
-9–12 GHz core band (≤ 9 % including the dispersive near-cutoff edge),
-`|S₁₁|` to ≤ 0.04.
-
-The guide must be long enough that, within the transient window, the
-incident / reflected / transmitted pulses are time-separated — the
-characteristic port has a residual modal-mismatch reflection, so its
-multiply-reflected energy must not return before the run ends.
+Modal-port **scattering parameters** are the frequency-domain backend's
+job: build the geometry once and run `ProblemFD.sweep(freqs)`. The
+time-domain backend injects and absorbs the modes (drive a transient,
+read the modal amplitudes with `port_signals`), but extracting `S(f)`
+from a finite transient window is the wrong tool when a direct
+frequency-domain solve is available.
 
 ## Materials and boundaries
 
