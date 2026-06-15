@@ -157,7 +157,6 @@ def show(obj, name: str = "default"):
         rf.show(prob)               # E-field point cloud (after .sweep())
         rf.show(result)             # |S-params| plot
         rf.show(ptd.transient(...)) # 3-D time-domain field animation
-        rf.show(ptd.sparams(...))   # time-domain |S-params| plot
 
 
     Parameters

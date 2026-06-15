@@ -33,18 +33,6 @@ _COMP = {"x": 0, "y": 1, "z": 2}
 # `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
 C_LIGHT = 299_792_458.0
 
-# S-parameter extraction tolerances. A rectangular-window DFT of the recorded
-# port signals stays leakage-free only once the transient has decayed; warn
-# when the tail still carries more than this fraction of the peak amplitude.
-_SPARAM_DECAY_FRAC = 0.08
-# |S| above 1 by more than this is non-physical for a passive structure and
-# flags an under-resolved or too-short transient window.
-_SPARAM_PASSIVITY_TOL = 0.02
-# Fraction of the driven-port peak a port signal must exceed to count as the
-# transmitted-pulse arrival; twice that arrival time is the round-trip travel
-# time after which the reflection (diagonal) DFT window must close.
-_SPARAM_ARRIVAL_FRAC = 0.05
-
 # Matched-absorber loss budget. An rf.PML region wires through to the TD
 # backend as a graded impedance-matched absorbing layer. The loss rate `nu`
 # ramps quadratically (`nu_max·frac²`) by depth into the layer; round-trip
@@ -490,39 +478,6 @@ def _point_label(spec):
     return f"{f}_{c} @ ({coords})"
 
 
-class TdScattering:
-    """Modal-port scattering matrix from :meth:`ProblemTD.sparams`.
-
-    Iterates as ``(frequencies, sparams)``, so the documented tuple
-    unpacking, ``freqs, S = ptd.sparams(...)``, keeps working unchanged;
-    the named attributes additionally let :func:`rapidfem.show` plot the
-    result in the UI.
-
-    Attributes
-    ----------
-    frequencies : ndarray
-        frequency axis, shape ``[n_freq]``
-    sparams : ndarray of complex
-        scattering matrix, shape ``[n_freq, n_port, n_port]``
-    """
-
-    def __init__(self, frequencies, sparams):
-        self.frequencies = np.asarray(frequencies)
-        self.sparams = np.asarray(sparams)
-
-    @property
-    def n_ports(self):
-        """Number of ports, the side length of the S-matrix."""
-        return self.sparams.shape[1] if self.sparams.ndim == 3 else 0
-
-    def __iter__(self):
-        return iter((self.frequencies, self.sparams))
-
-    def __repr__(self):
-        return (f"TdScattering(n_ports={self.n_ports}, "
-                f"n_freq={self.frequencies.size})")
-
-
 class TdResponse:
     """Probe time series from :meth:`ProblemTD.driven_transient`.
 
@@ -694,9 +649,8 @@ class ProblemTD:
       (e.g. ``scipy.integrate.solve_ivp``)
     - :meth:`step` / :meth:`stepper` / :meth:`transient`, exact
       exponential time stepping (matrix-free Krylov / ETD)
-    - :meth:`driven_transient` / :meth:`transfer_function` / :meth:`sparams`:
-      soft-source or modal-port excitation, a scalar transfer function,
-      and the modal-port scattering matrix
+    - :meth:`driven_transient` / :meth:`transfer_function`:
+      soft-source or modal-port excitation and a scalar transfer function
     - :meth:`resonances`, cavity eigenfrequencies from the spectrum
     - :meth:`export_vtk`, a VTK field animation
 
@@ -715,7 +669,7 @@ class ProblemTD:
 
     Example
     -------
-    Build a waveguide problem, then read the model at three levels:
+    Build a waveguide problem, then read the model at two levels:
 
     .. code-block:: python
 
@@ -730,8 +684,6 @@ class ProblemTD:
         ptd = rf.ProblemTD(g, order=2, flux="upwind")
         A = ptd.state_space()                        # verbatim sparse A
         advance = ptd.stepper(dt=5e-12)              # exact exponential step
-        freqs, S = ptd.sparams(np.linspace(8e9, 12e9, 21),
-                               dt=3e-12, steps=820)  # modal-port S-matrix
 
     Attributes
     ----------
@@ -1411,184 +1363,6 @@ class ProblemTD:
             source_label=_point_label(source),
             probe_label=_point_label(probe),
         )
-
-    # -- ports: scattering parameters --------------------------------------
-    def _port_impedance(self, port_idx, f):
-        """TE-mode wave impedance of a port at physical frequency ``f``."""
-        wc = self._op.port_cutoff(port_idx)
-        fc = self.c * wc / (2.0 * np.pi)
-        r = fc / f
-        return 1.0 / np.sqrt(1.0 - r * r)
-
-    def sparams(self, freqs, *, dt, steps, pulse=None, krylov_dim=40,
-                verbose=True):
-        """Scattering matrix ``S(f)`` of the waveguide-port network.
-
-        Drives each port in turn with a broadband pulse, extracts the
-        modal amplitudes at every port by surface-integral projection,
-        and assembles ``S_ij(f) = B_i(f)/A_j(f)``, the wave leaving port
-        ``i`` per unit wave incident at the driven port ``j``.
-
-        Parameters
-        ----------
-        freqs : array_like
-            Frequencies, Hz for a geometry, operator units for a
-            :meth:`box`.
-        dt, steps : float, int
-            Time step and step count. The run must be long enough to
-            capture the response; for a clean ``S₁₁`` it should stop
-            before energy multiply-reflected by the (characteristic)
-            ports returns.
-        pulse : callable, optional
-            Broadband excitation ``g(t)``; defaults to a modulated
-            Gaussian spanning the frequency band.
-        krylov_dim : int
-            Krylov dimension of the exponential step.
-
-        Returns
-        -------
-        TdScattering
-            Iterates as ``(freqs, S)``, ``freqs`` the frequency axis and
-            ``S`` the complex scattering matrix of shape
-            ``[n_freq, n_port, n_port]``, with ``S[f, i, j]`` in the same
-            index order as the frequency-domain backend's
-            ``SweepResult.sparams``. ``freqs, S = ...`` unpacking works
-            unchanged; :func:`rapidfem.show` plots the S-parameters.
-        """
-        freqs = np.asarray(freqs, dtype=float).ravel()
-        total_ports = self._op.n_ports()
-        # Modal ports only, ABC faces (port_has_mode == False) are
-        # absorbing-only and do not participate in S-parameter
-        # extraction. The S-matrix is indexed over the modal subset
-        # in declaration order.
-        modal_idx = [
-            p for p in range(total_ports) if self._op.port_has_mode(p)
-        ]
-        n_ports = len(modal_idx)
-        if n_ports == 0:
-            raise RuntimeError(
-                "ProblemTD has no modal ports, attach "
-                "RectWaveguidePort(s) or CoaxPort(s) to the "
-                "geometry before constructing it; ABC faces alone do "
-                "not carry a mode for extraction"
-            )
-        # Below a waveguide port's cutoff the modal wave impedance turns
-        # imaginary and the scattering parameters are undefined; reject the
-        # run up front rather than let NaN poison the whole S-matrix.
-        f_min = float(freqs.min())
-        for p in modal_idx:
-            f_cut = self.c * self._op.port_cutoff(p) / (2.0 * np.pi)
-            if f_min <= f_cut:
-                raise ValueError(
-                    f"frequency {f_min:.4g} is at or below the cutoff "
-                    f"{f_cut:.4g} of port {p}; restrict freqs to the "
-                    f"propagating band"
-                )
-        n = self.n_dof
-        times = np.arange(steps) * dt
-
-        if pulse is None:
-            fc = float(np.mean(freqs))
-            fw = float(np.ptp(freqs)) or 0.5 * fc
-            tau = 1.0 / (np.pi * max(fw, 0.25 * fc))
-            pulse = GaussianPulse(t0=4.0 * tau, tau=tau, f0=fc)
-        g = np.asarray(pulse(times), dtype=float)
-        # DFT kernel, rows index frequency, columns index time sample.
-        phase = np.exp(-2j * np.pi * np.outer(freqs, times)) * dt
-
-        h_op = float(self.c * dt)
-        a_inc = np.zeros((n_ports, freqs.size), dtype=complex)
-        b_out = np.zeros((n_ports, n_ports, freqs.size), dtype=complex)
-        every = max(1, steps // 5)
-        for jx, j_port in enumerate(modal_idx):
-            src = self._op.port_source(j_port)
-            y = np.zeros(n)
-            pe = np.zeros((n_ports, steps))
-            ph = np.zeros((n_ports, steps))
-            t0 = time.time()
-            for s in range(steps):
-                y = self._op.step_with_source(
-                    y, src * g[s], h_op, krylov_dim
-                )
-                for ix, i_port in enumerate(modal_idx):
-                    pe[ix, s], ph[ix, s] = self._op.port_projections(
-                        y, i_port
-                    )
-                if verbose and (s + 1) % every == 0:
-                    _log(
-                        f"sparams drive {jx + 1}/{n_ports}: "
-                        f"step {s + 1}/{steps} ({time.time() - t0:.1f}s)"
-                    )
-            # Reflection (i == j) and transmission (i != j) terms need
-            # opposite DFT windows. Transmission must capture the whole
-            # slow, dispersive transmitted pulse, so it uses the full run.
-            # Reflection must be read off before the imperfectly absorbed
-            # port re-reflection makes its round trip back to the driven
-            # port, so its window closes at twice the first-arrival time
-            # at the nearest other port -- the round-trip travel time.
-            peak = float(np.abs(pe).max())
-            arrivals = []
-            for ix in range(n_ports):
-                if ix == jx or peak <= 0.0:
-                    continue
-                env = np.abs(pe[ix])
-                above = np.flatnonzero(env > _SPARAM_ARRIVAL_FRAC * peak)
-                if above.size:
-                    arrivals.append(int(above[0]))
-            refl_w = (
-                int(np.clip(2 * min(arrivals), steps // 4, steps))
-                if arrivals else steps
-            )
-            phase_r = (
-                phase
-                if refl_w >= steps
-                else np.exp(-2j * np.pi * np.outer(freqs, times[:refl_w]))
-                * dt
-            )
-            # Forward / backward modal split A,B = (P_e +- Z*P_h)/2 of the
-            # recorded total field. Impedance is looked up on the
-            # operator's port index (i_port), not the modal-list index.
-            for ix, i_port in enumerate(modal_idx):
-                z = np.array(
-                    [self._port_impedance(i_port, f) for f in freqs]
-                )
-                if ix == jx:
-                    pe_f = phase_r @ pe[ix, :refl_w]
-                    ph_f = phase_r @ ph[ix, :refl_w]
-                    a_inc[jx] = 0.5 * (pe_f + z * ph_f)
-                    b_out[jx, ix] = 0.5 * (pe_f - z * ph_f)
-                else:
-                    pe_f = phase @ pe[ix]
-                    ph_f = phase @ ph[ix]
-                    b_out[jx, ix] = 0.5 * (pe_f - z * ph_f)
-            # Closing the loop: the transmission DFT stays leakage-free
-            # only once the transient has decayed by the window end.
-            tail = max(1, steps // 20)
-            resid = float(np.abs(pe[:, -tail:]).max())
-            if verbose and peak > 0.0 and resid > _SPARAM_DECAY_FRAC * peak:
-                _log(
-                    f"sparams drive {jx + 1}: port signal still at "
-                    f"{resid / peak:.0%} of peak at the window end, "
-                    f"raise steps for a cleaner extraction"
-                )
-
-        s_mat = np.zeros((freqs.size, n_ports, n_ports), dtype=complex)
-        for j in range(n_ports):
-            for i in range(n_ports):
-                s_mat[:, i, j] = b_out[j, i] / a_inc[j]
-        smax = float(np.abs(s_mat).max())
-        if verbose:
-            _log(
-                f"sparams complete - {n_ports}-port S-matrix at "
-                f"{freqs.size} frequencies"
-            )
-            if smax > 1.0 + _SPARAM_PASSIVITY_TOL:
-                _log(
-                    f"sparams: |S| peaks at {smax:.3f} above unity, the "
-                    f"transient window is too short or the mesh too coarse "
-                    f"for a passive result"
-                )
-        return TdScattering(freqs, s_mat)
 
     # -- turnkey: a transient run ------------------------------------------
     def _modal_ports(self):
