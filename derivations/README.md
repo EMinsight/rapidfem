@@ -47,11 +47,34 @@ longer names EMerge.
 | Kernel (Rust file)        | derivation                | golden test                         | header clean |
 |---------------------------|---------------------------|-------------------------------------|--------------|
 | `coefficients.rs`         | `nedelec2/barycentric.py` | `coefficients_golden_test.rs` (881) | ✅ |
-| `tet_assembly.rs`         | `nedelec2/` (in progress) | —                                   | ⬜ |
+| `tet_assembly.rs`         | `nedelec2/element.py`     | partial (see below)                 | ⬜ |
 | `tri_assembly.rs`         | —                         | —                                   | ⬜ |
 | `interp.rs`               | —                         | —                                   | ⬜ |
 | `basis.rs` (DOF mapping)  | interface only, no math   | —                                   | ⬜ |
 | `materials.rs`            | —                         | —                                   | ⬜ |
+
+### `tet_assembly.rs` — element matrix engine status
+
+`nedelec2/element.py` builds the 20 basis functions from scratch (Whitney
+edge function × nodal barycentric weight) and assembles the 20×20 stiffness
+and mass matrices by exact symbolic integration. Verified on the unit tet
+against the assembler's golden norms (`tests/tet_assembly_test.rs`):
+
+- **Stiffness `D` (curl–curl): exact, entrywise.** All DOF blocks
+  (edge-edge, edge-face, face-face) match the existing kernel to ~1e-15.
+  The edge functions are therefore confirmed correct, and the derived basis
+  has the *same curl* as EMerge's.
+- **Mass `F`: edge-edge and edge-face exact; face-face differs ~0.06%.**
+  Because the curls are identical, the two face bases differ only by a
+  curl-free (gradient) field: `φ_emerge = φ_derived + ∇g`. They are both
+  valid 2nd-order H(curl) elements but not the *same* element — the
+  irrotational content of the face bubbles differs.
+
+Open decision (see git history / discussion): either (A) pin the exact
+gradient correction to reproduce EMerge's element bit-for-bit, or (B) adopt
+the independent textbook element and re-verify through the physics
+validation harness (S-parameters), which is invariant to the kernel as long
+as it converges to Maxwell.
 
 ## Running
 
