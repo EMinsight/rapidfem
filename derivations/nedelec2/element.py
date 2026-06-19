@@ -10,6 +10,12 @@
 # Finite Element Method in Electromagnetics".
 """Symbolic Nedelec-2 (20-DOF) element stiffness and mass matrices.
 
+This basis is the canonical Nedelec first-kind order-2 element: the element
+pencil spectrum matches an explicit construction of R2 = (P1)^3 (+) {p in
+H~2^3 : x.p = 0} (see canonical_r2.py), and the span is complete to (P1)^3
+(see completeness_report). It is the standard, well-conditioned choice; the
+matrices are the source for the clean-room Rust kernel.
+
 The 20 basis functions on a tet, with W_ab = L_a grad L_b - L_b grad L_a and
 the Whitney function scaled by an edge length / nodal barycentric weight:
 
@@ -70,24 +76,6 @@ def monomial_from_nodes(nodes):
     for n in nodes:
         e[n] += 1
     return tuple(e)
-
-
-def whitney(grads, a, b):
-    """W_ab = L_a grad L_b - L_b grad L_a, as field terms (coeff, exps, vec)."""
-    ea = monomial_from_nodes([a])
-    eb = monomial_from_nodes([b])
-    return [
-        (sp.Integer(1), eb, grads[a]),    # L_b * grad L_a  -> wait: L_a grad L_b
-    ]
-
-
-def edge_function(grads, a, b, length):
-    """phi = length * L_w * W_ab, with W_ab = L_a gradL_b - L_b gradL_a.
-
-    L_w is the nodal weight (a for mode 1, b for mode 2) supplied by caller via
-    `weight_node`. Returns list of (coeff, exps, vec).
-    """
-    raise NotImplementedError  # replaced by weighted_whitney below
 
 
 def weighted_whitney(grads, weight_node, a, b, scale):
@@ -180,6 +168,70 @@ def element_matrices(verts, eps, mu_inv):
             D[i, j] = D[j, i] = dij
             F[i, j] = F[j, i] = fij
     return D, F
+
+
+def field_to_polyvec(field, verts):
+    """Expand a barycentric field to a coefficient vector over degree<=2 x,y,z.
+
+    Returns a length-30 sympy vector: 3 components, each over the 10 monomials
+    [1, x, y, z, x^2, y^2, z^2, x*y, x*z, y*z].
+    """
+    x, y, z = sp.symbols("x y z")
+    M = sp.Matrix([[sp.Integer(1), v[0], v[1], v[2]] for v in verts]).inv()
+    Lexpr = [M[0, j] + M[1, j] * x + M[2, j] * y + M[3, j] * z for j in range(4)]
+    monos = [sp.Integer(1), x, y, z, x**2, y**2, z**2, x*y, x*z, y*z]
+    comps = [sp.Integer(0), sp.Integer(0), sp.Integer(0)]
+    for coeff, exps, vec in field:
+        scal = coeff
+        for k in range(4):
+            scal *= Lexpr[k] ** exps[k]
+        for c in range(3):
+            comps[c] += sp.expand(scal * vec[c])
+    out = []
+    for c in range(3):
+        p = sp.Poly(sp.expand(comps[c]), x, y, z)
+        for mono in monos:
+            out.append(p.coeff_monomial(mono))
+    return sp.Matrix(out)
+
+
+def completeness_report(verts):
+    """Check which polynomial vector spaces are contained in span(basis).
+
+    A 2nd-order curl-conforming element must contain (P1)^3 (12-dim, complete
+    linear vector fields) for 2nd-order convergence. Returns dict of results.
+    """
+    x, y, z = sp.symbols("x y z")
+    basis, _sixV, _grads = build_basis(verts)
+    cols = [field_to_polyvec(f, verts) for f in basis]
+    A = sp.Matrix.hstack(*cols)          # 30 x 20
+    rank_A = A.rank()
+
+    # target spaces
+    one = sp.Integer(1)
+    P0 = [(one, 0, 0), (0, one, 0), (0, 0, one)]                       # constants
+    P1_extra = []
+    for comp in range(3):
+        for var in (x, y, z):
+            vec = [sp.Integer(0)] * 3
+            vec[comp] = var
+            P1_extra.append(tuple(vec))
+    P1 = P0 + P1_extra                                                 # 12 fields
+
+    def in_span(vecfield):
+        # build the degree<=2 coeff vector of a raw polynomial vector field
+        monos = [one, x, y, z, x**2, y**2, z**2, x*y, x*z, y*z]
+        col = []
+        for c in range(3):
+            p = sp.Poly(sp.expand(vecfield[c]), x, y, z)
+            for mono in monos:
+                col.append(p.coeff_monomial(mono))
+        b = sp.Matrix(col)
+        return A.rank() == sp.Matrix.hstack(A, b).rank()
+
+    p1_ok = all(in_span(v) for v in P1)
+    p0_ok = all(in_span(v) for v in P0)
+    return {"rank": rank_A, "P0_subset": p0_ok, "P1_subset": p1_ok}
 
 
 def frob(M):

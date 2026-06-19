@@ -70,11 +70,30 @@ against the assembler's golden norms (`tests/tet_assembly_test.rs`):
   valid 2nd-order H(curl) elements but not the *same* element — the
   irrotational content of the face bubbles differs.
 
-Open decision (see git history / discussion): either (A) pin the exact
-gradient correction to reproduce EMerge's element bit-for-bit, or (B) adopt
-the independent textbook element and re-verify through the physics
-validation harness (S-parameters), which is invariant to the kernel as long
-as it converges to Maxwell.
+**Resolved.** The derived element was checked for physical correctness, not
+EMerge equivalence:
+
+- **Completeness** (`element.completeness_report`): span has rank 20
+  (unisolvent) and contains (P0)³ and the full (P1)³ — the sufficient
+  condition for optimal O(h²) H(curl) convergence.
+- **Identity** (`canonical_r2.py`): an explicit basis of the canonical
+  Nédélec first-kind order-2 space, R2 = (P1)³ ⊕ {p ∈ H̃2³ : x·p = 0}, was
+  built from scratch and its element pencil (D,F) generalized eigenspectrum
+  matches the derived element exactly. **The derived basis spans the
+  canonical R2 space.** The same comparison shows the **existing EMerge
+  kernel is *not* canonical R2** (spectrum differs up to ~15%): it is a
+  valid but non-standard 20-DOF element.
+- **Conditioning** (`verify_element.py`): cond(F)=203 vs EMerge 208,
+  cond(D)=23.08 (identical), Jacobi-scaled cond(F)=104 vs 107 — the
+  canonical element is as good or marginally better.
+
+Decision: ship the **canonical R2** element (the derived one). It is the
+standard, well-conditioned, provably convergent choice and is fully
+clean-room (constructed from the R2 definition, independent of EMerge).
+Switching the kernel changes per-element numbers (different discretization
+than EMerge), so correctness is re-confirmed end-to-end through the physics
+validation harness, and the unit golden norms are regenerated from this
+derivation.
 
 ## Running
 
