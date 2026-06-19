@@ -47,7 +47,10 @@ longer names EMerge.
 | Kernel (Rust file)        | derivation                | golden test                         | header clean |
 |---------------------------|---------------------------|-------------------------------------|--------------|
 | `coefficients.rs`         | `nedelec2/barycentric.py` | `coefficients_golden_test.rs` (881) | ✅ |
-| `tet_assembly.rs`         | `nedelec2/element.py`     | partial (see below)                 | ⬜ |
+| `tet_assembly_r2.rs` (new)| `nedelec2/element.py`     | `r2_element_golden_test.rs` (3 tets)| ✅ |
+| `tet_assembly.rs` (old)   | superseded by `_r2`       | —                                   | ⬜ remove after swap |
+| `tri_assembly.rs`         | `nedelec2/` (TODO surface)| —                                   | ⬜ |
+| `interp.rs`               | `nedelec2/` (TODO eval)   | —                                   | ⬜ |
 | `tri_assembly.rs`         | —                         | —                                   | ⬜ |
 | `interp.rs`               | —                         | —                                   | ⬜ |
 | `basis.rs` (DOF mapping)  | interface only, no math   | —                                   | ⬜ |
@@ -94,6 +97,19 @@ Switching the kernel changes per-element numbers (different discretization
 than EMerge), so correctness is re-confirmed end-to-end through the physics
 validation harness, and the unit golden norms are regenerated from this
 derivation.
+
+### Consistency requirement before the swap
+
+The element basis is shared across the FD pipeline: `tet_assembly` (volume),
+`tri_assembly` (surface Robin/port terms), `interp` (field reconstruction)
+and `sparam` (modal overlaps) must all use the *same* 20-/8-DOF basis. The
+canonical-R2 basis differs from EMerge's, so the swap is atomic: `interp`
+and `tri_assembly` have to be re-derived from `element.py`'s basis (their
+surface restriction and point evaluation) before `tet_assembly_r2` replaces
+`tet_assembly` in `assembly.rs`. Mixing a canonical-R2 stiffness with an
+EMerge-basis interpolation would be inconsistent. This makes the element
+swap a single coherent step that retires `tet_assembly.rs`, `tri_assembly.rs`
+and `interp.rs` together, all sourced from one derivation.
 
 ## Running
 
