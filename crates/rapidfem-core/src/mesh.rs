@@ -1,34 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
-// Copyright (C) Robert Fennis (original EMerge source)
+// Copyright (C) 2024-2026 Milan Rother and rapidfem contributors
 //
-// This file is part of rapidfem and contains code ported from EMerge
-// (https://github.com/FennisRobert/EMerge), originally licensed under
-// GPL-2.0-or-later with the Gmsh additional permission; redistributed
-// here under GPL-3.0-or-later with that permission preserved.
-// See LICENSE and NOTICE for the full terms.
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
 
 //! Mesh data structure: nodes, edges, tris, tets, and connectivity.
-//! Mirrors emerge/_emerge/mesh3d.py.
+//!
+//! Edges and faces are extracted from the tetrahedra, deduplicated by sorted
+//! node keys, and cross-referenced (tet↔edge, tet↔face, face↔edge, face↔tet).
+//! The local edge/face traversal orders below are a fixed interface convention
+//! that, together with sorted global node keys, gives every shared edge/face a
+//! consistent orientation across elements — required by the curl-conforming
+//! Nédélec DOFs.
 
 use hashbrown::HashMap;
 
-/// Edge local index ordering within a tetrahedron (1-indexed node pairs).
-/// Mirrors EMerge's _idset1 = ((1,2),(1,3),(1,4),(2,3),(4,2),(3,4))
-/// Note: (4,2) not (2,4), this ordering is critical for basis function orientation.
+/// Local edge order within a tetrahedron, as 0-indexed node pairs.
+/// The reversed entry (3,1) for the 5th edge is part of the convention and is
+/// load-bearing for DOF orientation; do not "normalise" it.
 pub const TET_EDGE_LOCAL: [[usize; 2]; 6] = [
-    [0, 1], // (1,2) in 1-indexed
-    [0, 2], // (1,3)
-    [0, 3], // (1,4)
-    [1, 2], // (2,3)
-    [3, 1], // (4,2), note reversed!
-    [2, 3], // (3,4)
+    [0, 1],
+    [0, 2],
+    [0, 3],
+    [1, 2],
+    [3, 1], // reversed on purpose
+    [2, 3],
 ];
 
-/// Face local index ordering within a tetrahedron (1-indexed node triples).
-/// Mirrors EMerge's _idset2 = ((1,2,3),(1,3,4),(1,4,2),(2,3,4))
-/// Note: (1,4,2) not (1,2,4), this ordering is critical.
+/// Local face order within a tetrahedron, as 0-indexed node triples.
+/// The 3rd entry (0,3,1) is intentionally not in ascending order.
 pub const TET_FACE_LOCAL: [[usize; 3]; 4] = [
     [0, 1, 2], // (1,2,3)
     [0, 2, 3], // (1,3,4)
@@ -107,16 +108,14 @@ impl Mesh {
             }
         }
 
-        // Build tri_to_edge, must match EMerge's ordering:
-        // tri_to_edge[0] = edge(sorted[0], sorted[1])
-        // tri_to_edge[1] = edge(sorted[1], sorted[2])
-        // tri_to_edge[2] = edge(sorted[0], sorted[2])
+        // Per-tri edge order convention: (0,1), (1,2), (0,2) of the sorted
+        // triangle nodes — matches the surface DOF layout in `basis`.
         let n_tris = tris.len();
         let mut tri_to_edge = vec![[0usize; 3]; n_tris];
         for (ti, tri) in tris.iter().enumerate() {
             let edge_pairs = [
                 (tri[0].min(tri[1]), tri[0].max(tri[1])), // edge(0,1)
-                (tri[1].min(tri[2]), tri[1].max(tri[2])), // edge(1,2), EMerge order!
+                (tri[1].min(tri[2]), tri[1].max(tri[2])), // edge(1,2)
                 (tri[0].min(tri[2]), tri[0].max(tri[2])), // edge(0,2)
             ];
             for (ei, &key) in edge_pairs.iter().enumerate() {
