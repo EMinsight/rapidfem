@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
-// Copyright (C) Robert Fennis (original EMerge source)
+// Copyright (C) 2024-2026 Milan Rother and rapidfem contributors
 //
-// This file is part of rapidfem and contains code ported from EMerge
-// (https://github.com/FennisRobert/EMerge), originally licensed under
-// GPL-2.0-or-later with the Gmsh additional permission; redistributed
-// here under GPL-3.0-or-later with that permission preserved.
-// See LICENSE and NOTICE for the full terms.
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Exact port of sparam.py: S-parameter extraction via surface integrals.
+//! S-parameter extraction via port surface integrals.
 //!
-//! Functions: sparam_waveport, sparam_field_power, sparam_mode_power, sparam_voltage
-//! Also includes surface_integral from integrals.py.
-//!
-//! All functions accept &dyn Port via the port trait.
+//! Standard modal post-processing (Pozar, *Microwave Engineering*, ch. 4;
+//! Jin, *FEM in Electromagnetics*): a port wave amplitude is the overlap of
+//! the simulated field with the port mode, weighted by the local wave
+//! admittance / Poynting factor. `sparam_waveport` returns the amplitude
+//! ratio S; the `*_power` helpers return the Poynting-normalised powers; and
+//! `sparam_voltage_line` extracts S from a line-integrated port voltage.
+//! All accept `&dyn Port` and integrate over the port triangles by Gaussian
+//! quadrature (`surface_integral`).
 
 use num_complex::Complex64 as C64;
 use crate::quadrature::gaus_quad_tri;
 use crate::port::Port;
 
-/// Port of integrals.py: surface_integral
+/// Gauss-quadrature surface integral of a scalar function over a triangle set.
 pub fn surface_integral(
     nodes: &[[f64; 3]],
     triangles: &[[usize; 3]],
@@ -54,8 +54,8 @@ pub fn surface_integral(
     total
 }
 
-/// Port of sparam.py's modal-port S-parameter (EMerge `_compute_s_data` else
-/// branch: `sparam_field_power` / `sparam_mode_power`).
+/// Modal-port S-parameter: amplitude ratio of the reflected/transmitted
+/// power-wave to the incident, by mode overlap.
 ///
 /// S = ∫ (E_field − Q·E_mode)·conj(E_mode)·c dS / ∫ |E_mode|²·c dS
 ///
@@ -103,7 +103,7 @@ pub fn sparam_waveport(
     mode_dot_field / norm
 }
 
-/// Port of sparam.py: sparam_field_power
+/// Field power crossing the port: P = ∫ (E−Q·E_mode)·conj(E_mode)/(2·Z_mode) dS.
 ///
 /// P_field = ∫ (E_field - Q·E_mode) · conj(E_mode) / (2·Z_mode) dS
 pub fn sparam_field_power(
@@ -134,7 +134,7 @@ pub fn sparam_field_power(
     }, gq_order)
 }
 
-/// Port of sparam.py: sparam_mode_power
+/// Reference mode power: P = ∫ |E_mode|²/(2·Z_mode) dS.
 ///
 /// P_mode = ∫ |E_mode|² / (2·Z_mode) dS
 pub fn sparam_mode_power(
