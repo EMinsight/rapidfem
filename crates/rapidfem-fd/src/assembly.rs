@@ -24,7 +24,7 @@ use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 use crate::port::Port;
 use crate::tet_assembly_r2::assemble_global_matrices;
-use crate::tri_assembly::{ned2_tri_stiff, ned2_tri_force};
+use crate::tri_assembly_r2::{ned2_tri_stiff, ned2_tri_force};
 use crate::coefficients::AreaCoeffCache;
 use crate::quadrature::gaus_quad_tri;
 use crate::constants::PI;
