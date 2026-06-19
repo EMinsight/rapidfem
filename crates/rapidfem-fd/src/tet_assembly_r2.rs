@@ -122,20 +122,23 @@ pub fn barycentric_grads(xs: &[f64; 4], ys: &[f64; 4], zs: &[f64; 4]) -> ([V3; 4
 
 /// One term of a basis function: `coeff · L_mono[0] · L_mono[1] · ∇L_grad`.
 #[derive(Clone, Copy)]
-struct Term {
-    coeff: f64,
-    mono: [usize; 2],
-    grad: usize,
+pub struct Term {
+    pub coeff: f64,
+    pub mono: [usize; 2],
+    pub grad: usize,
 }
 
 /// A basis function = `scale · Σ terms`. Every R2 function has exactly 2 terms.
-struct BasisFn {
-    scale: f64,
-    terms: [Term; 2],
+/// This is the single source of truth for the canonical R2 basis, shared by
+/// the element assembly here and the field reconstruction in `interp`.
+pub struct BasisFn {
+    pub scale: f64,
+    pub terms: [Term; 2],
 }
 
 /// Build the 20 R2 basis functions for this tet from its local edge/face maps.
-fn build_basis(
+/// DOF order matches `basis::Nedelec2Basis`: edge·m1, face·m1, edge·m2, face·m2.
+pub fn build_basis(
     edge_len: &[f64; 6],
     edge_map: &[[usize; 2]; 6],
     tri_map: &[[usize; 3]; 4],
