@@ -60,3 +60,24 @@ the geometry is bad. The realistic, solution-safe levers, by value:
   (`cond·u < 1`); a no-op when well conditioned.
 - **① Symmetric diagonal equilibration** — solution-safe global hygiene,
   modest gain; matters most when materials/PML mix scales.
+
+## What was implemented
+
+Our in-repo fixtures have **no slivers** (`scan_mesh_quality.py`: min q ≈ 0.08
+across all 22 meshes, floor = 1e-9 — eight orders of margin). The levers are
+therefore *defensive* infrastructure for future/imported bad meshes, not a fix
+for an observed problem. Built (iterative refinement intentionally skipped):
+
+- **③ Volume/area floor** — `tet_assembly_r2::barycentric_grads` and
+  `tri_assembly_r2::bary_grads_2d` floor `|6V|`/`|2A|` at
+  `SLIVER_NORMVOL_FLOOR` (q = 1e-9) of `h_mean³`/`h_mean²`. A degenerate tet
+  yields bounded gradients instead of NaN. Inert on healthy meshes (q ≫ floor).
+- **⑥ Quality gate** — `rapidfem-core::quality` computes per-tet q and warns at
+  load (`mesh_io`) if any tet is below `SLIVER_NORMVOL_WARN` (q = 1e-6).
+- **① Equilibration** — `assembly.rs` solves `(S K S)(S⁻¹x) = S b`,
+  `S_i = 1/√|K_ii|`, recovering `x = S y`. Solution-preserving (verified: the
+  WR-90/iris S-parameters are bit-for-bit unchanged with it active).
+
+Verified: floor keeps degenerate-tet element matrices finite; the gate flags a
+planted sliver and stays silent on clean meshes; equilibration leaves the
+physics unchanged.

@@ -34,6 +34,34 @@ pub struct SolveResult {
     pub n_field: usize,
 }
 
+/// Symmetric diagonal (Jacobi) equilibration of a COO system: returns S with
+/// S_i = 1/√|K_ii|. Solving (S K S)(S⁻¹x) = S b and recovering x = S y is a
+/// diagonal similarity, so the solution is exact up to the now-better-
+/// conditioned factorisation. It improves the backward error when DOFs span
+/// very different scales (mixed materials/PML, sliver-adjacent rows). On a
+/// uniform, well-shaped mesh S is ≈ constant and the transform is a no-op.
+/// See `derivations/conditioning/`.
+fn equilibration_scaling(n: usize, rows: &[usize], cols: &[usize], vals: &[C64]) -> Vec<f64> {
+    let mut diag = vec![C64::new(0.0, 0.0); n];
+    for k in 0..rows.len() {
+        if rows[k] == cols[k] {
+            diag[rows[k]] += vals[k];
+        }
+    }
+    diag.iter().map(|d| {
+        let m = d.norm();
+        if m > crate::constants::SINGULAR_EPS { 1.0 / m.sqrt() } else { 1.0 }
+    }).collect()
+}
+
+/// Scale a COO system in place to S K S.
+#[inline]
+fn apply_equilibration(rows: &[usize], cols: &[usize], vals: &mut [C64], s: &[f64]) {
+    for k in 0..rows.len() {
+        vals[k] *= s[rows[k]] * s[cols[k]];
+    }
+}
+
 /// Assemble the driven system and solve for each driven port. Accepts any
 /// Port type via trait objects.
 pub fn assemble_and_solve(
@@ -213,6 +241,10 @@ pub fn assemble_and_solve_with_pml(
     }
     eprintln!("  COO: {} entries, built in {:.1}ms", coo_rows.len(), t2.elapsed().as_secs_f64()*1e3);
 
+    // Symmetric diagonal equilibration: solve (S K S)(S⁻¹x) = S b, recover x = S y.
+    let s_eq = equilibration_scaling(n_free, &coo_rows, &coo_cols, &coo_vals);
+    apply_equilibration(&coo_rows, &coo_cols, &mut coo_vals, &s_eq);
+
     // Backend-agnostic factor + solve via the SparseSolver trait. Selection
     // honours RAPIDFEM_SOLVER (auto|pardiso|accelerate|faer).
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
@@ -222,11 +254,12 @@ pub fn assemble_and_solve_with_pml(
 
     let mut solutions = Vec::new();
     for (pi, bvec) in port_vectors.iter().enumerate() {
-        let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+        let b_free: Vec<C64> = free_dofs.iter().enumerate()
+            .map(|(fi, &d)| bvec[d] * C64::from(s_eq[fi])).collect();
         let x_free = solver.solve(&b_free)?;
         let mut x_full = vec![C64::new(0.0, 0.0); n_field];
         for (fi, &d) in free_dofs.iter().enumerate() {
-            x_full[d] = x_free[fi];
+            x_full[d] = x_free[fi] * C64::from(s_eq[fi]);
         }
         let xnorm: f64 = x_full.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
         eprintln!("  Port {} solved ({}) in {:.1}ms, ||x|| = {:.6e}",
@@ -424,6 +457,12 @@ pub fn frequency_sweep_with_pml(
             coo_vals.push(val);
         }
 
+        // Symmetric diagonal equilibration (recomputed per frequency; the
+        // sparsity pattern is unchanged, so the symbolic factorisation reuse
+        // via `refactorize` still holds).
+        let s_eq = equilibration_scaling(n_free, &coo_rows, &coo_cols, &coo_vals);
+        apply_equilibration(&coo_rows, &coo_cols, &mut coo_vals, &s_eq);
+
         // Factor (symbolic once via `factorize`, then `refactorize` per freq
         // reusing the sparsity pattern) and solve via the backend-agnostic
         // SparseSolver trait.
@@ -436,11 +475,12 @@ pub fn frequency_sweep_with_pml(
 
         let mut solutions = Vec::new();
         for bvec in &port_bvecs {
-            let b_free: Vec<C64> = free_dofs.iter().map(|&d| bvec[d]).collect();
+            let b_free: Vec<C64> = free_dofs.iter().enumerate()
+                .map(|(fi_d, &d)| bvec[d] * C64::from(s_eq[fi_d])).collect();
             let x_free = solver.solve(&b_free)?;
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
             for (fi_d, &d) in free_dofs.iter().enumerate() {
-                x_full[d] = x_free[fi_d];
+                x_full[d] = x_free[fi_d] * C64::from(s_eq[fi_d]);
             }
             solutions.push(x_full);
         }
@@ -463,4 +503,36 @@ pub fn frequency_sweep_with_pml(
     }
 
     Ok(results)
+}
+#[cfg(test)]
+mod conditioning_tests {
+    use super::*;
+
+    /// Equilibration must drive the diagonal magnitudes to ~1 (it is exactly
+    /// 1/√|K_ii| symmetric scaling) — this is what tames a scale-mixed system.
+    #[test]
+    fn equilibration_unit_diagonal() {
+        // 2-DOF system with a 1e8 spread between the two diagonals.
+        let rows = vec![0, 0, 1, 1];
+        let cols = vec![0, 1, 0, 1];
+        let mut vals = vec![
+            C64::new(1e6, 0.0), C64::new(1.0, 0.0),
+            C64::new(1.0, 0.0), C64::new(1e-2, 0.0),
+        ];
+        let s = equilibration_scaling(2, &rows, &cols, &vals);
+        apply_equilibration(&rows, &cols, &mut vals, &s);
+        // diagonal entries are vals[0] (0,0) and vals[3] (1,1)
+        assert!((vals[0].norm() - 1.0).abs() < 1e-12, "diag0 = {}", vals[0].norm());
+        assert!((vals[3].norm() - 1.0).abs() < 1e-12, "diag1 = {}", vals[3].norm());
+    }
+
+    /// On a system that is already uniformly scaled, equilibration is ~identity.
+    #[test]
+    fn equilibration_noop_on_uniform() {
+        let rows = vec![0, 1];
+        let cols = vec![0, 1];
+        let vals = vec![C64::new(2.0, 0.0), C64::new(2.0, 0.0)];
+        let s = equilibration_scaling(2, &rows, &cols, &vals);
+        for &si in &s { assert!((si - 1.0 / 2.0_f64.sqrt()).abs() < 1e-12); }
+    }
 }
