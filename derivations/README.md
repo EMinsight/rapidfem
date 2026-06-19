@@ -44,17 +44,20 @@ longer names EMerge.
 
 ## Status
 
-| Kernel (Rust file)        | derivation                | golden test                         | header clean |
-|---------------------------|---------------------------|-------------------------------------|--------------|
-| `coefficients.rs`         | `nedelec2/barycentric.py` | `coefficients_golden_test.rs` (881) | ✅ |
-| `tet_assembly_r2.rs` (new)| `nedelec2/element.py`     | `r2_element_golden_test.rs` (3 tets)| ✅ |
-| `tet_assembly.rs` (old)   | superseded by `_r2`       | —                                   | ⬜ remove after swap |
-| `tri_assembly.rs`         | `nedelec2/` (TODO surface)| —                                   | ⬜ |
-| `interp.rs`               | `nedelec2/` (TODO eval)   | —                                   | ⬜ |
-| `tri_assembly.rs`         | —                         | —                                   | ⬜ |
-| `interp.rs`               | —                         | —                                   | ⬜ |
-| `basis.rs` (DOF mapping)  | interface only, no math   | —                                   | ⬜ |
-| `materials.rs`            | —                         | —                                   | ⬜ |
+**All EMerge-attributed files are clean** — no `Robert Fennis` header remains
+anywhere in the tree, so every line is rapidfem's own copyright.
+
+| Rust file                          | source / basis            | verification                        | clean |
+|------------------------------------|---------------------------|-------------------------------------|-------|
+| `coefficients.rs`                  | `nedelec2/barycentric.py` | `coefficients_golden_test.rs` (881) | ✅ |
+| `tet_assembly_r2.rs` (new)         | `nedelec2/element.py`     | `r2_element_golden_test.rs` (3 tets)| ✅ |
+| `interp.rs`                        | shared `build_basis`      | self-validating curl test + e2e     | ✅ |
+| `tri_assembly_r2.rs` (new)         | 2-D R2 surface element    | e2e + iris / two-iris energy        | ✅ |
+| `tet_assembly.rs`, `tri_assembly.rs` (old) | removed            | —                                   | ✅ |
+| `quadrature.rs`                    | Dunavant / closed form    | polynomial-exactness test (+ bugfix)| ✅ |
+| `materials.rs`                     | textbook εr* (Pozar)      | re-head + cite                      | ✅ |
+| `basis.rs` `mesh.rs` `constants.rs` `touchstone.rs` | conventions / facts / spec | re-head + cite        | ✅ |
+| `sparam.rs` `assembly.rs` `waveguide.rs` | textbook EM / std FEM | re-head + cite, e2e             | ✅ |
 
 ### `tet_assembly.rs` — element matrix engine status
 

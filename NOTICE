@@ -6,50 +6,52 @@ See LICENSE for the full GNU GPL v3 text with the Gmsh additional
 permission.
 
 ────────────────────────────────────────────────────────────────────────
-1. EMerge (GPL-2.0+ with Gmsh additional permission)
+0. Licensing
+────────────────────────────────────────────────────────────────────────
+
+All rapidfem source code is copyright (C) Milan Rother and rapidfem
+contributors. The public distribution is offered under GPL-3.0-or-later
+(with the Gmsh additional permission). Because the copyright is held wholly
+by the project, the copyright holder may additionally offer rapidfem under
+separate commercial terms; the GPL grant here does not waive that right.
+
+The only remaining copyleft *obligation* on a distributed binary comes from
+linking Gmsh (GPL-2.0-or-later) at runtime — not from any rapidfem source.
+A build that does not link Gmsh (e.g. using the project's own mesher) carries
+no third-party copyleft obligation, leaving the licensing of rapidfem's own
+code entirely at the copyright holder's discretion.
+
+────────────────────────────────────────────────────────────────────────
+1. Acknowledgement: EMerge
 ────────────────────────────────────────────────────────────────────────
 
 Copyright (C) Robert Fennis and EMerge contributors.
 Upstream: https://github.com/FennisRobert/EMerge
 
-The following files in `crates/rapidfem-fd` and `crates/rapidfem-core`
-contain code directly ported from EMerge. Per the GPL-2.0-or-later
-grant, they are redistributed here under GPL-3.0-or-later with the Gmsh
-additional permission carried forward.
+Early development of rapidfem's frequency-domain backend used EMerge
+(GPL-2.0-or-later) as a reference implementation. Those files have since
+been rewritten so that no EMerge source remains:
 
-  crates/rapidfem-fd/src/assembly.rs         (port of microwave_3d.py
-                                              assemble_and_solve)
-  crates/rapidfem-fd/src/basis.rs            (port of nedleg2.py
-                                              Nedelec2Basis)
-  crates/rapidfem-fd/src/interp.rs           (port of ned2_tet_interp.py)
-  crates/rapidfem-fd/src/sparam.rs           (port of sparam.py)
-  crates/rapidfem-fd/src/touchstone.rs       (port of touchstone.py)
-  crates/rapidfem-fd/src/tri_assembly.rs     (port of robinbc.py
-                                              ned2_tri_stiff / force)
-  crates/rapidfem-fd/src/waveguide.rs        (port of microwave_bc.py
-                                              RectangularWaveguide,
-                                              CoaxPort, LumpedPort,
-                                              FloquetPort,
-                                              UserDefinedPort,
-                                              SurfaceImpedance,
-                                              LumpedElement, ABC, plus
-                                              cs.py CoordinateSystem)
-  crates/rapidfem-core/src/materials.rs      (port of materials.py
-                                              build_material_tensors)
-  crates/rapidfem-core/src/quadrature.rs     (port of quadrature tables
-                                              from EMerge)
+  * The core finite-element kernels — the canonical Nédélec first-kind
+    order-2 element (`tet_assembly_r2.rs`), the barycentric integration
+    coefficients (`coefficients.rs`), the surface Robin/port assembly
+    (`tri_assembly_r2.rs`) and the field reconstruction (`interp.rs`) —
+    were re-derived from primary mathematics with an independent symbolic
+    derivation harness (see `derivations/`) and are validated entrywise
+    against it. The former `tet_assembly.rs` / `tri_assembly.rs` ports were
+    removed.
 
-New code in `crates/rapidfem-fd/src/waveguide.rs` (the `NumericalWavePort`
-class and its supporting helpers) and in `crates/rapidfem-core/src/port_eigen.rs`
-(the 2-D wave-port mode eigensolver) is original to this project, also
-under GPL-3.0-or-later.
+  * The remaining modules (`assembly.rs`, `sparam.rs`, `waveguide.rs`,
+    `materials.rs`, `quadrature.rs`, `mesh.rs`, `basis.rs`, `constants.rs`,
+    `touchstone.rs`) implement standard, non-copyrightable content —
+    textbook electromagnetic formulas (Pozar, Jackson, Collin), published
+    numerical tables (Dunavant; Eisenberg & Malvern), the public Touchstone
+    file format, and generic FEM data structures / assembly orchestration —
+    re-expressed with primary-source citations.
 
-The volume element assembly (`crates/rapidfem-fd/src/tet_assembly_r2.rs`)
-and the barycentric integration coefficients (`coefficients.rs`) are
-original, clean-room work: the canonical Nédélec first-kind order-2 element
-and the simplex integration identity were re-derived from primary
-mathematics (see `derivations/`), independent of EMerge. They replace the
-former `tet_assembly.rs` port, which has been removed.
+rapidfem remains under GPL-3.0-or-later with the Gmsh additional permission.
+EMerge is acknowledged here in good faith as the original architectural
+reference.
 
 ────────────────────────────────────────────────────────────────────────
 2. Runtime dependencies
