@@ -115,9 +115,28 @@ pub fn barycentric_grads(xs: &[f64; 4], ys: &[f64; 4], zs: &[f64; 4]) -> ([V3; 4
         -x1 * y2 + x1 * y4 + x2 * y1 - x2 * y4 - x4 * y1 + x4 * y2,
         x1 * y2 - x1 * y3 - x2 * y1 + x2 * y3 + x3 * y1 - x3 * y2,
     ];
-    let inv = 1.0 / six_v;
+    // Sliver guard: a near-degenerate tet has 6V → 0 while edges stay O(1),
+    // so ∇L = (b,c,d)/6V would blow up to ±∞/NaN and poison the whole global
+    // factorization. Floor |6V| at q = SLIVER_NORMVOL_FLOOR of h_mean³ so one
+    // bad tet stays locally wrong but bounded. (Diagnostics: `core::quality`.)
+    let mut sum_len = 0.0;
+    for &(a, b) in &[(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+        let dx = xs[a] - xs[b];
+        let dy = ys[a] - ys[b];
+        let dz = zs[a] - zs[b];
+        sum_len += (dx * dx + dy * dy + dz * dz).sqrt();
+    }
+    let h_mean = sum_len / 6.0;
+    let floor = crate::constants::SLIVER_NORMVOL_FLOOR * h_mean * h_mean * h_mean;
+    let six_v_eff = if six_v.abs() < floor {
+        floor.copysign(if six_v == 0.0 { 1.0 } else { six_v })
+    } else {
+        six_v
+    };
+
+    let inv = 1.0 / six_v_eff;
     let grads = std::array::from_fn(|i| [bbs[i] * inv, ccs[i] * inv, dds[i] * inv]);
-    (grads, six_v.abs())
+    (grads, six_v_eff.abs())
 }
 
 /// One term of a basis function: `coeff · L_mono[0] · L_mono[1] · ∇L_grad`.
@@ -356,4 +375,46 @@ pub fn assemble_global_matrices(
     });
 
     (rows, cols, data_e, data_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ident() -> [[C64; 3]; 3] {
+        [[C64::new(1.0,0.0),C64::new(0.0,0.0),C64::new(0.0,0.0)],
+         [C64::new(0.0,0.0),C64::new(1.0,0.0),C64::new(0.0,0.0)],
+         [C64::new(0.0,0.0),C64::new(0.0,0.0),C64::new(1.0,0.0)]]
+    }
+
+    /// A fully coplanar (degenerate) tet must not produce inf/NaN gradients —
+    /// the volume floor keeps 1/6V finite.
+    #[test]
+    fn degenerate_tet_grads_are_finite() {
+        let xs = [0.0, 1.0, 0.0, 0.5];
+        let ys = [0.0, 0.0, 1.0, 0.5];
+        let zs = [0.0, 0.0, 0.0, 0.0]; // 4th node coplanar -> 6V = 0
+        let (grads, six_v) = barycentric_grads(&xs, &ys, &zs);
+        assert!(six_v.is_finite() && six_v > 0.0, "floored 6V must be positive finite");
+        for g in &grads {
+            for &c in g { assert!(c.is_finite(), "gradient component must be finite"); }
+        }
+    }
+
+    /// A sliver tet must yield finite element matrices (no NaN poisoning).
+    #[test]
+    fn sliver_element_matrices_are_finite() {
+        let xs = [0.0, 1.0, 0.0, 0.333];
+        let ys = [0.0, 0.0, 1.0, 0.333];
+        let zs = [0.0, 0.0, 0.0, 1e-12]; // near-flat sliver
+        let s2 = 2.0_f64.sqrt();
+        let el = [1.0, 1.0, 1.0, s2, s2, s2];
+        let em = [[0,1],[0,2],[0,3],[1,2],[3,1],[2,3]];
+        let tm = [[0,1,2],[0,2,3],[0,3,1],[1,2,3]];
+        let (d, f) = r2_tet_stiff_mass(&xs,&ys,&zs,&el,&em,&tm,&ident(),&ident());
+        for i in 0..20 { for j in 0..20 {
+            assert!(d[i][j].re.is_finite() && d[i][j].im.is_finite(), "D finite");
+            assert!(f[i][j].re.is_finite() && f[i][j].im.is_finite(), "F finite");
+        }}
+    }
 }

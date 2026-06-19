@@ -71,9 +71,26 @@ fn bary_grads_2d(xs: &[f64; 3], ys: &[f64; 3]) -> ([V2; 3], f64) {
     let two_a = x1*(y2-y3) + x2*(y3-y1) + x3*(y1-y2); // signed 2·Area
     let b = [y2-y3, y3-y1, y1-y2];
     let c = [x3-x2, x1-x3, x2-x1];
-    let inv = 1.0 / two_a;
+
+    // Sliver guard (2-D analogue of the tet floor): a near-collinear boundary
+    // triangle has 2A → 0; floor it so ∇L stays finite.
+    let mut sum_len = 0.0;
+    for &(i, j) in &[(0, 1), (1, 2), (0, 2)] {
+        let dx = xs[i] - xs[j];
+        let dy = ys[i] - ys[j];
+        sum_len += (dx * dx + dy * dy).sqrt();
+    }
+    let h_mean = sum_len / 3.0;
+    let floor = crate::constants::SLIVER_NORMVOL_FLOOR * h_mean * h_mean;
+    let two_a_eff = if two_a.abs() < floor {
+        floor.copysign(if two_a == 0.0 { 1.0 } else { two_a })
+    } else {
+        two_a
+    };
+
+    let inv = 1.0 / two_a_eff;
     let grads = std::array::from_fn(|i| [b[i]*inv, c[i]*inv]);
-    (grads, two_a)
+    (grads, two_a_eff)
 }
 
 #[derive(Clone, Copy)]
