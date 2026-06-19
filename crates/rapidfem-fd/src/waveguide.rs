@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
-// Copyright (C) Robert Fennis (original EMerge source)
+// Copyright (C) 2024-2026 Milan Rother and rapidfem contributors
 //
-// This file is part of rapidfem and contains code ported from EMerge
-// (https://github.com/FennisRobert/EMerge), originally licensed under
-// GPL-2.0-or-later with the Gmsh additional permission; redistributed
-// here under GPL-3.0-or-later with that permission preserved.
-// See LICENSE and NOTICE for the full terms.
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Exact port of microwave_bc.py: RectangularWaveguide class and CoordinateSystem.
+//! Port boundary conditions and their analytic modal fields.
 //!
-//! All method names and formulas match EMerge exactly.
+//! Each port supplies a modal field profile, a propagation/mode impedance and
+//! a Robin γ-coefficient for the boundary term. The closed forms are standard
+//! microwave theory (Pozar, *Microwave Engineering*; Collin, *Field Theory of
+//! Guided Waves*): rectangular-waveguide TE/TM modes, the coaxial and parallel
+//! plate TEM modes, a Floquet plane-wave port, a Leontovich surface-impedance
+//! BC, lumped ports/elements, and an absorbing boundary. `NumericalWavePort`
+//! (general cross-sections) is solved numerically in `port_eigen`.
 
 use num_complex::Complex64 as C64;
 use rapidfem_core::port_eigen::NumericalMode;
 use crate::constants::*;
 
-/// Port of cs.py: CoordinateSystem
+/// Orthonormal port coordinate frame (origin + x̂,ŷ,ẑ rows).
 ///
 /// Stores origin, xax (xhat), yax (yhat), zax (zhat), _basis, _basis_inv.
 pub struct CoordinateSystem {
@@ -44,7 +46,7 @@ impl CoordinateSystem {
         CoordinateSystem { origin, xax, yax, zax, basis, basis_inv }
     }
 
-    /// Port of cs.py: in_local_cs(x, y, z)
+    /// Map a global point into the local frame.
     pub fn in_local_cs(&self, x: f64, y: f64, z: f64) -> (f64, f64, f64) {
         let b = &self.basis_inv;
         let xg = x - self.origin[0];
@@ -57,7 +59,7 @@ impl CoordinateSystem {
         )
     }
 
-    /// Port of cs.py: in_global_basis(x, y, z), transforms vector components
+    /// Rotate local vector components back into the global frame.
     pub fn in_global_basis(&self, x: f64, y: f64, z: f64) -> (f64, f64, f64) {
         (
             self.xax[0]*x + self.yax[0]*y + self.zax[0]*z,
@@ -67,7 +69,7 @@ impl CoordinateSystem {
     }
 }
 
-/// Port of microwave_bc.py: RectangularWaveguide
+/// Rectangular-waveguide port (TE/TM modes).
 pub struct RectWaveguide {
     pub port_number: usize,
     pub power: f64,
@@ -79,14 +81,14 @@ pub struct RectWaveguide {
 }
 
 impl RectWaveguide {
-    /// Port of get_amplitude(k0)
+    /// Modal field amplitude for the requested power.
     /// amplitude = sqrt(power * 4 * Z0 / (width * height))
     pub fn get_amplitude(&self, _k0: f64) -> f64 {
         let zte = Z0;
         (self.power * 4.0 * zte / (self.dims.0 * self.dims.1)).sqrt()
     }
 
-    /// Port of get_beta(k0)
+    /// Propagation constant β = √(k₀²εᵣ − k_c²).
     /// beta = sqrt(er*k0^2 - (pi*m/width)^2 - (pi*n/height)^2)
     pub fn get_beta(&self, k0: f64) -> f64 {
         let (width, height) = self.dims;
@@ -96,25 +98,25 @@ impl RectWaveguide {
             - (PI * n as f64 / height).powi(2)).sqrt()
     }
 
-    /// Port of get_gamma(k0)
+    /// Robin γ-coefficient for the port boundary term.
     /// gamma = 1j * beta
     pub fn get_gamma(&self, k0: f64) -> C64 {
         C64::new(0.0, self.get_beta(k0))
     }
 
-    /// Port of Zmode(k0), for TE modes
+    /// Mode wave impedance (TE: ωμ/β).
     /// Zmode = k0 * C0 * MU0 / beta
     pub fn z_mode(&self, k0: f64) -> f64 {
         k0 * C0 * MU0 / self.get_beta(k0)
     }
 
-    /// Port of _qmode(k0)
+    /// Mode admittance-like weighting factor.
     /// qmode = sqrt(Zmode / Z0)
     pub fn qmode(&self, k0: f64) -> f64 {
         (self.z_mode(k0) / Z0).sqrt()
     }
 
-    /// Port of port_mode_3d(x_local, y_local, k0)
+    /// Transverse modal E-field at a local cross-section point.
     /// Returns (Ex, Ey, Ez) in LOCAL coordinates.
     ///
     /// Ev = polarization * amplitude * cos(pi*m*x/width) * cos(pi*n*y/height)
@@ -138,7 +140,7 @@ impl RectWaveguide {
         (q * ex, q * ey, q * ez)
     }
 
-    /// Port of port_mode_3d_global(x_global, y_global, z_global, k0)
+    /// Modal E-field at a global point (rotated into global components).
     /// Returns (Ex, Ey, Ez) in GLOBAL coordinates.
     pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, k0: f64) -> (f64, f64, f64) {
         let (xl, yl, _zl) = self.cs.in_local_cs(x, y, z);
@@ -146,7 +148,7 @@ impl RectWaveguide {
         self.cs.in_global_basis(ex, ey, ez)
     }
 
-    /// Port of get_Uinc(x_global, y_global, z_global, k0)
+    /// Incident-wave source term for the port excitation vector.
     /// Returns -2j * beta * port_mode_3d_global(...) as complex [3] vector.
     pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
         let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, k0);
@@ -166,7 +168,7 @@ impl AbsorbingBoundary {
         AbsorbingBoundary { neff: 1.0 }
     }
 
-    /// γ(k0) = j·k₀·neff  (port of get_gamma, microwave_bc.py).
+    /// γ(k0) = j·k₀·neff.
     pub fn get_gamma(&self, k0: f64) -> C64 {
         C64::new(0.0, k0 * self.neff)
     }
@@ -178,7 +180,7 @@ impl Default for AbsorbingBoundary {
     }
 }
 
-/// Floquet plane-wave port, port of microwave_bc.py:FloquetPort (lines 451-549).
+/// Floquet plane-wave port.
 ///
 /// Models an incident plane wave at scan angles (θ, φ). Robin BC with γ = j·k₀·cos(θ).
 /// Two polarization modes: TE (S-pol, mode_nr=1) and TM (P-pol, mode_nr=2).
@@ -217,7 +219,7 @@ impl FloquetPort {
     }
 
     pub fn amplitude(&self, _k0: f64) -> f64 {
-        // E0 = sqrt(2·Z0·P / (A · cos θ)). Same as EMerge FloquetPort.get_amplitude.
+        // E0 = sqrt(2·Z0·P / (A · cos θ)).
         (2.0 * Z0 * self.power / (self.area * self.scan_theta.cos())).sqrt()
     }
 
@@ -252,7 +254,7 @@ impl FloquetPort {
     }
 }
 
-/// User-defined port, port of microwave_bc.py:UserDefinedPort (lines 1172-1292).
+/// User-defined port: a caller-supplied uniform transverse field.
 ///
 /// The user supplies the port's E-field mode as a closure. A common case (constant E
 /// uniform across the face, e.g. parallel-plate TEM) is exposed via `from_constant`.
@@ -296,7 +298,7 @@ impl UserDefinedPort {
     }
 }
 
-/// Coaxial port (TEM mode), port of microwave_bc.py:CoaxPort (lines 1031-1166).
+/// Coaxial port (TEM mode): radial E ∝ 1/ρ between inner and outer conductors.
 ///
 /// Mode field is the analytic TEM coaxial wave: E_ρ = V₀ / (ρ · ln(Ro/Ri)).
 /// V₀ = √(2·pZ₀·P), pZ₀ = (η/2π)·ln(Ro/Ri), η = Z₀/√εr, β = k₀√εr.
@@ -379,7 +381,7 @@ pub fn cs_from_origin_zaxis(origin: [f64; 3], z_axis: [f64; 3]) -> CoordinateSys
 }
 
 /// Surface impedance boundary condition (lossy conductor wall).
-/// Port of microwave_bc.py:SurfaceImpedance (lines 1521-1626).
+/// Leontovich surface-impedance boundary (lossy-metal sheet).
 ///
 /// Robin BC with γ = j·k₀·Z₀/R, where R = surface resistivity.
 /// Supports either user-supplied surface impedance or computation from σ via skin depth.
@@ -405,7 +407,7 @@ impl SurfaceImpedance {
         SurfaceImpedance { sigma: 0.0, mur: 1.0, er: 1.0, thickness: None, zs: Some(zs) }
     }
 
-    /// Computes the Robin γ-coefficient. Mirrors EMerge SurfaceImpedance.get_gamma(k0).
+    /// Robin γ-coefficient from the surface impedance Zs: γ = j·k₀·Z₀/Zs.
     pub fn get_gamma(&self, k0: f64) -> C64 {
         let r = self.surface_impedance(k0);
         // γ = j*k0*Z0 / R
@@ -437,7 +439,7 @@ impl SurfaceImpedance {
     }
 }
 
-/// Lumped element (R, L, C in series) on a surface, port of microwave_bc.py:LumpedElement.
+/// Lumped element (series R, L, C) applied as a surface impedance.
 ///
 /// Robin BC with γ = j·k₀·Z₀/(Z(ω)·width/height) where Z(ω) = R + jωL + 1/(jωC).
 /// Distinct from LumpedPort: there's no excitation, just a passive impedance load.
@@ -475,7 +477,7 @@ impl LumpedElement {
     }
 }
 
-/// Exact port of microwave_bc.py: LumpedPort (lines 1294-1441)
+/// Lumped port: a uniform-field gap source with a series reference impedance.
 pub struct LumpedPort {
     pub port_number: usize,
     pub power: f64,
@@ -487,27 +489,27 @@ pub struct LumpedPort {
 }
 
 impl LumpedPort {
-    /// Port of surfZ property: Z0 * width / height
+    /// Surface impedance of the gap: Z0 · width / height.
     pub fn surf_z(&self) -> f64 {
         self.z0 * self.width / self.height
     }
 
-    /// Port of voltage property: sqrt(2 * power * Z0)
+    /// Drive voltage: sqrt(2 · power · Z0).
     pub fn voltage(&self) -> f64 {
         (2.0 * self.power * self.z0).sqrt()
     }
 
-    /// Port of get_gamma(k0): j * k0 * Z0 / surfZ
+    /// Robin γ-coefficient for the port boundary term.: j * k0 * Z0 / surfZ
     pub fn get_gamma(&self, k0: f64) -> C64 {
         C64::new(0.0, k0 * Z0 / self.surf_z())
     }
 
-    /// Port of port_mode_3d_global: returns uniform field in direction
+    /// Uniform modal field along the gap direction.
     pub fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, _k0: f64) -> (f64, f64, f64) {
         (self.direction[0], self.direction[1], self.direction[2])
     }
 
-    /// Port of get_Uinc: -j*2*k0 * voltage/height * (Z0/surfZ) * mode_field
+    /// Incident source term: −2j·k0 · (voltage/height) · (Z0/surfZ) · mode_field.
     pub fn get_uinc(&self, x: f64, y: f64, z: f64, k0: f64) -> [C64; 3] {
         let emag = C64::new(0.0, -2.0 * k0) * C64::from(self.voltage() / self.height * (Z0 / self.surf_z()));
         let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, k0);
@@ -516,7 +518,7 @@ impl LumpedPort {
 }
 
 /// Auto-detect port coordinate system and dimensions from mesh face triangles.
-/// Port of EMerge's rect_basis() for axis-aligned rectangular ports.
+/// Detect an axis-aligned rectangular port and its local basis from its tris.
 ///
 /// Returns (CoordinateSystem, width, height) where width ≥ height.
 pub fn detect_rect_port(
@@ -607,11 +609,9 @@ pub fn detect_rect_port(
     (CoordinateSystem::new(center, xhat_f, yhat, zhat), width, height)
 }
 
-/// Return (width, height) for a lumped port using EMerge's convention:
-/// height = extent along `direction`, width = extent orthogonal (in the port plane).
-///
-/// EMerge microwave_bc.py:1314-1317, height is the size in the direction axis along which
-/// the potential is imposed; width is orthogonal to that. surfZ = Z0 * width / height.
+/// Return (width, height) for a lumped port:
+/// height = extent along `direction` (the axis the potential is imposed along),
+/// width = extent orthogonal to it in the port plane. surfZ = Z0 · width / height.
 pub fn lumped_port_dims(
     mesh: &crate::mesh::Mesh,
     tri_ids: &[usize],

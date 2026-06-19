@@ -1,30 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Copyright (C) 2024-2025 Milan Rother and rapidfem contributors
-// Copyright (C) Robert Fennis (original EMerge source)
+// Copyright (C) 2024-2026 Milan Rother and rapidfem contributors
 //
-// This file is part of rapidfem and contains code ported from EMerge
-// (https://github.com/FennisRobert/EMerge), originally licensed under
-// GPL-2.0-or-later with the Gmsh additional permission; redistributed
-// here under GPL-3.0-or-later with that permission preserved.
-// See LICENSE and NOTICE for the full terms.
+// This file is part of rapidfem, distributed under GPL-3.0-or-later with
+// the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Exact port of assembler.py: assemble_freq_matrix + solve pipeline.
+//! Frequency-domain assemble-and-solve pipeline.
 //!
-//! Follows EMerge's assembly order exactly:
-//! 1. E, B = tet_mass_stiffness_matrices
-//! 2. K = (E - k0² * B).tocsr()
-//! 3. PEC: collect DOFs from edge_to_field and tri_to_field for PEC faces
-//! 4. Robin: Bempty = empty_tri_matrix(); compute_bc_entries; K += generate_csr(Bempty)
-//! 5. Port vectors: assemble_robin_bc_bvec (generate_points_3d + compute_force_entries)
-//! 6. Eliminate PEC DOFs, solve K*x = b
+//! The standard vector-FEM driven-problem assembly:
+//! 1. element stiffness E and mass B from the R2 volume assembly,
+//! 2. system matrix K = E − k₀²·B,
+//! 3. PEC: drop the DOFs on perfect-conductor faces,
+//! 4. Robin: add the port-surface boundary term to K,
+//! 5. port excitation vector b from the incident modes,
+//! 6. eliminate the constrained DOFs and solve K·x = b per driven port.
+//!
+//! The sweep variant caches E/B for frequency-independent materials and reuses
+//! the solver's symbolic factorisation across frequencies.
 
 use num_complex::Complex64 as C64;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
 use crate::port::Port;
-use crate::tet_assembly::assemble_global_matrices;
-use crate::tri_assembly::{ned2_tri_stiff, ned2_tri_force};
+use crate::tet_assembly_r2::assemble_global_matrices;
+use crate::tri_assembly_r2::{ned2_tri_stiff, ned2_tri_force};
 use crate::coefficients::AreaCoeffCache;
 use crate::quadrature::gaus_quad_tri;
 use crate::constants::PI;
@@ -35,8 +34,8 @@ pub struct SolveResult {
     pub n_field: usize,
 }
 
-/// Exact port of assembler.py:assemble_freq_matrix + solve.
-/// Now accepts any Port type via trait objects.
+/// Assemble the driven system and solve for each driven port. Accepts any
+/// Port type via trait objects.
 pub fn assemble_and_solve(
     mesh: &Mesh,
     basis: &Nedelec2Basis,
@@ -64,7 +63,7 @@ pub fn assemble_and_solve_with_pml(
     let n_field = basis.n_field;
     let n_tets = mesh.n_tets();
 
-    // Step 1: Build material tensors (exact port of assembler.py lines 280-303)
+    // Step 1: Build per-tet material tensors.
     let (er, ur) = if let Some(pml) = pml_regions {
         crate::materials::build_material_tensors_with_pml(
             n_tets, materials.unwrap_or(&[]), pml, mesh, freq,
@@ -89,7 +88,7 @@ pub fn assemble_and_solve_with_pml(
     let t1 = web_time::Instant::now();
     let k0_sq = C64::from(k0 * k0);
 
-    // Step 3: PEC DOFs, exact port of assembler.py lines 356-373
+    // Step 3: collect the PEC (perfect-conductor) DOFs to constrain.
     let mut pec_ids: HashSet<usize> = HashSet::new();
 
     for &ti in pec_tri_indices {
@@ -110,8 +109,8 @@ pub fn assemble_and_solve_with_pml(
     }
     eprintln!("  PEC DOFs: {} of {}", pec_ids.len(), n_field);
 
-    // Step 4: Robin BC, exact port of assembler.py lines 380-413
-    // Uses EMerge's flat array mechanism: Bempty + compute_bc_entries + generate_csr
+    // Step 4: Robin / port boundary term, accumulated into a flat per-tri
+    // buffer (Bempty) and added to K as COO triplets.
     let ac_base = AreaCoeffCache::new();
     let gauss_points = gaus_quad_tri(4);
 

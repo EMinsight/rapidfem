@@ -14,7 +14,7 @@
 use num_complex::Complex64 as C64;
 use crate::mesh::Mesh;
 use crate::basis::Nedelec2Basis;
-use crate::tet_assembly::assemble_global_matrices;
+use crate::tet_assembly_r2::assemble_global_matrices;
 use crate::constants::*;
 use std::collections::HashSet;
 
