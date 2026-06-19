@@ -31,8 +31,35 @@
 
 use num_complex::Complex64 as C64;
 use crate::coefficients::volume_coeff;
+use crate::mesh::Mesh;
+use crate::basis::Nedelec2Basis;
 
 type V3 = [f64; 3];
+
+/// Inverse of a complex 3×3 tensor (textbook cofactor / determinant form).
+/// Panics on a (near-)singular tensor rather than emit NaNs into the system.
+fn matinv3(m: &[[C64; 3]; 3]) -> [[C64; 3]; 3] {
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    assert!(
+        det.norm() > crate::constants::SINGULAR_EPS,
+        "matinv3: singular 3x3 material tensor (|det| = {:.3e})",
+        det.norm()
+    );
+    let inv = C64::new(1.0, 0.0) / det;
+    [
+        [(m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv,
+         (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * inv,
+         (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv],
+        [(m[1][2] * m[2][0] - m[1][0] * m[2][2]) * inv,
+         (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * inv,
+         (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * inv],
+        [(m[1][0] * m[2][1] - m[1][1] * m[2][0]) * inv,
+         (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * inv,
+         (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * inv],
+    ]
+}
 
 #[inline]
 fn cross(a: &V3, b: &V3) -> V3 {
@@ -141,11 +168,12 @@ fn build_basis(
     for f in 0..4 {
         let (n0, n1, n2) = (tri_map[f][0], tri_map[f][1], tri_map[f][2]);
         // φ_f1 = |n0 n2| L_n1 (L_n0 ∇L_n2 − L_n2 ∇L_n0)
+        // (sign convention flipped to match the pipeline's face-mode-1 DOF)
         face_m1.push(BasisFn {
             scale: node_dist(n0, n2),
             terms: [
-                Term { coeff: 1.0, mono: [n1, n0], grad: n2 },
-                Term { coeff: -1.0, mono: [n1, n2], grad: n0 },
+                Term { coeff: -1.0, mono: [n1, n0], grad: n2 },
+                Term { coeff: 1.0, mono: [n1, n2], grad: n0 },
             ],
         });
         // φ_f2 = |n0 n1| L_n2 (L_n0 ∇L_n1 − L_n1 ∇L_n0)
@@ -253,4 +281,76 @@ pub fn r2_tet_stiff_mass(
         }
     }
     (d, f)
+}
+
+/// Assemble global stiffness (E) and mass (B) COO triplets from all tets using
+/// the canonical R2 element. Drop-in replacement for the legacy
+/// `tet_assembly::assemble_global_matrices` (same signature and DOF mapping);
+/// `ur` is permeability (inverted per tet to μ⁻¹), `er` is permittivity.
+pub fn assemble_global_matrices(
+    mesh: &Mesh,
+    basis: &Nedelec2Basis,
+    er: &[[[C64; 3]; 3]],
+    ur: &[[[C64; 3]; 3]],
+) -> (Vec<usize>, Vec<usize>, Vec<C64>, Vec<C64>) {
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    let n_tets = mesh.n_tets();
+    let nnz = n_tets * 400;
+    let mut rows = vec![0usize; nnz];
+    let mut cols = vec![0usize; nnz];
+    let mut data_e = vec![C64::new(0.0, 0.0); nnz];
+    let mut data_b = vec![C64::new(0.0, 0.0); nnz];
+
+    let chunks: Vec<(usize, &mut [usize], &mut [usize], &mut [C64], &mut [C64])> = {
+        let rc: Vec<&mut [usize]> = rows.chunks_mut(400).collect();
+        let cc: Vec<&mut [usize]> = cols.chunks_mut(400).collect();
+        let de: Vec<&mut [C64]> = data_e.chunks_mut(400).collect();
+        let db: Vec<&mut [C64]> = data_b.chunks_mut(400).collect();
+        (0..n_tets).zip(rc).zip(cc).zip(de).zip(db)
+            .map(|((((i, r), c), e), b)| (i, r, c, e, b))
+            .collect()
+    };
+
+    #[cfg(feature = "parallel")]
+    let it = chunks.into_par_iter();
+    #[cfg(not(feature = "parallel"))]
+    let it = chunks.into_iter();
+
+    it.for_each(|(itet, row_slice, col_slice, de_slice, db_slice)| {
+        let tet = &mesh.tets[itet];
+        let xs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][0]);
+        let ys: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][1]);
+        let zs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][2]);
+
+        let tet_edges = &mesh.tet_to_edge[itet];
+        let edge_lengths: [f64; 6] = std::array::from_fn(|i| mesh.edge_lengths[tet_edges[i]]);
+        let global_edge_nodes: [[usize; 2]; 6] = std::array::from_fn(|i| mesh.edges[tet_edges[i]]);
+        let local_edge_map = crate::basis::local_mapping(tet, &global_edge_nodes);
+
+        let tet_tris = &mesh.tet_to_tri[itet];
+        let global_tri_nodes: [[usize; 3]; 4] = std::array::from_fn(|i| mesh.tris[tet_tris[i]]);
+        let local_tri_map = crate::basis::local_mapping_tri(tet, &global_tri_nodes);
+
+        let ms = matinv3(&ur[itet]);
+        let mm = &er[itet];
+
+        let (esub, bsub) = r2_tet_stiff_mass(
+            &xs, &ys, &zs, &edge_lengths, &local_edge_map, &local_tri_map, &ms, mm,
+        );
+
+        let indices = &basis.tet_to_field[itet];
+        for ii in 0..20 {
+            for jj in 0..20 {
+                let idx = ii * 20 + jj;
+                row_slice[idx] = indices[ii];
+                col_slice[idx] = indices[jj];
+                de_slice[idx] = esub[ii][jj];
+                db_slice[idx] = bsub[ii][jj];
+            }
+        }
+    });
+
+    (rows, cols, data_e, data_b)
 }

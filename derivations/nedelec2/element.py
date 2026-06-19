@@ -101,8 +101,10 @@ def build_basis(verts):
     for (n0, n1, n2) in LOCAL_TRI_MAP:
         l_f1 = dist(verts, n0, n2)
         l_f2 = dist(verts, n0, n1)
-        # phi_f1 = l*L_n1*(L_n0 gradL_n2 - L_n2 gradL_n0)
-        face_m1.append(weighted_whitney(grads, n1, n0, n2, l_f1))
+        # phi_f1 = l*L_n1*(L_n2 gradL_n0 - L_n0 gradL_n2)
+        #   (face-mode-1 sign matched to the FD pipeline's interp/tri DOF
+        #   convention; sign is a free choice and does not change the span)
+        face_m1.append(weighted_whitney(grads, n1, n2, n0, l_f1))
         # phi_f2 = l*L_n2*(L_n0 gradL_n1 - L_n1 gradL_n0)
         face_m2.append(weighted_whitney(grads, n2, n0, n1, l_f2))
     basis = edge_m1 + face_m1 + edge_m2 + face_m2

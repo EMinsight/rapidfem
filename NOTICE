@@ -17,8 +17,6 @@ contain code directly ported from EMerge. Per the GPL-2.0-or-later
 grant, they are redistributed here under GPL-3.0-or-later with the Gmsh
 additional permission carried forward.
 
-  crates/rapidfem-fd/src/abc_order2.rs       (port of microwave_bc.py
-                                              order-2 ABC correction)
   crates/rapidfem-fd/src/assembly.rs         (port of microwave_3d.py
                                               assemble_and_solve)
   crates/rapidfem-fd/src/basis.rs            (port of nedleg2.py
@@ -26,8 +24,6 @@ additional permission carried forward.
   crates/rapidfem-fd/src/interp.rs           (port of ned2_tet_interp.py)
   crates/rapidfem-fd/src/sparam.rs           (port of sparam.py)
   crates/rapidfem-fd/src/touchstone.rs       (port of touchstone.py)
-  crates/rapidfem-fd/src/tet_assembly.rs     (port of ned2_tet.py
-                                              stiff / mass / force)
   crates/rapidfem-fd/src/tri_assembly.rs     (port of robinbc.py
                                               ned2_tri_stiff / force)
   crates/rapidfem-fd/src/waveguide.rs        (port of microwave_bc.py
@@ -47,6 +43,13 @@ New code in `crates/rapidfem-fd/src/waveguide.rs` (the `NumericalWavePort`
 class and its supporting helpers) and in `crates/rapidfem-core/src/port_eigen.rs`
 (the 2-D wave-port mode eigensolver) is original to this project, also
 under GPL-3.0-or-later.
+
+The volume element assembly (`crates/rapidfem-fd/src/tet_assembly_r2.rs`)
+and the barycentric integration coefficients (`coefficients.rs`) are
+original, clean-room work: the canonical Nédélec first-kind order-2 element
+and the simplex integration identity were re-derived from primary
+mathematics (see `derivations/`), independent of EMerge. They replace the
+former `tet_assembly.rs` port, which has been removed.
 
 ────────────────────────────────────────────────────────────────────────
 2. Runtime dependencies
