@@ -98,7 +98,28 @@ than EMerge), so correctness is re-confirmed end-to-end through the physics
 validation harness, and the unit golden norms are regenerated from this
 derivation.
 
-### Consistency requirement before the swap
+### Swap result (validated)
+
+The swap turned out minimal: `interp.rs` and `tri_assembly.rs` were already
+ported from EMerge's *canonical* face functions (= the derived basis), so
+only `tet_assembly.rs` (the non-canonical volume kernel) had to be replaced.
+One sign convention (face mode-1 DOF) was aligned to the pipeline. After the
+swap, `tet_assembly_r2` drives the FD solver and the legacy `tet_assembly.rs`
+was removed. Validation on in-repo fixtures:
+
+- **WR-90 straight** (matched): |S21| = 0.999964, |S11| = −75 dB, power
+  conserved (better than the old element's −63 dB).
+- **Iris filter** (resonant, reflective, 9–11 GHz): energy |S11|²+|S21|² =
+  0.9999 across the band; A/B vs the old EMerge element agrees to ΔS11 ≈
+  1.5e-3, ΔS21 ≈ 2e-4 (the expected canonical-vs-non-canonical gap).
+- **Two-iris filter** (9–11 GHz): energy = 0.9998, reciprocity |S21−S12| = 0
+  exactly.
+
+EMerge's volume assembly was found to be *internally inconsistent* with its
+own interp/tri (non-canonical element vs canonical reconstruction); the swap
+removes that latent inconsistency.
+
+### Consistency requirement (was the concern before the swap)
 
 The element basis is shared across the FD pipeline: `tet_assembly` (volume),
 `tri_assembly` (surface Robin/port terms), `interp` (field reconstruction)
