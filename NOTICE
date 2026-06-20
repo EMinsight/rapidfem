@@ -1,72 +1,36 @@
 rapidfem — NOTICE
 ==================
 
-This file lists copyright attribution and third-party dependencies.
-See LICENSE for the full GNU GPL v3 text with the Gmsh additional
-permission.
+See LICENSE for the full GNU GPL v3 text with the Gmsh additional permission.
 
 ────────────────────────────────────────────────────────────────────────
 0. Licensing
 ────────────────────────────────────────────────────────────────────────
 
-All rapidfem source code is copyright (C) Milan Rother and rapidfem
-contributors. The public distribution is offered under GPL-3.0-or-later
-(with the Gmsh additional permission). Because the copyright is held wholly
-by the project, the copyright holder may additionally offer rapidfem under
-separate commercial terms; the GPL grant here does not waive that right.
+All rapidfem source code is original work, copyright (C) Milan Rother and
+rapidfem contributors. The public distribution is offered under
+GPL-3.0-or-later (with the Gmsh additional permission): free for hobby and
+academic use. Because the copyright is held wholly by the project, it may
+also be licensed under separate commercial terms; the GPL grant does not
+waive that right. Commercial licensing is available on request.
 
-The only remaining copyleft *obligation* on a distributed binary comes from
-linking Gmsh (GPL-2.0-or-later) at runtime — not from any rapidfem source.
-A build that does not link Gmsh (e.g. using the project's own mesher) carries
-no third-party copyleft obligation, leaving the licensing of rapidfem's own
-code entirely at the copyright holder's discretion.
+The only copyleft obligation on a distributed binary comes from linking Gmsh
+(GPL-2.0-or-later) at runtime — not from any rapidfem source.
 
 ────────────────────────────────────────────────────────────────────────
-1. Acknowledgement: EMerge
-────────────────────────────────────────────────────────────────────────
-
-Copyright (C) Robert Fennis and EMerge contributors.
-Upstream: https://github.com/FennisRobert/EMerge
-
-Early development of rapidfem's frequency-domain backend used EMerge
-(GPL-2.0-or-later) as a reference implementation. Those files have since
-been rewritten so that no EMerge source remains:
-
-  * The core finite-element kernels — the canonical Nédélec first-kind
-    order-2 element (`tet_assembly_r2.rs`), the barycentric integration
-    coefficients (`coefficients.rs`), the surface Robin/port assembly
-    (`tri_assembly_r2.rs`) and the field reconstruction (`interp.rs`) —
-    were re-derived from primary mathematics with an independent symbolic
-    derivation harness (see `derivations/`) and are validated entrywise
-    against it. The former `tet_assembly.rs` / `tri_assembly.rs` ports were
-    removed.
-
-  * The remaining modules (`assembly.rs`, `sparam.rs`, `waveguide.rs`,
-    `materials.rs`, `quadrature.rs`, `mesh.rs`, `basis.rs`, `constants.rs`,
-    `touchstone.rs`) implement standard, non-copyrightable content —
-    textbook electromagnetic formulas (Pozar, Jackson, Collin), published
-    numerical tables (Dunavant; Eisenberg & Malvern), the public Touchstone
-    file format, and generic FEM data structures / assembly orchestration —
-    re-expressed with primary-source citations.
-
-rapidfem remains under GPL-3.0-or-later with the Gmsh additional permission.
-EMerge is acknowledged here in good faith as the original architectural
-reference.
-
-────────────────────────────────────────────────────────────────────────
-2. Runtime dependencies
+1. Third-party runtime dependencies
 ────────────────────────────────────────────────────────────────────────
 
   gmsh                   GPL-2.0-or-later (with Gmsh additional permission)
-  Intel oneAPI MKL       Intel Simplified Software License (runtime-only)
+  Intel oneAPI MKL       Intel Simplified Software License (optional, runtime)
   faer (Rust)            MIT
   num-complex (Rust)     MIT / Apache-2.0
   ndarray (Rust)         MIT / Apache-2.0
+  pyo3 (Rust)            MIT / Apache-2.0
   numpy (Python)         BSD-3-Clause
   scipy (Python)         BSD-3-Clause
   pyvista (Python)       MIT
-  pyo3 (Rust)            MIT / Apache-2.0
 
-The Gmsh additional permission in LICENSE explicitly authorises linking
-against Gmsh, Netgen, METIS, OpenCASCADE and ParaView under their own
-licences when distributing binaries containing rapidfem.
+The Gmsh additional permission in LICENSE authorises linking against Gmsh,
+Netgen, METIS, OpenCASCADE and ParaView under their own licences when
+distributing binaries containing rapidfem.
