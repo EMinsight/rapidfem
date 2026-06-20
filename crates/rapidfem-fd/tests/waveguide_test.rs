@@ -1,6 +1,6 @@
 /// Unit tests for waveguide.rs against reference values.
 use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
-use rapidfem_fd::constants::*;
+use rapidfem_fd::excitation::Excitation;
 
 fn make_test_port() -> RectWaveguide {
     // Port 1 for Box(22.86mm, 30mm, 10.16mm) at origin, wg.front face
@@ -24,13 +24,13 @@ fn make_test_port() -> RectWaveguide {
 #[test]
 fn test_waveguide_beta_gamma_zmode() {
     let port = make_test_port();
-    let k0 = 2.0 * PI * 10.0e9 / C0;
+    let exc = Excitation::new(10.0e9, 1.0);
 
-    let beta = port.get_beta(k0);
-    let gamma = port.get_gamma(k0);
-    let zmode = port.z_mode(k0);
-    let amp = port.get_amplitude(k0);
-    let qm = port.qmode(k0);
+    let beta = port.get_beta(&exc);
+    let gamma = port.get_gamma(&exc);
+    let zmode = port.z_mode(&exc);
+    let amp = port.get_amplitude(&exc);
+    let qm = port.qmode(&exc);
 
     eprintln!("beta = {:.15e}", beta);
     eprintln!("gamma = {:.15e}", gamma);
@@ -50,9 +50,9 @@ fn test_waveguide_beta_gamma_zmode() {
 #[test]
 fn test_waveguide_mode_field() {
     let port = make_test_port();
-    let k0 = 2.0 * PI * 10.0e9 / C0;
+    let exc = Excitation::new(10.0e9, 1.0);
 
-    let (ex, ey, ez) = port.port_mode_3d_global(0.01, 0.0, 0.005, k0);
+    let (ex, ey, ez) = port.port_mode_3d_global(0.01, 0.0, 0.005, &exc);
 
     eprintln!("mode_field_global(0.01, 0, 0.005) = ({:.15e}, {:.15e}, {:.15e})", ex, ey, ez);
 
@@ -67,9 +67,9 @@ fn test_waveguide_mode_field() {
 #[test]
 fn test_waveguide_uinc() {
     let port = make_test_port();
-    let k0 = 2.0 * PI * 10.0e9 / C0;
+    let exc = Excitation::new(10.0e9, 1.0);
 
-    let ui = port.get_uinc(0.01, 0.0, 0.005, k0);
+    let ui = port.get_uinc(0.01, 0.0, 0.005, &exc);
 
     eprintln!("get_uinc(0.01, 0, 0.005) = ({:.6e}, {:.6e}, {:.6e})", ui[0], ui[1], ui[2]);
 

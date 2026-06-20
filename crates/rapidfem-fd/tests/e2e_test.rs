@@ -8,7 +8,7 @@ use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
 use rapidfem_fd::assembly::assemble_and_solve;
 use rapidfem_fd::sparam::sparam_waveport;
 use rapidfem_fd::interp;
-use rapidfem_fd::constants::*;
+use rapidfem_fd::excitation::Excitation;
 
 #[test]
 #[ignore = "needs tests/meshes/wr90_straight.msh fixture (not in repo)"]
@@ -17,7 +17,7 @@ fn test_straight_waveguide_sparams() {
     let basis = Nedelec2Basis::new(&mesh);
 
     let freq = 10.0e9;
-    let k0 = 2.0 * PI * freq / C0;
+    let exc = Excitation::new(freq, 1.0);
 
     let port1_tris = mesh.tris_for_tag(3).to_vec();
     let port2_tris = mesh.tris_for_tag(4).to_vec();
@@ -110,8 +110,8 @@ fn test_straight_waveguide_sparams() {
 
     let p1_ref: &dyn rapidfem_fd::port::Port = &port1;
     let p2_ref: &dyn rapidfem_fd::port::Port = &port2;
-    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, k0, true, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
-    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, k0, false, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
+    let s11 = sparam_waveport(&mesh.nodes, &port1_tri_verts, p1_ref, &exc, true, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
+    let s21 = sparam_waveport(&mesh.nodes, &port2_tri_verts, p2_ref, &exc, false, &fieldf, &(|_x: f64, _y: f64, _z: f64| 1.0), 4);
 
     eprintln!("\n=== S-parameters ===");
     eprintln!("  |S11| = {:.6} ({:.1} dB)", s11.norm(), 20.0 * s11.norm().max(1e-10).log10());
