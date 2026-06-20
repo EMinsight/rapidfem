@@ -85,7 +85,7 @@ pub fn assemble_and_solve_with_pml(
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
 ) -> Result<SolveResult, String> {
-    let exc = crate::excitation::Excitation::new(freq);
+    let exc = crate::excitation::Excitation::new(freq, mesh.l0);
     let k0 = exc.k0;
     let n_field = basis.n_field;
     let n_tets = mesh.n_tets();
@@ -381,7 +381,7 @@ pub fn frequency_sweep_with_pml(
 
     for (fi, &freq) in frequencies.iter().enumerate() {
         let t_freq = web_time::Instant::now();
-        let exc = crate::excitation::Excitation::new(freq);
+        let exc = crate::excitation::Excitation::new(freq, mesh.l0);
         let k0 = exc.k0;
         let k0_sq = C64::from(k0 * k0);
         let n_field = basis.n_field;

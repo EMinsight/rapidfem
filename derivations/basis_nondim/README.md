@@ -106,9 +106,35 @@ restore `L0`. Sits upstream of equilibration and ①.
 
 ## Recommendation
 
-Implement **④** when RFIC / sub-micron meshes come on the roadmap — it is the
-lever with real value here and low cost, and it makes the whole solver
-unit-invariant (a correctness property, not just a speed-up). Defer **①** into
-the eventual hierarchical-basis work (②); a 2× constant factor does not justify
-a basis rewrite on its own. Neither lever touches the geometric sliver blowup —
-that remains the own-mesher's job.
+Defer **①** into the eventual hierarchical-basis work (②); a 2× constant factor
+does not justify a basis rewrite on its own. Neither lever touches the geometric
+sliver blowup — that remains the own-mesher's job.
+
+## ④ — IMPLEMENTED (characteristic-length non-dimensionalization)
+
+Lever ④ is now in the solver. `Mesh::normalize_characteristic_length` divides
+the node coordinates by `L0 = mean edge length` at `Simulation::new`; the
+frequency state (`Excitation`) carries `κ = k0·L0` for the wave operator and
+propagation constants while keeping the physical `ω` for the dispersive
+material/circuit terms (length-coupled wave impedances use `ω̃ = κ·c0`). The
+solver assembles and solves on O(1) coordinates; outputs are converted back at
+the boundary (E ÷L0, H/curl ÷L0², coordinates ×L0, eigen-frequency ÷L0,
+far-field done fully in physical units). `RAPIDFEM_NO_NORMALIZE=1` keeps physical
+units (`l0 = 1`) as an escape hatch / bit-identity oracle.
+
+**Empirically validated** (all on light fixtures, < 100k DOF):
+
+- Normalization is **bit-identical** to the physical path on S-parameters
+  (WR-90 single-solve and the 11-frequency iris sweep) — no regression.
+- Field outputs (VTK E/coords) agree to **4e-9 relative** (machine precision;
+  the residual is O(1)-vs-physical rounding, not a factor error).
+- Cavity eigen-frequencies match exactly (8.559581 GHz … invariant).
+- **The headline win:** a geometrically perfect WR-90 scaled to **20 pm**
+  features (where the un-normalized solver collapses to total reflection,
+  `|S11|=1`) now returns the bit-identical *correct* S-parameters. Scale
+  invariance is total across the full range (20 Mm → 20 pm), not just the
+  physically realistic part the equilibration already covered.
+
+The motivation is forward-looking as much as present: a future float32 / GPU
+solve path has far less headroom than float64, so O(1)-magnitude assembly (which
+equilibration cannot fully substitute for at low precision) becomes load-bearing.

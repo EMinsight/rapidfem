@@ -105,10 +105,11 @@ impl RectWaveguide {
         C64::new(0.0, self.get_beta(exc))
     }
 
-    /// Mode wave impedance (TE: ωμ/β).
-    /// Zmode = ω * MU0 / beta
+    /// Mode wave impedance (TE: ωμ/β). Uses the length-coupled ω̃ = κ·c₀ so the
+    /// impedance is invariant under the L₀ scaling (ω̃ and β both carry one L₀).
+    /// Zmode = ω̃ * MU0 / beta
     pub fn z_mode(&self, exc: &Excitation) -> f64 {
-        exc.omega * MU0 / self.get_beta(exc)
+        exc.omega_scaled() * MU0 / self.get_beta(exc)
     }
 
     /// Mode admittance-like weighting factor.
@@ -756,7 +757,8 @@ impl NumericalWavePort {
     /// `sparam_mode_power`); the mode-projection path (`sparam_waveport`)
     /// is amplitude-invariant.
     pub fn z_mode(&self, exc: &Excitation) -> f64 {
-        self.mode.te_impedance(exc.omega) * Z0
+        // Length-coupled ω̃ = κ·c₀ keeps the cutoff ratio ωc/ω̃ invariant under L₀.
+        self.mode.te_impedance(exc.omega_scaled()) * Z0
     }
 
     /// Power-normalised amplitude scaling for the unit-peak mode profile.
