@@ -122,8 +122,9 @@ pub fn compute_farfield_full(
     gq_order: usize,
     radiation_efficiency: Option<f64>,
 ) -> RadiationPattern {
-    let k0 = 2.0 * PI * frequency / C0;
-    let omega = 2.0 * PI * frequency;
+    let exc = crate::excitation::Excitation::new(frequency);
+    let k0 = exc.k0;
+    let omega = exc.omega;
     let j = C64::new(0.0, 1.0);
 
     // Build theta/phi grids

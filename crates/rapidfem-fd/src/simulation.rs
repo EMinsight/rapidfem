@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::basis::Nedelec2Basis;
 use crate::config::{Config, PortConfig};
-use crate::constants::{C0, EPS0, LUMPED_PORT_PROJ_EPS, MU0, PI};
+use crate::constants::{EPS0, LUMPED_PORT_PROJ_EPS, MU0};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
 use crate::interp;
@@ -332,7 +332,7 @@ impl Simulation {
             }
         };
 
-        let k0 = 2.0 * PI * freq / C0;
+        let exc = crate::excitation::Excitation::new(freq);
         let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
 
         for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
@@ -344,7 +344,7 @@ impl Simulation {
             };
             for (obs_idx, &obs_pi) in ctx.driven_indices.iter().enumerate() {
                 let active = obs_idx == exc_idx;
-                let s = if let (true, Some(lines), Some((_, z0, v_inc))) = (
+                let s = if let (true, Some(lines), Some((_, _z0, v_inc))) = (
                     port_dyn[obs_pi].is_lumped(),
                     self.lumped_lines.get(&obs_pi),
                     port_dyn[obs_pi].lumped_voltage_params(),
@@ -352,7 +352,7 @@ impl Simulation {
                     let n_lines = lines.len() as f64;
                     let mut s_sum = C64::new(0.0, 0.0);
                     for line_pts in lines {
-                        s_sum += sparam_voltage_line(v_inc, z0, active, &fieldf, line_pts);
+                        s_sum += sparam_voltage_line(v_inc, active, &fieldf, line_pts);
                     }
                     s_sum / C64::from(n_lines)
                 } else {
@@ -360,7 +360,7 @@ impl Simulation {
                         .iter()
                         .map(|&ti| self.mesh.tris[ti])
                         .collect();
-                    sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, &weight, 4)
+                    sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], &exc, active, &fieldf, &weight, 4)
                 };
                 freq_s[obs_idx][exc_idx] = s;
             }
@@ -407,7 +407,7 @@ impl Simulation {
     ) -> Option<crate::error_estimator::ErrorEstimate> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let k0 = 2.0 * PI * freq / C0;
+        let k0 = crate::excitation::Excitation::new(freq).k0;
         let n_tets = self.mesh.n_tets();
         let (er_tensors, _) = if self.materials.is_empty() {
             let id: [[C64; 3]; 3] = [
@@ -534,7 +534,7 @@ impl Simulation {
     pub fn current_density_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let omega = 2.0 * PI * freq;
+        let omega = crate::excitation::Excitation::new(freq).omega;
         let sigma = self.per_tet_sigma_eff(omega);
         let n_nodes = self.mesh.n_nodes();
         let node_to_tet = self.node_to_tet_map();
@@ -563,7 +563,7 @@ impl Simulation {
     pub fn h_field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let omega = 2.0 * PI * freq;
+        let omega = crate::excitation::Excitation::new(freq).omega;
         let mur = self.per_tet_mur();
         let n_nodes = self.mesh.n_nodes();
         let node_to_tet = self.node_to_tet_map();
@@ -1073,7 +1073,7 @@ fn build_wave_numerical(
     let face_tris: Vec<[usize; 3]> = tri_ids.iter().map(|&t| mesh.tris[t]).collect();
     let pm = PortMesh2D::from_face(&mesh.nodes, &face_tris, nrm, pec_opt);
 
-    let k0 = 2.0 * PI * f0 / C0;
+    let k0 = crate::excitation::Excitation::new(f0).k0;
 
     // Per-face εr (size = face_tris.len()) is always needed: the vector
     // path uses it as the eigensolve weight, and the unified amplitude

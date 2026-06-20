@@ -19,6 +19,7 @@
 use num_complex::Complex64 as C64;
 use crate::quadrature::gaus_quad_tri;
 use crate::port::Port;
+use crate::excitation::Excitation;
 
 /// Gauss-quadrature surface integral of a scalar function over a triangle set.
 pub fn surface_integral(
@@ -71,7 +72,7 @@ pub fn sparam_waveport(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
     port: &dyn Port,
-    k0: f64,
+    exc: &Excitation,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
     weight: &dyn Fn(f64, f64, f64) -> f64,
@@ -80,7 +81,7 @@ pub fn sparam_waveport(
     let q = if active { 1.0 } else { 0.0 };
 
     let mode_dot_field = surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, exc).unwrap_or((0.0, 0.0, 0.0));
         let (fx, fy, fz) = fieldf(x, y, z);
         let c = C64::from(weight(x, y, z));
 
@@ -92,7 +93,7 @@ pub fn sparam_waveport(
     }, gq_order);
 
     let norm = surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, exc).unwrap_or((0.0, 0.0, 0.0));
         C64::from(weight(x, y, z) * (mx*mx + my*my + mz*mz))
     }, gq_order);
 
@@ -110,16 +111,16 @@ pub fn sparam_field_power(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
     port: &dyn Port,
-    k0: f64,
+    exc: &Excitation,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
     gq_order: usize,
 ) -> C64 {
     let q = if active { 1.0 } else { 0.0 };
-    let z_mode = port.z_mode(k0);
+    let z_mode = port.z_mode(exc);
 
     surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, exc).unwrap_or((0.0, 0.0, 0.0));
         let (fx, fy, fz) = fieldf(x, y, z);
 
         let ex1 = fx - C64::from(q * mx);
@@ -141,13 +142,13 @@ pub fn sparam_mode_power(
     nodes: &[[f64; 3]],
     tri_verts: &[[usize; 3]],
     port: &dyn Port,
-    k0: f64,
+    exc: &Excitation,
     gq_order: usize,
 ) -> C64 {
-    let z_mode = port.z_mode(k0);
+    let z_mode = port.z_mode(exc);
 
     surface_integral(nodes, tri_verts, &|x, y, z| {
-        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, k0).unwrap_or((0.0, 0.0, 0.0));
+        let (mx, my, mz) = port.port_mode_3d_global(x, y, z, exc).unwrap_or((0.0, 0.0, 0.0));
         let ex2 = C64::from(mx).conj();
         let ey2 = C64::from(my).conj();
         let ez2 = C64::from(mz).conj();
@@ -166,9 +167,11 @@ pub fn sparam_mode_power(
 ///
 /// For active port (self-excitation):  S = (V_total - V_inc) / V_inc
 /// For passive port (observation only): S = V_total / V_inc
+///
+/// The reference impedance Z₀ cancels in the wave-amplitude ratio (it enters
+/// `a` and `b` identically), so it is not a parameter here.
 pub fn sparam_voltage_line(
     v_inc: f64,
-    z0: f64,
     active: bool,
     fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
     line_points: &[[f64; 3]],

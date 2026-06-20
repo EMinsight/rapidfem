@@ -68,7 +68,7 @@ pub fn solve_eigenmode(
     eprintln!("  Eigenmode: {} free DOFs, target={:.4e} Hz", n_free, target_freq);
 
     // Shift σ = (2πf/c)²
-    let k0_target = 2.0 * PI * target_freq / C0;
+    let k0_target = crate::excitation::Excitation::new(target_freq).k0;
     let sigma = C64::from(k0_target * k0_target);
 
     // Build COO for (E - σB) and B, filtered to free DOFs
