@@ -155,6 +155,23 @@ impl PySimulation {
         self.inner.ports.iter().filter(|p| p.is_driven()).count()
     }
 
+    /// Modal characteristic impedance (Ω) of the `driven_idx`-th DRIVEN port at
+    /// `freq_hz`. The index matches the S-matrix column order (driven ports
+    /// only). Modal ports (waveguide / wave) return their frequency-dependent
+    /// modal impedance; lumped ports return their fixed reference z0. Used by
+    /// Python to renormalize the modal-referenced S-parameters to a fixed
+    /// reference impedance. Returns 0.0 if the index is out of range.
+    fn port_z_mode(&self, driven_idx: usize, freq_hz: f64) -> f64 {
+        let exc = rapidfem_fd::excitation::Excitation::new(freq_hz, self.inner.mesh.l0);
+        self.inner
+            .ports
+            .iter()
+            .filter(|p| p.is_driven())
+            .nth(driven_idx)
+            .map(|p| p.z_mode(&exc))
+            .unwrap_or(0.0)
+    }
+
     /// Run an eigenmode analysis. Requires `[eigenmode]` block in the TOML config.
     /// Returns a list of `Eigenmode` (frequency, Q, field).
     fn run_eigenmode(&self) -> PyResult<Vec<PyEigenmode>> {
