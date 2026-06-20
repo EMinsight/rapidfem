@@ -310,7 +310,7 @@ impl Simulation {
         let grid = interp::TetGrid::new(&self.mesh);
 
         // Local wave-admittance weight √(εᵣ/μᵣ) per tet, for the power-overlap
-        // S-parameter (matches EMerge's TEM `const = 1/√(μᵣ/εᵣ)`). Constant
+        // S-parameter (the TEM weight `1/√(μᵣ/εᵣ)`). Constant
         // across a homogeneous port (cancels in the ratio); varies across an
         // inhomogeneous quasi-TEM cross-section, where it is what keeps the
         // extraction unitary. Material scalars are frequency-flat here.
@@ -959,7 +959,7 @@ fn build_pml_regions(mesh: &Mesh, config: &Config) -> Vec<PmlRegion> {
     }).collect()
 }
 
-/// Build EMerge-compatible lumped port integration lines: one line per min-projection
+/// Build lumped port integration lines: one line per min-projection
 /// vertex on the port face, line goes from that vertex to (vertex + direction × height).
 /// S-parameter averages over lines. See microwave_3d.py:_define_lumped_port_integration_points.
 fn build_lumped_lines(

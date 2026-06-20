@@ -383,8 +383,7 @@ struct Ned2ModeData {
     /// Longitudinal `E_z` P2 coefficients on the vertex DOFs (per global node)
     /// and edge-midpoint DOFs (per global edge). A quasi-TEM mode in an
     /// inhomogeneous cross-section carries `E_z ≠ 0`; `e_profile` adds it along
-    /// the propagation axis (matching EMerge's `ned2_tri_interp_full`, which
-    /// combines `E_t + ẑ·E_z`).
+    /// the propagation axis, so the reconstructed field is `E_t + ẑ·E_z`.
     e_z_node: Vec<f64>,
     e_z_edge: Vec<f64>,
 }
@@ -693,8 +692,8 @@ fn wedge2(a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 /// Evaluate the Ned-2 second-kind transverse edge basis function for one of
-/// the triangle's 6 edge DOFs at barycentric coordinates `l`. Direct port of
-/// EMerge's `_ne1`/`_ne2` (generalized_eigen_hb.py): for edge `e` with local
+/// the triangle's 6 edge DOFs at barycentric coordinates `l`. For edge `e`
+/// with local
 /// endpoints `a=(e+1)%3`, `b=(e+2)%3` and Whitney field
 /// `W = λ_a∇λ_b − λ_b∇λ_a`,
 ///   mode 0 (`ne1`) = W,                 (orientation-odd → carries `sign`)
@@ -720,7 +719,7 @@ fn ned2_edge_basis(
 
 /// Scalar curl (z-component) of the Ned-2 edge basis function. `curl(W) =
 /// 2·c_ab` (constant) and `curl((λ_a−λ_b)W) = 3·(λ_a−λ_b)·c_ab` (linear),
-/// where `c_ab = (∇λ_a × ∇λ_b)_z`. Mirrors EMerge `_ne1_curl`/`_ne2_curl`.
+/// where `c_ab = (∇λ_a × ∇λ_b)_z`.
 #[inline]
 fn ned2_edge_curl(
     e: usize,
@@ -739,8 +738,8 @@ fn ned2_edge_curl(
     }
 }
 
-/// Evaluate one of the 2 interior face (bubble) basis functions. Direct port
-/// of EMerge's `_nf1`/`_nf2` (using all three vertices in local order):
+/// Evaluate one of the 2 interior face (bubble) basis functions
+/// (using all three vertices in local order):
 ///   nf1 = −λ_1(λ_2∇λ_0 − λ_0∇λ_2) − λ_0(λ_2∇λ_1 − λ_1∇λ_2),
 ///   nf2 =  λ_2(λ_0∇λ_1 − λ_1∇λ_0) + λ_1(λ_0∇λ_2 − λ_2∇λ_0).
 /// Interior DOFs (per-triangle, not shared) → no orientation sign.
@@ -771,7 +770,7 @@ fn ned2_face_basis(
 }
 
 /// Scalar curl (z-component) of the face basis functions, derived from the
-/// `_nf1`/`_nf2` forms (mirrors EMerge `_nf1_curl`/`_nf2_curl`):
+/// `nf1`/`nf2` forms above:
 ///   curl(nf1) = 3·(λ_0·c_12 + λ_1·c_02),
 ///   curl(nf2) = 3·(λ_1·c_02 + λ_2·c_01),   c_ij = (∇λ_i × ∇λ_j)_z.
 #[inline]
@@ -1040,7 +1039,7 @@ pub fn solve_vector_modes(
     // refinement, where a dense ndof×ndof factorisation is intractable.
     let mut a_trip: Vec<(usize, usize, f64)> = Vec::new();
     let mut b_trip: Vec<(usize, usize, f64)> = Vec::new();
-    // Symmetric eigenproblem A·x = λ·B·x (cf. EMerge `generalized_eigen_hb.py`).
+    // Symmetric eigenproblem A·x = λ·B·x.
     //
     //   A = [ Att − k0²·Btt          0         ]
     //       [        0                0         ]
@@ -1131,8 +1130,8 @@ pub fn solve_vector_modes(
                 }
                 mass  *= area;
                 stiff *= area;
-                // EMerge-faithful sign convention (generalized_eigen_hb.py:408):
-                // A[:8,:8] = Att − k0²·Btt, assembled WITHOUT negation. The
+                // Sign convention: A[:8,:8] = Att − k0²·Btt, assembled
+                // WITHOUT negation. The
                 // generalized eigenvalue is then λ = −β² (the propagating band
                 // is λ < 0); β is recovered as √(−λ) in the solve below. The
                 // discrete gradient null space lands at λ ≈ 0 and is rejected
@@ -1189,7 +1188,7 @@ pub fn solve_vector_modes(
     }
 
     // ============================================================== SOLVE
-    // EMerge convention: the generalized eigenvalue is λ = −β². The physical
+    // Convention: the generalized eigenvalue is λ = −β². The physical
     // propagating band is λ ∈ [−ε_max·k0², 0); n_eff² = β²/k0² = −λ/k0², with
     // 0 < n_eff² ≤ ε_max for a confined mode.
     //
@@ -1197,10 +1196,10 @@ pub fn solve_vector_modes(
     // curl-free modes spread across n_eff² ∈ [ε_min, ε_max] (in a homogeneous
     // region they pile into one degenerate cluster at exactly ε_max). A DENSE
     // all-at-once eigensolve cannot separate that cluster from the genuine
-    // guided mode, the eigenvectors mix. EMerge instead uses a shift-invert
-    // ITERATIVE solve (scipy `eigs`) that resolves only the few isolated modes
-    // nearest a shift σ, so the cluster contributes at most one representative
-    // and the genuine mode converges cleanly. We replicate that with a dense
+    // guided mode, the eigenvectors mix. A shift-invert ITERATIVE solve
+    // (scipy `eigs`) that resolves only the few isolated modes nearest a
+    // shift σ keeps the cluster to at most one representative, so the genuine
+    // mode converges cleanly. We achieve the same with a dense
     // shift-invert ARNOLDI (Krylov dim ≪ ndof) on M = (A − σB)⁻¹B, swept over
     // σ across the band, then keep the curl-bearing modes (k_t² above floor)
     // and return the fundamental (largest n_eff), the curl-free spurious /

@@ -26,7 +26,7 @@ const FACTORIALS: [u64; 10] = [1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880];
 /// Indices a,b,c,d are in range [0,4] where 0 means "not used" and 1-4 select
 /// a vertex coordinate. Result: ∫_tet L_a L_b L_c L_d dV / (6V).
 pub fn volume_coeff(a: usize, b: usize, c: usize, d: usize) -> f64 {
-    // Count occurrences of each index 0-6 (EMerge uses indices 0-6, only 1-4 matter)
+    // Count occurrences of each index 0-6 (only 1-4 matter)
     let mut klmn = [0usize; 7];
     klmn[a] += 1;
     klmn[b] += 1;

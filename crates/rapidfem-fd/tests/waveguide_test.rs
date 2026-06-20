@@ -1,13 +1,13 @@
-/// Unit tests for waveguide.rs against EMerge reference values.
+/// Unit tests for waveguide.rs against reference values.
 use rapidfem_fd::waveguide::{RectWaveguide, CoordinateSystem};
 use rapidfem_fd::constants::*;
 
 fn make_test_port() -> RectWaveguide {
-    // EMerge port 1 for Box(22.86mm, 30mm, 10.16mm) at origin, wg.front face
+    // Port 1 for Box(22.86mm, 30mm, 10.16mm) at origin, wg.front face
     let cs = CoordinateSystem::new(
         [0.01143, 0.0, 0.00508],  // origin
         [1.0, 0.0, 0.0],          // xax
-        [0.0, 0.0, 1.0],          // yax (EMerge: [0, -0, 1] ≈ [0, 0, 1])
+        [0.0, 0.0, 1.0],          // yax ([0, -0, 1] ≈ [0, 0, 1])
         [0.0, -1.0, 0.0],         // zax
     );
     RectWaveguide {
@@ -56,7 +56,7 @@ fn test_waveguide_mode_field() {
 
     eprintln!("mode_field_global(0.01, 0, 0.005) = ({:.15e}, {:.15e}, {:.15e})", ex, ey, ez);
 
-    // EMerge: (0, 0, 2.875035710170894e+03)
+    // Reference: (0, 0, 2.875035710170894e+03)
     assert!(ex.abs() < 1e-10, "Ex should be 0, got {}", ex);
     assert!(ey.abs() < 1e-10, "Ey should be 0, got {}", ey);
     assert!((ez - 2.875035710170894e+03).abs() < 1e-3, "Ez wrong: {}", ez);
@@ -73,7 +73,7 @@ fn test_waveguide_uinc() {
 
     eprintln!("get_uinc(0.01, 0, 0.005) = ({:.6e}, {:.6e}, {:.6e})", ui[0], ui[1], ui[2]);
 
-    // EMerge: (0, 0, -9.098812752302133e+05j)
+    // Reference: (0, 0, -9.098812752302133e+05j)
     assert!(ui[0].norm() < 1e-6);
     assert!(ui[1].norm() < 1e-6);
     assert!((ui[2].im - (-9.098812752302133e+05)).abs() < 1e0, "Uinc_z wrong: {}", ui[2]);

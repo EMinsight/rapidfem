@@ -11,7 +11,7 @@
 use num_complex::Complex64 as C64;
 use crate::excitation::Excitation;
 
-/// Unified port interface matching EMerge's RobinBC abstract class.
+/// Unified port interface for the Robin boundary-condition ports.
 pub trait Port {
     /// Robin BC impedance parameter γ
     fn get_gamma(&self, exc: &Excitation) -> C64;

@@ -1,10 +1,10 @@
-/// Verify mesh connectivity matches EMerge exactly.
+/// Verify mesh connectivity against known reference counts.
 use rapidfem_fd::mesh_io::load_mesh;
 use rapidfem_fd::basis::Nedelec2Basis;
 
 #[test]
 #[ignore = "needs tests/meshes/wr90_straight.msh fixture (not in repo)"]
-fn test_mesh_counts_vs_emerge() {
+fn test_mesh_counts() {
     let mesh = load_mesh("tests/meshes/wr90_straight.msh").expect("Load mesh");
     let basis = Nedelec2Basis::new(&mesh);
 
@@ -30,7 +30,7 @@ fn test_mesh_counts_vs_emerge() {
     eprintln!("Port1: {} tris, Port2: {} tris, PEC: {} tris",
         port1_tris.len(), port2_tris.len(), pec_tris.len());
 
-    // EMerge reference: 222 nodes, 1025 edges, 1404 tris, 600 tets
+    // Reference counts: 222 nodes, 1025 edges, 1404 tris, 600 tets
     assert_eq!(mesh.n_nodes(), 222, "Node count mismatch");
     assert_eq!(mesh.n_tets(), 600, "Tet count mismatch");
     assert_eq!(mesh.n_edges(), 1025, "Edge count mismatch: got {}, expected 1025", mesh.n_edges());
@@ -40,5 +40,5 @@ fn test_mesh_counts_vs_emerge() {
     assert_eq!(port1_tris.len(), 44, "Port1 tri count mismatch");
     assert_eq!(port2_tris.len(), 44, "Port2 tri count mismatch");
 
-    eprintln!("Mesh connectivity: PASS, all counts match EMerge");
+    eprintln!("Mesh connectivity: PASS, all counts match reference");
 }

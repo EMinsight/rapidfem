@@ -144,7 +144,7 @@ fn benchmark_scaling() {
         run_waveguide_benchmark(path, label);
     }
 
-    eprintln!("\n=== EMerge reference (SuperLU, same geometry) ===");
+    eprintln!("\n=== External reference solver (SuperLU, same geometry) ===");
     eprintln!("  Straight WR-90 medium (600 tets, 4858 DOFs): 0.058s");
     eprintln!("  Straight WR-90 coarse (378 tets, 3198 DOFs): 1.304s (includes JIT warmup)");
 }

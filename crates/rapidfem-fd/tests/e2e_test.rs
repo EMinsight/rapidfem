@@ -1,5 +1,5 @@
 /// End-to-end test: straight WR-90 waveguide.
-/// EMerge reference: S11=0.001496, S21=0.999824.
+/// Reference: S11=0.001496, S21=0.999824.
 
 use num_complex::Complex64 as C64;
 use rapidfem_fd::mesh_io::load_mesh;
@@ -23,7 +23,7 @@ fn test_straight_waveguide_sparams() {
     let port2_tris = mesh.tris_for_tag(4).to_vec();
     let pec_tris = mesh.tris_for_tag(1).to_vec();
 
-    // Port CS from EMerge reference
+    // Port CS from reference
     let cs1 = CoordinateSystem::new(
         [0.01143, 0.0, 0.00508], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0],
     );
@@ -46,12 +46,11 @@ fn test_straight_waveguide_sparams() {
     let result = assemble_and_solve(&mesh, &basis, &ports, &port_tris, &pec_tris, freq, None)
         .expect("assemble_and_solve failed");
 
-    // S-param extraction: exact port of EMerge's approach
-    // EMerge: fieldf = self.basis.interpolate_Ef(solution, tetids=port_tets)
-    // which calls MATHLIB.ned2_tet_interp, 3D tet interpolation searching all tets.
+    // S-param extraction: interpolate the solution field at the port by
+    // 3D tet interpolation (find the containing tet, evaluate the R2 basis).
     let sol0 = &result.solutions[0];
 
-    // Build field evaluator using find_containing_tet (same as EMerge's ned2_tet_interp)
+    // Build field evaluator using find_containing_tet (3D tet interpolation)
     let fieldf = |x: f64, y: f64, z: f64| -> (C64, C64, C64) {
         match interp::find_containing_tet(&mesh, x, y, z) {
             Some(tet) => interp::eval_field_in_tet(&mesh, &basis, sol0, tet, x, y, z),
@@ -87,7 +86,7 @@ fn test_straight_waveguide_sparams() {
         let l_edge = rapidfem_fd::basis::local_mapping(tet, &global_edge_nodes);
         eprintln!("  Tet 0: nodes={:?}", tet);
         eprintln!("  local_edge_map = {:?}", l_edge);
-        eprintln!("  EMerge ref: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]]");
+        eprintln!("  Reference: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]]");
     }
 
     // Check a few DOF values
@@ -100,7 +99,7 @@ fn test_straight_waveguide_sparams() {
     if let Some(tet) = interp::find_containing_tet(&mesh, test_x, test_y, test_z) {
         let (ex, ey, ez) = interp::eval_field_in_tet(&mesh, &basis, sol0, tet, test_x, test_y, test_z);
         eprintln!("  Field at ({},{},{}): Ex={:.6e}, Ey={:.6e}, Ez={:.6e}", test_x, test_y, test_z, ex, ey, ez);
-        eprintln!("  EMerge ref: Ex=9.39e0-4.59ej, Ey=-1.22e0-1.81ej, Ez=2.82e3-4.51e2j");
+        eprintln!("  Reference: Ex=9.39e0-4.59ej, Ey=-1.22e0-1.81ej, Ez=2.82e3-4.51e2j");
     } else {
         eprintln!("  FAILED: could not find tet for test point");
     }
@@ -118,5 +117,5 @@ fn test_straight_waveguide_sparams() {
     eprintln!("  |S11| = {:.6} ({:.1} dB)", s11.norm(), 20.0 * s11.norm().max(1e-10).log10());
     eprintln!("  |S21| = {:.6} ({:.1} dB)", s21.norm(), 20.0 * s21.norm().max(1e-10).log10());
     eprintln!("  |S11|²+|S21|² = {:.6}", s11.norm_sqr() + s21.norm_sqr());
-    eprintln!("  EMerge ref: |S11|=0.001496, |S21|=0.999824");
+    eprintln!("  Reference: |S11|=0.001496, |S21|=0.999824");
 }
