@@ -769,6 +769,18 @@ fn build_ports(
                 ports.push(Box::new(port));
             }
             PortConfig::Floquet { tag, scan_theta_deg, scan_phi_deg, mode_nr, er, power } => {
+                // Only normal incidence is supported in the FD solver: oblique
+                // scan needs periodic side-wall BCs and a complex mode field
+                // (issue #14). Reject θ≠0 rather than silently returning wrong
+                // S-parameters.
+                assert!(
+                    scan_theta_deg.abs() < 1e-9,
+                    "FloquetPort: oblique scan (θ={:.3}°) is not yet supported in \
+                     the frequency-domain solver — it requires periodic side-wall \
+                     boundary conditions and a complex mode field (see issue #14). \
+                     Only normal incidence (θ=0) is valid.",
+                    scan_theta_deg
+                );
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping FloquetPort", tag);

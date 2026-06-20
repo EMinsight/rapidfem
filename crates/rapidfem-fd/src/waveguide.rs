@@ -195,8 +195,9 @@ impl Default for AbsorbingBoundary {
 ///
 /// LIMITATION: A full Floquet simulation also requires periodic boundary conditions on the
 /// side walls of the unit cell with phase factor exp(-jk₀·u·Δv). That's a separate feature
-/// (master/slave DOF elimination in the assembly layer) and is not yet implemented; without
-/// it, FloquetPort is only useful for problems whose side walls are physically PEC/PMC.
+/// (master/slave DOF elimination in the assembly layer) and is not yet implemented (issue #14);
+/// without it, FloquetPort is only useful for problems whose side walls are physically PEC/PMC,
+/// and `build_ports` rejects oblique scan (θ≠0).
 pub struct FloquetPort {
     pub port_number: usize,
     pub power: f64,
@@ -225,8 +226,7 @@ impl FloquetPort {
         (2.0 * Z0 * self.power / (self.area * self.scan_theta.cos())).sqrt()
     }
 
-    pub fn port_mode_3d_global(&self, x: f64, y: f64, z: f64, exc: &Excitation) -> (f64, f64, f64) {
-        let (xl, yl, _) = self.cs.in_local_cs(x, y, z);
+    pub fn port_mode_3d_global(&self, _x: f64, _y: f64, _z: f64, exc: &Excitation) -> (f64, f64, f64) {
         let (s, p): (f64, f64) = match self.mode_nr {
             1 => (1.0, 0.0),  // TE
             _ => (0.0, 1.0),  // TM
@@ -237,15 +237,13 @@ impl FloquetPort {
         let sin_t = self.scan_theta.sin();
         let e0 = self.amplitude(exc);
 
-        // At normal incidence (θ=0): no phase factor; field is real and uniform.
-        // For oblique incidence we'd multiply by exp(-j(xl·kx + yl·ky)). Currently we drop
-        // that phase (real-only API), see struct doc.
-        let _phase_xy = xl * (exc.k0 * sin_t * cos_p) + yl * (exc.k0 * sin_t * sin_p);
-        let phase = 1.0;  // approximation; exact at θ=0
-
-        let ex_l = e0 * (-s * sin_p - p * cos_t * cos_p) * phase;
-        let ey_l = e0 * (s * cos_p - p * cos_t * sin_p) * phase;
-        let ez_l = e0 * (-p * sin_t) * phase;
+        // Uniform transverse mode field, valid only at normal incidence (θ=0),
+        // which `build_ports` enforces. Oblique scan additionally needs the
+        // transverse Bloch phase exp(-j·k_t·r) and periodic side-wall BCs — see
+        // issue #14.
+        let ex_l = e0 * (-s * sin_p - p * cos_t * cos_p);
+        let ey_l = e0 * (s * cos_p - p * cos_t * sin_p);
+        let ez_l = e0 * (-p * sin_t);
         self.cs.in_global_basis(ex_l, ey_l, ez_l)
     }
 
