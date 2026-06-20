@@ -888,11 +888,34 @@ fn build_ports(
 }
 
 fn build_pec_tris(mesh: &Mesh, config: &Config) -> Vec<usize> {
-    let mut pec_tris = Vec::new();
+    use std::collections::HashSet;
+    let mut pec: HashSet<usize> = HashSet::new();
     for &tag in &config.pec.tags {
-        pec_tris.extend_from_slice(mesh.tris_for_tag(tag));
+        pec.extend(mesh.tris_for_tag(tag).iter().copied());
     }
-    pec_tris
+
+    // Default boundary condition: every EXTERIOR boundary face (one adjacent
+    // tet) that carries no explicit port / BC becomes PEC (tangential E = 0).
+    // A magnetic wall — the bare natural BC of the curl-curl form — is opt-in
+    // via an explicit PMC. This makes a closed metal box the default and
+    // removes the footgun where an untagged outer wall silently leaks (acts as
+    // a magnetic wall). Interior faces (two adjacent tets) are never touched.
+    let mut assigned: HashSet<usize> = pec.clone();
+    for pc in &config.ports {
+        assigned.extend(mesh.tris_for_tag(pc.tag()).iter().copied());
+        if let PortConfig::WaveNumerical { pec_tags, .. } = pc {
+            for &t in pec_tags {
+                assigned.extend(mesh.tris_for_tag(t).iter().copied());
+            }
+        }
+    }
+    for t in 0..mesh.n_tris() {
+        if mesh.tri_to_tet[t][1] == usize::MAX && !assigned.contains(&t) {
+            pec.insert(t);
+        }
+    }
+
+    pec.into_iter().collect()
 }
 
 fn build_materials(mesh: &Mesh, config: &Config) -> Vec<Material> {
@@ -951,8 +974,13 @@ fn build_pml_regions(mesh: &Mesh, config: &Config) -> Vec<PmlRegion> {
             er_base: pc.er_base,
             ur_base: pc.ur_base,
             direction: pc.direction,
-            inner_face: pc.inner_face,
-            thickness: pc.thickness,
+            // `inner_face` is a coordinate and `thickness` a length; the stretch
+            // profile is evaluated against the lever-④ normalized node
+            // coordinates, so both must be divided by L0 to stay consistent.
+            // `u = (coord − inner_face)/thickness` is a length ratio, so the
+            // corrected stretch is scale-invariant.
+            inner_face: pc.inner_face / mesh.l0,
+            thickness: pc.thickness / mesh.l0,
             exponent: pc.exponent,
             delta_max: pc.delta_max,
         }

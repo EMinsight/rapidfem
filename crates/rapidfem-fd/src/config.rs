@@ -245,6 +245,26 @@ pub enum PortConfig {
     },
 }
 
+impl PortConfig {
+    /// Physical-group tag of the face this port / boundary condition occupies.
+    /// Every variant carries the face tag as its first field; used to know
+    /// which boundary faces are "assigned" when defaulting the rest to PEC.
+    pub fn tag(&self) -> i32 {
+        match self {
+            PortConfig::Rectangular { tag, .. }
+            | PortConfig::Floquet { tag, .. }
+            | PortConfig::UserDefined { tag, .. }
+            | PortConfig::Coax { tag, .. }
+            | PortConfig::Lumped { tag, .. }
+            | PortConfig::Abc { tag }
+            | PortConfig::Pmc { tag }
+            | PortConfig::LumpedElement { tag, .. }
+            | PortConfig::WaveNumerical { tag, .. }
+            | PortConfig::SurfaceImpedance { tag, .. } => *tag,
+        }
+    }
+}
+
 /// Perfectly Matched Layer region. Tets in `volume_tag` get coordinate-stretched
 /// anisotropic ε/μ tensors evaluated at each tet centroid. `direction` selects which
 /// face the layer absorbs (e.g. [1,0,0] for the +x boundary, [0,0,-1] for -z).
