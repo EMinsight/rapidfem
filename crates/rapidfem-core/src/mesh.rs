@@ -67,6 +67,13 @@ pub struct Mesh {
     pub ftag_to_tri: HashMap<i32, Vec<usize>>,
     /// Gmsh volume tag → list of tet indices
     pub vtag_to_tet: HashMap<i32, Vec<usize>>,
+
+    /// Characteristic length L₀ (m) the node coordinates were divided by to
+    /// non-dimensionalize the geometry (lever ④). `1.0` means the mesh is in its
+    /// original physical units (no normalization applied). When > 0 and ≠ 1, the
+    /// stored `nodes`/`edge_lengths` are in units of L₀ and physical coordinates
+    /// are recovered by multiplying by `l0`. See `derivations/basis_nondim/`.
+    pub l0: f64,
 }
 
 impl Mesh {
@@ -163,7 +170,36 @@ impl Mesh {
             edge_lengths, inv_edges, inv_tris,
             ftag_to_tri: HashMap::new(),
             vtag_to_tet: HashMap::new(),
+            l0: 1.0,
         }
+    }
+
+    /// Non-dimensionalize the geometry (lever ④): divide all node coordinates by
+    /// the characteristic length L₀ = mean edge length, so the solver assembles
+    /// on O(1) coordinates regardless of the mesh's physical scale. Returns L₀.
+    ///
+    /// Idempotent: a no-op if already normalized (`l0 != 1.0`) or degenerate
+    /// (zero mean edge). The transform is exactly reversible — physical
+    /// coordinates are `node * l0` — so callers restore physical units for
+    /// output by multiplying back. Connectivity is coordinate-independent and
+    /// untouched; `edge_lengths` is rescaled in step.
+    pub fn normalize_characteristic_length(&mut self) -> f64 {
+        if self.l0 != 1.0 || self.edge_lengths.is_empty() {
+            return self.l0;
+        }
+        let mean: f64 = self.edge_lengths.iter().sum::<f64>() / self.edge_lengths.len() as f64;
+        if !(mean > 0.0) {
+            return 1.0;
+        }
+        let inv = 1.0 / mean;
+        for n in &mut self.nodes {
+            n[0] *= inv; n[1] *= inv; n[2] *= inv;
+        }
+        for e in &mut self.edge_lengths {
+            *e *= inv;
+        }
+        self.l0 = mean;
+        mean
     }
 
     pub fn n_nodes(&self) -> usize { self.nodes.len() }
@@ -205,5 +241,35 @@ mod tests {
         let adj = mesh.tri_to_tet[shared];
         assert_eq!(adj[0], 0, "first tet kept");
         assert_eq!(adj[1], 1, "second tet kept, not overwritten by the third");
+    }
+
+    /// `normalize_characteristic_length` divides coordinates by the mean edge
+    /// length, records it in `l0`, rescales `edge_lengths`, and is idempotent.
+    #[test]
+    fn normalize_sets_l0_and_unit_mean_edge() {
+        // A tet scaled to a small (RFIC-like) size; mean edge ~ µm.
+        let s = 3e-6;
+        let nodes = vec![
+            [0.0, 0.0, 0.0], [s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s],
+        ];
+        let mut mesh = Mesh::from_tets(nodes, vec![[0, 1, 2, 3]]);
+        let mean_before: f64 =
+            mesh.edge_lengths.iter().sum::<f64>() / mesh.edge_lengths.len() as f64;
+
+        let l0 = mesh.normalize_characteristic_length();
+        assert!((l0 - mean_before).abs() < 1e-18, "l0 = mean edge length");
+        assert_eq!(mesh.l0, l0);
+
+        // Mean edge length of the normalized mesh is exactly 1.
+        let mean_after: f64 =
+            mesh.edge_lengths.iter().sum::<f64>() / mesh.edge_lengths.len() as f64;
+        assert!((mean_after - 1.0).abs() < 1e-12, "mean edge normalized to 1");
+
+        // Physical coordinates are recovered by multiplying back by l0.
+        assert!((mesh.nodes[1][0] * mesh.l0 - s).abs() < 1e-18);
+
+        // Idempotent: a second call is a no-op.
+        let again = mesh.normalize_characteristic_length();
+        assert_eq!(again, l0);
     }
 }

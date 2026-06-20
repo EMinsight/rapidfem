@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::basis::Nedelec2Basis;
 use crate::config::{Config, PortConfig};
-use crate::constants::{C0, EPS0, LUMPED_PORT_PROJ_EPS, MU0, PI};
+use crate::constants::{EPS0, LUMPED_PORT_PROJ_EPS, MU0};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
 use crate::interp;
@@ -84,6 +84,16 @@ impl Simulation {
     /// Build a `Simulation` from an owned mesh and a parsed config. All BC objects
     /// (ports, PEC, materials, PML, lumped integration lines) are constructed up-front.
     pub fn new(mesh: Mesh, config: Config) -> Self {
+        let mut mesh = mesh;
+        // Lever ④: non-dimensionalize the geometry to O(1) coordinates so the
+        // assembly and its absolute tolerances are unit-/scale-invariant. The
+        // transform is reversed at the output boundary (field/coord rescaling).
+        // `RAPIDFEM_NO_NORMALIZE` keeps physical units (l0 = 1) — used to prove
+        // the normalized path is bit-identical on the solver's outputs.
+        if std::env::var_os("RAPIDFEM_NO_NORMALIZE").is_none() {
+            let l0 = mesh.normalize_characteristic_length();
+            eprintln!("  Geometry normalized: L0 = {:.6e} m (mean edge length)", l0);
+        }
         let basis = Nedelec2Basis::new(&mesh);
         eprintln!(
             "RapidFEM - {} tets, {} DOFs",
@@ -161,7 +171,8 @@ impl Simulation {
             let (ex, ey, ez) = crate::interp::eval_field_in_tet(
                 &self.mesh, &self.basis, solution, ti, cx, cy, cz,
             );
-            let mag = (ex.norm_sqr() + ey.norm_sqr() + ez.norm_sqr()).sqrt();
+            // |E| on the normalized mesh is L₀·|E_phys| → divide by L₀.
+            let mag = (ex.norm_sqr() + ey.norm_sqr() + ez.norm_sqr()).sqrt() / self.mesh.l0;
             for k in 0..4 {
                 sum[tet[k]] += mag;
                 count[tet[k]] += 1;
@@ -197,9 +208,12 @@ impl Simulation {
             let (ex, ey, ez) = crate::interp::eval_field_in_tet(
                 &self.mesh, &self.basis, solution, ti, cx, cy, cz,
             );
-            let a = ex.re * ex.re + ey.re * ey.re + ez.re * ez.re;
-            let b = ex.im * ex.im + ey.im * ey.im + ez.im * ez.im;
-            let c = ex.re * ex.im + ey.re * ey.im + ez.re * ez.im;
+            // These are quadratic in E (|E|²), and E on the normalized mesh is
+            // L₀·E_phys, so divide by L₀² for physical |E|² units.
+            let inv_l02 = 1.0 / (self.mesh.l0 * self.mesh.l0);
+            let a = (ex.re * ex.re + ey.re * ey.re + ez.re * ez.re) * inv_l02;
+            let b = (ex.im * ex.im + ey.im * ey.im + ez.im * ez.im) * inv_l02;
+            let c = (ex.re * ex.im + ey.re * ey.im + ez.re * ez.im) * inv_l02;
             for k in 0..4 {
                 sum[tet[k]][0] += a;
                 sum[tet[k]][1] += b;
@@ -332,7 +346,7 @@ impl Simulation {
             }
         };
 
-        let k0 = 2.0 * PI * freq / C0;
+        let exc = crate::excitation::Excitation::new(freq, self.mesh.l0);
         let mut freq_s = vec![vec![C64::new(0.0, 0.0); n_driven]; n_driven];
 
         for (exc_idx, sol) in freq_result.solutions.iter().enumerate() {
@@ -344,7 +358,7 @@ impl Simulation {
             };
             for (obs_idx, &obs_pi) in ctx.driven_indices.iter().enumerate() {
                 let active = obs_idx == exc_idx;
-                let s = if let (true, Some(lines), Some((_, z0, v_inc))) = (
+                let s = if let (true, Some(lines), Some((_, _z0, v_inc))) = (
                     port_dyn[obs_pi].is_lumped(),
                     self.lumped_lines.get(&obs_pi),
                     port_dyn[obs_pi].lumped_voltage_params(),
@@ -352,7 +366,7 @@ impl Simulation {
                     let n_lines = lines.len() as f64;
                     let mut s_sum = C64::new(0.0, 0.0);
                     for line_pts in lines {
-                        s_sum += sparam_voltage_line(v_inc, z0, active, &fieldf, line_pts);
+                        s_sum += sparam_voltage_line(v_inc, active, &fieldf, line_pts);
                     }
                     s_sum / C64::from(n_lines)
                 } else {
@@ -360,7 +374,7 @@ impl Simulation {
                         .iter()
                         .map(|&ti| self.mesh.tris[ti])
                         .collect();
-                    sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], k0, active, &fieldf, &weight, 4)
+                    sparam_waveport(&self.mesh.nodes, &obs_tris, port_dyn[obs_pi], &exc, active, &fieldf, &weight, 4)
                 };
                 freq_s[obs_idx][exc_idx] = s;
             }
@@ -407,7 +421,7 @@ impl Simulation {
     ) -> Option<crate::error_estimator::ErrorEstimate> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let k0 = 2.0 * PI * freq / C0;
+        let k0 = crate::excitation::Excitation::new(freq, self.mesh.l0).k0;
         let n_tets = self.mesh.n_tets();
         let (er_tensors, _) = if self.materials.is_empty() {
             let id: [[C64; 3]; 3] = [
@@ -460,6 +474,10 @@ impl Simulation {
             }
         }
 
+        // Lever ④: the field reconstructed on the L₀-normalized mesh is L₀·E_phys
+        // (the Nédélec basis is scale-invariant), so divide by L₀ for physical
+        // V/m. A no-op when l0 = 1.
+        let inv_l0 = C64::from(1.0 / self.mesh.l0);
         let mut out: Vec<C64> = Vec::with_capacity(3 * n_nodes);
         for ni in 0..n_nodes {
             let tet_idx = node_to_tet[ni];
@@ -471,9 +489,9 @@ impl Simulation {
             let (ex, ey, ez) = crate::interp::eval_field_in_tet(
                 &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
             );
-            out.push(ex);
-            out.push(ey);
-            out.push(ez);
+            out.push(ex * inv_l0);
+            out.push(ey * inv_l0);
+            out.push(ez * inv_l0);
         }
         out
     }
@@ -534,7 +552,7 @@ impl Simulation {
     pub fn current_density_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let omega = 2.0 * PI * freq;
+        let omega = crate::excitation::Excitation::new(freq, self.mesh.l0).omega;
         let sigma = self.per_tet_sigma_eff(omega);
         let n_nodes = self.mesh.n_nodes();
         let node_to_tet = self.node_to_tet_map();
@@ -549,7 +567,8 @@ impl Simulation {
             let (ex, ey, ez) = crate::interp::eval_field_in_tet(
                 &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
             );
-            let s = C64::from(sigma[tet_idx]);
+            // J = σ·E_phys; E reconstructed on the normalized mesh is L₀·E_phys.
+            let s = C64::from(sigma[tet_idx] / self.mesh.l0);
             out.push(ex * s);
             out.push(ey * s);
             out.push(ez * s);
@@ -563,7 +582,7 @@ impl Simulation {
     pub fn h_field_at_nodes(&self, result: &SweepResult, freq_idx: usize, port_idx: usize) -> Option<Vec<C64>> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(port_idx))?;
         let freq = *result.frequencies.get(freq_idx)?;
-        let omega = 2.0 * PI * freq;
+        let omega = crate::excitation::Excitation::new(freq, self.mesh.l0).omega;
         let mur = self.per_tet_mur();
         let n_nodes = self.mesh.n_nodes();
         let node_to_tet = self.node_to_tet_map();
@@ -579,7 +598,9 @@ impl Simulation {
             let curl = crate::interp::eval_curl_in_tet(
                 &self.mesh, &self.basis, solution, tet_idx, p[0], p[1], p[2],
             );
-            let denom = j * C64::from(omega * MU0 * mur[tet_idx]);
+            // ∇×E on the normalized mesh is L₀²·(∇×E)_phys (one L₀ from the basis
+            // field, one from the normalized ∇), so H = ∇×E/(jωμ) needs /L₀².
+            let denom = j * C64::from(omega * MU0 * mur[tet_idx] * self.mesh.l0 * self.mesh.l0);
             out.push(curl[0] / denom);
             out.push(curl[1] / denom);
             out.push(curl[2] / denom);
@@ -668,8 +689,10 @@ fn build_ports(
                     continue;
                 }
                 let (cs, det_w, det_h) = detect_rect_port(mesh, &tri_ids);
-                let w = if *width > 0.0 { *width } else { det_w };
-                let h = if *height > 0.0 { *height } else { det_h };
+                // Config dims are physical lengths; the mesh (and det_*) are in
+                // L₀ units, so normalize config dims to match (lever ④).
+                let w = if *width > 0.0 { *width / mesh.l0 } else { det_w };
+                let h = if *height > 0.0 { *height / mesh.l0 } else { det_h };
                 let port_num = ports.len() + 1;
                 let port = RectWaveguide {
                     port_number: port_num,
@@ -692,13 +715,17 @@ fn build_ports(
                     continue;
                 }
                 let (cs_detected, _, _) = detect_rect_port(mesh, &tri_ids);
-                let org = origin.unwrap_or(cs_detected.origin);
+                // Config origin is a physical coordinate; normalize to L₀ units.
+                let org = origin
+                    .map(|o| [o[0] / mesh.l0, o[1] / mesh.l0, o[2] / mesh.l0])
+                    .unwrap_or(cs_detected.origin);
                 let zax = z_axis.unwrap_or(cs_detected.zax);
                 let cs = cs_from_origin_zaxis(org, zax);
                 let port_num = ports.len() + 1;
                 let port = CoaxPort {
                     port_number: port_num,
-                    power: *power, er: *er, ri: *ri, ro: *ro, cs,
+                    power: *power, er: *er,
+                    ri: *ri / mesh.l0, ro: *ro / mesh.l0, cs,
                 };
                 eprintln!("  Port {}: coax, tag={}, Ri={:.3}mm, Ro={:.3}mm, er={:.2}, Z0={:.2}Ohm",
                     port_num, tag, ri * 1e3, ro * 1e3, er, port.port_z());
@@ -713,8 +740,8 @@ fn build_ports(
                 }
                 let port_num = ports.len() + 1;
                 let (det_w, det_h) = lumped_port_dims(mesh, &tri_ids, direction);
-                let w = if *width > 0.0 { *width } else { det_w };
-                let h = if *height > 0.0 { *height } else { det_h };
+                let w = if *width > 0.0 { *width / mesh.l0 } else { det_w };
+                let h = if *height > 0.0 { *height / mesh.l0 } else { det_h };
                 let port = LumpedPort {
                     port_number: port_num,
                     power: *power,
@@ -776,8 +803,10 @@ fn build_ports(
                     continue;
                 }
                 let (det_w, det_h) = lumped_port_dims(mesh, &tri_ids, direction);
-                let w = if *width > 0.0 { *width } else { det_w };
-                let h = if *height > 0.0 { *height } else { det_h };
+                // surf_z uses w/h as a ratio (scale-invariant); normalize both
+                // anyway so the values stay consistent with the L₀-unit mesh.
+                let w = if *width > 0.0 { *width / mesh.l0 } else { det_w };
+                let h = if *height > 0.0 { *height / mesh.l0 } else { det_h };
                 let bc = LumpedElement { r: *r, l: *l, c: *c, width: w, height: h };
                 eprintln!("  LumpedElement: tag={}, R={:.2}Ohm, L={:.2e}H, C={:?}F, w={:.2}mm, h={:.2}mm",
                     tag, r, l, c, w * 1e3, h * 1e3);
@@ -1073,7 +1102,7 @@ fn build_wave_numerical(
     let face_tris: Vec<[usize; 3]> = tri_ids.iter().map(|&t| mesh.tris[t]).collect();
     let pm = PortMesh2D::from_face(&mesh.nodes, &face_tris, nrm, pec_opt);
 
-    let k0 = 2.0 * PI * f0 / C0;
+    let k0 = crate::excitation::Excitation::new(f0, mesh.l0).k0;
 
     // Per-face εr (size = face_tris.len()) is always needed: the vector
     // path uses it as the eigensolve weight, and the unified amplitude

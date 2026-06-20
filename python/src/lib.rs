@@ -176,9 +176,12 @@ impl PySimulation {
     #[getter]
     fn mesh_nodes<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         let n = self.inner.mesh.n_nodes();
+        // The mesh is stored in L₀ (characteristic-length) units after lever ④;
+        // report physical coordinates by multiplying back.
+        let l0 = self.inner.mesh.l0;
         let mut flat: Vec<f64> = Vec::with_capacity(n * 3);
         for p in &self.inner.mesh.nodes {
-            flat.extend_from_slice(p);
+            flat.extend_from_slice(&[p[0] * l0, p[1] * l0, p[2] * l0]);
         }
         let arr = numpy::ndarray::Array2::from_shape_vec((n, 3), flat).expect("shape");
         arr.into_pyarray_bound(py)

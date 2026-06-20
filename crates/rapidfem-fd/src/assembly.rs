@@ -26,7 +26,6 @@ use crate::tet_assembly_r2::assemble_global_matrices;
 use crate::tri_assembly_r2::{ned2_tri_stiff, ned2_tri_force};
 use crate::coefficients::AreaCoeffCache;
 use crate::quadrature::gaus_quad_tri;
-use crate::constants::PI;
 use std::collections::HashSet;
 
 pub struct SolveResult {
@@ -86,8 +85,8 @@ pub fn assemble_and_solve_with_pml(
     materials: Option<&[crate::materials::Material]>,
     pml_regions: Option<&[crate::materials::PmlRegion]>,
 ) -> Result<SolveResult, String> {
-    let c0 = crate::constants::C0;
-    let k0 = 2.0 * PI * freq / c0;
+    let exc = crate::excitation::Excitation::new(freq, mesh.l0);
+    let k0 = exc.k0;
     let n_field = basis.n_field;
     let n_tets = mesh.n_tets();
 
@@ -146,7 +145,7 @@ pub fn assemble_and_solve_with_pml(
     let mut bempty = basis.empty_tri_matrix();
 
     for (pi, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
-        let gamma = port.get_gamma(k0);
+        let gamma = port.get_gamma(&exc);
 
         // Robin BC stiffness: for each port tri, compute 8x8 and write into flat array
         for &ti in *tri_ids {
@@ -187,7 +186,7 @@ pub fn assemble_and_solve_with_pml(
                 let x = verts[0][0]*l1 + verts[1][0]*l2 + verts[2][0]*l3;
                 let y = verts[0][1]*l1 + verts[1][1]*l2 + verts[2][1]*l3;
                 let z = verts[0][2]*l1 + verts[1][2]*l2 + verts[2][2]*l3;
-                port.get_uinc(x, y, z, k0)
+                port.get_uinc(x, y, z, &exc)
             }).collect();
 
             if u_inc_at_qp.len() == gauss_points.len() {
@@ -382,7 +381,8 @@ pub fn frequency_sweep_with_pml(
 
     for (fi, &freq) in frequencies.iter().enumerate() {
         let t_freq = web_time::Instant::now();
-        let k0 = 2.0 * PI * freq / crate::constants::C0;
+        let exc = crate::excitation::Excitation::new(freq, mesh.l0);
+        let k0 = exc.k0;
         let k0_sq = C64::from(k0 * k0);
         let n_field = basis.n_field;
 
@@ -403,7 +403,7 @@ pub fn frequency_sweep_with_pml(
         // Robin BC (γ frequency-dependent), reuse bempty buffer
         bempty.fill(C64::new(0.0, 0.0));
         for (_, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
-            let gamma = port.get_gamma(k0);
+            let gamma = port.get_gamma(&exc);
             for &ti in *tri_ids {
                 let tri = &mesh.tris[ti];
                 let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
@@ -427,7 +427,7 @@ pub fn frequency_sweep_with_pml(
                         port.get_uinc(
                             verts[0][0]*l1+verts[1][0]*l2+verts[2][0]*l3,
                             verts[0][1]*l1+verts[1][1]*l2+verts[2][1]*l3,
-                            verts[0][2]*l1+verts[1][2]*l2+verts[2][2]*l3, k0)
+                            verts[0][2]*l1+verts[1][2]*l2+verts[2][2]*l3, &exc)
                     }).collect();
                 if u_at_qp.len() == gauss_points.len() {
                     let b_tri = ned2_tri_force(&verts, &u_at_qp, &gauss_points);
