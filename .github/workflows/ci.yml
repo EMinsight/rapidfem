@@ -59,6 +59,11 @@ jobs:
       # gmsh (a runtime dep) needs these shared libs on headless Linux.
       - name: System deps for gmsh
         run: sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
+      # pyproject's readme path is relative to python/; stage the repo-root
+      # README there (a gitignored build artifact) as wheels.yml does, else
+      # maturin's metadata step fails on the missing file.
+      - name: Stage README for maturin
+        run: cp README.md python/README.md
       - name: Build + install rapidfem (with test extras)
         run: pip install "./python[test]"
       - name: Fast tests (renormalization math, no FEM solves)
@@ -80,6 +85,11 @@ jobs:
           python-version: "3.12"
       - name: System deps for gmsh
         run: sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
+      # pyproject's readme path is relative to python/; stage the repo-root
+      # README there (a gitignored build artifact) as wheels.yml does, else
+      # maturin's metadata step fails on the missing file.
+      - name: Stage README for maturin
+        run: cp README.md python/README.md
       - name: Build + install rapidfem (with test extras)
         run: pip install "./python[test]"
       - name: Full phenomenon suite (all geometries + goldens)
