@@ -38,6 +38,17 @@ ui = [
     "flask>=3.0",
     "flask-sock>=0.7",
 ]
+test = [
+    "pytest>=8.0",
+    "scipy>=1.11",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: full FD sweep / TD transient (minutes); opt out with -m 'not slow'",
+    "phenomenon: a physics-phenomenon geometry test (vs harness self-test)",
+]
 
 [project.urls]
 Homepage = "https://github.com/milanofthe/rapidfem"
