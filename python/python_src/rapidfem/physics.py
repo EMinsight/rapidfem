@@ -803,13 +803,35 @@ class SurfaceImpedance(_Physics):
     an explicit ``zs = (re, im)`` in :math:`\\Omega/\\square`.
 
 
+    Note
+    ----
+    Apply this to the **outer face of the actual conductor geometry**, not to a
+    zero-thickness sheet collapsed into the dielectric. Modelling a thick trace
+    (e.g. a 3 µm microstrip line) as a single embedded plate over-estimates the
+    conductor loss — the sharp edges of a zero-thickness strip carry a singular
+    surface-current density, so :math:`\\int |J_s|^2` (hence the loss) and the
+    extracted Z0 both run high (~1.6× the loss, ~10 % on Z0 in a microstrip
+    cross-check). Extrude the conductor to its real thickness and put the
+    surface impedance on its faces; the gap-facing face then carries the current
+    one-sidedly, as the physical conductor does. The boundary condition itself
+    is exact for a sheet of the given :math:`Z_s` — this is purely a geometry
+    fidelity point.
+
+
     Example
     -------
-    Copper surface on a stripline ground:
+    Copper surface on a stripline ground (an outer boundary face):
 
     .. code-block:: python
 
         rf.SurfaceImpedance(ground_face, conductivity=5.8e7)
+
+    A finite-thickness trace, surface impedance on every outer face:
+
+    .. code-block:: python
+
+        trace = g.box(w, length, 3e-6, position=(...))
+        rf.SurfaceImpedance(trace.faces, conductivity=3e7, thickness=3e-6)
 
 
     Parameters
