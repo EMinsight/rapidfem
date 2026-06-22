@@ -13,11 +13,10 @@
 //! pre-built ports and materials before solving.
 
 use num_complex::Complex64 as C64;
-use std::collections::HashMap;
 
 use crate::basis::Nedelec2Basis;
 use crate::config::{Config, PortConfig};
-use crate::constants::{EPS0, LUMPED_PORT_PROJ_EPS, MU0};
+use crate::constants::{EPS0, MU0};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
 use crate::interp;
@@ -68,8 +67,6 @@ pub struct Simulation {
     pub pec_tris: Vec<usize>,
     pub materials: Vec<Material>,
     pub pml_regions: Vec<PmlRegion>,
-    /// Lumped-port voltage integration lines, keyed by port index.
-    pub lumped_lines: HashMap<usize, Vec<Vec<[f64; 3]>>>,
 }
 
 impl Simulation {
@@ -107,7 +104,6 @@ impl Simulation {
         let (ports, port_tris) = build_ports(&mesh, &config, &materials);
         let pec_tris = build_pec_tris(&mesh, &config);
         let pml_regions = build_pml_regions(&mesh, &config);
-        let lumped_lines = build_lumped_lines(&mesh, &ports, &port_tris);
 
         Simulation {
             mesh,
@@ -118,7 +114,6 @@ impl Simulation {
             pec_tris,
             materials,
             pml_regions,
-            lumped_lines,
         }
     }
 
@@ -735,7 +730,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::Lumped { tag, z0, direction, width, height, power } => {
+            PortConfig::Lumped { tag, z0, l, c, direction, width, height, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping port", tag);
@@ -749,6 +744,8 @@ fn build_ports(
                     port_number: port_num,
                     power: *power,
                     z0: *z0,
+                    l: *l,
+                    c: *c,
                     width: w,
                     height: h,
                     direction: *direction,
@@ -988,71 +985,6 @@ fn build_pml_regions(mesh: &Mesh, config: &Config) -> Vec<PmlRegion> {
             delta_max: pc.delta_max,
         }
     }).collect()
-}
-
-/// Build lumped port integration lines: one line per min-projection
-/// vertex on the port face, line goes from that vertex to (vertex + direction × height).
-/// S-parameter averages over lines. See microwave_3d.py:_define_lumped_port_integration_points.
-fn build_lumped_lines(
-    mesh: &Mesh,
-    ports: &[Box<dyn Port>],
-    port_tris: &[Vec<usize>],
-) -> HashMap<usize, Vec<Vec<[f64; 3]>>> {
-    let mut lines_map: HashMap<usize, Vec<Vec<[f64; 3]>>> = HashMap::new();
-    for (pi, port) in ports.iter().enumerate() {
-        if !port.is_lumped() {
-            continue;
-        }
-        let tri_ids = &port_tris[pi];
-        let (dir, _, _) = port.lumped_voltage_params().unwrap();
-        let height = port.port_height().expect("lumped port must have height");
-
-        let mut verts: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for &ti in tri_ids {
-            for &vi in &mesh.tris[ti] {
-                verts.insert(vi);
-            }
-        }
-
-        let mut min_proj = f64::INFINITY;
-        for &vi in &verts {
-            let p = mesh.nodes[vi];
-            let proj = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
-            if proj < min_proj {
-                min_proj = proj;
-            }
-        }
-        let proj_tol = LUMPED_PORT_PROJ_EPS * height.max(1.0);
-        let start_verts: Vec<usize> = verts
-            .iter()
-            .copied()
-            .filter(|&vi| {
-                let p = mesh.nodes[vi];
-                let proj = p[0] * dir[0] + p[1] * dir[1] + p[2] * dir[2];
-                (proj - min_proj).abs() < proj_tol
-            })
-            .collect();
-
-        let n_pts = 21;
-        let mut lines: Vec<Vec<[f64; 3]>> = Vec::with_capacity(start_verts.len());
-        for &vi in &start_verts {
-            let s = mesh.nodes[vi];
-            let mut pts = Vec::with_capacity(n_pts);
-            for i in 0..n_pts {
-                let t = i as f64 / (n_pts - 1) as f64;
-                pts.push([
-                    s[0] + t * dir[0] * height,
-                    s[1] + t * dir[1] * height,
-                    s[2] + t * dir[2] * height,
-                ]);
-            }
-            lines.push(pts);
-        }
-        eprintln!("  Lumped port {}: {} integration lines x {} pts, height={:.4}mm",
-            port.port_number(), lines.len(), n_pts, height * 1e3);
-        lines_map.insert(pi, lines);
-    }
-    lines_map
 }
 
 /// Build a per-tet scalar relative permittivity from the materials list. Used

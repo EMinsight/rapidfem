@@ -477,11 +477,22 @@ impl LumpedElement {
     }
 }
 
-/// Lumped port: a uniform-field gap source with a series reference impedance.
+/// Lumped port: a uniform-field gap source terminated in a series R-L-C.
+///
+/// Termination impedance Z(ω) = R + jωL + 1/(jωC) (R = `z0`); the Robin BC uses
+/// the full RLC sheet impedance, while the incident-wave source and the
+/// S-parameter reference use the resistive part R (the standard real reference
+/// impedance). With L = 0 and no C this is the pure-R reference port.
+/// Derivation: derivations/lumped_port/.
 pub struct LumpedPort {
     pub port_number: usize,
     pub power: f64,
+    /// Reference resistance R (Ω) — S-parameters and incident power normalise to this.
     pub z0: f64,
+    /// Series inductance L (H); 0 ⇒ no inductor.
+    pub l: f64,
+    /// Series capacitance C (F); None ⇒ no capacitor.
+    pub c: Option<f64>,
     pub width: f64,
     pub height: f64,
     /// E-field direction unit vector in global coordinates
@@ -489,19 +500,36 @@ pub struct LumpedPort {
 }
 
 impl LumpedPort {
-    /// Surface impedance of the gap: Z0 · width / height.
-    pub fn surf_z(&self) -> f64 {
+    /// Series RLC termination impedance Z(ω) = R + jωL + 1/(jωC), R = z0.
+    pub fn impedance(&self, exc: &Excitation) -> C64 {
+        let omega = exc.omega;
+        let mut z = C64::new(self.z0, omega * self.l);
+        if let Some(c) = self.c {
+            if c > 0.0 {
+                z += C64::new(0.0, -1.0 / (omega * c));
+            }
+        }
+        z
+    }
+
+    /// Sheet impedance for the Robin BC (full RLC): Z(ω) · width/height.
+    pub fn surf_z(&self, exc: &Excitation) -> C64 {
+        self.impedance(exc) * C64::from(self.width / self.height)
+    }
+
+    /// Real reference sheet impedance for the matched source: R · width/height.
+    pub fn surf_z_ref(&self) -> f64 {
         self.z0 * self.width / self.height
     }
 
-    /// Drive voltage: sqrt(2 · power · Z0).
+    /// Incident drive voltage referenced to R: sqrt(2 · power · R).
     pub fn voltage(&self) -> f64 {
         (2.0 * self.power * self.z0).sqrt()
     }
 
-    /// Robin γ-coefficient for the port boundary term.: j * k0 * Z0 / surfZ
+    /// Robin γ-coefficient for the port boundary term: j·k0·η0 / Zs(ω) (full RLC).
     pub fn get_gamma(&self, exc: &Excitation) -> C64 {
-        C64::new(0.0, exc.k0 * Z0 / self.surf_z())
+        C64::new(0.0, exc.k0 * Z0) / self.surf_z(exc)
     }
 
     /// Uniform modal field along the gap direction.
@@ -509,9 +537,11 @@ impl LumpedPort {
         (self.direction[0], self.direction[1], self.direction[2])
     }
 
-    /// Incident source term: −2j·k0 · (voltage/height) · (Z0/surfZ) · mode_field.
+    /// Incident source term −2·γ_R·E_inc (matched feed referenced to R):
+    /// −2j·k0 · (voltage/height) · (η0 / Zs_ref) · mode_field, Zs_ref = R·w/h.
     pub fn get_uinc(&self, x: f64, y: f64, z: f64, exc: &Excitation) -> [C64; 3] {
-        let emag = C64::new(0.0, -2.0 * exc.k0) * C64::from(self.voltage() / self.height * (Z0 / self.surf_z()));
+        let emag = C64::new(0.0, -2.0 * exc.k0)
+            * C64::from(self.voltage() / self.height * (Z0 / self.surf_z_ref()));
         let (ex, ey, ez) = self.port_mode_3d_global(x, y, z, exc);
         [emag * C64::from(ex), emag * C64::from(ey), emag * C64::from(ez)]
     }

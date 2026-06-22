@@ -12,7 +12,8 @@
 //! the simulated field with the port mode, weighted by the local wave
 //! admittance / Poynting factor. `sparam_waveport` returns the amplitude
 //! ratio S; the `*_power` helpers return the Poynting-normalised powers; and
-//! `sparam_voltage_line` extracts S from a line-integrated port voltage.
+//! `sparam_voltage_surface` extracts a lumped port's S from the area-averaged
+//! mode-projected voltage `V = (1/w)∫E·l̂ dS` (derivations/lumped_port/).
 //! All accept `&dyn Port` and integrate over the port triangles by Gaussian
 //! quadrature (`surface_integral`).
 
@@ -226,37 +227,3 @@ pub fn sparam_voltage_surface(
     }
 }
 
-pub fn sparam_voltage_line(
-    v_inc: f64,
-    active: bool,
-    fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
-    line_points: &[[f64; 3]],
-) -> C64 {
-    let n_pts = line_points.len();
-    if n_pts < 2 { return C64::new(0.0, 0.0); }
-
-    // Integrate E·dl along the line (trapezoidal-like: evaluate at midpoints)
-    let mut v_total = C64::new(0.0, 0.0);
-    for i in 0..(n_pts - 1) {
-        let p0 = line_points[i];
-        let p1 = line_points[i + 1];
-        let mid = [(p0[0]+p1[0])/2.0, (p0[1]+p1[1])/2.0, (p0[2]+p1[2])/2.0];
-        let dl = [p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]];
-
-        let (ex, ey, ez) = fieldf(mid[0], mid[1], mid[2]);
-        v_total += ex * C64::from(dl[0]) + ey * C64::from(dl[1]) + ez * C64::from(dl[2]);
-    }
-
-    let v_inc_c = C64::from(v_inc);
-
-    // S-parameter: ratio of reflected to incident wave amplitudes
-    // a = V_inc / (2*sqrt(Z0)), b = (V_total - V_inc) / (2*sqrt(Z0)) for active
-    // The sqrt(Z0) normalization cancels in the ratio
-    if active {
-        // S_ii = (V_total - V_inc) / V_inc
-        (v_total - v_inc_c) / v_inc_c
-    } else {
-        // S_ij = V_total / V_inc
-        v_total / v_inc_c
-    }
-}
