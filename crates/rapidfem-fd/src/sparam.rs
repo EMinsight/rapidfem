@@ -170,6 +170,62 @@ pub fn sparam_mode_power(
 ///
 /// The reference impedance Z₀ cancels in the wave-amplitude ratio (it enters
 /// `a` and `b` identically), so it is not a parameter here.
+/// Area-averaged mode-projected voltage S-parameter for lumped ports.
+///
+/// Clean-room derivation in `derivations/lumped_port/`: the port voltage is the
+/// transverse-averaged path integral of the SOLVED field over the whole port
+/// surface,
+///
+///   V = (1/w) ∫_Γ E·l̂ dS,   w = area/l   ⇒   V = (l/A) ∫_Γ E·l̂ dS
+///
+/// (`l̂` = port direction, `l` = height along it, `A` = port area). For a
+/// uniform mode `a·l̂` this is exactly the gap voltage `a·l`, but unlike a few
+/// discrete `∫E·dl` lines it stays well-defined when the field is non-uniform
+/// over a TALL port (e.g. a 184 µm RFIC feed), where the line integrals
+/// disagree and the extraction degenerates.
+///
+/// `S_ii = (V - V_inc)/V_inc` (active), `S_ij = V/V_inc` (passive).
+pub fn sparam_voltage_surface(
+    nodes: &[[f64; 3]],
+    tri_verts: &[[usize; 3]],
+    direction: [f64; 3],
+    height: f64,
+    v_inc: f64,
+    active: bool,
+    fieldf: &dyn Fn(f64, f64, f64) -> (C64, C64, C64),
+    gq_order: usize,
+) -> C64 {
+    // Port area A = Σ triangle areas.
+    let mut area = 0.0_f64;
+    for tri in tri_verts {
+        let v1 = nodes[tri[0]];
+        let v2 = nodes[tri[1]];
+        let v3 = nodes[tri[2]];
+        let e1 = [v2[0]-v1[0], v2[1]-v1[1], v2[2]-v1[2]];
+        let e2 = [v3[0]-v1[0], v3[1]-v1[1], v3[2]-v1[2]];
+        let cr = [e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]];
+        area += 0.5 * (cr[0]*cr[0] + cr[1]*cr[1] + cr[2]*cr[2]).sqrt();
+    }
+    if area < crate::constants::SINGULAR_EPS || v_inc == 0.0 {
+        return C64::new(0.0, 0.0);
+    }
+
+    // ∫_Γ E·l̂ dS over the port surface.
+    let flux = surface_integral(nodes, tri_verts, &|x, y, z| {
+        let (fx, fy, fz) = fieldf(x, y, z);
+        fx * C64::from(direction[0]) + fy * C64::from(direction[1]) + fz * C64::from(direction[2])
+    }, gq_order);
+
+    // V = (l/A) ∫ E·l̂ dS  (the w=A/l normalisation, mode-projected gap voltage).
+    let v_total = flux * C64::from(height / area);
+    let v_inc_c = C64::from(v_inc);
+    if active {
+        (v_total - v_inc_c) / v_inc_c
+    } else {
+        v_total / v_inc_c
+    }
+}
+
 pub fn sparam_voltage_line(
     v_inc: f64,
     active: bool,

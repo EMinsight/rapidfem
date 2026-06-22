@@ -24,7 +24,7 @@ use crate::interp;
 use crate::materials::{self, Material, PmlRegion};
 use crate::mesh::Mesh;
 use crate::port::Port;
-use crate::sparam::{sparam_voltage_line, sparam_waveport};
+use crate::sparam::{sparam_voltage_surface, sparam_waveport};
 use crate::waveguide::{
     cs_from_origin_zaxis, detect_rect_port, lumped_port_dims, AbsorbingBoundary, CoaxPort,
     FloquetPort, LumpedElement, LumpedPort, NumericalWavePort, RectWaveguide, SurfaceImpedance,
@@ -358,17 +358,20 @@ impl Simulation {
             };
             for (obs_idx, &obs_pi) in ctx.driven_indices.iter().enumerate() {
                 let active = obs_idx == exc_idx;
-                let s = if let (true, Some(lines), Some((_, _z0, v_inc))) = (
+                let s = if let (true, Some((dir, _z0, v_inc)), Some(height)) = (
                     port_dyn[obs_pi].is_lumped(),
-                    self.lumped_lines.get(&obs_pi),
                     port_dyn[obs_pi].lumped_voltage_params(),
+                    port_dyn[obs_pi].port_height(),
                 ) {
-                    let n_lines = lines.len() as f64;
-                    let mut s_sum = C64::new(0.0, 0.0);
-                    for line_pts in lines {
-                        s_sum += sparam_voltage_line(v_inc, active, &fieldf, line_pts);
-                    }
-                    s_sum / C64::from(n_lines)
+                    // Area-averaged mode projection V = (l/A)∫E·l̂ dS — robust
+                    // for tall / non-TEM ports (derivations/lumped_port/).
+                    let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi]
+                        .iter()
+                        .map(|&ti| self.mesh.tris[ti])
+                        .collect();
+                    sparam_voltage_surface(
+                        &self.mesh.nodes, &obs_tris, dir, height, v_inc, active, &fieldf, 4,
+                    )
                 } else {
                     let obs_tris: Vec<[usize; 3]> = port_tri_refs[obs_pi]
                         .iter()
