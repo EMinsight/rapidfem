@@ -969,7 +969,66 @@ fn vector_mode_tem_supported(
 /// out. The singular generalized problem `A x = λ B x` is solved by
 /// shift-invert near `σ` (just above the largest `ε_r`): eigenvalues `ν`
 /// of `(A − σB)⁻¹ B`, then `λ = σ + 1/ν`. Dense, sized for one face.
+/// Port characteristic length ℓ for the non-dimensionalization wrapper:
+/// √(total cross-section area), i.e. the PORT size (not the mesh resolution).
+/// This keeps the electrical size κ = k0·ℓ faithful — a µm RFIC port maps to
+/// O(1) coordinates with its true (tiny) κ, while an already-O(1) cross-section
+/// stays in its natural regime. `n_eff` is ℓ-invariant, so any O(port-size)
+/// length is valid; this one preserves the conditioning across scales.
+fn port_characteristic_length(mesh: &PortMesh2D) -> f64 {
+    let mut area = 0.0_f64;
+    for &t in &mesh.tris {
+        let (a, _g) = mesh.tri_geom(t);
+        area += a;
+    }
+    area.sqrt()
+}
+
+/// Robust quasi-TEM / vector wave-port mode solve.
+///
+/// Port-local non-dimensionalization (derivations/wave_port/): the 2-D
+/// eigenproblem is assembled in a frame scaled by the port's own characteristic
+/// length ℓ, so the matrix entries stay O(1) and the conditioning is
+/// independent of how small the port is relative to the 3-D mesh (RFIC µm
+/// cross-sections otherwise trip the absolute, k0²-scaled tolerances and the
+/// ill-conditioned shift-invert LU, returning 0 modes). `n_eff = β/k0` is
+/// scale-invariant; the recovered field coefficients are mapped back to the
+/// physical frame (transverse Eₜ ∝ ∇L scales as 1/ℓ, longitudinal E_z does not,
+/// so Eₜ coefficients are multiplied by ℓ) so downstream profile evaluation on
+/// the original mesh stays consistent.
 pub fn solve_vector_modes(
+    mesh: &PortMesh2D,
+    eps_r: &[f64],
+    k0: f64,
+    n_modes: usize,
+) -> Vec<VectorMode> {
+    let ell = port_characteristic_length(mesh);
+    if !(ell.is_finite() && ell > 0.0) {
+        return solve_vector_modes_core(mesh, eps_r, k0, n_modes);
+    }
+    // Assemble in the port-local O(1) frame: x̃ = x/ℓ, κ = k0·ℓ.
+    let scaled = PortMesh2D {
+        nodes: mesh.nodes.iter().map(|n| [n[0] / ell, n[1] / ell]).collect(),
+        tris: mesh.tris.clone(),
+        on_boundary: mesh.on_boundary.clone(),
+        on_pec: mesh.on_pec.clone(),
+        u_hat: mesh.u_hat,
+        v_hat: mesh.v_hat,
+        origin: mesh.origin,
+    };
+    let mut modes = solve_vector_modes_core(&scaled, eps_r, k0 * ell, n_modes);
+    for m in modes.iter_mut() {
+        // n_eff is ℓ-invariant; report the physical k0. Map Eₜ coefficients
+        // back to the physical frame (×ℓ); E_z and the eigenvalue are unchanged.
+        m.k0 = k0;
+        for c in m.e_edge_ned2.iter_mut() { c[0] *= ell; c[1] *= ell; }
+        for c in m.e_face_ned2.iter_mut() { c[0] *= ell; c[1] *= ell; }
+        for c in m.e_uv_node.iter_mut() { c[0] *= ell; c[1] *= ell; }
+    }
+    modes
+}
+
+fn solve_vector_modes_core(
     mesh: &PortMesh2D,
     eps_r: &[f64],
     k0: f64,
@@ -1785,6 +1844,48 @@ mod tests {
         let n_eff = modes[0].n_eff;
         assert!(n_eff > 1.0 && n_eff < 3.55_f64.sqrt(),
             "n_eff = {n_eff:.3} not bracketed (1, 1.884)");
+    }
+
+    /// Build the microstrip cross-section at an arbitrary geometric scale `s`
+    /// (coords ×s, k0 ×1/s, so the electrical size κ = k0·ℓ is INVARIANT) and
+    /// return the quasi-TEM n_eff. Same physics at every `s`; n_eff must match.
+    fn microstrip_neff_at_scale(s: f64) -> f64 {
+        // Coarse mesh: the natural-vs-µm comparison is mesh-accuracy-independent
+        // (same resolution at both scales), so this only needs to be consistent.
+        let (nodes, tris) = rect_mesh(2.0 * s, 1.0 * s, 12, 6);
+        let mut pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
+        let eps: Vec<f64> = pm.tris.iter().map(|&t| {
+            let yc = (pm.nodes[t[0]][1] + pm.nodes[t[1]][1] + pm.nodes[t[2]][1]) / 3.0;
+            if yc < 0.1 * s { 3.55 } else { 1.0 }
+        }).collect();
+        let mut on_pec = vec![false; pm.nodes.len()];
+        for (i, n) in pm.nodes.iter().enumerate() {
+            if (n[1] - 0.1 * s).abs() < 1e-6 * s && (n[0] - 1.0 * s).abs() < (0.1 + 1e-6) * s {
+                on_pec[i] = true;
+            }
+        }
+        pm.on_pec = on_pec;
+        let k0 = 3.0 / s;
+        let modes = solve_vector_modes(&pm, &eps, k0, 3);
+        assert!(!modes.is_empty(), "no quasi-TEM mode at scale s={s:.0e}");
+        modes[0].n_eff
+    }
+
+    #[test]
+    fn vector_solver_is_scale_invariant_micron_port() {
+        // The reported failure: an RFIC port at µm coordinates returns 0 modes,
+        // even though the physics is identical to the O(1) "natural" scale. The
+        // port-local non-dimensionalization makes the solve scale-invariant.
+        // Asserting natural == µm at the SAME (coarse) mesh is what matters and
+        // is mesh-accuracy-independent — the absolute n_eff need not be
+        // converged here; the well-resolved value is pinned by the
+        // `microstrip_quasi_tem_natural_scale` test above.
+        let n_natural = microstrip_neff_at_scale(1.0);          // O(1) coords
+        let n_micron = microstrip_neff_at_scale(1.0e-6);        // µm coords, GHz·1e6
+        eprintln!("[scale-invariance] n_eff: natural={n_natural:.5} µm={n_micron:.5}");
+        let rel = (n_micron - n_natural).abs() / n_natural;
+        assert!(rel < 1e-3, "n_eff drifted with scale: µm {n_micron:.5} vs natural \
+            {n_natural:.5} ({:.3}% — solve is not scale-invariant)", 100.0 * rel);
     }
 
     /// Reference triangle for basis-evaluator tests: v0=(0,0), v1=(1,0),
