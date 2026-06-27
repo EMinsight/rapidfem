@@ -51,6 +51,7 @@ import numpy as np
 
 from ._geometry_gds import _GdsMixin
 from ._geometry_primitives import _PrimitivesMixin
+from ._geometry_import import _ImportMixin
 
 
 # TOLERANCES ============================================================================
@@ -98,12 +99,33 @@ class _Entity:
     material: object = None    # rapidfem.Material | str | None
     maxh: float | None = None
     _geometry: object = None   # back-ref to Geometry, set by registration
+    _discrete: bool = False    # True for healed-STL volumes (geo/discrete kernel,
+                               # not OCC): they live as mesh nodes, so OCC boolean
+                               # ops and post-import transforms don't apply
 
     @staticmethod
     def from_dimtag(dim: int, tag: int) -> "_Entity":
-        cog = tuple(gmsh.model.occ.getCenterOfMass(dim, tag))
         bbox = tuple(gmsh.model.getBoundingBox(dim, tag))
-        return _Entity(dim=dim, tag=tag, cog=cog, bbox=bbox)
+        return _Entity(dim=dim, tag=tag, cog=_cog(dim, tag, bbox), bbox=bbox)
+
+
+def _cog(dim: int, tag: int, bbox: tuple | None = None) -> tuple:
+    """Centre of mass of an entity, with a discrete-geometry fallback.
+
+    OCC entities (primitives, imported STEP/IGES/BREP) expose an exact
+    ``occ.getCenterOfMass``. Discrete entities (healed STL, pre-built ``.msh``
+    groups) live outside the OCC kernel, so that call raises; we fall back to
+    the bounding-box centre, which is all the ``.min``/``.max``/``.where``
+    face selectors actually consult.
+    """
+    try:
+        return tuple(gmsh.model.occ.getCenterOfMass(dim, tag))
+    except Exception:
+        if bbox is None:
+            bbox = tuple(gmsh.model.getBoundingBox(dim, tag))
+        return ((bbox[0] + bbox[3]) / 2,
+                (bbox[1] + bbox[4]) / 2,
+                (bbox[2] + bbox[5]) / 2)
 
 
 def _bbox_match(a: tuple, b: tuple, tol: float) -> bool:
@@ -316,6 +338,26 @@ class EntityCollection:
     def maxh(self, value: float) -> None:
         for e in self._entities:
             e.maxh = value
+
+    @property
+    def material(self):
+        mats = {id(e.material): e.material
+                for e in self._entities if e.material is not None}
+        if len(mats) == 1:
+            return next(iter(mats.values()))
+        return None
+
+    @material.setter
+    def material(self, value) -> None:
+        """Assign one material to every volume in the collection.
+
+        The canonical way to give a material to an imported-mesh group, e.g.
+        ``scene.group("substrate").material = rf.Dielectric(er=4.4)``. Applies
+        to volume (dim 3) members; assigning to a face collection is a no-op for
+        the FEM (faces carry boundary physics, not bulk materials).
+        """
+        for e in self._entities:
+            e.material = value
 
     @property
     def unassigned(self) -> "EntityCollection":
@@ -587,8 +629,8 @@ class GeoObject:
         # Build entries, reusing existing _Entity records if cog+bbox matches
         out: list[_Entity] = []
         for d, t in children:
-            cog = tuple(gmsh.model.occ.getCenterOfMass(d, t))
             bbox = tuple(gmsh.model.getBoundingBox(d, t))
+            cog = _cog(d, t, bbox)
             existing = self._find_or_register_entity(d, t, cog, bbox)
             out.append(existing)
         return out
@@ -646,7 +688,7 @@ class GeoObject:
 
 # GEOMETRY ==============================================================================
 
-class Geometry(_GdsMixin, _PrimitivesMixin):
+class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
     """Top-level geometry builder. Owns a gmsh OCC model for its lifetime.
 
     Build with primitive factory methods (:meth:`box`, :meth:`cylinder`,
@@ -759,6 +801,14 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         # Consumed in mesh() as extra Distance + Threshold background
         # fields, merged into the per-entity Min combiner.
         self._refinements: list[dict] = []
+        # Substrate mode: "occ" (primitives + STEP/IGES/BREP/STL, the default)
+        # or "mesh" (a pre-built .msh loaded via load(); no OCC model). Set by
+        # _ImportMixin._load_mesh().
+        self._mode = "occ"
+        self._mesh_scene = None             # MeshScene when in mesh mode
+        # True once a healed STL (discrete/geo body) is present: it cannot share
+        # the OCC kernel with primitives, so further OCC geometry is rejected.
+        self._has_discrete = False
 
     # ── Scale helpers ──────────────────────────────────────────────────────
     # Every coord that goes INTO gmsh is divided by self._scale; every coord
@@ -788,6 +838,9 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
     def _wrap_volume(self, tag: int, *,
                      material=None,
                      maxh: float | None = None) -> GeoObject:
+        if self._mode == "mesh":
+            self._require_occ_mode("build OCC geometry")
+        self._reject_after_discrete("add a volume")
         gmsh.model.occ.synchronize()
         ent = _Entity.from_dimtag(3, tag)
         ent._geometry = self
@@ -800,6 +853,9 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
 
     def _wrap_face(self, tag: int, *,
                    maxh: float | None = None) -> GeoObject:
+        if self._mode == "mesh":
+            self._require_occ_mode("build OCC geometry")
+        self._reject_after_discrete("add a face")
         gmsh.model.occ.synchronize()
         ent = _Entity.from_dimtag(2, tag)
         ent._geometry = self
@@ -1037,6 +1093,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         *tools : GeoObject
             additional operands to fragment with ``target``
         """
+        for _op in (target, *tools):
+            self._reject_discrete(_op, "boolean op")
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
         _, out_map = gmsh.model.occ.fragment(target_dt, tools_dt)
@@ -1067,6 +1125,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         *tools : GeoObject
             objects to subtract (consumed)
         """
+        for _op in (target, *tools):
+            self._reject_discrete(_op, "boolean op")
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
         _, out_map = gmsh.model.occ.cut(target_dt, tools_dt)
@@ -1171,6 +1231,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         center : tuple[float, float, float]
             a point on the rotation axis (defaults to origin)
         """
+        self._reject_discrete(obj, "rotate")
         cx, cy, cz = center
         ax, ay, az = axis
         s = self._s
@@ -1206,6 +1267,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         center : tuple[float, float, float]
             scaling centre (defaults to origin)
         """
+        self._reject_discrete(obj, "stretch")
         cx, cy, cz = center
         s = self._s
         gmsh.model.occ.dilate([(obj.dim, obj._entity.tag)],
@@ -1239,6 +1301,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         dx, dy, dz : float
             translation along each axis in metres (default 0 = no move)
         """
+        self._reject_discrete(obj, "translate")
         s = self._s
         gmsh.model.occ.translate([(obj.dim, obj._entity.tag)], s(dx), s(dy), s(dz))
         gmsh.model.occ.synchronize()
@@ -1282,6 +1345,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         point : tuple[float, float, float]
             a point the plane passes through (defaults to origin)
         """
+        self._reject_discrete(obj, "mirror")
         nx, ny, nz = normal
         px, py, pz = point
         s = self._s
@@ -1335,6 +1399,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         GeoObject
             the new, independent duplicate
         """
+        self._reject_discrete(obj, "copy")
         out = gmsh.model.occ.copy([(obj.dim, obj._entity.tag)])
         gmsh.model.occ.synchronize()
         new_dim, new_tag = out[0]
@@ -1465,6 +1530,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         *tools : GeoObject
             objects to intersect with (consumed)
         """
+        for _op in (target, *tools):
+            self._reject_discrete(_op, "boolean op")
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
         _, out_map = gmsh.model.occ.intersect(target_dt, tools_dt)
@@ -1502,6 +1569,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
             "fuse, or use fragment() if you need them preserved.",
             stacklevel=2,
         )
+        for _op in (target, *tools):
+            self._reject_discrete(_op, "boolean op")
         target_dt = [(target.dim, target._entity.tag)]
         tools_dt = [(t.dim, t._entity.tag) for t in tools]
         _, out_map = gmsh.model.occ.fuse(target_dt, tools_dt)
@@ -1560,6 +1629,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         ValueError
             if ``obj`` is not a volume or has no edges to round
         """
+        self._reject_discrete(obj, "fillet")
         if obj.dim != 3:
             raise ValueError(f"fillet expects a volume (dim=3), got dim={obj.dim}")
         edge_tags = [e.tag for e in (edges if edges is not None else obj.edges)]
@@ -1610,6 +1680,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         ValueError
             if ``obj`` is not a volume or has no edges to bevel
         """
+        self._reject_discrete(obj, "chamfer")
         if obj.dim != 3:
             raise ValueError(f"chamfer expects a volume (dim=3), got dim={obj.dim}")
         edge_tags = [e.tag for e in (edges if edges is not None else obj.edges)]
@@ -1766,6 +1837,181 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
             "distance": (float(distance) if distance is not None else 5.0 * float(h)),
         })
 
+    # ── Physical-group assignment (shared by mesh() and mesh mode) ───────────
+    def _assign_physical_groups(self) -> dict[str, int]:
+        """Bake the material + physics registries into gmsh physical groups.
+
+        Three sources, in order:
+
+        1. Object-API :class:`~rapidfem.Material` instances (one group each)
+        2. Object-API physics objects (one group per ``rf.PEC``/Port/... call)
+        3. Legacy string materials/names (``rfic.Stack`` and old code paths)
+
+        Populates ``self._material_tags`` / ``self._physics_tags`` (keyed by
+        ``id()``) and returns the legacy name→tag map. Assumes any prior groups
+        were already cleared by the caller. Used both by :meth:`mesh` (OCC path)
+        and by the mesh-mode bake (a pre-built ``.msh``), so the downstream
+        :class:`~rapidfem.Problem` TOML walk is identical for both substrates.
+        """
+        self._material_tags = {}
+        self._physics_tags = {}
+        name_to_tag: dict[str, int] = {}
+        # Start physical-group tags well above every entity tag, the Rust
+        # mesh loader (`src/mesh_io.rs::tris_for_tag`) keys tris by either
+        # the entity's physical-group tag OR (fallback) the entity tag
+        # itself when no group is assigned. Sharing the integer namespace
+        # means a physical-group tag like 9 collides with face entity 9
+        # and Port "9" picks up the unrelated entity's triangles.
+        next_tag = 100_000
+
+        # Collect volume entities targeted by PML, they go into the PML
+        # physical group (step 2) and must NOT also land in a material group,
+        # otherwise the Rust solver sees them tagged twice and the PML's
+        # coordinate stretch is overridden by the bulk material assignment.
+        pml_volume_ids: set[int] = set()
+        for phys in self._physics:
+            if type(phys).__name__ == "PML":
+                for ent in getattr(phys, "_entities", ()):
+                    pml_volume_ids.add(id(ent))
+
+        # Per-class counters keep physical-group names unique without leaking
+        # python id()s into the viewer legend. Class lower-case + 1-based index.
+        # Example: two Dielectric() instances → "dielectric_1", "dielectric_2".
+        # Driven ports collapse onto a shared "port_<N>" namespace so the legend
+        # reads Port 1 / Port 2 regardless of waveguide/lumped/coax mix.
+        mat_class_count: dict[str, int] = {}
+        phys_class_count: dict[str, int] = {}
+        port_classes = {
+            "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
+            "UserDefinedPort", "FloquetPort",
+        }
+
+        def _mat_group_name(mat) -> str:
+            cls = type(mat).__name__.lower()
+            mat_class_count[cls] = mat_class_count.get(cls, 0) + 1
+            return f"{cls}_{mat_class_count[cls]}"
+
+        def _phys_group_name(phys) -> str:
+            cls_name = type(phys).__name__
+            key = "port" if cls_name in port_classes else cls_name.lower()
+            phys_class_count[key] = phys_class_count.get(key, 0) + 1
+            return f"{key}_{phys_class_count[key]}"
+
+        # 1) Material instances → volume groups (skipping PML-targeted volumes).
+        mat_to_volumes: dict[int, tuple[object, list[int]]] = {}
+        for ent in self._entities:
+            mat = ent.material
+            # Skip strings (handled in step 3) and None.
+            if mat is None or isinstance(mat, str):
+                continue
+            if ent.dim != 3:
+                continue
+            if id(ent) in pml_volume_ids:
+                continue
+            key = id(mat)
+            if key not in mat_to_volumes:
+                mat_to_volumes[key] = (mat, [])
+            mat_to_volumes[key][1].append(ent.tag)
+        for mat_id, (mat, tags) in mat_to_volumes.items():
+            phys_tag = next_tag
+            next_tag += 1
+            gmsh.model.addPhysicalGroup(3, tags, tag=phys_tag, name=_mat_group_name(mat))
+            self._material_tags[mat_id] = phys_tag
+
+        # 2) Physics objects → faces or volume groups.
+        for phys in self._physics:
+            # A PeriodicBoundary is a two-sided physics object: each side
+            # must carry its own physical-group tag so the time-domain
+            # backend can match the pair. The geometry stores the pair as
+            # `(tag_a, tag_b)` under `_physics_tags`; downstream walkers
+            # ignore it unless they are the periodic collector.
+            if type(phys).__name__ == "PeriodicBoundary":
+                ents_a = getattr(phys, "_entities_a", None)
+                ents_b = getattr(phys, "_entities_b", None)
+                if not ents_a or not ents_b:
+                    continue
+                name = _phys_group_name(phys)
+                tag_a = next_tag
+                next_tag += 1
+                gmsh.model.addPhysicalGroup(
+                    2, [e.tag for e in ents_a], tag=tag_a, name=f"{name}_a")
+                tag_b = next_tag
+                next_tag += 1
+                gmsh.model.addPhysicalGroup(
+                    2, [e.tag for e in ents_b], tag=tag_b, name=f"{name}_b")
+                self._physics_tags[id(phys)] = (tag_a, tag_b)
+                continue
+
+            ents = getattr(phys, "_entities", None)
+            if not ents:
+                continue
+            # All entities in one physics object share dim by construction.
+            dim = ents[0].dim
+            tags = [e.tag for e in ents]
+            phys_tag = next_tag
+            next_tag += 1
+            phys_id = id(phys)
+            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=_phys_group_name(phys))
+            self._physics_tags[phys_id] = phys_tag
+
+        # 3) Legacy: name/material strings (rfic.Stack + builder workflow).
+        by_dim_name: dict[tuple[int, str], list[int]] = {}
+        for ent in self._entities:
+            if ent.name:
+                by_dim_name.setdefault((ent.dim, ent.name), []).append(ent.tag)
+        for ent in self._entities:
+            if isinstance(ent.material, str) and ent.dim == 3:
+                key = (3, f"_mat_{ent.material}")
+                by_dim_name.setdefault(key, []).append(ent.tag)
+        for (dim, name), tags in by_dim_name.items():
+            phys_tag = next_tag
+            next_tag += 1
+            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=name)
+            display_name = name[len("_mat_"):] if name.startswith("_mat_") else name
+            name_to_tag[display_name] = phys_tag
+
+        return name_to_tag
+
+    def _mesh_imported(self) -> "tuple[bytes, dict[str, int]]":
+        """Bake bindings into a pre-built mesh (mesh mode), no remeshing.
+
+        A geometry loaded from a ``.msh`` (via :meth:`load`) is already
+        tessellated, so there is nothing to mesh: we clear the file's original
+        physical groups, re-tag from the material/physics the user attached to
+        the mesh's named groups, and serialise. The element/node table is the
+        loaded mesh, untouched. Downstream is identical to the OCC path because
+        the same registries and tag maps drive :meth:`rapidfem.Problem` TOML.
+        """
+        if not self._physics and not any(
+                e.material is not None for e in self._entities):
+            raise RuntimeError(
+                "mesh mode: no materials or physics attached. Bind them to the "
+                "mesh's named groups, e.g. scene.group('air').material = "
+                "rf.Air() or rf.PEC(scene.group('metal')), before g.mesh().")
+        # Drop the file's own physical groups; the user's bindings are now
+        # authoritative and are written back as fresh high-numbered tags.
+        try:
+            for dim, ptag in gmsh.model.getPhysicalGroups():
+                gmsh.model.removePhysicalGroups([(dim, ptag)])
+        except Exception:
+            pass
+        name_to_tag = self._assign_physical_groups()
+
+        gmsh.option.setNumber("Mesh.SaveAll", 1)
+        with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
+            tmp_path = f.name
+        try:
+            gmsh.write(tmp_path)
+            with open(tmp_path, "rb") as f:
+                mesh_bytes = f.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        self._last_mesh = (mesh_bytes, name_to_tag)
+        return mesh_bytes, name_to_tag
+
     def mesh(
         self,
         maxh: float | None = None,
@@ -1832,6 +2078,10 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         name_to_tag : dict[str, int]
             legacy name → tag map (empty under the object-API path)
         """
+        # Mesh mode (a pre-built .msh loaded via load()): nothing to tessellate,
+        # just bake the user's group bindings and serialise the loaded mesh.
+        if self._mode == "mesh":
+            return self._mesh_imported()
         if maxh is None:
             maxh = self._maxh
         if maxh is None:
@@ -1991,6 +2241,16 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
                       f"(N_pts={len(tags)}, h={h:.3e}, dist={dist_radius:.3e})",
                       file=sys.stderr)
 
+        # Pin the mesh-size options unconditionally. These gmsh options are
+        # process-global, NOT per-model, so a previous mesh() (e.g. one that
+        # took the field branch below and set FromPoints=0) would otherwise
+        # leak into a plain, field-less geometry and silently coarsen it,
+        # making the result depend on call order. Set the field-less defaults
+        # here; the field branch overrides them when refinement is active.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
+        gmsh.option.setNumber(
+            "Mesh.MeshSizeExtendFromBoundary", 1 if self._grading else 0)
+
         all_field_ids = threshold_field_ids + refinement_field_ids
         if _refdbg:
             print(f"[refine] all_field_ids={all_field_ids}, "
@@ -2040,128 +2300,9 @@ class Geometry(_GdsMixin, _PrimitivesMixin):
         # error already). User can override before calling .mesh().
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
 
-        # Assign physical groups. Three sources, in order:
-        #   1. Object-API Material instances (one group per instance)
-        #   2. Object-API physics objects (one group per rf.PEC/Port/... call)
-        #   3. Legacy string materials/names (rfic.Stack and old code paths)
-        # Each source produces independent physical-group tags, so the
-        # registries stay self-contained and Problem can read them by id.
-        self._material_tags = {}
-        self._physics_tags = {}
-        name_to_tag: dict[str, int] = {}
-        # Start physical-group tags well above every entity tag, the Rust
-        # mesh loader (`src/mesh_io.rs::tris_for_tag`) keys tris by either
-        # the entity's physical-group tag OR (fallback) the entity tag
-        # itself when no group is assigned. Sharing the integer namespace
-        # means a physical-group tag like 9 collides with face entity 9
-        # and Port "9" picks up the unrelated entity's triangles.
-        next_tag = 100_000
-
-        # Collect volume entities targeted by PML, they go into the PML
-        # physical group (step 2) and must NOT also land in a material group,
-        # otherwise the Rust solver sees them tagged twice and the PML's
-        # coordinate stretch is overridden by the bulk material assignment.
-        pml_volume_ids: set[int] = set()
-        for phys in self._physics:
-            if type(phys).__name__ == "PML":
-                for ent in getattr(phys, "_entities", ()):
-                    pml_volume_ids.add(id(ent))
-
-        # Per-class counters keep physical-group names unique without leaking
-        # python id()s into the viewer legend. Class lower-case + 1-based index.
-        # Example: two Dielectric() instances → "dielectric_1", "dielectric_2".
-        # Driven ports collapse onto a shared "port_<N>" namespace so the legend
-        # reads Port 1 / Port 2 regardless of waveguide/lumped/coax mix.
-        mat_class_count: dict[str, int] = {}
-        phys_class_count: dict[str, int] = {}
-        port_classes = {
-            "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
-            "UserDefinedPort", "FloquetPort",
-        }
-
-        def _mat_group_name(mat) -> str:
-            cls = type(mat).__name__.lower()
-            mat_class_count[cls] = mat_class_count.get(cls, 0) + 1
-            return f"{cls}_{mat_class_count[cls]}"
-
-        def _phys_group_name(phys) -> str:
-            cls_name = type(phys).__name__
-            key = "port" if cls_name in port_classes else cls_name.lower()
-            phys_class_count[key] = phys_class_count.get(key, 0) + 1
-            return f"{key}_{phys_class_count[key]}"
-
-        # 1) Material instances → volume groups (skipping PML-targeted volumes).
-        mat_to_volumes: dict[int, tuple[object, list[int]]] = {}
-        for ent in self._entities:
-            mat = ent.material
-            # Skip strings (handled in step 3) and None.
-            if mat is None or isinstance(mat, str):
-                continue
-            if ent.dim != 3:
-                continue
-            if id(ent) in pml_volume_ids:
-                continue
-            key = id(mat)
-            if key not in mat_to_volumes:
-                mat_to_volumes[key] = (mat, [])
-            mat_to_volumes[key][1].append(ent.tag)
-        for mat_id, (mat, tags) in mat_to_volumes.items():
-            phys_tag = next_tag
-            next_tag += 1
-            gmsh.model.addPhysicalGroup(3, tags, tag=phys_tag, name=_mat_group_name(mat))
-            self._material_tags[mat_id] = phys_tag
-
-        # 2) Physics objects → faces or volume groups.
-        for phys in self._physics:
-            # A PeriodicBoundary is a two-sided physics object: each side
-            # must carry its own physical-group tag so the time-domain
-            # backend can match the pair. The geometry stores the pair as
-            # `(tag_a, tag_b)` under `_physics_tags`; downstream walkers
-            # ignore it unless they are the periodic collector.
-            if type(phys).__name__ == "PeriodicBoundary":
-                ents_a = getattr(phys, "_entities_a", None)
-                ents_b = getattr(phys, "_entities_b", None)
-                if not ents_a or not ents_b:
-                    continue
-                name = _phys_group_name(phys)
-                tag_a = next_tag
-                next_tag += 1
-                gmsh.model.addPhysicalGroup(
-                    2, [e.tag for e in ents_a], tag=tag_a, name=f"{name}_a")
-                tag_b = next_tag
-                next_tag += 1
-                gmsh.model.addPhysicalGroup(
-                    2, [e.tag for e in ents_b], tag=tag_b, name=f"{name}_b")
-                self._physics_tags[id(phys)] = (tag_a, tag_b)
-                continue
-
-            ents = getattr(phys, "_entities", None)
-            if not ents:
-                continue
-            # All entities in one physics object share dim by construction.
-            dim = ents[0].dim
-            tags = [e.tag for e in ents]
-            phys_tag = next_tag
-            next_tag += 1
-            phys_id = id(phys)
-            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=_phys_group_name(phys))
-            self._physics_tags[phys_id] = phys_tag
-
-        # 3) Legacy: name/material strings (rfic.Stack + builder workflow).
-        by_dim_name: dict[tuple[int, str], list[int]] = {}
-        for ent in self._entities:
-            if ent.name:
-                by_dim_name.setdefault((ent.dim, ent.name), []).append(ent.tag)
-        for ent in self._entities:
-            if isinstance(ent.material, str) and ent.dim == 3:
-                key = (3, f"_mat_{ent.material}")
-                by_dim_name.setdefault(key, []).append(ent.tag)
-        for (dim, name), tags in by_dim_name.items():
-            phys_tag = next_tag
-            next_tag += 1
-            gmsh.model.addPhysicalGroup(dim, tags, tag=phys_tag, name=name)
-            display_name = name[len("_mat_"):] if name.startswith("_mat_") else name
-            name_to_tag[display_name] = phys_tag
+        # Assign physical groups from the material + physics registries. Shared
+        # with the mesh-mode path (a pre-built .msh that skips meshing).
+        name_to_tag = self._assign_physical_groups()
 
         # Generate. SaveAll=1 ensures volumes without explicit material/name still
         # land in the .msh (otherwise gmsh writes only physical-group elements).

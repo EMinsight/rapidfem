@@ -58,6 +58,55 @@ antennas (PML + far-field), pyramidal horns, dielectric resonators, and the
 `fd_rfic_*` on-chip passives. RFIC geometry comes from a process stack and
 layout via `rapidfem.rfic` (`rfic.Stack`, `Geometry.from_gds`).
 
+## Importing external CAD and meshes
+
+`g.load(path)` brings external geometry into the scene; the action is chosen
+from the file extension:
+
+```python
+g = rf.Geometry(maxh=rf.lambda_maxh(f_max=20e9))
+
+# STEP / IGES / BREP land in the same OpenCASCADE kernel as the primitives,
+# so the result is a normal GeoObject: boolean it, transform it, select its
+# faces, attach materials and physics, all exactly like a g.box(...).
+part = g.load("horn.step", material=rf.Air())   # mm STEP -> metres by default
+post = g.cylinder(radius=0.5e-3, height=5e-3)
+g.cut(part, post)                                # compose CAD with primitives
+g.rotate(part, math.pi / 2, axis=(0, 1, 0))      # full transform API applies
+rf.RectWaveguidePort(part.faces.max(axis="z"))
+rf.PEC(*part.faces.unassigned)
+g.mesh()
+
+# Place/orient any import at load time, like a primitive's position= kwarg:
+part = g.load("horn.step", position=(0, 0, 5e-3), rotation=(math.pi, (0, 0, 1)))
+
+# STL is a surface triangulation, healed into a meshable solid. It is a
+# discrete body (its geometry IS the mesh), so it stays standalone: it takes a
+# material, physics, placement and meshing, but it cannot be combined with OCC
+# primitives or boolean ops (use a STEP/IGES/BREP export for that). STL is
+# unit-less, pass scale= (metres per file unit) for a model authored in mm.
+g = rf.Geometry(maxh=0.5e-3)
+blob = g.load("antenna.stl", material=rf.Air(), scale=1e-3, position=(0, 0, 1e-3))
+
+# A pre-built .msh volume mesh is already tessellated, so loading one switches
+# the geometry into mesh mode: its named physical groups become selectable
+# handles you attach materials and physics to. g.mesh() then bakes the
+# bindings (no remeshing) and the usual Problem/sweep pipeline runs unchanged.
+g = rf.Geometry()
+scene = g.load("waveguide.msh")
+scene.group("air").material = rf.Air()
+rf.RectWaveguidePort(scene.group("port_in"))
+rf.RectWaveguidePort(scene.group("port_out"))
+rf.PEC(scene.group("walls"))
+g.mesh()
+result = rf.Problem(g).sweep(np.linspace(8e9, 12e9, 21))
+```
+
+`unit=` sets the target unit OpenCASCADE converts a STEP/IGES file into
+(default `"M"`, so a millimetre file comes in at metre coordinates); `scale=`
+is an extra metres-per-file-unit factor for unit-less STL or a mis-declared
+CAD unit. See `examples/fd_step_import.py` for a full STEP-driven sweep.
+
 ## Local UI
 
 ```bash
@@ -76,6 +125,10 @@ Use `rapidfem.show(g)` to send a geometry to the viewer.
   and fillet/chamfer; ready-made RF structures in `rf.structures` (coax,
   microstrip, CPW, stripline, waveguides, helix) build geometry + ports in one
   call
+- **External CAD / mesh import** — `g.load(path)` pulls in STEP / IGES / BREP
+  solids as fully composable primitives, heals STL surfaces into meshable
+  solids, or loads a pre-built `.msh` and exposes its named physical groups
+  for material / physics binding
 - **RFIC / GDS** — `rapidfem.rfic` process stacks and `Geometry.from_gds` build
   on-chip passives, solved scale-invariantly down to sub-micron features
 - **Canonical Nédélec R2 elements** — first-kind order-2 curl–curl vector
