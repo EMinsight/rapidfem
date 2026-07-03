@@ -744,7 +744,7 @@ impl ElemMaterial {
     }
 
     /// An impedance-matched absorbing material: `σ*/μ = σ/ε = nu`, so the
-    /// wave is absorbed with no reflection at the layer interface.
+    /// wave is absorbed with no reflection at normal incidence.
     pub fn matched_absorber(eps: Field, mu: Field, nu: Field) -> Self {
         ElemMaterial {
             eps: [eps; 3],

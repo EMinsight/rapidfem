@@ -7,11 +7,14 @@
 
 //! Absorbing boundary layers.
 //!
-//! A graded impedance-matched lossy layer (`σ/ε = σ*/μ`) absorbs outgoing
-//! waves with no reflection at the layer interface; ramping the loss from
-//! zero keeps the entry smooth. This is the matched-layer absorber, a true
-//! CFS-PML (reflectionless at *all* incidence angles, via auxiliary
-//! differential equations) is a further extension.
+//! A graded impedance-matched lossy layer (`σ/ε = σ*/μ`) keeps the wave
+//! impedance equal to the medium's, so a normally-incident outgoing wave
+//! crosses the interface without reflection and then decays inside the layer;
+//! ramping the loss up from zero keeps that entry smooth. This is a
+//! matched-layer absorber, not a true PML: its reflectionlessness holds only
+//! near normal incidence. A coordinate-stretched (CFS-)PML — reflectionless at
+//! *all* incidence angles, via auxiliary differential equations — is a further
+//! extension.
 
 use crate::constants::Field;
 use crate::rhs::ElemMaterial;
