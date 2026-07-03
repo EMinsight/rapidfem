@@ -209,6 +209,20 @@ Larger: 327 k DOFs driven sweep (PARDISO) ~5 s/freq; 905 k DOFs eigenmode
 (1e-12 – 1e-16). End-to-end S-parameter accuracy is tracked in
 `tests/validation/` against analytical solutions and reference solvers.
 
+## Acknowledgments
+
+rapidfem began life as a Rust port of [EMerge](https://github.com/FennisRobert/EMerge)
+([PyPI](https://pypi.org/project/emerge/)), Robert Fennis' open-source Python
+electromagnetic FEM solver. EMerge is the project that inspired this one — its
+clear, script-first design shaped how rapidfem's geometry / material / physics
+API feels today, and the early releases ported its Python implementation to
+Rust. Warm thanks to Robert Fennis for building and sharing it.
+
+The solver kernels have since been independently re-derived from primary
+sources (Nédélec's edge-element construction, standard microwave theory, and
+the barycentric integration identities); the derivations, completeness proofs
+and entrywise cross-checks live in [`derivations/`](derivations/).
+
 ## License
 
 GPL-3.0-or-later with the Gmsh additional permission — see [LICENSE](LICENSE).
