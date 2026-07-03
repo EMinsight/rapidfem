@@ -5,10 +5,10 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Clean-room Nédélec first-kind order-2 (R2) tetrahedral element.
+//! Canonical Nédélec first-kind order-2 (R2) tetrahedral element.
 //!
-//! Independently derived element assembly for the 20-DOF curl-conforming
-//! element. The 20 basis functions are built from the Whitney function
+//! Element assembly for the 20-DOF curl-conforming element. The 20 basis
+//! functions are built from the Whitney function
 //! W_ab = L_a ∇L_b − L_b ∇L_a scaled by a nodal barycentric weight:
 //!
 //!   edge e=(a,b), length ℓ:   φ_e1 = ℓ L_a W_ab,   φ_e2 = ℓ L_b W_ab

@@ -6,7 +6,6 @@
 // the Gmsh additional permission. See LICENSE for the full terms.
 
 //! Load .msh files via mshio and build a Mesh.
-//! Mirrors the gmsh extraction in mesh3d._pre_update().
 
 use crate::mesh::Mesh;
 use mshio::mshfile::ElementType;

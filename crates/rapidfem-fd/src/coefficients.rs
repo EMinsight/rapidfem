@@ -16,8 +16,8 @@
 //!   ∫_tri L₁^p L₂^q L₃^r   dA = (p! q! r!)/(p+q+r+2)!     · 2A
 //!
 //! The two helpers below return the mesh-independent prefactors used by the
-//! Nédélec-2 element assembly. The same identity is re-derived from scratch
-//! by symbolic integration in `derivations/nedelec2/barycentric.py`, whose
+//! Nédélec-2 element assembly. The same identity is reproduced by symbolic
+//! integration in `derivations/nedelec2/barycentric.py`, whose
 //! exact rationals back the golden test in `tests/coefficients_golden_test.rs`.
 
 const FACTORIALS: [u64; 10] = [1, 1, 2, 6, 24, 120, 720, 5040, 40320, 362880];

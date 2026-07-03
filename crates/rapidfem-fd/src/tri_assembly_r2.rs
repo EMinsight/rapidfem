@@ -5,7 +5,7 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Clean-room surface (boundary-triangle) assembly for the Robin / port BC.
+//! Surface (boundary-triangle) assembly for the Robin / port BC.
 //!
 //! On a boundary face the curl-conforming element restricts to the canonical
 //! R2 *surface* element: 8 DOFs = 3 edges × 2 modes + 1 face × 2 modes, with

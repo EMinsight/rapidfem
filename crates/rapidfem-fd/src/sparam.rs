@@ -173,7 +173,7 @@ pub fn sparam_mode_power(
 /// `a` and `b` identically), so it is not a parameter here.
 /// Area-averaged mode-projected voltage S-parameter for lumped ports.
 ///
-/// Clean-room derivation in `derivations/lumped_port/`: the port voltage is the
+/// Derivation in `derivations/lumped_port/`: the port voltage is the
 /// transverse-averaged path integral of the SOLVED field over the whole port
 /// surface,
 ///
