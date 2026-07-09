@@ -111,7 +111,7 @@ pub fn assemble_and_solve_with_pml(
     let (rows, cols, data_e, data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
     eprintln!("  Assembled E,B in {:.1}ms ({} entries)", t0.elapsed().as_secs_f64()*1e3, rows.len());
 
-    // Step 2: K = E - k0² * B (defer CSR construction, build faer triplets directly later)
+    // Step 2: K = E - k0² * B (defer CSR construction, build solver COO directly later)
     let t1 = web_time::Instant::now();
     let k0_sq = C64::from(k0 * k0);
 
@@ -227,12 +227,17 @@ pub fn assemble_and_solve_with_pml(
         coo_cols.push(dof_to_free[c]);
         coo_vals.push(data_e[i] - k0_sq * data_b[i]);
     }
-    // Precompute non-zero Robin indices (avoids iterating all n_tris*64 entries)
-    let robin_nonzero: Vec<usize> = (0..bempty.len())
-        .filter(|&i| (bempty[i].re != 0.0 || bempty[i].im != 0.0)
-            && !pec_ids.contains(&basis.tri_rows[i])
+    // Robin entries live only on the port triangles; walk just those slots
+    // instead of all n_tris*64 (mirrors the sweep path's port-tri indices).
+    let mut robin_nonzero: Vec<usize> = port_tri_indices
+        .iter()
+        .flat_map(|tri_ids| tri_ids.iter().copied())
+        .flat_map(|ti| ti * 64..(ti + 1) * 64)
+        .filter(|&i| !pec_ids.contains(&basis.tri_rows[i])
             && !pec_ids.contains(&basis.tri_cols[i]))
         .collect();
+    robin_nonzero.sort_unstable();
+    robin_nonzero.dedup();
     for &idx in &robin_nonzero {
         coo_rows.push(dof_to_free[basis.tri_rows[idx]]);
         coo_cols.push(dof_to_free[basis.tri_cols[idx]]);
@@ -245,17 +250,21 @@ pub fn assemble_and_solve_with_pml(
     apply_equilibration(&coo_rows, &coo_cols, &mut coo_vals, &s_eq);
 
     // Backend-agnostic factor + solve via the SparseSolver trait. Selection
-    // honours RAPIDFEM_SOLVER (auto|pardiso|accelerate|faer).
+    // honours RAPIDFEM_SOLVER (auto|pardiso|rslab).
     let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
     let t_solve = web_time::Instant::now();
     solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
     eprintln!("  {}: factorized in {:.1}ms", solver.name(), t_solve.elapsed().as_secs_f64()*1e3);
 
+    // All driven-port RHS against the one factorisation, batched (one factor
+    // traversal for all RHS where the backend supports it).
+    let b_frees: Vec<Vec<C64>> = port_vectors.iter()
+        .map(|bvec| free_dofs.iter().enumerate()
+            .map(|(fi, &d)| bvec[d] * C64::from(s_eq[fi])).collect())
+        .collect();
+    let x_frees = solver.solve_many(&b_frees)?;
     let mut solutions = Vec::new();
-    for (pi, bvec) in port_vectors.iter().enumerate() {
-        let b_free: Vec<C64> = free_dofs.iter().enumerate()
-            .map(|(fi, &d)| bvec[d] * C64::from(s_eq[fi])).collect();
-        let x_free = solver.solve(&b_free)?;
+    for (pi, x_free) in x_frees.into_iter().enumerate() {
         let mut x_full = vec![C64::new(0.0, 0.0); n_field];
         for (fi, &d) in free_dofs.iter().enumerate() {
             x_full[d] = x_free[fi] * C64::from(s_eq[fi]);
@@ -357,14 +366,27 @@ pub fn frequency_sweep_with_pml(
     let k_free_rows: Vec<usize> = k_free_indices.iter().map(|&i| dof_to_free[rows[i]]).collect();
     let k_free_cols: Vec<usize> = k_free_indices.iter().map(|&i| dof_to_free[cols[i]]).collect();
 
-    // Precompute non-PEC Robin indices (reused every frequency)
-    let robin_free_indices: Vec<usize> = (0..basis.n_tris * 64)
+    // Precompute non-PEC Robin indices (reused every frequency), restricted
+    // to the PORT triangles: only they carry a Robin term, and the port set
+    // is frequency-independent. The COO entries at these indices are then
+    // emitted UNCONDITIONALLY per frequency (no skip of exact-zero values),
+    // so the sparsity pattern is guaranteed stable across the sweep — which
+    // the backends' numeric-only `refactorize` (PARDISO phase 22, rslab
+    // frozen-pattern factor) silently relies on.
+    let mut robin_free_indices: Vec<usize> = port_tri_indices
+        .iter()
+        .flat_map(|tri_ids| tri_ids.iter().copied())
+        .flat_map(|ti| ti * 64..(ti + 1) * 64)
         .filter(|&idx| {
             let r = basis.tri_rows[idx];
             let c = basis.tri_cols[idx];
             !pec_ids.contains(&r) && !pec_ids.contains(&c)
         })
         .collect();
+    // Ports share no triangles by construction; dedup defends the pattern
+    // (and the entry values) against a config that lists one twice.
+    robin_free_indices.sort_unstable();
+    robin_free_indices.dedup();
 
     // Pick backend once for the whole sweep, symbolic factorisation is
     // amortised across frequencies via `solver.refactorize`.
@@ -449,12 +471,12 @@ pub fn frequency_sweep_with_pml(
             coo_cols.push(k_free_cols[ti]);
             coo_vals.push(data_e[orig_i] - k0_sq * data_b[orig_i]);
         }
+        // Unconditional emit (zeros included): the pattern must not drift
+        // between frequencies, see `robin_free_indices` above.
         for &idx in &robin_free_indices {
-            let val = bempty[idx];
-            if val.re == 0.0 && val.im == 0.0 { continue; }
             coo_rows.push(dof_to_free[basis.tri_rows[idx]]);
             coo_cols.push(dof_to_free[basis.tri_cols[idx]]);
-            coo_vals.push(val);
+            coo_vals.push(bempty[idx]);
         }
 
         // Symmetric diagonal equilibration (recomputed per frequency; the
@@ -473,11 +495,14 @@ pub fn frequency_sweep_with_pml(
             solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
         }
 
+        // Batched multi-port solve on the shared factorisation.
+        let b_frees: Vec<Vec<C64>> = port_bvecs.iter()
+            .map(|bvec| free_dofs.iter().enumerate()
+                .map(|(fi_d, &d)| bvec[d] * C64::from(s_eq[fi_d])).collect())
+            .collect();
+        let x_frees = solver.solve_many(&b_frees)?;
         let mut solutions = Vec::new();
-        for bvec in &port_bvecs {
-            let b_free: Vec<C64> = free_dofs.iter().enumerate()
-                .map(|(fi_d, &d)| bvec[d] * C64::from(s_eq[fi_d])).collect();
-            let x_free = solver.solve(&b_free)?;
+        for x_free in x_frees {
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
             for (fi_d, &d) in free_dofs.iter().enumerate() {
                 x_full[d] = x_free[fi_d] * C64::from(s_eq[fi_d]);
