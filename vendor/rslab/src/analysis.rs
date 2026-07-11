@@ -160,7 +160,6 @@ fn pattern_stats(
     if n == 0 {
         return (0.0, 0, 0.0, 0, 0.0, 0.0, 0.0);
     }
-    let nnz = row_idx.len();
     let mut deg_sum = 0u64;
     let mut deg_sq = 0u64;
     let mut deg_max = 0usize;
@@ -211,7 +210,6 @@ fn pattern_stats(
     } else {
         0.0
     };
-    let _ = nnz;
     (
         deg_mean,
         deg_max,
@@ -367,7 +365,8 @@ impl StructuralFeatures {
     /// This is the **single-solve** policy. For many concurrent solves sharing
     /// the machine (solver-in-the-loop), keep a small fixed budget instead so
     /// they coexist - that is why [`SolverSettings`](crate::SolverSettings)
-    /// defaults to 2 rather than this.
+    /// defaults to [`Threads::Auto { max: 4 }`](crate::Threads::Auto) (this
+    /// predictor, capped at 4 workers) rather than the uncapped prediction.
     pub fn recommend_threads(&self, max_cores: usize) -> usize {
         recommend_threads_from(
             self.factor_flops,

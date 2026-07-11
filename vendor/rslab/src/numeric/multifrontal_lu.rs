@@ -32,7 +32,7 @@ use crate::numeric::multifrontal_ldlt::{
     analyze_with, compute_supernode_row_structures, perturb_pivot, BlrMode, FactorMethod,
     MemoryMode, SolverSettings, ZeroPivotAction,
 };
-use crate::scalar::Scalar;
+use crate::scalar::{fmadd, Scalar};
 use crate::sparse::general::GeneralCsc;
 use crate::symbolic::SymbolicFactorization;
 use rayon::prelude::*;
@@ -46,7 +46,10 @@ use std::sync::Mutex;
 /// them to the OS, so peak RSS balloons far above the live set (the OOM the
 /// pure-per-front allocation caused). This pool recycles a handful of buffers
 /// (≈ the concurrency level) instead, capping the transient at the live set.
-struct FrontPool<T>(Mutex<Vec<Vec<T>>>);
+/// Shared with the symmetric multifrontal twin
+/// ([`crate::numeric::multifrontal_ldlt`]), whose per-front `nrow²` buffer has
+/// the same fragmentation exposure.
+pub(crate) struct FrontPool<T>(Mutex<Vec<Vec<T>>>);
 
 /// Only buffers up to this many entries are recycled. The churning majority of
 /// small/medium fronts (which drive fragmentation) stay pooled; the rare huge
@@ -56,11 +59,11 @@ struct FrontPool<T>(Mutex<Vec<Vec<T>>>);
 const POOL_MAX_LEN: usize = 4_000_000;
 
 impl<T: Scalar> FrontPool<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         FrontPool(Mutex::new(Vec::new()))
     }
     /// Take a buffer (reused if available) and zero-fill it to `len`.
-    fn take(&self, len: usize) -> Vec<T> {
+    pub(crate) fn take(&self, len: usize) -> Vec<T> {
         let mut buf = self
             .0
             .lock()
@@ -73,7 +76,7 @@ impl<T: Scalar> FrontPool<T> {
     }
     /// Return a buffer for reuse, unless it is an oversized (huge-front) buffer
     /// whose capacity we do not want to pin in the pool - those are dropped.
-    fn give(&self, buf: Vec<T>) {
+    pub(crate) fn give(&self, buf: Vec<T>) {
         if buf.capacity() <= POOL_MAX_LEN {
             self.0.lock().unwrap_or_else(|p| p.into_inner()).push(buf);
         }
@@ -743,6 +746,10 @@ pub struct LuSymbolic {
     symb: crate::numeric::multifrontal_ldlt::MultifrontalSymbolic,
     n: usize,
     nnz: usize,
+    /// [`estimate_memory`](Self::estimate_memory) results, keyed by scalar
+    /// size (the estimate depends on `T` only through `size_of::<T>()`, and
+    /// rebuilding the supernode row structures per call is expensive).
+    est_cache: Mutex<Vec<(usize, crate::diagnostics::MemoryEstimate)>>,
 }
 
 impl LuSymbolic {
@@ -770,11 +777,17 @@ impl LuSymbolic {
                 symb: analyze_with(0, &[0], &[], opts)?,
                 n: 0,
                 nnz: 0,
+                est_cache: Mutex::new(Vec::new()),
             });
         }
         let (col_ptr, row_idx) = symmetrized_lower_pattern(a);
         let symb = analyze_with(n, &col_ptr, &row_idx, opts)?;
-        Ok(LuSymbolic { symb, n, nnz })
+        Ok(LuSymbolic {
+            symb,
+            n,
+            nnz,
+            est_cache: Mutex::new(Vec::new()),
+        })
     }
 
     /// PARDISO **phases 2-3**: equilibrate and LU-factor `a`, reusing this
@@ -801,7 +814,9 @@ impl LuSymbolic {
             estimate: Some(estimate),
             ..Default::default()
         };
-        diagnostics.push("factor", factor_ms, 0, nnz * 24);
+        // Bytes per stored entry: the scalar value plus its usize index.
+        let entry_bytes = (std::mem::size_of::<T>() + std::mem::size_of::<usize>()) as u64;
+        diagnostics.push("factor", factor_ms, 0, nnz * entry_bytes);
         Ok(LuSolver {
             factors,
             diagnostics,
@@ -859,6 +874,26 @@ impl LuSymbolic {
 
     pub fn estimate_memory<T: Scalar>(&self) -> crate::diagnostics::MemoryEstimate {
         let value_bytes = std::mem::size_of::<T>();
+        // Cache per scalar size: the estimate is a pure function of the
+        // structure and `size_of::<T>()`, and `tuned` + phased `factor` ask
+        // for it repeatedly.
+        if let Ok(cache) = self.est_cache.lock() {
+            if let Some(&(_, est)) = cache.iter().find(|&&(vb, _)| vb == value_bytes) {
+                return est;
+            }
+        }
+        let est = self.estimate_memory_for(value_bytes);
+        if let Ok(mut cache) = self.est_cache.lock() {
+            if !cache.iter().any(|&(vb, _)| vb == value_bytes) {
+                cache.push((value_bytes, est));
+            }
+        }
+        est
+    }
+
+    /// The uncached estimate body, a pure function of the symbolic structure
+    /// and the scalar size.
+    fn estimate_memory_for(&self, value_bytes: usize) -> crate::diagnostics::MemoryEstimate {
         let Some((sym, _levels)) = self.symb.sym_and_levels() else {
             return crate::diagnostics::estimate_left_looking(
                 0,
@@ -948,20 +983,86 @@ impl<T: Scalar> LuSolver<T> {
         })
     }
 
-    /// Auto-tuned factorization at Pareto `weight` (`1` = fastest, `0` = smallest
-    /// peak memory). Picks the settings from the matrix's structural features via
-    /// the embedded performance model, **guarded** (only deviates from the default
-    /// on a clear, memory-vetoed predicted win). The unsymmetric counterpart of
-    /// [`LdltSolver::factor_auto`](crate::LdltSolver::factor_auto); pass explicit
-    /// settings to [`factor`](Self::factor) to opt out.
+    /// The **heuristic** settings pick for `a` - the model-free default, the
+    /// unsymmetric counterpart of [`LdltSolver::tuned`](crate::LdltSolver::tuned):
+    /// analysis with the adaptive ordering heuristic, the proven default kernel
+    /// configuration, and (on large systems) the exact nested-dissection bakeoff.
+    pub fn tuned(a: &GeneralCsc<T>) -> Result<(LuSymbolic, SolverSettings), RslabError> {
+        let sym = LuSymbolic::analyze(a)?;
+        let s = SolverSettings::default();
+        #[allow(unused_mut)]
+        let (sym, mut s) = if a.n >= crate::numeric::sparse_solver::ND_BAKEOFF_MIN_N
+            && sym.estimate_memory::<T>().factor_flops
+                >= crate::numeric::sparse_solver::ND_BAKEOFF_MIN_FLOPS
+        {
+            Self::nd_bakeoff(a, sym, s)?
+        } else {
+            (sym, s)
+        };
+        // Install-diagnosed worker count: only when a calibration cache exists
+        // (written once by `tuning::install_diagnose`); never measures here.
+        #[cfg(feature = "tuning")]
+        if let Some((cores, calib)) = crate::tuning::cached_calibration() {
+            let est = sym.estimate_memory::<T>();
+            let t = crate::tuning::recommend_threads_cost_model(&est, &calib, 0, cores);
+            s.threads = crate::numeric::multifrontal_ldlt::Threads::Fixed(t);
+        }
+        Ok((sym, s))
+    }
+
+    /// Re-analyze with [`OrderingMethod`](crate::symbolic::OrderingMethod)`::MetisND`
+    /// and keep whichever ordering the *exact* symbolic quantities favour - the
+    /// LU mirror of the LDLᵀ bakeoff: ND is adopted only on a clear
+    /// predicted-flops win with no regression in exact fill or in the
+    /// method-relevant transient peak. Deterministic; nothing is modeled.
+    fn nd_bakeoff(
+        a: &GeneralCsc<T>,
+        sym: LuSymbolic,
+        s: SolverSettings,
+    ) -> Result<(LuSymbolic, SolverSettings), RslabError> {
+        use crate::symbolic::OrderingMethod;
+        if s.ordering == OrderingMethod::MetisND {
+            return Ok((sym, s));
+        }
+        let mut s_nd = s.clone();
+        s_nd.ordering = OrderingMethod::MetisND;
+        let sym_nd = match LuSymbolic::analyze_with(a, &s_nd) {
+            Ok(x) => x,
+            Err(_) => return Ok((sym, s)),
+        };
+        let est = sym.estimate_memory::<T>();
+        let est_nd = sym_nd.estimate_memory::<T>();
+        let peak = |e: &crate::diagnostics::MemoryEstimate| match s.method {
+            FactorMethod::Multifrontal => e.mf_transient_peak_bytes,
+            _ => e.panel_live_peak_bytes,
+        };
+        let flops_win = (est_nd.factor_flops as f64)
+            < est.factor_flops as f64 * crate::numeric::sparse_solver::ND_BAKEOFF_ADOPT_RATIO;
+        let fill_ok = sym_nd.symbolic_factor_nnz() <= sym.symbolic_factor_nnz();
+        let mem_ok = peak(&est_nd) <= peak(&est);
+        if flops_win && fill_ok && mem_ok {
+            Ok((sym_nd, s_nd))
+        } else {
+            Ok((sym, s))
+        }
+    }
+
+    /// **Optional ML-tuned** factorization at Pareto `weight` (`1` = fastest, `0` =
+    /// smallest peak memory). Picks the settings from the matrix's structural
+    /// features via the embedded performance model, **guarded** (only deviates from
+    /// the default on a clear, memory-vetoed predicted win). The unsymmetric
+    /// counterpart of [`LdltSolver::factor_auto`](crate::LdltSolver::factor_auto);
+    /// the model-free heuristic default is [`tuned`](Self::tuned), and explicit
+    /// settings go to [`factor`](Self::factor).
     pub fn factor_auto(a: &GeneralCsc<T>, weight: f64) -> Result<Self, RslabError> {
-        let (sym, s) = Self::tuned(a, weight)?;
+        let (sym, s) = Self::tuned_model(a, weight)?;
         sym.factor(a, &s)
     }
 
-    /// The auto-tuner's choice for `a`: the symbolic + guarded, memory-backstopped
+    /// The ML tuner's choice for `a`: the symbolic + guarded, memory-backstopped
     /// settings (shared by [`factor_auto`](Self::factor_auto) and the benchmark).
-    pub fn tuned(
+    /// See [`tuned`](Self::tuned) for the model-free heuristic default.
+    pub fn tuned_model(
         a: &GeneralCsc<T>,
         weight: f64,
     ) -> Result<(LuSymbolic, SolverSettings), RslabError> {
@@ -2584,28 +2685,33 @@ pub fn solve_lu<T: Scalar>(f: &LuFactors<T>, b: &[T]) -> Result<Vec<T>, RslabErr
         })
         .collect();
     // Forward solve L y = ŷ (CSC, unit diagonal). Column-oriented: once y[e] is
-    // final, eliminate it from the rows below.
+    // final, eliminate it from the rows below. Axpys via `fmadd` (FMA on
+    // native builds; see `scalar::fmadd`). The explicit unit diagonal is a
+    // column's FIRST entry (rows sorted, lower triangular in elimination
+    // numbering), so the sweep starts at `col_ptr[e] + 1` instead of
+    // branching on `i != e` at every nonzero.
     for e in 0..n {
-        let ye = y[e];
-        for k in f.l_col_ptr[e]..f.l_col_ptr[e + 1] {
+        let (s, ee) = (f.l_col_ptr[e], f.l_col_ptr[e + 1]);
+        debug_assert_eq!(f.l_row_idx[s], e, "unit diagonal must lead its column");
+        let nye = T::zero() - y[e];
+        for k in (s + 1)..ee {
             let i = f.l_row_idx[k];
-            if i != e {
-                y[i] = y[i] - f.l_values[k] * ye;
-            }
+            y[i] = fmadd(f.l_values[k], nye, y[i]);
         }
     }
-    // Backward solve U x = y (CSR by row).
+    // Backward solve U x = y (CSR by row). The pivot is a row's FIRST entry
+    // (columns sorted, upper triangular), replacing the per-nonzero
+    // diagonal-search branch. Deliberately mul+sub, NOT `fmadd`: the
+    // accumulator is a latency-bound serial chain (see `solve_ldlt`'s
+    // backward-sweep note).
     let mut x = vec![T::zero(); n];
     for e in (0..n).rev() {
+        let (s, ee) = (f.u_row_ptr[e], f.u_row_ptr[e + 1]);
+        debug_assert_eq!(f.u_col_idx[s], e, "pivot must lead its row");
+        let diag = f.u_values[s];
         let mut acc = y[e];
-        let mut diag = T::one();
-        for k in f.u_row_ptr[e]..f.u_row_ptr[e + 1] {
-            let c = f.u_col_idx[k];
-            if c == e {
-                diag = f.u_values[k];
-            } else {
-                acc = acc - f.u_values[k] * x[c];
-            }
+        for k in (s + 1)..ee {
+            acc = acc - f.u_values[k] * x[f.u_col_idx[k]];
         }
         x[e] = acc * diag.recip();
     }
@@ -2706,36 +2812,34 @@ fn solve_lu_block<T: Scalar>(f: &LuFactors<T>, b: &[T], nrhs: usize) -> Result<V
     for e in 0..n {
         let eb = e * nrhs;
         row.copy_from_slice(&y[eb..eb + nrhs]);
-        for k in f.l_col_ptr[e]..f.l_col_ptr[e + 1] {
+        let (s, ee) = (f.l_col_ptr[e], f.l_col_ptr[e + 1]);
+        debug_assert_eq!(f.l_row_idx[s], e);
+        for k in (s + 1)..ee {
             let i = f.l_row_idx[k];
-            if i != e {
-                let lval = f.l_values[k];
-                let ib = i * nrhs;
-                let tgt = &mut y[ib..ib + nrhs];
-                for c in 0..nrhs {
-                    tgt[c] = tgt[c] - lval * row[c];
-                }
+            let nlval = T::zero() - f.l_values[k];
+            let ib = i * nrhs;
+            let tgt = &mut y[ib..ib + nrhs];
+            for c in 0..nrhs {
+                tgt[c] = fmadd(nlval, row[c], tgt[c]);
             }
         }
     }
     // Backward solve U X = Y (CSR by row), in place in `y`. Accumulate row `e`'s
     // update in the local buffer (the off-diagonal sources `y[c_col]`, `c_col > e`,
     // are already solved and not touched here), then scale and write it back.
+    // The pivot leads its row (sorted columns, upper triangular).
     for e in (0..n).rev() {
         let eb = e * nrhs;
         row.copy_from_slice(&y[eb..eb + nrhs]);
-        let mut diag = T::one();
-        for k in f.u_row_ptr[e]..f.u_row_ptr[e + 1] {
-            let c_col = f.u_col_idx[k];
-            let uval = f.u_values[k];
-            if c_col == e {
-                diag = uval;
-            } else {
-                let cb = c_col * nrhs;
-                let src = &y[cb..cb + nrhs];
-                for c in 0..nrhs {
-                    row[c] = row[c] - uval * src[c];
-                }
+        let (s, ee) = (f.u_row_ptr[e], f.u_row_ptr[e + 1]);
+        debug_assert_eq!(f.u_col_idx[s], e);
+        let diag = f.u_values[s];
+        for k in (s + 1)..ee {
+            let nuval = T::zero() - f.u_values[k];
+            let cb = f.u_col_idx[k] * nrhs;
+            let src = &y[cb..cb + nrhs];
+            for c in 0..nrhs {
+                row[c] = fmadd(nuval, src[c], row[c]);
             }
         }
         let dinv = diag.recip();
@@ -2778,7 +2882,9 @@ pub fn solve_lu_refined<T: Scalar>(
     let mut ax = vec![T::zero(); n];
     let mut best_x = x.clone();
     let mut best_res = f64::INFINITY;
-    for _ in 0..=max_iter {
+    // Every computed correction is evaluated: the final pass only measures,
+    // so no solve is spent on an iterate that could never be returned.
+    for it in 0..=max_iter {
         a.matvec(&x, &mut ax);
         let r: Vec<T> = b.iter().zip(&ax).map(|(&bi, &axi)| bi - axi).collect();
         let res = r.iter().map(|v| v.magnitude()).fold(0.0, f64::max);
@@ -2786,7 +2892,7 @@ pub fn solve_lu_refined<T: Scalar>(
             best_res = res;
             best_x.clone_from(&x);
         }
-        if res == 0.0 {
+        if res == 0.0 || it == max_iter {
             break;
         }
         let dx = solve_lu(f, &r)?;

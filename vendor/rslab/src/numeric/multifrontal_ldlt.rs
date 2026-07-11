@@ -26,7 +26,7 @@
 //! generic [`solve_ldlt`](crate::dense::ldlt_generic::solve_ldlt) handles the
 //! triangular/diagonal solves and permutation directly.
 
-use crate::dense::ldlt_generic::{bk_alpha, swap_sym_lower, LdltFactors};
+use crate::dense::ldlt_generic::{bk_alpha, swap_sym_lower, swap_sym_lower_bounded, LdltFactors};
 use crate::error::RslabError;
 use crate::inertia::Inertia;
 use crate::scalar::Scalar;
@@ -51,6 +51,19 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 // vs the deferred Schur update, summed across worker threads. Zero cost when off.
 static PROF_LDLT_GETF2_NS: AtomicU64 = AtomicU64::new(0);
 static PROF_LDLT_SCHUR_NS: AtomicU64 = AtomicU64::new(0);
+// Left-looking phase profiler (assembly / cmod updates / cdiv panel factor),
+// parity with the LU twin's `[RLA_LL_PROFILE]`.
+static PROF_LDLT_ASM_NS: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_NS: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CDIV_NS: AtomicU64 = AtomicU64::new(0);
+// cmod descendant-distribution: counts/geom-flops split by dispatch path
+// (scalar tiny / serial gemm / parallel gemm), parity with `[RLA_CMOD_DIST]`.
+static PROF_LDLT_CMOD_SCAL_N: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_SCAL_F: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_GSER_N: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_GSER_F: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_GPAR_N: AtomicU64 = AtomicU64::new(0);
+static PROF_LDLT_CMOD_GPAR_F: AtomicU64 = AtomicU64::new(0);
 static PROF_LDLT_FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 #[inline]
 fn ldlt_prof_on() -> bool {
@@ -59,6 +72,90 @@ fn ldlt_prof_on() -> bool {
             .map(|v| v == "1")
             .unwrap_or(false)
     })
+}
+
+// Wall-clock node-concurrency histogram (`RLA_PROFILE=1`): time integral of the
+// number of `ll_factor_node` calls in flight. `hist_ns[k]` = wall ns with
+// exactly k nodes active (k capped at 16). Separates "the tree does not keep
+// the workers busy" (mass at 1-2) from "per-node work is slow" — mutex on node
+// entry/exit only, ~2 lock ops per supernode, zero cost when profiling is off.
+struct LlConcProf {
+    last: std::time::Instant,
+    active: usize,
+    hist_ns: [u64; 17],
+}
+static PROF_LDLT_CONC: std::sync::OnceLock<std::sync::Mutex<LlConcProf>> =
+    std::sync::OnceLock::new();
+fn ll_conc_event(enter: bool) {
+    let m = PROF_LDLT_CONC.get_or_init(|| {
+        std::sync::Mutex::new(LlConcProf {
+            last: std::time::Instant::now(),
+            active: 0,
+            hist_ns: [0; 17],
+        })
+    });
+    let Ok(mut g) = m.lock() else { return };
+    let now = std::time::Instant::now();
+    // First event after a reset: arm the clock without accumulating the
+    // between-factorizations gap as "idle".
+    let fresh = g.active == 0 && g.hist_ns.iter().all(|&x| x == 0);
+    if !fresh {
+        let k = g.active.min(16);
+        g.hist_ns[k] += now.duration_since(g.last).as_nanos() as u64;
+    }
+    g.last = now;
+    g.active = if enter {
+        g.active + 1
+    } else {
+        g.active.saturating_sub(1)
+    };
+}
+
+// Per-node wall profile: the top-K most expensive supernodes with their phase
+// split - names the nodes behind the low-concurrency wall share.
+struct LlNodeCost {
+    wall_ms: f64,
+    asm_ms: f64,
+    cmod_ms: f64,
+    cdiv_ms: f64,
+    nrow: usize,
+    ncol: usize,
+    n_upd: usize,
+    cmod_gflop: f64,
+}
+static PROF_LDLT_NODES: std::sync::OnceLock<std::sync::Mutex<Vec<LlNodeCost>>> =
+    std::sync::OnceLock::new();
+fn ll_node_cost(c: LlNodeCost) {
+    if c.wall_ms < 2.0 {
+        return;
+    }
+    let m = PROF_LDLT_NODES.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    if let Ok(mut v) = m.lock() {
+        v.push(c);
+    }
+}
+/// RAII guard so early `?` returns in `ll_factor_node` still close the interval.
+struct LlConcGuard;
+impl Drop for LlConcGuard {
+    fn drop(&mut self) {
+        ll_conc_event(false);
+    }
+}
+
+/// Always-on (relaxed, ~free) count of `ll_factor_node` calls in flight for
+/// THIS factorization - the fork-dispatch signal: in the separator-chain
+/// phase (few active nodes) even a small node's cmod/cdiv should fork, since
+/// workers are idle and there is little foreign work a blocked join could
+/// steal; in the busy phase small nodes stay strictly serial (join-steal
+/// guard). Scheduling-only: the dispatch never changes the computed bits
+/// (identical per-entry accumulation order on every path), so reading a racy
+/// counter is benign and bit-identity across thread counts holds.
+struct LlActiveGuard<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for LlActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Action to take when a near-zero pivot is encountered during factorization.
@@ -681,6 +778,81 @@ pub(crate) fn perturb_pivot<T: Scalar>(d: T, abs_floor: f64) -> T {
     }
 }
 
+/// Column-tile width for [`lower_tile_gemm`]. Wide enough that each tile's
+/// GEMM stays BLAS-3-efficient, narrow enough that the wasted
+/// above-diagonal strip per tile (`< TILE/2` rows) is negligible.
+const SCHUR_TILE: usize = 256;
+
+/// Symmetric trailing-update GEMM computed **only on and below the tile
+/// diagonal**: `TMP[:, j] = G · L21ᵀ[:, j]` for rows `>= tile start`. The
+/// consumers (the front Schur subtraction and the left-looking panel
+/// subtraction) read only entries with `row >= col`, so the full `m × ncols`
+/// product wastes up to half the flops (exactly half for the square front
+/// Schur, approaching half for wide root panels where `ncols ≈ m`). Tiling
+/// the columns and starting each tile's rows at its own diagonal keeps the
+/// per-element summation deterministic while cutting the waste to
+/// `< SCHUR_TILE/2` rows per tile.
+///
+/// Layouts: `tmp` is `m × ncols` column-major (column stride `m`, row
+/// stride 1); `lhs` is `m × k` with column stride `lhs_cs` (row stride 1);
+/// `rhs` is read as `k × ncols` with strides `(rhs_cs = 1, rhs_rs)` -
+/// element `(kk, j)` at `rhs[j + kk·rhs_rs]`. Each tile's GEMM goes
+/// rayon-parallel at/above the `par_cdiv` flop bar.
+///
+/// SAFETY: the three buffers must be pairwise-disjoint allocations sized
+/// for the strides passed (`tmp` ≥ `m·ncols`; `lhs` rows `[0, m)` × cols
+/// `[0, k)` under `lhs_cs`; `rhs` valid at `j + kk·rhs_rs` for `j < ncols`,
+/// `kk < k`).
+#[allow(clippy::too_many_arguments)]
+unsafe fn lower_tile_gemm<T: Scalar>(
+    tmp: &mut [T],
+    m: usize,
+    ncols: usize,
+    k: usize,
+    lhs: *const T,
+    lhs_cs: isize,
+    rhs: *const T,
+    rhs_rs: isize,
+    par_cdiv: usize,
+) {
+    debug_assert!(ncols <= m);
+    debug_assert!(tmp.len() >= m * ncols);
+    let mut c0 = 0usize;
+    while c0 < ncols {
+        let tw = SCHUR_TILE.min(ncols - c0);
+        let mrows = m - c0;
+        let par = if (mrows as u128) * (tw as u128) * (k as u128) >= par_cdiv as u128 {
+            gemm::Parallelism::Rayon(0)
+        } else {
+            gemm::Parallelism::None
+        };
+        // Dst tile = columns [c0, c0+tw) rows [c0, m) of `tmp`; lhs = rows
+        // [c0, m); rhs = columns [c0, c0+tw).
+        gemm::gemm(
+            mrows,
+            tw,
+            k,
+            tmp.as_mut_ptr().add(c0 * m + c0),
+            m as isize,
+            1,
+            false,
+            lhs.add(c0),
+            lhs_cs,
+            1,
+            rhs.add(c0),
+            1,
+            rhs_rs,
+            T::zero(),
+            T::one(),
+            false,
+            false,
+            false,
+            par,
+        );
+        c0 += tw;
+    }
+}
+
 /// Per-front partial-factorization output, in within-front pivot order.
 struct FrontFactors<T> {
     /// Total front size (eliminated + contribution rows).
@@ -973,38 +1145,26 @@ fn factor_front<T: Scalar>(
             }
             tmp.clear();
             tmp.resize(mt * mt, T::zero());
-            let par = if (mt as u128) * (mt as u128) * (pw as u128) >= kt.par_cdiv as u128 {
-                gemm::Parallelism::Rayon(0)
-            } else {
-                gemm::Parallelism::None
-            };
             if kt.use_gemm_schur {
-                // SAFETY: `tmp`, `gbuf`, `l21buf` are three distinct,
-                // non-overlapping allocations sized for (m,n,k)=(mt,mt,pw) under
-                // the strides passed; `T` is `f64`/`Complex<f64>` (gemm-supported).
+                // The subtraction below reads only the lower triangle of
+                // `tmp`, so compute the symmetric product tile-by-tile from
+                // each tile's diagonal downward — ~half the flops of the old
+                // full `mt × mt` GEMM on the dominant front-Schur kernel.
+                // SAFETY: `tmp`, `gbuf`, `l21buf` are distinct allocations sized
+                // for the (mt, mt, pw) strides.
                 unsafe {
-                    gemm::gemm(
+                    lower_tile_gemm(
+                        &mut tmp,
                         mt,
                         mt,
                         pw,
-                        tmp.as_mut_ptr(),
-                        mt as isize,
-                        1,
-                        false,
                         gbuf.as_ptr(),
                         mt as isize,
-                        1,
                         l21buf.as_ptr(),
-                        1,
                         mt as isize,
-                        T::zero(),
-                        T::one(),
-                        false,
-                        false,
-                        false,
-                        par,
-                    );
-                }
+                        kt.par_cdiv,
+                    )
+                };
             } else {
                 for jj in 0..mt {
                     for ii in jj..mt {
@@ -1071,16 +1231,16 @@ fn factor_front<T: Scalar>(
 
     // Contribution block CB = A22 − L21·D·L21ᵀ. The per-panel trailing GEMMs
     // above already applied the whole Schur update into `f`'s trailing
-    // `[ncol, nrow)²` lower triangle, so extract it directly (mirrored to both
-    // triangles for the parent's extend-add).
+    // `[ncol, nrow)²` lower triangle. The CB is symmetric and the parent's
+    // extend-add reads only `i >= j`, so store it as a **packed lower
+    // triangle** (column-major: column `j` holds rows `j..cnrow`
+    // contiguously) — half the CB-stack transient of the old mirrored
+    // full-square layout, which was the dominant factorization transient.
     let cnrow = nrow - ncol;
-    let mut cb = vec![T::zero(); cnrow * cnrow];
+    let mut cb = Vec::with_capacity(cnrow * (cnrow + 1) / 2);
     for j in 0..cnrow {
-        for i in j..cnrow {
-            let v = f[(ncol + j) * n + (ncol + i)];
-            cb[j * cnrow + i] = v;
-            cb[i * cnrow + j] = v;
-        }
+        let col = (ncol + j) * n;
+        cb.extend_from_slice(&f[col + ncol + j..col + ncol + cnrow]);
     }
 
     Ok((
@@ -1103,10 +1263,14 @@ fn factor_front<T: Scalar>(
 struct NodeFactor<T> {
     front: FrontFactors<T>,
     row_indices: Vec<usize>,
-    /// This front's contribution block (`cnrow × cnrow` column-major lower
-    /// triangle), consumed by the parent's extend-add. Kept on the node (rather
-    /// than a separate take-able slot) so independent subtrees factor in
-    /// parallel without a shared mutable contribution pool.
+    /// This front's contribution block as a **packed lower triangle**
+    /// (column-major: column `j` holds rows `j..cnrow` contiguously,
+    /// `cnrow·(cnrow+1)/2` entries), consumed by the parent's extend-add.
+    /// The CB is symmetric, so the packed half is complete — storing it
+    /// full-square would double the CB stack, the dominant factorization
+    /// transient. Kept on the node (rather than a separate take-able slot)
+    /// so independent subtrees factor in parallel without a shared mutable
+    /// contribution pool.
     contrib: Vec<T>,
 }
 
@@ -1117,6 +1281,122 @@ thread_local! {
     /// driver is a work-stealing tree recursion rather than a level `par_iter`.
     static GLOC_SCRATCH: std::cell::RefCell<Vec<usize>> =
         const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Raw base pointer of a panel buffer, smuggled across rayon workers so each
+/// task can write its own **disjoint row range** of a column-major panel. Safe
+/// only because callers partition the rows so no two tasks touch the same cell
+/// (the LU twin's `PanelPtr` pattern).
+#[derive(Clone, Copy)]
+struct LdltPanelPtr<T>(*mut T);
+// SAFETY: the pointer is only dereferenced on disjoint, caller-partitioned cells.
+unsafe impl<T> Send for LdltPanelPtr<T> {}
+unsafe impl<T> Sync for LdltPanelPtr<T> {}
+impl<T> LdltPanelPtr<T> {
+    /// Taking `self` by value forces closures to capture the whole (Send+Sync)
+    /// wrapper rather than disjoint-capturing the bare `*mut T` field.
+    #[inline]
+    fn get(self) -> *mut T {
+        self.0
+    }
+}
+
+/// Apply a factored Bunch-Kaufman panel's transform sequence to rows
+/// `[r0, r1)` of the column-major `panel` (stride `nrow`), for pivot steps
+/// `[kb, ke)`. Bit-identical to the corresponding rows of the full-height
+/// panel factorization: per 1×1 step the in-panel updates use the **final**
+/// column-`k` multipliers (`w_j·d⁻¹` is exactly the stored `L(j,k)`), then
+/// the column is scaled by `d⁻¹`; per 2×2 step the multiplier pair is
+/// rebuilt from the (already perturbed) stored `D` block with the same
+/// expressions and order. Deep rows are never pivot candidates, so each
+/// caller's row range is independent - the lever that lifts the dominant
+/// `O((nrow-ke)·pw²)` panel work off the serial getf2 path onto all idle
+/// workers (ports the LU twin's `apply_panel_trailing` to Bunch-Kaufman).
+///
+/// `deep_swaps[k - kb]` records the pivot interchange partner of step `k`
+/// (`usize::MAX` when the step did not interchange): getf2 bounds its swaps
+/// to the panel rows, so the deep-row segments of each interchange are
+/// replayed here, immediately before the step's transform - the original
+/// full-height order, row by row.
+///
+/// `mult_snap` holds the in-panel multipliers **as of each step's time**
+/// (`mult_snap[(k - kb)·nb + (j - kb)]` is step `k`'s coefficient for
+/// in-panel row `j`). Reading them from the final panel would be wrong:
+/// later symmetric interchanges permute the rows of earlier multiplier
+/// columns (unlike LU, where produced pivot rows never move again).
+///
+/// SAFETY: `[r0, r1)` must be this caller's exclusive rows and within the
+/// buffer; columns `[kb, ke)` must be in bounds under stride `nrow`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn apply_bk_panel_trailing<T: Scalar>(
+    base: *mut T,
+    nrow: usize,
+    kb: usize,
+    ke: usize,
+    d_diag: &[T],
+    d_subdiag: &[T],
+    two_by_two: &[bool],
+    deep_swaps: &[usize],
+    mult_snap: &[T],
+    nb: usize,
+    r0: usize,
+    r1: usize,
+) {
+    let mut k = kb;
+    while k < ke {
+        let kp = deep_swaps[k - kb];
+        if kp != usize::MAX {
+            // Deep segment of this step's row/column interchange: columns
+            // swap wholesale below the panel (the symmetric in-panel part
+            // already happened in getf2).
+            let src = if two_by_two[k] { k + 1 } else { k };
+            let ca = base.add(src * nrow);
+            let cb = base.add(kp * nrow);
+            for i in r0..r1 {
+                core::ptr::swap(ca.add(i), cb.add(i));
+            }
+        }
+        if two_by_two[k] {
+            let (d11, d21, d22) = (d_diag[k], d_subdiag[k], d_diag[k + 1]);
+            let det = d11 * d22 - d21 * d21;
+            let detinv = det.recip();
+            let colk = base.add(k * nrow);
+            let colk1 = base.add((k + 1) * nrow);
+            for j in (k + 2)..ke {
+                let l1j = mult_snap[(k - kb) * nb + (j - kb)];
+                let l2j = mult_snap[(k + 1 - kb) * nb + (j - kb)];
+                let colj = base.add(j * nrow);
+                for i in r0..r1 {
+                    *colj.add(i) = *colj.add(i) - *colk.add(i) * l1j - *colk1.add(i) * l2j;
+                }
+            }
+            for i in r0..r1 {
+                let wik = *colk.add(i);
+                let wik1 = *colk1.add(i);
+                *colk.add(i) = (d22 * wik - d21 * wik1) * detinv;
+                *colk1.add(i) = (d11 * wik1 - d21 * wik) * detinv;
+            }
+            k += 2;
+        } else {
+            let dinv = d_diag[k].recip();
+            let colk = base.add(k * nrow);
+            for j in (k + 1)..ke {
+                // Step k's coefficient `w_j · d⁻¹` for in-panel row j, from
+                // the time-of-step snapshot.
+                let wj_dinv = mult_snap[(k - kb) * nb + (j - kb)];
+                if wj_dinv != T::zero() {
+                    let colj = base.add(j * nrow);
+                    for i in r0..r1 {
+                        *colj.add(i) = *colj.add(i) - *colk.add(i) * wj_dinv;
+                    }
+                }
+            }
+            for i in r0..r1 {
+                *colk.add(i) = *colk.add(i) * dinv;
+            }
+            k += 1;
+        }
+    }
 }
 
 /// A supernode's own factor plus the flat `(supernode-id, factor)` list for the
@@ -1133,6 +1413,7 @@ fn factor_one_node<T: Scalar>(
     a_perm: &CscMatrix<T>,
     child_refs: &[&NodeFactor<T>],
     perturb_floor: Option<f64>,
+    pool: &crate::numeric::multifrontal_lu::FrontPool<T>,
     kt: KernelTuning,
 ) -> Result<NodeFactor<T>, RslabError> {
     let snode = &sym.supernodes[s];
@@ -1165,9 +1446,13 @@ fn factor_one_node<T: Scalar>(
     ri.extend(trailing);
     let nrow = ri.len();
 
-    // Front buffer (transient - the unavoidable nrow² zeroing dominates, so a
-    // per-front allocation adds only negligible malloc over a pooled one).
-    let mut fbuf: Vec<T> = vec![T::zero(); nrow * nrow];
+    // Front buffer (transient `nrow²`), drawn from the shared reuse pool: a
+    // per-front allocation churns the system allocator with large, varying
+    // sizes, and on Windows the heap retains the freed blocks rather than
+    // returning them to the OS — peak RSS then balloons far above the live
+    // set (the fragmentation OOM the LU twin hit first; see
+    // [`crate::numeric::multifrontal_lu::FrontPool`]).
+    let mut fbuf: Vec<T> = pool.take(nrow * nrow);
     let f = &mut fbuf[..];
 
     // Take the thread-local global→local scratch (held at all-`usize::MAX`) for
@@ -1193,17 +1478,21 @@ fn factor_one_node<T: Scalar>(
         }
     }
 
-    // Extend-add each child's contribution block.
+    // Extend-add each child's contribution block (packed lower triangle:
+    // column `j` holds rows `j..cn` contiguously — the walk below consumes
+    // it in exactly its storage order).
     for child in child_refs {
         let cn = child.front.nrow - child.front.nelim;
         let crows = &child.row_indices[child.front.nelim..];
         let cb = &child.contrib;
+        let mut p = 0usize;
         for j in 0..cn {
             let lj = gloc[crows[j]];
             for i in j..cn {
                 let li = gloc[crows[i]];
                 let (hi, lo) = if li >= lj { (li, lj) } else { (lj, li) };
-                f[lo * nrow + hi] = f[lo * nrow + hi] + cb[j * cn + i];
+                f[lo * nrow + hi] = f[lo * nrow + hi] + cb[p];
+                p += 1;
             }
         }
     }
@@ -1216,6 +1505,8 @@ fn factor_one_node<T: Scalar>(
     GLOC_SCRATCH.with(|c| *c.borrow_mut() = gloc);
 
     let (front, contrib) = factor_front(f, nrow, ncol, perturb_floor, kt)?;
+    // `factor_front` has copied L/D/CB out; recycle the front buffer.
+    pool.give(fbuf);
     Ok(NodeFactor {
         front,
         row_indices: ri,
@@ -1233,16 +1524,17 @@ fn factor_subtree<T: Scalar>(
     sym: &SymbolicFactorization,
     a_perm: &CscMatrix<T>,
     perturb_floor: Option<f64>,
+    pool: &crate::numeric::multifrontal_lu::FrontPool<T>,
     kt: KernelTuning,
 ) -> Result<SubtreeFactors<T>, RslabError> {
     let children = &sym.supernodes[s].children;
     let mut outs: Vec<SubtreeFactors<T>> = children
         .par_iter()
-        .map(|&ch| factor_subtree(ch, sym, a_perm, perturb_floor, kt))
+        .map(|&ch| factor_subtree(ch, sym, a_perm, perturb_floor, pool, kt))
         .collect::<Result<Vec<_>, _>>()?;
     let nf = {
         let child_refs: Vec<&NodeFactor<T>> = outs.iter().map(|(own, _)| own).collect();
-        factor_one_node(s, sym, a_perm, &child_refs, perturb_floor, kt)?
+        factor_one_node(s, sym, a_perm, &child_refs, perturb_floor, pool, kt)?
     };
     // Free the children's contribution blocks NOW: they have been extend-added
     // into this front and are never read again (the global emit uses only the
@@ -1636,6 +1928,9 @@ pub fn factor_numeric<T: Scalar>(
     // deep trees, like the left-looking path above).
     let recommend = |cap: usize| recommend_threads_for_sym(symb, cap);
     let mut node_results: Vec<Option<NodeFactor<T>>> = (0..nsuper).map(|_| None).collect();
+    // Shared front-buffer pool (see `FrontPool` in the LU twin): recycles the
+    // transient `nrow²` buffers instead of churning the allocator per front.
+    let pool = crate::numeric::multifrontal_lu::FrontPool::<T>::new();
     if opts.method == FactorMethod::RightLooking {
         // Right-looking schedule: factor supernodes sequentially in postorder,
         // holding every front live (no contribution-block frontier free), each
@@ -1658,7 +1953,7 @@ pub fn factor_numeric<T: Scalar>(
                                 }
                             }
                         }
-                        factor_one_node(s, sym, &a_perm, &child_refs, perturb_floor, kt)?
+                        factor_one_node(s, sym, &a_perm, &child_refs, perturb_floor, &pool, kt)?
                     };
                     node_results[s] = Some(nf);
                 }
@@ -1668,7 +1963,7 @@ pub fn factor_numeric<T: Scalar>(
         let root_outs: Vec<SubtreeFactors<T>> = opts.threads.run(stack, recommend, || {
             roots
                 .par_iter()
-                .map(|&r| factor_subtree(r, sym, &a_perm, perturb_floor, kt))
+                .map(|&r| factor_subtree(r, sym, &a_perm, perturb_floor, &pool, kt))
                 .collect::<Result<Vec<_>, _>>()
         })?;
         // Scatter the subtree factors into `node_results` (by supernode id) for the
@@ -2096,14 +2391,25 @@ fn ll_factor_node<T: Scalar>(
     emit: &LlEmitLdlt<T>,
     perturb_floor: Option<f64>,
     n_perturbed: &AtomicUsize,
+    ll_active: &AtomicUsize,
     kt: KernelTuning,
 ) -> Result<(), RslabError> {
+    ll_active.fetch_add(1, Ordering::Relaxed);
+    let _active = LlActiveGuard(ll_active);
     let ll_gemm_gate = kt.scalar_gate;
     let ll_gemm_par = kt.par_gemm;
     let snode = &sym.supernodes[s];
     let (first, ncol) = (snode.first_col, snode.ncol);
     let nrow = rs[s].len();
     let n = sym.n;
+    let prof = ldlt_prof_on();
+    let _conc = prof.then(|| {
+        ll_conc_event(true);
+        LlConcGuard
+    });
+    let t_node = prof.then(std::time::Instant::now);
+    let mut node_ph_ns = [0u64; 3]; // asm / cmod / cdiv
+    let t_asm = prof.then(std::time::Instant::now);
     let mut panel = vec![T::zero(); nrow * ncol];
 
     // Thread-local global→local scratch (held at all-`usize::MAX`).
@@ -2122,11 +2428,160 @@ fn ll_factor_node<T: Scalar>(
             panel[li + p * nrow] = panel[li + p * nrow] + a_perm.values[k];
         }
     }
-    // cmod from every updater (all are factored descendants).
+    if let Some(t) = t_asm {
+        node_ph_ns[0] = t.elapsed().as_nanos() as u64;
+        PROF_LDLT_ASM_NS.fetch_add(node_ph_ns[0], AtomicOrdering::Relaxed);
+    }
+    let t_cmod = prof.then(std::time::Instant::now);
+    // Pre-pass over the updaters: locate each one's landing range in this
+    // panel once ([p0, p1) of its off-diagonal rows) and total the update
+    // flops - the dispatch between the column-tiled parallel cmod and the
+    // sequential per-update path below.
+    let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(update_list[s].len());
+    let mut cmod_flops: usize = 0;
+    for &kk in &update_list[s] {
+        let nck = sym.supernodes[kk].ncol;
+        let ok = &rs[kk][nck..];
+        let nok = ok.len();
+        let p0 = ok.partition_point(|&g| g < first);
+        let p1 = ok.partition_point(|&g| g < first + ncol);
+        let npk = p1 - p0;
+        if npk == 0 {
+            continue;
+        }
+        let flop = (nok - p0) * npk * nck;
+        cmod_flops += flop;
+        spans.push((kk, p0, p1));
+        if prof {
+            if flop < ll_gemm_gate {
+                PROF_LDLT_CMOD_SCAL_N.fetch_add(1, AtomicOrdering::Relaxed);
+                PROF_LDLT_CMOD_SCAL_F.fetch_add(flop as u64, AtomicOrdering::Relaxed);
+            } else if flop >= ll_gemm_par {
+                PROF_LDLT_CMOD_GPAR_N.fetch_add(1, AtomicOrdering::Relaxed);
+                PROF_LDLT_CMOD_GPAR_F.fetch_add(flop as u64, AtomicOrdering::Relaxed);
+            } else {
+                PROF_LDLT_CMOD_GSER_N.fetch_add(1, AtomicOrdering::Relaxed);
+                PROF_LDLT_CMOD_GSER_F.fetch_add(flop as u64, AtomicOrdering::Relaxed);
+            }
+        }
+    }
+
+    // Column-tiled parallel cmod: partition THIS panel into column slabs
+    // (disjoint `&mut` chunks) and apply, per slab, every updater's
+    // contribution to the slab's columns in updater order. One rayon
+    // fan-out per node instead of one per update, the slab stays cache-hot
+    // across all updaters, and - decisive at the top of the tree, where a
+    // root separator runs alone with hundreds of updaters - the node's cmod
+    // parallelizes even though each per-slab GEMM is serial. Bit-identical
+    // to the sequential path: every panel entry lies in exactly one slab
+    // and receives its contributions in the same updater order with the
+    // same kernel; the slab width is a pure function of `ncol` (never of
+    // the thread count).
+    let tile_w = (ncol / 16).clamp(32, 256);
+    // Fork inside cmod only when the node's update work is genuinely large.
+    // A small node that forks pays rayon's join-steal latency: while its
+    // join waits for a stolen slab, the waiting thread steals OTHER work -
+    // often a whole sibling subtree - and this node (and every dependent on
+    // its chain) stalls for tens of ms doing ~zero flops (measured: 74 ms
+    // cmod at 0.03 Gflop on a 1046x170 node). Below the gate the node runs
+    // its cmod strictly serially - it never blocks on foreign work, and the
+    // tree-level parallelism covers it.
+    const LL_CMOD_FORK_MIN_FLOPS: usize = 100_000_000;
+    let fork_gate = LL_CMOD_FORK_MIN_FLOPS.max(ll_gemm_par);
+    // Chain phase (few nodes in flight): fork even below the gate - workers
+    // are idle and there is little foreign work a blocked join could steal.
+    let chain_phase = ll_active.load(Ordering::Relaxed) <= 2;
+    let forks = cmod_flops >= fork_gate || (chain_phase && cmod_flops >= ll_gemm_par);
+    let tiled = ncol >= 2 * tile_w && forks;
+    let seq_gemm_par = if forks { ll_gemm_par } else { usize::MAX };
+    if tiled {
+        let gloc_ref = &gloc;
+        let spans_ref = &spans;
+        panel
+            .par_chunks_mut(nrow * tile_w)
+            .enumerate()
+            .for_each(|(ti, tile)| {
+                let c0 = ti * tile_w;
+                let c1 = (c0 + tile_w).min(ncol);
+                let mut vd_buf: Vec<T> = Vec::new();
+                let mut u_buf: Vec<T> = Vec::new();
+                for &(kk, p0, p1) in spans_ref {
+                    let nck = sym.supernodes[kk].ncol;
+                    let nrk = rs[kk].len();
+                    let ok = &rs[kk][nck..];
+                    let nok = ok.len();
+                    // Updater columns landing in this slab.
+                    let q0 = p0 + ok[p0..p1].partition_point(|&g| g < first + c0);
+                    let q1 = p0 + ok[p0..p1].partition_point(|&g| g < first + c1);
+                    let npk = q1 - q0;
+                    if npk == 0 {
+                        continue;
+                    }
+                    // SAFETY: `kk` is a factored descendant of `s`, its cells
+                    // are written and never mutated again.
+                    let pk = unsafe { store.panel(kk) };
+                    let dk = unsafe { store.dval(kk) };
+                    let dsub_k = unsafe { store.dsub(kk) };
+                    let two_k = unsafe { store.two(kk) };
+                    // G = (kk's block rows q0..q1) · D, column-major npk × nck.
+                    vd_buf.clear();
+                    vd_buf.resize(npk * nck, T::zero());
+                    let mut ck = 0;
+                    while ck < nck {
+                        if two_k[ck] {
+                            let (d11, d21, d22) = (dk[ck], dsub_k[ck], dk[ck + 1]);
+                            for i in 0..npk {
+                                let a = pk[(nck + q0 + i) + ck * nrk];
+                                let b = pk[(nck + q0 + i) + (ck + 1) * nrk];
+                                vd_buf[i + ck * npk] = d11 * a + d21 * b;
+                                vd_buf[i + (ck + 1) * npk] = d21 * a + d22 * b;
+                            }
+                            ck += 2;
+                        } else {
+                            let dkc = dk[ck];
+                            for i in 0..npk {
+                                vd_buf[i + ck * npk] = pk[(nck + q0 + i) + ck * nrk] * dkc;
+                            }
+                            ck += 1;
+                        }
+                    }
+                    let mrows = nok - q0;
+                    u_buf.clear();
+                    u_buf.resize(mrows * npk, T::zero());
+                    // Serial per slab - the parallelism is across slabs.
+                    // SAFETY: lhs (read), rhs (read), dst (write) pairwise
+                    // disjoint; strides in bounds.
+                    unsafe {
+                        lower_tile_gemm(
+                            &mut u_buf,
+                            mrows,
+                            npk,
+                            nck,
+                            pk.as_ptr().add(nck + q0),
+                            nrk as isize,
+                            vd_buf.as_ptr(),
+                            npk as isize,
+                            usize::MAX,
+                        )
+                    };
+                    for c in 0..npk {
+                        let tcol = ok[q0 + c] - first;
+                        let ucol = &u_buf[c * mrows..c * mrows + mrows];
+                        let dst_col = &mut tile[(tcol - c0) * nrow..(tcol - c0 + 1) * nrow];
+                        for r in (q0 + c)..nok {
+                            let dst = gloc_ref[ok[r]];
+                            dst_col[dst] = dst_col[dst] - ucol[r - q0];
+                        }
+                    }
+                }
+            });
+    }
+
+    // Sequential per-update cmod (small nodes / small total update work).
     let mut vc: Vec<T> = Vec::new();
     let mut vd_buf: Vec<T> = Vec::new();
     let mut u_buf: Vec<T> = Vec::new();
-    for &kk in &update_list[s] {
+    for &(kk, p0, p1) in spans.iter().filter(|_| !tiled) {
         let nck = sym.supernodes[kk].ncol;
         let nrk = rs[kk].len();
         let ok = &rs[kk][nck..];
@@ -2140,13 +2595,10 @@ fn ll_factor_node<T: Scalar>(
         // only the block-diagonal `D`-apply has to honor the 2×2 blocks.
         let dsub_k = unsafe { store.dsub(kk) };
         let two_k = unsafe { store.two(kk) };
-        let p0 = ok.partition_point(|&g| g < first);
-        let p1 = ok.partition_point(|&g| g < first + ncol);
         let npk = p1 - p0;
-        if npk == 0 {
-            continue;
-        }
-        if nok * npk * nck < ll_gemm_gate {
+        // Gate on the REAL work (rows >= p0); the scalar path already
+        // iterates from the target block, so small tails route there.
+        if (nok - p0) * npk * nck < ll_gemm_gate {
             vc.clear();
             vc.resize(nck, T::zero());
             for c_idx in p0..p1 {
@@ -2201,48 +2653,52 @@ fn ll_factor_node<T: Scalar>(
                     ck += 1;
                 }
             }
+            // Only rows >= p0 land in (or below) the target block: computing
+            // the full `nok`-tall product and discarding rows `< p0` in the
+            // write-back wasted `p0·npk·nck` flops per update - large for
+            // updates into high supernodes, where most of the updater's
+            // off-diagonal rows lie above the target. Mirror the LU twin:
+            // offset the lhs by `p0` and compute `mrows = nok - p0` rows.
+            // The write-back below also reads only rows `>= c` per column
+            // (the symmetric lower part), so the product is computed
+            // tile-wise from each tile's diagonal downward - the same
+            // `lower_tile_gemm` that serves the panel Schur updates. For
+            // updates into the topmost supernodes (`mrows ~ npk`) the full
+            // rectangle wasted another ~half of the flops.
+            let mrows = nok - p0;
             u_buf.clear();
-            u_buf.resize(nok * npk, T::zero());
-            let par = if nok * npk * nck >= ll_gemm_par {
-                gemm::Parallelism::Rayon(0)
-            } else {
-                gemm::Parallelism::None
-            };
-            // SAFETY: lhs (`pk` off-diag block, read), rhs (`vd_buf`, read), dst
-            // (`u_buf`, write) are pairwise-disjoint; strides in bounds.
+            u_buf.resize(mrows * npk, T::zero());
+            // SAFETY: lhs (`pk` off-diag block from row p0, read), rhs
+            // (`vd_buf`, read), dst (`u_buf`, write) are pairwise-disjoint;
+            // strides in bounds.
             unsafe {
-                gemm::gemm(
-                    nok,
+                lower_tile_gemm(
+                    &mut u_buf,
+                    mrows,
                     npk,
                     nck,
-                    u_buf.as_mut_ptr(),
-                    nok as isize,
-                    1,
-                    false,
-                    pk.as_ptr().add(nck),
+                    pk.as_ptr().add(nck + p0),
                     nrk as isize,
-                    1,
                     vd_buf.as_ptr(),
-                    1,
                     npk as isize,
-                    T::zero(),
-                    T::one(),
-                    false,
-                    false,
-                    false,
-                    par,
-                );
-            }
+                    seq_gemm_par,
+                )
+            };
             for c in 0..npk {
                 let tcol = ok[p0 + c] - first;
-                let ucol = &u_buf[c * nok..c * nok + nok];
+                let ucol = &u_buf[c * mrows..c * mrows + mrows];
                 for r in (p0 + c)..nok {
                     let dst = gloc[ok[r]] + tcol * nrow;
-                    panel[dst] = panel[dst] - ucol[r];
+                    panel[dst] = panel[dst] - ucol[r - p0];
                 }
             }
         }
     }
+    if let Some(t) = t_cmod {
+        node_ph_ns[1] = t.elapsed().as_nanos() as u64;
+        PROF_LDLT_CMOD_NS.fetch_add(node_ph_ns[1], AtomicOrdering::Relaxed);
+    }
+    let t_cdiv = prof.then(std::time::Instant::now);
     // cdiv: partial **blocked** Bunch-Kaufman LDLᵀ (1×1 and 2×2 pivots), the
     // rectangular `nrow × ncol` analogue of `factor_front`'s panel kernel. The
     // fully-summed columns are factored in panels of width `NB` with pivoting
@@ -2255,8 +2711,30 @@ fn ll_factor_node<T: Scalar>(
     // is the rectangular `(nrow-ke) × (ncol-ke)` lower part. Pivoting stays inside
     // `0..ncol`, so the off-diagonal rows `[ncol, nrow)` keep their identity and
     // `s`'s contribution to ancestors is unaffected by this internal permutation.
-    let nb = kt.panel_nb;
-    let ll_cdiv_par = kt.par_cdiv;
+    //
+    // Adaptive panel width: wide separators get double-width panels - the
+    // deferred Schur GEMM's inner dimension is `nb`, and k = 64 is too thin
+    // to reach peak on root-class panels (measured ~79 Gflop/s-eq). The
+    // extra serial getf2 work is O(nb³) per panel - negligible against the
+    // GEMM gain at this size. The global nb sweep said 128 loses overall
+    // because SMALL panels pay; widening only above `ncol >= 512` (a pure
+    // function of the node, thread-count independent) keeps them at default.
+    let nb = if ncol >= 512 {
+        kt.panel_nb.max(128)
+    } else {
+        kt.panel_nb
+    };
+    // Same join-steal guard as cmod: a small node must not fork inside its
+    // cdiv (deep-row apply / deferred Schur GEMM) - the blocked join steals
+    // foreign subtree work and stalls this node's dependents. Total cdiv
+    // work ~ nrow·ncol² (panel + trailing updates). In the chain phase the
+    // guard lifts (see `chain_phase` above): workers are idle, forking pays.
+    let cdiv_chain = ll_active.load(Ordering::Relaxed) <= 2;
+    let ll_cdiv_par = if nrow * ncol * ncol >= 100_000_000 || cdiv_chain {
+        kt.par_cdiv
+    } else {
+        usize::MAX
+    };
     let alpha = bk_alpha();
     let mut d = vec![T::zero(); ncol];
     let mut d_subdiag = vec![T::zero(); ncol];
@@ -2269,6 +2747,13 @@ fn ll_factor_node<T: Scalar>(
     let mut l21buf: Vec<T> = Vec::new();
     let mut gbuf: Vec<T> = Vec::new();
     let mut tmp: Vec<T> = Vec::new();
+    // Per-step pivot-interchange partners of the current panel (`usize::MAX`
+    // = no interchange), consumed by the deep-row replay.
+    let mut deep_swaps = vec![usize::MAX; nb];
+    // Time-of-step in-panel multipliers (`nb × nb`, column = step), consumed
+    // by the deep-row replay (later interchanges permute the final panel's
+    // multiplier rows, so the finals cannot be read back).
+    let mut mult_snap = vec![T::zero(); nb * nb];
     let mut local_perturbed = 0usize;
     // Helper to restore the `gloc` scratch invariant before an early return.
     macro_rules! restore_gloc {
@@ -2279,7 +2764,6 @@ fn ll_factor_node<T: Scalar>(
             GLOC_SCRATCH.with(|c| *c.borrow_mut() = gloc);
         }};
     }
-    let prof = ldlt_prof_on();
     let mut kb = 0;
     while kb < ncol {
         let ke = (kb + nb).min(ncol);
@@ -2288,10 +2772,15 @@ fn ll_factor_node<T: Scalar>(
         } else {
             None
         };
-        // getf2: unblocked Bunch-Kaufman over the panel columns [kb, ke), with the
-        // pivot candidate and rank-1/rank-2 trailing updates bounded to `ke` (the
-        // columns beyond `ke` are deferred to the panel GEMM below). The L21
-        // multipliers are still formed over all rows down to `nrow`.
+        // getf2: unblocked Bunch-Kaufman over the panel columns [kb, ke), with
+        // EVERYTHING bounded to the panel rows `< ke`: pivot candidates,
+        // rank-1/rank-2 updates, interchanges. The deep rows `[ke, nrow)` -
+        // the dominant `O((nrow-ke)·pw²)` share on tall panels - are lifted
+        // off this serial path into the parallel `apply_bk_panel_trailing`
+        // below (bit-identical replay; ports the LU twin's lever).
+        for ds in deep_swaps.iter_mut() {
+            *ds = usize::MAX;
+        }
         let mut k = kb;
         while k < ke {
             let absakk = panel[k + k * nrow].magnitude();
@@ -2349,8 +2838,9 @@ fn ll_factor_node<T: Scalar>(
 
             if kstep == 1 {
                 if kp != k {
-                    swap_sym_lower(&mut panel, nrow, k, kp);
+                    swap_sym_lower_bounded(&mut panel, nrow, k, kp, ke);
                     lperm.swap(k, kp);
+                    deep_swaps[k - kb] = kp;
                 }
                 let mut dk = panel[k + k * nrow];
                 match perturb_floor {
@@ -2367,25 +2857,28 @@ fn ll_factor_node<T: Scalar>(
                 }
                 d[k] = dk;
                 let dinv = dk.recip();
-                // Update the in-panel trailing columns (k+1)..ke (all rows, so the
-                // L21 multiplier rows form), then scale column k → its L column.
+                // Update the in-panel trailing columns (k+1)..ke over the
+                // panel rows, then scale column k's panel rows (deep rows
+                // replayed in the parallel apply).
                 for j in (k + 1)..ke {
                     let wj_dinv = panel[k * nrow + j] * dinv;
+                    mult_snap[(k - kb) * nb + (j - kb)] = wj_dinv;
                     if wj_dinv != T::zero() {
-                        for i in j..nrow {
+                        for i in j..ke {
                             panel[j * nrow + i] =
                                 panel[j * nrow + i] - panel[k * nrow + i] * wj_dinv;
                         }
                     }
                 }
-                for i in (k + 1)..nrow {
+                for i in (k + 1)..ke {
                     panel[k * nrow + i] = panel[k * nrow + i] * dinv;
                 }
                 k += 1;
             } else {
                 if kp != k + 1 {
-                    swap_sym_lower(&mut panel, nrow, k + 1, kp);
+                    swap_sym_lower_bounded(&mut panel, nrow, k + 1, kp, ke);
                     lperm.swap(k + 1, kp);
+                    deep_swaps[k - kb] = kp;
                 }
                 let mut d11 = panel[k + k * nrow];
                 let d21 = panel[k * nrow + (k + 1)];
@@ -2418,26 +2911,87 @@ fn ll_factor_node<T: Scalar>(
                 d_subdiag[k] = d21;
                 d[k + 1] = d22;
                 two_by_two[k] = true;
-                for i in (k + 2)..nrow {
+                for i in (k + 2)..ke {
                     let wik = panel[k * nrow + i];
                     let wik1 = panel[(k + 1) * nrow + i];
                     l1[i] = (d22 * wik - d21 * wik1) * detinv;
                     l2[i] = (d11 * wik1 - d21 * wik) * detinv;
+                    mult_snap[(k - kb) * nb + (i - kb)] = l1[i];
+                    mult_snap[(k + 1 - kb) * nb + (i - kb)] = l2[i];
                 }
                 for j in (k + 2)..ke {
                     let l1j = l1[j];
                     let l2j = l2[j];
-                    for i in j..nrow {
+                    for i in j..ke {
                         panel[j * nrow + i] = panel[j * nrow + i]
                             - panel[k * nrow + i] * l1j
                             - panel[(k + 1) * nrow + i] * l2j;
                     }
                 }
-                for i in (k + 2)..nrow {
+                for i in (k + 2)..ke {
                     panel[k * nrow + i] = l1[i];
                     panel[(k + 1) * nrow + i] = l2[i];
                 }
                 k += 2;
+            }
+        }
+        // Deep rows [ke, nrow): replay this panel's interchanges + pivot
+        // transforms row-parallel (bit-identical to the old full-height
+        // getf2 - same per-row op sequence). This is the dominant panel
+        // work on tall supernodes; it now runs on all idle workers instead
+        // of the serial getf2 path.
+        if nrow > ke {
+            let deep = nrow - ke;
+            let pw = ke - kb;
+            let par = deep * pw * pw >= ll_cdiv_par;
+            if par {
+                let pp = LdltPanelPtr(panel.as_mut_ptr());
+                let nthreads = rayon::current_num_threads().max(1);
+                let cs = deep.div_ceil(nthreads).max(1);
+                let ranges: Vec<(usize, usize)> = (0..nthreads)
+                    .map(|c| {
+                        let r0 = ke + c * cs;
+                        (r0.min(nrow), (r0 + cs).min(nrow))
+                    })
+                    .filter(|(a, b)| a < b)
+                    .collect();
+                ranges.par_iter().for_each(|&(r0, r1)| {
+                    // SAFETY: disjoint row chunk; see `apply_bk_panel_trailing`.
+                    unsafe {
+                        apply_bk_panel_trailing(
+                            pp.get(),
+                            nrow,
+                            kb,
+                            ke,
+                            &d,
+                            &d_subdiag,
+                            &two_by_two,
+                            &deep_swaps,
+                            &mult_snap,
+                            nb,
+                            r0,
+                            r1,
+                        )
+                    };
+                });
+            } else {
+                // SAFETY: single task over all deep rows.
+                unsafe {
+                    apply_bk_panel_trailing(
+                        panel.as_mut_ptr(),
+                        nrow,
+                        kb,
+                        ke,
+                        &d,
+                        &d_subdiag,
+                        &two_by_two,
+                        &deep_swaps,
+                        &mult_snap,
+                        nb,
+                        ke,
+                        nrow,
+                    )
+                };
             }
         }
 
@@ -2490,39 +3044,28 @@ fn ll_factor_node<T: Scalar>(
             }
             tmp.clear();
             tmp.resize(mt * cw, T::zero());
-            let par = if (mt as u128) * (cw as u128) * (pw as u128) >= ll_cdiv_par as u128 {
-                gemm::Parallelism::Rayon(0)
-            } else {
-                gemm::Parallelism::None
-            };
             if kt.use_gemm_schur {
-                // SAFETY: `tmp`, `gbuf`, `l21buf` are three distinct, non-overlapping
-                // allocations sized for (m,n,k)=(mt,cw,pw); `R` is the top `cw` rows
-                // of `l21buf` (cw ≤ mt), addressed via the rhs strides. `T` is
-                // `f64`/`Complex<f64>` (gemm-supported).
+                // The write-back below reads only `rr >= cc2`, so compute the
+                // rectangular product tile-by-tile from each tile's diagonal
+                // downward. Matters most at the tree root where `cw ≈ mt`
+                // (nearly-square panel) and the full product wasted ~half its
+                // flops; for tall separator panels (`mt >> cw`) the saving is
+                // small but never negative.
+                // SAFETY: `tmp`, `gbuf`, `l21buf` are distinct allocations sized
+                // for the (mt, cw, pw) strides.
                 unsafe {
-                    gemm::gemm(
+                    lower_tile_gemm(
+                        &mut tmp,
                         mt,
                         cw,
                         pw,
-                        tmp.as_mut_ptr(),
-                        mt as isize,
-                        1,
-                        false,
                         gbuf.as_ptr(),
                         mt as isize,
-                        1,
                         l21buf.as_ptr(),
-                        1,
                         mt as isize,
-                        T::zero(),
-                        T::one(),
-                        false,
-                        false,
-                        false,
-                        par,
-                    );
-                }
+                        ll_cdiv_par,
+                    )
+                };
             } else {
                 for cc2 in 0..cw {
                     for rr in 0..mt {
@@ -2547,6 +3090,22 @@ fn ll_factor_node<T: Scalar>(
             PROF_LDLT_SCHUR_NS.fetch_add(t.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         }
         kb = ke;
+    }
+    if let Some(t) = t_cdiv {
+        node_ph_ns[2] = t.elapsed().as_nanos() as u64;
+        PROF_LDLT_CDIV_NS.fetch_add(node_ph_ns[2], AtomicOrdering::Relaxed);
+    }
+    if let Some(t) = t_node {
+        ll_node_cost(LlNodeCost {
+            wall_ms: t.elapsed().as_secs_f64() * 1e3,
+            asm_ms: node_ph_ns[0] as f64 / 1e6,
+            cmod_ms: node_ph_ns[1] as f64 / 1e6,
+            cdiv_ms: node_ph_ns[2] as f64 / 1e6,
+            nrow,
+            ncol,
+            n_upd: update_list[s].len(),
+            cmod_gflop: cmod_flops as f64 / 1e9,
+        });
     }
     if local_perturbed > 0 {
         n_perturbed.fetch_add(local_perturbed, Ordering::Relaxed);
@@ -2634,6 +3193,7 @@ fn ll_factor_subtree<T: Scalar>(
     perturb_floor: Option<f64>,
     drop_tol: Option<f64>,
     n_perturbed: &AtomicUsize,
+    ll_active: &AtomicUsize,
     kt: KernelTuning,
 ) -> Result<(), RslabError> {
     sym.supernodes[s]
@@ -2651,6 +3211,7 @@ fn ll_factor_subtree<T: Scalar>(
                 perturb_floor,
                 drop_tol,
                 n_perturbed,
+                ll_active,
                 kt,
             )
         })
@@ -2665,6 +3226,7 @@ fn ll_factor_subtree<T: Scalar>(
         emit,
         perturb_floor,
         n_perturbed,
+        ll_active,
         kt,
     )?;
     // Free each descendant whose last consumer this node was (refcount→0), and `s`
@@ -2774,6 +3336,7 @@ fn factor_left_looking<T: Scalar>(
     }
     let roots: Vec<usize> = (0..nsuper).filter(|&s| !is_child[s]).collect();
     let kt = opts.kernel();
+    let ll_active = AtomicUsize::new(0);
     roots
         .par_iter()
         .map(|&r| {
@@ -2788,6 +3351,7 @@ fn factor_left_looking<T: Scalar>(
                 perturb_floor,
                 opts.drop_tol,
                 &n_perturbed_atomic,
+                &ll_active,
                 kt,
             )
         })
@@ -2795,6 +3359,29 @@ fn factor_left_looking<T: Scalar>(
     drop(store); // panels freed incrementally; release the shells
     let n_perturbed = n_perturbed_atomic.load(Ordering::Relaxed);
     if ldlt_prof_on() {
+        let asm = PROF_LDLT_ASM_NS.swap(0, AtomicOrdering::Relaxed) as f64 / 1e6;
+        let cmod = PROF_LDLT_CMOD_NS.swap(0, AtomicOrdering::Relaxed) as f64 / 1e6;
+        let cdiv = PROF_LDLT_CDIV_NS.swap(0, AtomicOrdering::Relaxed) as f64 / 1e6;
+        let tot = (asm + cmod + cdiv).max(1.0);
+        eprintln!(
+            "[RLA_LDLT_LL] CPU-ms  asm {asm:.0} ({:.0}%)  cmod {cmod:.0} ({:.0}%)  cdiv {cdiv:.0} ({:.0}%)",
+            100.0 * asm / tot,
+            100.0 * cmod / tot,
+            100.0 * cdiv / tot,
+        );
+        let sn = PROF_LDLT_CMOD_SCAL_N.swap(0, AtomicOrdering::Relaxed);
+        let sf = PROF_LDLT_CMOD_SCAL_F.swap(0, AtomicOrdering::Relaxed);
+        let rn = PROF_LDLT_CMOD_GSER_N.swap(0, AtomicOrdering::Relaxed);
+        let rf = PROF_LDLT_CMOD_GSER_F.swap(0, AtomicOrdering::Relaxed);
+        let pn = PROF_LDLT_CMOD_GPAR_N.swap(0, AtomicOrdering::Relaxed);
+        let pf = PROF_LDLT_CMOD_GPAR_F.swap(0, AtomicOrdering::Relaxed);
+        let ftot = (sf + rf + pf).max(1) as f64;
+        eprintln!(
+            "[RLA_LDLT_CMOD_DIST] updates  scalar n={sn} ({:.1}% flop)  gemm-ser n={rn} ({:.1}% flop)  gemm-par n={pn} ({:.1}% flop)",
+            100.0 * sf as f64 / ftot,
+            100.0 * rf as f64 / ftot,
+            100.0 * pf as f64 / ftot,
+        );
         let g = PROF_LDLT_GETF2_NS.swap(0, AtomicOrdering::Relaxed) as f64 / 1e6;
         let s = PROF_LDLT_SCHUR_NS.swap(0, AtomicOrdering::Relaxed) as f64 / 1e6;
         let t = (g + s).max(1.0);
@@ -2803,6 +3390,63 @@ fn factor_left_looking<T: Scalar>(
             100.0 * g / t,
             100.0 * s / t,
         );
+        if let Some(m) = PROF_LDLT_CONC.get() {
+            if let Ok(mut cg) = m.lock() {
+                // Close the last open interval, report, reset for the next run.
+                let now = std::time::Instant::now();
+                let k = cg.active.min(16);
+                cg.hist_ns[k] += now.duration_since(cg.last).as_nanos() as u64;
+                cg.last = now;
+                let tot: u64 = cg.hist_ns.iter().sum::<u64>().max(1);
+                let mean: f64 = cg
+                    .hist_ns
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &ns)| k as f64 * ns as f64)
+                    .sum::<f64>()
+                    / tot as f64;
+                let pct = |ns: u64| 100.0 * ns as f64 / tot as f64;
+                let b12 = cg.hist_ns[1] + cg.hist_ns[2];
+                let b34 = cg.hist_ns[3] + cg.hist_ns[4];
+                let b58: u64 = cg.hist_ns[5..=8].iter().sum();
+                let b9: u64 = cg.hist_ns[9..].iter().sum();
+                eprintln!(
+                    "[RLA_LDLT_CONC] mean active nodes {mean:.2}  wall-share: idle {:.0}%  1-2 {:.0}%  3-4 {:.0}%  5-8 {:.0}%  9+ {:.0}%",
+                    pct(cg.hist_ns[0]),
+                    pct(b12),
+                    pct(b34),
+                    pct(b58),
+                    pct(b9),
+                );
+                cg.hist_ns = [0; 17];
+            }
+        }
+        if let Some(m) = PROF_LDLT_NODES.get() {
+            if let Ok(mut v) = m.lock() {
+                v.sort_by(|a, b| b.wall_ms.total_cmp(&a.wall_ms));
+                let top_sum: f64 = v.iter().take(12).map(|c| c.wall_ms).sum();
+                let all_sum: f64 = v.iter().map(|c| c.wall_ms).sum();
+                eprintln!(
+                    "[RLA_LDLT_NODES] {} nodes >2ms, wall sum {all_sum:.0} ms (top-12: {top_sum:.0} ms)",
+                    v.len()
+                );
+                for c in v.iter().take(12) {
+                    eprintln!(
+                        "  node {}x{} upd {:>4}: wall {:>6.1} ms = asm {:>5.1} + cmod {:>6.1} + cdiv {:>6.1}  (cmod {:>5.2} Gflop, {:>5.1} Gflop/s)",
+                        c.nrow,
+                        c.ncol,
+                        c.n_upd,
+                        c.wall_ms,
+                        c.asm_ms,
+                        c.cmod_ms,
+                        c.cdiv_ms,
+                        c.cmod_gflop,
+                        c.cmod_gflop / (c.cmod_ms / 1e3).max(1e-9),
+                    );
+                }
+                v.clear();
+            }
+        }
     }
 
     // Assemble global L (CSC) by concatenating the per-supernode compact fragments

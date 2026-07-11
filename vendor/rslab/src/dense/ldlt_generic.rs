@@ -20,7 +20,7 @@
 
 use crate::dense::matrix::SymmetricMatrix;
 use crate::error::RslabError;
-use crate::scalar::Scalar;
+use crate::scalar::{fmadd, Scalar};
 use rayon::prelude::*;
 
 /// Result of a generic Bunch-Kaufman LDLᵀ factorization.
@@ -77,9 +77,24 @@ pub(crate) fn bk_alpha() -> f64 {
 /// columns to the left - so the partial factorization stays consistent. The
 /// crossing element `(q, p)` maps to itself and is left in place.
 pub(crate) fn swap_sym_lower<T: Scalar>(a: &mut [T], n: usize, p: usize, q: usize) {
-    debug_assert!(p < q && q < n);
+    swap_sym_lower_bounded(a, n, p, q, n);
+}
+
+/// [`swap_sym_lower`] with the below-`q` column-segment swap bounded to rows
+/// `< row_limit`. The blocked Bunch-Kaufman panel kernels keep their pivot
+/// interchanges inside the panel rows and replay the deep-row segments later
+/// in the parallel trailing apply (`apply_bk_panel_trailing`), so the
+/// interchange sequence reaches every row exactly once, in step order.
+pub(crate) fn swap_sym_lower_bounded<T: Scalar>(
+    a: &mut [T],
+    n: usize,
+    p: usize,
+    q: usize,
+    row_limit: usize,
+) {
+    debug_assert!(p < q && q < n && q < row_limit);
     // Column segment strictly below q: (i, p) <-> (i, q) for i > q.
-    for i in (q + 1)..n {
+    for i in (q + 1)..row_limit {
         a.swap(p * n + i, q * n + i);
     }
     // Middle cross strip: (i, p) <-> (q, i) for p < i < q.
@@ -113,6 +128,12 @@ pub fn factor_ldlt<T: Scalar>(matrix: &SymmetricMatrix<T>) -> Result<LdltFactors
     let mut d_subdiag = vec![T::zero(); n];
     let mut two_by_two = vec![false; n];
     let mut inertia = crate::inertia::Inertia::new(0, 0, 0);
+    // 2×2-pivot multiplier scratch, hoisted out of the pivot loop (an
+    // indefinite matrix with many 2×2 blocks must not allocate per pivot).
+    // Only entries `[k+2, n)` are written/read each step, so stale values
+    // left below are never observed - same invariant as `factor_front`.
+    let mut l1 = vec![T::zero(); n];
+    let mut l2 = vec![T::zero(); n];
 
     let mut k = 0;
     while k < n {
@@ -241,8 +262,6 @@ pub fn factor_ldlt<T: Scalar>(matrix: &SymmetricMatrix<T>) -> Result<LdltFactors
 
             // Multiplier columns L_i = D⁻¹ · [A[i][k], A[i][k+1]]ᵀ for i >= k+2,
             // with D⁻¹ = (1/det)·[[d22, -d21], [-d21, d11]].
-            let mut l1 = vec![T::zero(); n];
-            let mut l2 = vec![T::zero(); n];
             for i in (k + 2)..n {
                 let wik = a[k * n + i];
                 let wik1 = a[(k + 1) * n + i];
@@ -332,14 +351,24 @@ pub fn solve_ldlt<T: Scalar>(factors: &LdltFactors<T>, rhs: &[T]) -> Result<Vec<
     }
 
     // Forward solve L · z = y (unit lower, CSC column-oriented): once y[j] is
-    // final, propagate it down its column.
+    // final, propagate it down its column. Axpys via `fmadd` (FMA on native
+    // builds); `CompressedLdltFactors::solve` mirrors the exact same
+    // expressions to stay bit-identical.
+    //
+    // The explicit unit diagonal is always a column's FIRST stored entry
+    // (rows are sorted and L is lower triangular in elimination numbering),
+    // so the sweeps skip index `col_ptr[j]` outright instead of branching on
+    // `i != j` at every nonzero.
     for j in 0..n {
-        let zj = y[j];
-        for k in factors.l_col_ptr[j]..factors.l_col_ptr[j + 1] {
+        let (s, e) = (factors.l_col_ptr[j], factors.l_col_ptr[j + 1]);
+        debug_assert_eq!(
+            factors.l_row_idx[s], j,
+            "unit diagonal must lead its column"
+        );
+        let nzj = T::zero() - y[j];
+        for k in (s + 1)..e {
             let i = factors.l_row_idx[k];
-            if i != j {
-                y[i] = y[i] - factors.l_values[k] * zj;
-            }
+            y[i] = fmadd(factors.l_values[k], nzj, y[i]);
         }
     }
 
@@ -371,14 +400,17 @@ pub fn solve_ldlt<T: Scalar>(factors: &LdltFactors<T>, rhs: &[T]) -> Result<Vec<
     }
 
     // Backward solve Lᵀ · v = w (CSC column j = row j of Lᵀ): dot column j's
-    // multipliers against the already-solved tail.
+    // multipliers against the already-solved tail (diagonal-first layout, so
+    // the dot starts at `col_ptr[j] + 1`). Deliberately mul+sub, NOT `fmadd`:
+    // this accumulator is a loop-carried dependency, and the FMA's higher
+    // latency on that serial chain measures ~8 % slower than the pipelined
+    // mul (off-chain) + sub. `fmadd` stays only in the scatter-form sweeps,
+    // where updates are independent and FMA is throughput-bound.
     for j in (0..n).rev() {
+        let (s, e) = (factors.l_col_ptr[j], factors.l_col_ptr[j + 1]);
         let mut acc = y[j];
-        for k in factors.l_col_ptr[j]..factors.l_col_ptr[j + 1] {
-            let i = factors.l_row_idx[k];
-            if i != j {
-                acc = acc - factors.l_values[k] * y[i];
-            }
+        for k in (s + 1)..e {
+            acc = acc - factors.l_values[k] * y[factors.l_row_idx[k]];
         }
         y[j] = acc;
     }
@@ -457,14 +489,15 @@ impl<T: Scalar> CompressedLdltFactors<T> {
         for (i, yi) in y.iter_mut().enumerate() {
             *yi = rhs[self.perm[i] as usize];
         }
-        // Forward solve L z = y.
+        // Forward solve L z = y (same `fmadd` expressions and diagonal-first
+        // skip as `solve_ldlt` - the bit-identity contract of this type).
         for j in 0..n {
-            let zj = y[j];
-            for k in self.l_col_ptr[j] as usize..self.l_col_ptr[j + 1] as usize {
+            let (s, e) = (self.l_col_ptr[j] as usize, self.l_col_ptr[j + 1] as usize);
+            debug_assert_eq!(self.l_row_idx[s] as usize, j);
+            let nzj = T::zero() - y[j];
+            for k in (s + 1)..e {
                 let i = self.l_row_idx[k] as usize;
-                if i != j {
-                    y[i] = y[i] - self.l_values[k] * zj;
-                }
+                y[i] = fmadd(self.l_values[k], nzj, y[i]);
             }
         }
         // D-block solve.
@@ -492,14 +525,14 @@ impl<T: Scalar> CompressedLdltFactors<T> {
                 k += 1;
             }
         }
-        // Backward solve Lᵀ v = w.
+        // Backward solve Lᵀ v = w (mul+sub like `solve_ldlt`: the accumulator
+        // chain is latency-bound, see the note there).
         for j in (0..n).rev() {
+            let (s, e) = (self.l_col_ptr[j] as usize, self.l_col_ptr[j + 1] as usize);
             let mut acc = y[j];
-            for k in self.l_col_ptr[j] as usize..self.l_col_ptr[j + 1] as usize {
+            for k in (s + 1)..e {
                 let i = self.l_row_idx[k] as usize;
-                if i != j {
-                    acc = acc - self.l_values[k] * y[i];
-                }
+                acc = acc - self.l_values[k] * y[i];
             }
             y[j] = acc;
         }
@@ -605,15 +638,15 @@ fn solve_ldlt_block<T: Scalar>(
     for j in 0..n {
         let jb = j * nrhs;
         row.copy_from_slice(&y[jb..jb + nrhs]);
-        for k in factors.l_col_ptr[j]..factors.l_col_ptr[j + 1] {
+        let (s, e) = (factors.l_col_ptr[j], factors.l_col_ptr[j + 1]);
+        debug_assert_eq!(factors.l_row_idx[s], j);
+        for k in (s + 1)..e {
             let i = factors.l_row_idx[k];
-            if i != j {
-                let lval = factors.l_values[k];
-                let ib = i * nrhs;
-                let tgt = &mut y[ib..ib + nrhs];
-                for c in 0..nrhs {
-                    tgt[c] = tgt[c] - lval * row[c];
-                }
+            let nlval = T::zero() - factors.l_values[k];
+            let ib = i * nrhs;
+            let tgt = &mut y[ib..ib + nrhs];
+            for c in 0..nrhs {
+                tgt[c] = fmadd(nlval, row[c], tgt[c]);
             }
         }
     }
@@ -658,15 +691,14 @@ fn solve_ldlt_block<T: Scalar>(
     for j in (0..n).rev() {
         let jb = j * nrhs;
         row.copy_from_slice(&y[jb..jb + nrhs]);
-        for k in factors.l_col_ptr[j]..factors.l_col_ptr[j + 1] {
+        let (s, e) = (factors.l_col_ptr[j], factors.l_col_ptr[j + 1]);
+        for k in (s + 1)..e {
             let i = factors.l_row_idx[k];
-            if i != j {
-                let lval = factors.l_values[k];
-                let ib = i * nrhs;
-                let src = &y[ib..ib + nrhs];
-                for c in 0..nrhs {
-                    row[c] = row[c] - lval * src[c];
-                }
+            let nlval = T::zero() - factors.l_values[k];
+            let ib = i * nrhs;
+            let src = &y[ib..ib + nrhs];
+            for c in 0..nrhs {
+                row[c] = fmadd(nlval, src[c], row[c]);
             }
         }
         y[jb..jb + nrhs].copy_from_slice(&row);

@@ -10,7 +10,7 @@ use crate::ordering::elimination_tree::EliminationTree;
 use crate::ordering::postorder::{biased_postorder, postorder};
 use crate::sparse::csc::{CscMatrix, CscPattern};
 
-pub use column_counts::{column_counts, column_counts_gnp, total_factor_nnz};
+pub use column_counts::{column_counts_gnp, total_factor_nnz};
 pub use ldlt_compress::{build_supermap, compress_pattern, expand_permutation, SuperMap};
 pub use profiler::{record_stage, StagePct, StageTiming, SymbolicProfileReport, SymbolicProfiler};
 pub use small_leaf::{find_small_leaf_groups, SmallLeafGroup, SmallLeafParams};
@@ -374,16 +374,6 @@ pub struct SymbolicFactorization {
     /// `supernodes.len()`.
     pub snode_group: Vec<Option<usize>>,
 
-    /// Cached MC64 matching produced by the `LdltCompress`
-    /// preprocessor. When `Some`, the numeric phase reuses it to
-    /// derive the `Mc64Symmetric` scaling vector in O(n) instead of
-    /// rerunning the Hungarian kernel. `None` when no MC64 matching
-    /// was computed during symbolic factorization. (Consumed by the
-    /// numeric path again once MC64 scaling is ported to the generic
-    /// solver - see the rslab feature port.)
-    #[allow(dead_code)]
-    pub(crate) cached_mc64: Option<crate::scaling::Mc64Cache>,
-
     /// Concrete ordering method actually dispatched. Records the
     /// `OrderingMethod::Auto → AMD/MetisND/ScotchND/KahipND`
     /// resolution made by `choose_adaptive`. For non-`Auto` callers
@@ -430,7 +420,12 @@ pub struct SymbolicFactorization {
 ///     ratio 1.003. ORBIT2_0000 alone goes from AMD's 1.4M nnz_L
 ///     down to AMF's 32_105.)
 ///   - everything else (`n > 10_000`)                  → `MetisND`
-///     (large patterns where nested dissection is the standard win.)
+///     — note this base decision is **always rerouted to AMF** by the
+///     issue #67/#73 catches in `choose_adaptive` (measured: AMF wins or
+///     ties MetisND on real factor+solve across the whole would-be-MetisND
+///     population, and MetisND's symbolic is 2-5× more expensive). It is
+///     kept here so the reroute stays a visible, separately-documented
+///     decision rather than being silently folded in.
 ///
 /// `nnz` here is the matrix's *stored* nnz (lower triangle for
 /// symmetric matrices), not the symmetric pattern's.
@@ -521,12 +516,16 @@ pub fn pick_ordering_preprocess(matrix: &CscMatrix) -> OrderingPreprocess {
 /// Perform symbolic factorization of a sparse symmetric matrix.
 ///
 /// Picks the fill-reducing ordering adaptively via [`OrderingMethod::Auto`]
-/// (resolved by `choose_adaptive`): AMF for n ≤ 10_000 or arrow/bordered
-/// patterns, AMD for very-large-and-sparse, MetisND otherwise. Routing
-/// through `Auto` keeps this no-arg default and the explicit `Auto` caller
-/// in exact agreement (issue #64). Callers who want a specific ordering
-/// with no dispatcher should call `symbolic_factorize_with_method` with an
-/// explicit `OrderingMethod`.
+/// (resolved by `choose_adaptive`): AMD for very-large-and-sparse
+/// (`n > 100_000`, avg degree `< 5`), **AMF for everything else** — the
+/// issue #67/#73 corpus A/Bs rerouted every would-be-MetisND decision to
+/// AMF, so `Auto` never resolves to nested dissection. MetisND is reachable
+/// only explicitly, via [`OrderingMethod::AutoRace`], or through the
+/// `LdltSolver::tuned` nested-dissection bakeoff. Routing through `Auto`
+/// keeps this no-arg default and the explicit `Auto` caller in exact
+/// agreement (issue #64). Callers who want a specific ordering with no
+/// dispatcher should call `symbolic_factorize_with_method` with an explicit
+/// `OrderingMethod`.
 ///
 /// Steps:
 /// 1. Pick fill-reducing ordering (resolved from `Auto` by `choose_adaptive`)
@@ -755,7 +754,6 @@ pub fn symbolic_factorize_with_method(
     // matrix directly). Issue #3.
     let method = choose_adaptive(&full_pattern, method);
 
-    let mut cached_mc64: Option<crate::scaling::Mc64Cache> = None;
     // Resolve `Auto` to `None` or `LdltCompress` before entering the
     // dispatch. Keeps the match below exhaustive on the two concrete
     // variants and keeps the dispatcher logic in one testable place.
@@ -787,19 +785,21 @@ pub fn symbolic_factorize_with_method(
         OrderingPreprocess::None => record_ordering(&full_pattern)?,
         OrderingPreprocess::Auto => unreachable!("resolved above"),
         OrderingPreprocess::LdltCompress => {
-            // Run the full MC64 pipeline once and keep the cache so the
-            // numeric phase can reuse it for `Mc64Symmetric` scaling
-            // (Phase 2.4.4: eliminates ~70% of compression symbolic
-            // overhead on matrices where scaling also runs MC64). MC64 is
-            // the expensive part - record it under its own `ldlt_compress`
-            // stage (issue #80).
+            // Run the MC64 matching once for the compression supermap. MC64
+            // is the expensive part - record it under its own
+            // `ldlt_compress` stage (issue #80). NOTE: this matching CANNOT
+            // be reused for `Mc64Symmetric` scaling — the generic solver
+            // path feeds this function a unit-valued pattern, so the
+            // matching carries no value information (see the
+            // `scaling::Mc64Cache` note); the retired `cached_mc64` field
+            // that promised that reuse was unwireable dead weight.
             let t_pre = prof.map(|_| std::time::Instant::now());
             let cache = crate::scaling::compute_mc64_cache(matrix)?;
             let map = build_supermap(&cache.perm);
             if let Some(t) = t_pre {
                 record_stage(prof, "ldlt_compress", t);
             }
-            let pair = if map.ncmp() == n {
+            if map.ncmp() == n {
                 // Matching gives no compression leverage; fall through
                 // to the uncompressed path rather than build and walk
                 // an identical-size graph.
@@ -817,9 +817,7 @@ pub fn symbolic_factorize_with_method(
                     record_stage(prof, "expand_perm", t);
                 }
                 (expanded, resolved)
-            };
-            cached_mc64 = Some(cache);
-            pair
+            }
         }
     };
 
@@ -1031,7 +1029,6 @@ pub fn symbolic_factorize_with_method(
         col_counts,
         small_leaf_groups,
         snode_group,
-        cached_mc64,
         resolved_method,
         resolved_amalgamation: snode_params.amalgamation_strategy,
         resolved_preprocess,
@@ -1225,7 +1222,6 @@ pub fn symbolic_factorize_with_schur(
         col_counts,
         small_leaf_groups,
         snode_group,
-        cached_mc64: None,
         resolved_method: OrderingMethod::Amd,
         resolved_amalgamation: effective_params.amalgamation_strategy,
         resolved_preprocess: OrderingPreprocess::None,
