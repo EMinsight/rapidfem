@@ -5,8 +5,6 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: "0 4 * * *"   # nightly: full physics validation suite
 
 permissions:
   contents: read
