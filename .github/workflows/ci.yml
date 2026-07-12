@@ -71,8 +71,8 @@ jobs:
     name: pytest (full physics suite)
     runs-on: ubuntu-latest
     # The phenomenon suite runs real FEM solves (minutes). Gate it to master
-    # pushes, the nightly schedule, and manual dispatch — not every PR.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master'
+    # pushes and manual dispatch — not every PR.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/master'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
