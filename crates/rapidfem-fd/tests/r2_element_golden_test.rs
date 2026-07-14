@@ -8,17 +8,21 @@
 // derivation, entrywise.
 
 use num_complex::Complex64 as C64;
-use rapidfem_fd::tet_assembly_r2::r2_tet_stiff_mass;
+use rapidfem_fd::basis::tet_dof_owners;
+use rapidfem_fd::tet_assembly_r2::{r2_tet_stiff_mass, BasisKind};
 
 const EDGE_MAP: [[usize; 2]; 6] = [[0,1],[0,2],[0,3],[1,2],[3,1],[2,3]];
 const TRI_MAP: [[usize; 3]; 4] = [[0,1,2],[0,2,3],[0,3,1],[1,2,3]];
 
-fn maxdiff(a: &[[C64; 20]; 20], b: &[[C64; 20]; 20]) -> f64 {
+/// `a` is the element matrix as the kernel returns it: ROW-MAJOR, n*n. `b` is
+/// the golden, kept as a 2-D literal for readability.
+fn maxdiff(a: &[C64], b: &[[C64; 20]; 20]) -> f64 {
+    assert_eq!(a.len(), 20 * 20, "element matrix is row-major 20x20");
     let mut m = 0.0_f64;
     let mut scale = 1e-300_f64;
     for i in 0..20 { for j in 0..20 {
         scale = scale.max(b[i][j].norm());
-        m = m.max((a[i][j] - b[i][j]).norm());
+        m = m.max((a[i * 20 + j] - b[i][j]).norm());
     }}
     m / scale
 }
@@ -85,7 +89,8 @@ const F_unit_identity: [[C64; 20]; 20] = [
 
 #[test]
 fn r2_element_matches_derivation_unit_identity() {
-    let (d, f) = r2_tet_stiff_mass(&XS_unit_identity, &YS_unit_identity, &ZS_unit_identity, &EL_unit_identity,
+    let owners = tet_dof_owners(&[2; 6], &[2; 4]);
+    let (d, f) = r2_tet_stiff_mass(BasisKind::Interpolatory, &owners, &XS_unit_identity, &YS_unit_identity, &ZS_unit_identity, &EL_unit_identity,
         &EDGE_MAP, &TRI_MAP, &MUINV_unit_identity, &EPS_unit_identity);
     let derr = maxdiff(&d, &D_unit_identity);
     let ferr = maxdiff(&f, &F_unit_identity);
@@ -156,7 +161,8 @@ const F_skew_identity: [[C64; 20]; 20] = [
 
 #[test]
 fn r2_element_matches_derivation_skew_identity() {
-    let (d, f) = r2_tet_stiff_mass(&XS_skew_identity, &YS_skew_identity, &ZS_skew_identity, &EL_skew_identity,
+    let owners = tet_dof_owners(&[2; 6], &[2; 4]);
+    let (d, f) = r2_tet_stiff_mass(BasisKind::Interpolatory, &owners, &XS_skew_identity, &YS_skew_identity, &ZS_skew_identity, &EL_skew_identity,
         &EDGE_MAP, &TRI_MAP, &MUINV_skew_identity, &EPS_skew_identity);
     let derr = maxdiff(&d, &D_skew_identity);
     let ferr = maxdiff(&f, &F_skew_identity);
@@ -227,7 +233,8 @@ const F_skew_aniso_complex: [[C64; 20]; 20] = [
 
 #[test]
 fn r2_element_matches_derivation_skew_aniso_complex() {
-    let (d, f) = r2_tet_stiff_mass(&XS_skew_aniso_complex, &YS_skew_aniso_complex, &ZS_skew_aniso_complex, &EL_skew_aniso_complex,
+    let owners = tet_dof_owners(&[2; 6], &[2; 4]);
+    let (d, f) = r2_tet_stiff_mass(BasisKind::Interpolatory, &owners, &XS_skew_aniso_complex, &YS_skew_aniso_complex, &ZS_skew_aniso_complex, &EL_skew_aniso_complex,
         &EDGE_MAP, &TRI_MAP, &MUINV_skew_aniso_complex, &EPS_skew_aniso_complex);
     let derr = maxdiff(&d, &D_skew_aniso_complex);
     let ferr = maxdiff(&f, &F_skew_aniso_complex);

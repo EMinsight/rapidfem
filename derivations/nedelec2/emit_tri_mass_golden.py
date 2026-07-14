@@ -178,15 +178,16 @@ HEADER = """\
 // basis (exact barycentric area integration). Pins ned2_tri_stiff entrywise.
 
 use num_complex::Complex64 as C64;
-use rapidfem_fd::coefficients::AreaCoeffCache;
+use rapidfem_fd::basis::tri_dof_owners;
+use rapidfem_fd::tet_assembly_r2::BasisKind;
 use rapidfem_fd::tri_assembly_r2::ned2_tri_stiff;
 
-fn maxdiff(a: &[[C64; 8]; 8], b: &[[C64; 8]; 8]) -> f64 {
+fn maxdiff(a: &[C64], b: &[[C64; 8]; 8]) -> f64 {
     let mut m = 0.0_f64;
     let mut scale = 1e-300_f64;
     for i in 0..8 { for j in 0..8 {
         scale = scale.max(b[i][j].norm());
-        m = m.max((a[i][j] - b[i][j]).norm());
+        m = m.max((a[i * 8 + j] - b[i][j]).norm());
     }}
     m / scale
 }
@@ -202,8 +203,8 @@ def emit_case(name, verts3, gamma):
     out += f"""
 #[test]
 fn ned2_tri_stiff_matches_derivation_{name}() {{
-    let ac = AreaCoeffCache::new();
-    let got = ned2_tri_stiff(&V_{name}, {g}, &ac);
+    let owners = tri_dof_owners(&[2; 3], 2);
+    let got = ned2_tri_stiff(BasisKind::Interpolatory, &owners, &V_{name}, {g});
     let err = maxdiff(&got, &M_{name});
     eprintln!("{name}: max rel err {{:.2e}}", err);
     assert!(err < 1e-10, "mismatch ({name}): {{:.2e}}", err);
@@ -222,7 +223,7 @@ def main():
     for name, verts3, gamma in CASES:
         body += emit_case(name, verts3, gamma)
         print(f"emitted case {name}")
-    with open(out_path, "w") as fh:
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(body)
     print(f"wrote {out_path}")
 

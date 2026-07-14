@@ -24,9 +24,15 @@ use crate::basis::Nedelec2Basis;
 use crate::port::Port;
 use crate::tet_assembly_r2::assemble_global_matrices;
 use crate::tri_assembly_r2::{ned2_tri_stiff, ned2_tri_force};
-use crate::coefficients::AreaCoeffCache;
 use crate::quadrature::gaus_quad_tri;
 use std::collections::HashSet;
+
+/// The surface element's DOF owners for triangle `ti`, from the entity orders the
+/// minimum rule produced. The element and the DOF map read the same list, so they
+/// agree on the size by construction.
+fn tri_owners(basis: &Nedelec2Basis, mesh: &Mesh, ti: usize) -> Vec<crate::dofmap::DofOwner> {
+    crate::basis::tri_dof_owners(&basis.orders.tri_edge_orders(mesh, ti), basis.orders.face[ti])
+}
 
 pub struct SolveResult {
     pub solutions: Vec<Vec<C64>>,
@@ -122,14 +128,12 @@ pub fn assemble_and_solve_with_pml(
         // edge_ids = list(mesh.tri_to_edge[:,tri_ids].flatten())
         let edges = &mesh.tri_to_edge[ti];
         for &ei in edges {
-            // eids = field.edge_to_field[:, ii]
-            let edofs = &basis.edge_to_field[ei];
+            let edofs = basis.edge_dofs(ei);
             for &d in edofs {
                 pec_ids.insert(d);
             }
         }
-        // tids = field.tri_to_field[:, ii]
-        let tdofs = &basis.tri_to_field[ti];
+        let tdofs = basis.tri_dofs(ti);
         for &d in tdofs {
             pec_ids.insert(d);
         }
@@ -138,10 +142,8 @@ pub fn assemble_and_solve_with_pml(
 
     // Step 4: Robin / port boundary term, accumulated into a flat per-tri
     // buffer (Bempty) and added to K as COO triplets.
-    let ac_base = AreaCoeffCache::new();
     let gauss_points = gaus_quad_tri(4);
 
-    // Bempty = field.empty_tri_matrix()
     let mut bempty = basis.empty_tri_matrix();
 
     for (pi, (port, tri_ids)) in ports.iter().zip(port_tri_indices.iter()).enumerate() {
@@ -151,11 +153,17 @@ pub fn assemble_and_solve_with_pml(
         for &ti in *tri_ids {
             let tri = &mesh.tris[ti];
             let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
-            let bsub = ned2_tri_stiff(&verts, gamma, &ac_base);
-            let p = ti * 64;
-            for ii in 0..8 {
-                for jj in 0..8 {
-                    bempty[p + ii * 8 + jj] += bsub[ii][jj];
+            let owners = tri_owners(basis, mesh, ti);
+            let bsub = ned2_tri_stiff(basis.kind, &owners, &verts, gamma);
+            // The block reserved for this triangle is n×n, with n from the DOF
+            // map, and the element produced exactly n functions from the same
+            // owner list. Under the minimum rule n need not be 8.
+            let n = basis.tri_dofs(ti).len();
+            debug_assert_eq!(bsub.len(), n * n);
+            let p = basis.tri_block(ti);
+            for ii in 0..n {
+                for jj in 0..n {
+                    bempty[p + ii * n + jj] += bsub[ii * n + jj];
                 }
             }
         }
@@ -190,10 +198,11 @@ pub fn assemble_and_solve_with_pml(
             }).collect();
 
             if u_inc_at_qp.len() == gauss_points.len() {
-                let b_tri = ned2_tri_force(&verts, &u_inc_at_qp, &gauss_points);
-                let dofs = &basis.tri_to_field[ti];
-                for i in 0..8 {
-                    bvec[dofs[i]] += b_tri[i];
+                let owners = tri_owners(basis, mesh, ti);
+                let b_tri = ned2_tri_force(basis.kind, &owners, &verts, &u_inc_at_qp, &gauss_points);
+                let dofs = basis.tri_dofs(ti);
+                for (i, &d) in dofs.iter().enumerate() {
+                    bvec[d] += b_tri[i];
                 }
             }
         }
@@ -227,12 +236,12 @@ pub fn assemble_and_solve_with_pml(
         coo_cols.push(dof_to_free[c]);
         coo_vals.push(data_e[i] - k0_sq * data_b[i]);
     }
-    // Robin entries live only on the port triangles; walk just those slots
-    // instead of all n_tris*64 (mirrors the sweep path's port-tri indices).
+    // Robin entries live only on the port triangles; walk just those blocks
+    // instead of every triangle's.
     let mut robin_nonzero: Vec<usize> = port_tri_indices
         .iter()
         .flat_map(|tri_ids| tri_ids.iter().copied())
-        .flat_map(|ti| ti * 64..(ti + 1) * 64)
+        .flat_map(|ti| basis.tri_block(ti)..basis.tri_block(ti + 1))
         .filter(|&i| !pec_ids.contains(&basis.tri_rows[i])
             && !pec_ids.contains(&basis.tri_cols[i]))
         .collect();
@@ -344,9 +353,9 @@ pub fn frequency_sweep_with_pml(
     let mut pec_ids: HashSet<usize> = HashSet::new();
     for &ti in pec_tri_indices {
         for &ei in &mesh.tri_to_edge[ti] {
-            for &d in &basis.edge_to_field[ei] { pec_ids.insert(d); }
+            for &d in basis.edge_dofs(ei) { pec_ids.insert(d); }
         }
-        for &d in &basis.tri_to_field[ti] { pec_ids.insert(d); }
+        for &d in basis.tri_dofs(ti) { pec_ids.insert(d); }
     }
 
     let free_dofs: Vec<usize> = (0..basis.n_field).filter(|d| !pec_ids.contains(d)).collect();
@@ -354,7 +363,6 @@ pub fn frequency_sweep_with_pml(
     let mut dof_to_free = vec![usize::MAX; basis.n_field];
     for (fi, &d) in free_dofs.iter().enumerate() { dof_to_free[d] = fi; }
 
-    let ac_base = crate::coefficients::AreaCoeffCache::new();
     let gauss_points = crate::quadrature::gaus_quad_tri(4);
 
     let mut results = Vec::with_capacity(frequencies.len());
@@ -376,7 +384,7 @@ pub fn frequency_sweep_with_pml(
     let mut robin_free_indices: Vec<usize> = port_tri_indices
         .iter()
         .flat_map(|tri_ids| tri_ids.iter().copied())
-        .flat_map(|ti| ti * 64..(ti + 1) * 64)
+        .flat_map(|ti| basis.tri_block(ti)..basis.tri_block(ti + 1))
         .filter(|&idx| {
             let r = basis.tri_rows[idx];
             let c = basis.tri_cols[idx];
@@ -429,9 +437,11 @@ pub fn frequency_sweep_with_pml(
             for &ti in *tri_ids {
                 let tri = &mesh.tris[ti];
                 let verts = [mesh.nodes[tri[0]], mesh.nodes[tri[1]], mesh.nodes[tri[2]]];
-                let bsub = ned2_tri_stiff(&verts, gamma, &ac_base);
-                let p = ti * 64;
-                for ii in 0..8 { for jj in 0..8 { bempty[p + ii*8 + jj] += bsub[ii][jj]; } }
+                let owners = tri_owners(basis, mesh, ti);
+                let bsub = ned2_tri_stiff(basis.kind, &owners, &verts, gamma);
+                let n = basis.tri_dofs(ti).len();
+                let p = basis.tri_block(ti);
+                for ii in 0..n { for jj in 0..n { bempty[p + ii*n + jj] += bsub[ii*n + jj]; } }
             }
         }
 
@@ -452,9 +462,10 @@ pub fn frequency_sweep_with_pml(
                             verts[0][2]*l1+verts[1][2]*l2+verts[2][2]*l3, &exc)
                     }).collect();
                 if u_at_qp.len() == gauss_points.len() {
-                    let b_tri = ned2_tri_force(&verts, &u_at_qp, &gauss_points);
-                    let dofs = &basis.tri_to_field[ti];
-                    for i in 0..8 { bvec[dofs[i]] += b_tri[i]; }
+                    let owners = tri_owners(basis, mesh, ti);
+                    let b_tri = ned2_tri_force(basis.kind, &owners, &verts, &u_at_qp, &gauss_points);
+                    let dofs = basis.tri_dofs(ti);
+                    for (i, &d) in dofs.iter().enumerate() { bvec[d] += b_tri[i]; }
                 }
             }
             port_bvecs.push(bvec);

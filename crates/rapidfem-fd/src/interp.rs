@@ -47,7 +47,7 @@ fn lambdas_at(grads: &[V3; 4], v0: &V3, p: &V3) -> [f64; 4] {
 
 /// Per-tet geometry shared by field and curl evaluation: the four ∇L_i, the
 /// 20 canonical basis functions (in DOF order), and node 0 as the affine base.
-fn tet_basis(mesh: &Mesh, tet_idx: usize) -> ([V3; 4], Vec<BasisFn>, V3) {
+fn tet_basis(mesh: &Mesh, tet_idx: usize, basis: &Nedelec2Basis) -> ([V3; 4], Vec<BasisFn>, V3) {
     let tet = &mesh.tets[tet_idx];
     let xs: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][0]);
     let ys: [f64; 4] = std::array::from_fn(|i| mesh.nodes[tet[i]][1]);
@@ -66,7 +66,11 @@ fn tet_basis(mesh: &Mesh, tet_idx: usize) -> ([V3; 4], Vec<BasisFn>, V3) {
     let node_dist = |i: usize, j: usize| -> f64 {
         ((xs[i]-xs[j]).powi(2) + (ys[i]-ys[j]).powi(2) + (zs[i]-zs[j]).powi(2)).sqrt()
     };
-    let fns = build_basis(&edge_lengths, &edge_map, &tri_map, &node_dist);
+    let owners = crate::basis::tet_dof_owners(
+        &basis.orders.tet_edge_orders(mesh, tet_idx),
+        &basis.orders.tet_face_orders(mesh, tet_idx),
+    );
+    let fns = build_basis(basis.kind, &owners, &edge_lengths, &edge_map, &tri_map, &node_dist);
     (grads, fns, mesh.nodes[tet[0]])
 }
 
@@ -80,23 +84,37 @@ pub fn eval_field_in_tet(
     tet_idx: usize,
     x: f64, y: f64, z: f64,
 ) -> (C64, C64, C64) {
-    let (grads, fns, v0) = tet_basis(mesh, tet_idx);
+    let (grads, fns, v0) = tet_basis(mesh, tet_idx, basis);
     let lam = lambdas_at(&grads, &v0, &[x, y, z]);
-    let field_ids = &basis.tet_to_field[tet_idx];
+    let field_ids = basis.tet_dofs(tet_idx);
 
     let mut e = [C64::new(0.0, 0.0); 3];
     for (i, bf) in fns.iter().enumerate() {
         let dof = solution[field_ids[i]];
         for t in &bf.terms {
-            // term value = scale·coeff·L_p·L_q·∇L_g
-            let s = RECON_SIGN * bf.scale * t.coeff * lam[t.mono[0]] * lam[t.mono[1]];
-            let g = &grads[t.grad];
+            // term value = scale · coeff · L^e · ∇L_g
+            let s = RECON_SIGN * bf.scale * t.coeff * monomial(&lam, &t.exps);
+            let g = &grads[t.grad as usize];
             for k in 0..3 {
                 e[k] += dof * C64::from(s * g[k]);
             }
         }
     }
     (e[0], e[1], e[2])
+}
+
+/// `L_1^e1 · L_2^e2 · L_3^e3 · L_4^e4` at a point, from the barycentric values.
+/// The exponents are small (2 at order 2), so repeated multiplication beats
+/// `powi` and keeps the result identical to the old explicit `lam[p] * lam[q]`.
+#[inline]
+fn monomial(lam: &[f64; 4], exps: &[u8; 4]) -> f64 {
+    let mut v = 1.0;
+    for k in 0..4 {
+        for _ in 0..exps[k] {
+            v *= lam[k];
+        }
+    }
+    v
 }
 
 /// Spatial hash grid for fast point-in-tet lookup.
@@ -214,20 +232,28 @@ pub fn eval_curl_in_tet(
     tet_idx: usize,
     x: f64, y: f64, z: f64,
 ) -> [C64; 3] {
-    let (grads, fns, v0) = tet_basis(mesh, tet_idx);
+    let (grads, fns, v0) = tet_basis(mesh, tet_idx, basis);
     let lam = lambdas_at(&grads, &v0, &[x, y, z]);
-    let field_ids = &basis.tet_to_field[tet_idx];
+    let field_ids = basis.tet_dofs(tet_idx);
 
     let mut curl = [C64::new(0.0, 0.0); 3];
     for (i, bf) in fns.iter().enumerate() {
         let dof = solution[field_ids[i]];
         for t in &bf.terms {
-            let (p, q, g) = (t.mono[0], t.mono[1], t.grad);
-            let cp = cross3(&grads[p], &grads[g]); // ∇L_p × ∇L_g, weight L_q
-            let cq = cross3(&grads[q], &grads[g]); // ∇L_q × ∇L_g, weight L_p
             let w = RECON_SIGN * bf.scale * t.coeff;
-            for k in 0..3 {
-                curl[k] += dof * C64::from(w * (lam[q] * cp[k] + lam[p] * cq[k]));
+            // ∇×(L^e ∇L_g) = Σ_m e_m · L^(e − 1_m) · (∇L_m × ∇L_g)
+            for m in 0..4 {
+                let em = t.exps[m];
+                if em == 0 {
+                    continue;
+                }
+                let mut e_less = t.exps;
+                e_less[m] -= 1;
+                let c = cross3(&grads[m], &grads[t.grad as usize]);
+                let s = w * em as f64 * monomial(&lam, &e_less);
+                for k in 0..3 {
+                    curl[k] += dof * C64::from(s * c[k]);
+                }
             }
         }
     }
