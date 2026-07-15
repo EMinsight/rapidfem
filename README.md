@@ -1,17 +1,14 @@
-
-
 [![PySimHub](https://pysimhub.io/badge.svg)](https://pysimhub.io/projects/rapidfem)
 
 # RapidFEM
 
-Electromagnetic FEM solver written in Rust, distributed as a Python package
-on PyPI. Two backends behind one geometry/material/physics API: a
-**frequency-domain** solver (Nédélec first-kind order-2 edge elements,
-complex-symmetric sparse linear algebra) and a **time-domain** DGTD solver
-(discontinuous Galerkin, Krylov/ETD exponential time integration,
-model-order reduction). The solver is scale-invariant, so sub-micron RFIC
-passives (with GDS / PDK-stack import) solve as reliably as metre-scale
-structures. Optional Flask-based local UI with code editor and live viewer.
+Electromagnetic FEM solver written in Rust, distributed as a Python package on PyPI. Two backends sit
+behind one geometry / material / physics API: a frequency-domain solver (Nédélec first-kind
+curl-conforming elements, complex-symmetric sparse linear algebra) and a time-domain DGTD solver
+(nodal discontinuous Galerkin, Krylov/ETD exponential time integration, model-order reduction). The
+geometry is non-dimensionalised before assembly, so sub-micron RFIC passives and metre-scale
+structures use the same numerical path. An optional Flask-based local UI provides a code editor and a
+live viewer.
 
 ## Install
 
@@ -20,10 +17,9 @@ pip install rapidfem            # solver only
 pip install rapidfem[ui]        # solver + local UI
 ```
 
-Wheels for Windows, Linux, and macOS are built via CI. The Rust core is
-compiled ahead of time — no Rust toolchain required on the user's machine.
-Gmsh (Python wheel `gmsh`) is pulled in automatically and provides the
-OpenCASCADE-based geometry + mesher used by `rapidfem.Geometry`.
+Wheels for Windows, Linux, and macOS are built in CI; the Rust core is compiled ahead of time, so no
+Rust toolchain is needed on the user's machine. Gmsh (the `gmsh` Python wheel) is pulled in
+automatically and provides the OpenCASCADE geometry kernel and mesher used by `rapidfem.Geometry`.
 
 ## Quick start (Python API)
 
@@ -47,28 +43,26 @@ prob = rf.Problem(g)                      # Problem is the frequency-domain Prob
 result = prob.sweep(np.linspace(8e9, 12e9, 21))
 print(result.frequencies.shape, result.sparams.shape)
 
-# Same Problem can also drive an eigenmode solve or a far-field pattern:
+# The same Problem can also drive an eigenmode solve or a far-field pattern:
 # modes   = prob.eigenmode(target_frequency=10e9, n_modes=6)
 # pattern = prob.farfield(result, freq_idx=10, port_idx=0)
 ```
 
-See `python_src/rapidfem/examples/` for end-to-end runs: microstrip and
-coupled lines, iris / stepped-impedance filters, patch / Vivaldi / inverted-F
-antennas (PML + far-field), pyramidal horns, dielectric resonators, and the
-`fd_rfic_*` on-chip passives. RFIC geometry comes from a process stack and
-layout via `rapidfem.rfic` (`rfic.Stack`, `Geometry.from_gds`).
+`python_src/rapidfem/examples/` has end-to-end runs: microstrip and coupled lines, iris and
+stepped-impedance filters, patch / Vivaldi / inverted-F antennas (PML + far-field), pyramidal horns,
+dielectric resonators, and the `fd_rfic_*` on-chip passives. RFIC geometry comes from a process stack
+and layout via `rapidfem.rfic` (`rfic.Stack`, `Geometry.from_gds`).
 
 ## Importing external CAD and meshes
 
-`g.load(path)` brings external geometry into the scene; the action is chosen
-from the file extension:
+`g.load(path)` brings external geometry into the scene; the action is chosen from the file extension.
 
 ```python
 g = rf.Geometry(maxh=rf.lambda_maxh(f_max=20e9))
 
 # STEP / IGES / BREP land in the same OpenCASCADE kernel as the primitives,
 # so the result is a normal GeoObject: boolean it, transform it, select its
-# faces, attach materials and physics, all exactly like a g.box(...).
+# faces, attach materials and physics, exactly like a g.box(...).
 part = g.load("horn.step", material=rf.Air())   # mm STEP -> metres by default
 post = g.cylinder(radius=0.5e-3, height=5e-3)
 g.cut(part, post)                                # compose CAD with primitives
@@ -80,18 +74,18 @@ g.mesh()
 # Place/orient any import at load time, like a primitive's position= kwarg:
 part = g.load("horn.step", position=(0, 0, 5e-3), rotation=(math.pi, (0, 0, 1)))
 
-# STL is a surface triangulation, healed into a meshable solid. It is a
-# discrete body (its geometry IS the mesh), so it stays standalone: it takes a
-# material, physics, placement and meshing, but it cannot be combined with OCC
-# primitives or boolean ops (use a STEP/IGES/BREP export for that). STL is
-# unit-less, pass scale= (metres per file unit) for a model authored in mm.
+# STL is a surface triangulation, healed into a meshable solid. It is a discrete
+# body (its geometry is the mesh), so it stays standalone: it takes a material,
+# physics, placement and meshing, but it cannot be combined with OCC primitives
+# or boolean ops (export STEP/IGES/BREP for that). STL is unit-less; pass scale=
+# (metres per file unit) for a model authored in mm.
 g = rf.Geometry(maxh=0.5e-3)
 blob = g.load("antenna.stl", material=rf.Air(), scale=1e-3, position=(0, 0, 1e-3))
 
 # A pre-built .msh volume mesh is already tessellated, so loading one switches
 # the geometry into mesh mode: its named physical groups become selectable
-# handles you attach materials and physics to. g.mesh() then bakes the
-# bindings (no remeshing) and the usual Problem/sweep pipeline runs unchanged.
+# handles for materials and physics. g.mesh() bakes the bindings (no remeshing)
+# and the usual Problem/sweep pipeline runs unchanged.
 g = rf.Geometry()
 scene = g.load("waveguide.msh")
 scene.group("air").material = rf.Air()
@@ -102,10 +96,9 @@ g.mesh()
 result = rf.Problem(g).sweep(np.linspace(8e9, 12e9, 21))
 ```
 
-`unit=` sets the target unit OpenCASCADE converts a STEP/IGES file into
-(default `"M"`, so a millimetre file comes in at metre coordinates); `scale=`
-is an extra metres-per-file-unit factor for unit-less STL or a mis-declared
-CAD unit. See `examples/fd_step_import.py` for a full STEP-driven sweep.
+`unit=` sets the target unit OpenCASCADE converts a STEP/IGES file into (default `"M"`, so a
+millimetre file arrives at metre coordinates); `scale=` is an extra metres-per-file-unit factor for
+unit-less STL or a mis-declared CAD unit. `examples/fd_step_import.py` is a full STEP-driven sweep.
 
 ## Local UI
 
@@ -113,58 +106,53 @@ CAD unit. See `examples/fd_step_import.py` for a full STEP-driven sweep.
 rapidfem serve ./my_project/
 ```
 
-Opens a browser window with a CodeMirror Python editor, a 3D geometry / mesh /
-field viewer (raw WebGL2), and S-parameter plots. The geometry view updates
-on save (`Ctrl+S`); mesh and solver runs are explicit. Results stream in as
-the solve runs; fields are fetched on demand as you scrub frequency and port.
-Use `rapidfem.show(g)` to send a geometry to the viewer.
+Opens a browser window with a CodeMirror Python editor, a 3D geometry / mesh / field viewer (raw
+WebGL2), and S-parameter plots. The geometry view updates on save (`Ctrl+S`); mesh and solver runs
+are explicit. Results stream in as the solve runs; fields are fetched on demand as you scrub
+frequency and port. `rapidfem.show(g)` sends a geometry to the viewer.
 
 ## Features
 
-- **Geometry builder** — OpenCASCADE primitives with boolean ops, transforms
-  and fillet/chamfer; ready-made RF structures in `rf.structures` (coax,
-  microstrip, CPW, stripline, waveguides, helix) build geometry + ports in one
-  call
-- **External CAD / mesh import** — `g.load(path)` pulls in STEP / IGES / BREP
-  solids as fully composable primitives, heals STL surfaces into meshable
-  solids, or loads a pre-built `.msh` and exposes its named physical groups
-  for material / physics binding
-- **RFIC / GDS** — `rapidfem.rfic` process stacks and `Geometry.from_gds` build
-  on-chip passives, solved scale-invariantly down to sub-micron features
-- **Canonical Nédélec R2 elements** — first-kind order-2 curl–curl vector
-  element, 20 DOFs per tetrahedron
-- **Excitations** — rectangular waveguide ports (arbitrary TE modes), lumped
-  ports (TEM, multi-line voltage integral), coax and wave ports, Floquet
-  plane-wave port (normal incidence), first-order absorbing boundary
-- **PML** — anisotropic stretched-coordinate perfectly matched layer
-- **Lossy materials** — complex permittivity with loss tangent + conductivity,
-  surface impedance for metals, Debye dispersion; cached across sweeps
-- **Sparse solvers** — pure-Rust [`rslab`](https://github.com/milanofthe/rslab)
-  complex-symmetric LDLᵀ (Bunch-Kaufman) baseline with a-priori memory
-  estimates; optional MKL PARDISO (complex-symmetric LDLᵀ) where `mkl_rt` is
-  installed
-- **Frequency sweep** — assembles E/B once, refactors only the frequency-
-  dependent K per point, reuses the symbolic LU pattern
-- **Eigenmode solver** — shift-invert Lanczos on the complex-symmetric system
-- **Adaptive refinement** — residual error estimator with Dörfler marking,
-  exports a size field for gmsh re-meshing
-- **Output** — Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT
-- **Parallel assembly** — rayon-based element matrix evaluation
+- Geometry builder: OpenCASCADE primitives with boolean ops, transforms, and fillet/chamfer.
+  Ready-made RF structures in `rf.structures` (coax, microstrip, CPW, stripline, waveguides, helix)
+  build geometry and ports in one call.
+- External CAD / mesh import: `g.load(path)` pulls in STEP / IGES / BREP solids as composable
+  primitives, heals STL surfaces into meshable solids, or loads a pre-built `.msh` and exposes its
+  named physical groups for material / physics binding.
+- RFIC / GDS: `rapidfem.rfic` process stacks and `Geometry.from_gds` build on-chip passives, solved
+  after non-dimensionalisation down to sub-micron features.
+- Element: Nédélec first-kind curl-conforming tetrahedral elements, order 2 (20 DOFs per cell), in a
+  hierarchical basis. Opt-in per-cell mixed order (1-2) via `[element] order_policy = "adaptive"`;
+  the default is uniform order 2.
+- Excitations: rectangular waveguide ports (arbitrary TE modes), lumped ports (TEM, multi-line
+  voltage integral), coax and wave ports, Floquet plane-wave port (normal incidence), first-order
+  absorbing boundary.
+- PML: anisotropic stretched-coordinate perfectly matched layer.
+- Lossy materials: complex permittivity with loss tangent and conductivity, surface impedance for
+  metals, Debye dispersion; cached across sweeps.
+- Sparse solvers: pure-Rust [`rslab`](https://github.com/milanofthe/rslab) complex-symmetric LDLᵀ
+  (Bunch-Kaufman) with a-priori memory estimates; optional MKL PARDISO where `mkl_rt` is installed.
+- Frequency sweep: assembles E/B once, refactors only the frequency-dependent K per point, reuses the
+  symbolic factorisation pattern.
+- Eigenmode solver: shift-invert Lanczos in the B inner product, with a per-mode residual check.
+- Adaptive refinement: residual error estimator with Dörfler marking, exports a size field for gmsh
+  re-meshing.
+- Output: Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT.
+- Parallel assembly: rayon-based element matrix evaluation.
 
 ## Time-domain backend (DGTD)
 
-`ProblemTD`, behind the same API, compiles a structure into an explicit linear
-ODE `dy/dt = A·y` and exposes it as a model at every level:
+`ProblemTD`, behind the same API, compiles a structure into an explicit linear ODE `dy/dt = A·y` and
+exposes it as a model at every level:
 
-- **DGTD** — nodal discontinuous Galerkin on tetrahedra, upwind or
-  energy-conserving central flux
-- **Exponential time integration** — matrix-free Krylov/ETD propagator, exact
-  for the linear system at any step size (no CFL limit)
-- **Model export / reduction** — the RHS, the verbatim sparse operator `A`, an
-  exponential stepper, or Krylov-projected reduced models
-- **Materials** — heterogeneous, lossy, anisotropic and Debye dispersive media;
-  matched absorbing layers; periodic boundaries
-- **Output** — field probes, RFT transfer function, VTK field-animation export
+- DGTD: nodal discontinuous Galerkin on tetrahedra, upwind or energy-conserving central flux.
+- Exponential time integration: matrix-free Krylov/ETD propagator, exact for the linear system at any
+  step size (no CFL limit).
+- Model export / reduction: the RHS, the verbatim sparse operator `A`, an exponential stepper, or
+  Krylov-projected reduced models.
+- Materials: heterogeneous, lossy, anisotropic, and Debye-dispersive media; matched absorbing layers;
+  periodic boundaries.
+- Output: field probes, RFT transfer function, VTK field-animation export.
 
 ```python
 import rapidfem as rf
@@ -181,49 +169,37 @@ Method notes and the `ProblemTD` API are in [`docs/td-backend.md`](docs/td-backe
 
 | Solver | Type | Notes |
 |--------|------|-------|
-| rslab | Complex-symmetric LDLᵀ (Bunch-Kaufman) | Pure Rust, no native dependencies — always available. Numeric-only refactorisation across sweeps, a-priori RAM gate |
-| MKL PARDISO | Complex-symmetric LDLᵀ | Opt-in, needs `mkl_rt` on PATH |
+| rslab | Complex-symmetric LDLᵀ (Bunch-Kaufman) | Pure Rust, no native dependencies, always available. Numeric-only refactorisation across sweeps, a-priori RAM gate. |
+| MKL PARDISO | Complex-symmetric LDLᵀ | Opt-in, needs `mkl_rt` on PATH. |
 
-Select with `RAPIDFEM_SOLVER` (`"auto"`, `"pardiso"`, `"rslab"`), set before
-`import rapidfem`. Default `"auto"` tries PARDISO → rslab. Optional MKL:
-`conda install mkl` / `pip install mkl` (ensure `mkl_rt` is on PATH).
-
-## Performance
-
-WR-90 iris waveguide driven sweep, 10 GHz, 2-port:
-
-| Mesh | DOFs | PARDISO | faer |
-|------|------|---------|------|
-| 693 tets | 5 512 | 0.14 s | 0.22 s |
-| 1 096 tets | 8 382 | 0.06 s | 0.45 s |
-| 2 595 tets | 19 196 | 0.17 s | 1.39 s |
-| 3 284 tets | 23 968 | 0.21 s | 1.98 s |
-
-Larger: 327 k DOFs driven sweep (PARDISO) ~5 s/freq; 905 k DOFs eigenmode
-(3-turn spiral, shift-invert Lanczos) ~54 s.
+Select with `RAPIDFEM_SOLVER` (`"auto"`, `"pardiso"`, `"rslab"`), set before `import rapidfem`. The
+default `"auto"` tries PARDISO, then rslab. For MKL: `conda install mkl` or `pip install mkl` (ensure
+`mkl_rt` is on PATH).
 
 ## Verification
 
-`cargo test --release` checks element-level functions to machine precision
-(1e-12 – 1e-16). End-to-end S-parameter accuracy is tracked in
-`tests/validation/` against analytical solutions and reference solvers.
+`cargo test --release` pins the element and solver kernels against independent symbolic derivations
+to machine precision: the Nédélec element matrices, the barycentric integration coefficients, the
+surface-element trace, the hierarchical-basis and exact-sequence properties, the global assembly, and
+the eigensolver against a densely computed cavity spectrum. The derivations, completeness proofs, and
+entrywise cross-checks live in [`derivations/`](derivations/).
+
+`python/tests/` runs end-to-end S-parameter checks on microstrip, stripline, CPW, waveguide, filter,
+and antenna geometries against closed-form values. Those run real solves, so they are run locally
+(`cd python && pytest -m slow`), not in CI.
 
 ## Acknowledgments
 
-rapidfem began life as a Rust port of [EMerge](https://github.com/FennisRobert/EMerge)
-([PyPI](https://pypi.org/project/emerge/)), Robert Fennis' open-source Python
-electromagnetic FEM solver. EMerge is the project that inspired this one — its
-clear, script-first design shaped how rapidfem's geometry / material / physics
-API feels today, and the early releases ported its Python implementation to
-Rust. Warm thanks to Robert Fennis for building and sharing it.
+rapidfem began as a Rust port of [EMerge](https://github.com/FennisRobert/EMerge)
+([PyPI](https://pypi.org/project/emerge/)), Robert Fennis' open-source Python electromagnetic FEM
+solver. Its script-first design shaped the geometry / material / physics API, and the early releases
+ported its Python implementation to Rust. Thanks to Robert Fennis for building and sharing it.
 
-The solver kernels have since been independently re-derived from primary
-sources (Nédélec's edge-element construction, standard microwave theory, and
-the barycentric integration identities); the derivations, completeness proofs
-and entrywise cross-checks live in [`derivations/`](derivations/).
+The solver kernels have since been independently re-derived from primary sources: Nédélec's
+edge-element construction, standard microwave theory, and the barycentric integration identities. The
+derivations and cross-checks are in [`derivations/`](derivations/).
 
 ## License
 
-GPL-3.0-or-later with the Gmsh additional permission — see [LICENSE](LICENSE).
-Copyright (C) Milan Rother and rapidfem contributors; commercial terms
-available.
+GPL-3.0-or-later with the Gmsh additional permission; see [LICENSE](LICENSE). Copyright (C) Milan
+Rother and rapidfem contributors; commercial terms available.
