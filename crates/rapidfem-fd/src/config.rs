@@ -60,12 +60,19 @@ pub struct ElementConfig {
 impl Default for ElementConfig {
     fn default() -> Self {
         ElementConfig {
-            // Adaptive is the default: order 1 where the mesh is geometry-fine, order
-            // 2 elsewhere. It gives back DOFs where order 2 buys accuracy nothing can
-            // measure, and reduces to plain uniform order 2 on a mesh with no
-            // geometry-driven refinement. `uniform` remains available for a fully
-            // predictable, every-cell-order-2 discretisation.
-            order_policy: "adaptive".to_string(),
+            // Uniform order 2 is the default: predictable, and the accuracy the
+            // element was validated at. `adaptive` is opt-in.
+            //
+            // The adaptive policy assumes a geometry-fine cell (`k·h < theta`) carries
+            // a smooth field, so order 1 there is free. That holds near a smooth wall,
+            // but it is FALSE at a re-entrant conductor edge, where the mesh is fine
+            // precisely because the field is singular (`|E| ~ r^{ν-1}`, large) and
+            // order 1 costs real accuracy. On-chip and PCB meshes refine at exactly
+            // those edges, so adaptive-by-default degraded the microstrip / stripline /
+            // CPW / lumped-load fixtures. Until the policy is taught to spare cells
+            // adjacent to conductors, adaptive stays something the user turns on
+            // knowingly for a mesh whose fine regions are field-smooth.
+            order_policy: "uniform".to_string(),
             theta: crate::order::DEFAULT_THETA,
         }
     }
@@ -481,12 +488,13 @@ mod element_config_tests {
         )
         .expect("a config without an [element] section must parse");
 
-        assert_eq!(cfg.element.order_policy, "adaptive");
-        assert_eq!(cfg.element.policy().unwrap(), OrderPolicy::Adaptive);
+        assert_eq!(cfg.element.order_policy, "uniform");
+        assert_eq!(cfg.element.policy().unwrap(), OrderPolicy::Uniform);
         assert_eq!(cfg.element.theta, crate::order::DEFAULT_THETA);
     }
 
-    /// A partially specified section keeps the defaults for what it omits.
+    /// A partially specified section keeps the defaults for what it omits, and can
+    /// opt in to the adaptive policy.
     #[test]
     fn a_partial_element_section_keeps_the_other_defaults() {
         let cfg: Config = parse_config(
@@ -498,12 +506,12 @@ mod element_config_tests {
             [pec]
             tags = []
             [element]
-            order_policy = "uniform"
+            order_policy = "adaptive"
             "#,
         )
         .expect("a partial [element] section must parse");
 
-        assert_eq!(cfg.element.policy().unwrap(), OrderPolicy::Uniform);
+        assert_eq!(cfg.element.policy().unwrap(), OrderPolicy::Adaptive);
         assert_eq!(cfg.element.theta, crate::order::DEFAULT_THETA);
     }
 
