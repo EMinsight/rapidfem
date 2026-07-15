@@ -21,8 +21,8 @@
 //! survive: F's three edges × 2 modes, and F itself × 2 modes. That is the
 //! surface element.
 //!
-//! `build_surface_basis` therefore calls `tet_assembly_r2::r2_edge_fns` and
-//! `r2_face_fns` — the same generators the volume element is built from — on the
+//! `build_surface_basis` therefore calls `tet_assembly::edge_fns` and
+//! `face_fns` — the same generators the volume element is built from — on the
 //! triangle's own three nodes. It does not restate the functions, so it cannot
 //! disagree with the volume element about their sign. (It used to restate them,
 //! with a comment claiming the signs had been matched by hand.) The identity is
@@ -34,7 +34,7 @@
 //! integrate exactly with the barycentric area coefficients; no quadrature is
 //! needed for the mass.
 //!
-//! DOF order matches `basis::R2_TRI_OWNERS`: [e0 e1 e2]·m1, face·m1,
+//! DOF order matches `basis::tri_dof_owners`: [e0 e1 e2]·m1, face·m1,
 //! [e0 e1 e2]·m2, face·m2 → indices 0..8.
 
 use num_complex::Complex64 as C64;
@@ -42,7 +42,7 @@ use rapidfem_core::mesh::TRI_EDGE_LOCAL;
 
 use crate::coefficients::area_coeff_exps;
 use crate::dofmap::DofOwner;
-use crate::tet_assembly_r2::{r2_edge_fns, r2_face_fns, BasisFn, BasisKind};
+use crate::tet_assembly::{edge_fns, face_fns, BasisFn};
 
 type V2 = [f64; 2];
 
@@ -127,7 +127,6 @@ fn node_dist(xs: &[f64; 3], ys: &[f64; 3], i: usize, j: usize) -> f64 {
 /// and no term gradients it — asserted below, because that is precisely the trace
 /// property the construction relies on.
 pub fn build_surface_basis(
-    kind: BasisKind,
     owners: &[DofOwner],
     xs: &[f64; 3],
     ys: &[f64; 3],
@@ -136,9 +135,9 @@ pub fn build_surface_basis(
 
     let edges: Vec<[BasisFn; 2]> = TRI_EDGE_LOCAL
         .iter()
-        .map(|&[a, b]| r2_edge_fns(kind, a, b, d(a, b)))
+        .map(|&[a, b]| edge_fns(a, b, d(a, b)))
         .collect();
-    let face = r2_face_fns(0, 1, 2, d(0, 2), d(0, 1));
+    let face = face_fns(0, 1, 2, d(0, 2), d(0, 1));
 
     let fns: Vec<BasisFn> = owners
         .iter()
@@ -177,7 +176,7 @@ fn eval_surface_fn(f: &BasisFn, lam: &[f64; 3], grads: &[V2; 3]) -> V2 {
 ///
 /// Exact: a product of two functions is a sum of terms `c · L^e · (∇L_a·∇L_b)`
 /// with constant gradients, and `∫ L^e dA / A` is the closed-form area
-/// coefficient. The 2-D counterpart of `tet_assembly_r2::element_stiff_mass`; the
+/// coefficient. The 2-D counterpart of `tet_assembly::element_stiff_mass`; the
 /// Robin term needs no curl, so there is no stiffness half.
 pub fn surface_mass(basis: &[BasisFn], grads: &[V2; 3], area: f64) -> Vec<f64> {
     let n = basis.len();
@@ -203,23 +202,21 @@ pub fn surface_mass(basis: &[BasisFn], grads: &[V2; 3], area: f64) -> Vec<f64> {
 /// Surface Robin stiffness: `γ ∫ φ_i·φ_j dA`, row-major n×n with n = owners.len().
 /// n is 8 at uniform order 2 and smaller where the minimum rule has reduced the
 /// triangle's entities.
-pub fn ned2_tri_stiff(
-    kind: BasisKind,
+pub fn tri_stiff(
     owners: &[DofOwner],
     glob_vertices: &[[f64; 3]; 3],
     gamma: C64,
 ) -> Vec<C64> {
     let (_, xs, ys) = tri_local_cs(glob_vertices);
     let (grads, two_a) = bary_grads_2d(&xs, &ys);
-    let fns = build_surface_basis(kind, owners, &xs, &ys);
+    let fns = build_surface_basis(owners, &xs, &ys);
     let m = surface_mass(&fns, &grads, 0.5 * two_a.abs());
     m.iter().map(|&v| gamma * C64::from(v)).collect()
 }
 
 /// Surface excitation: `∫ φ_i·u_inc dA` by quadrature, an 8-vector.
 /// `dpts[q] = [w, L1, L2, L3]`, `glob_uinc[q]` the incident field at that point.
-pub fn ned2_tri_force(
-    kind: BasisKind,
+pub fn tri_force(
     owners: &[DofOwner],
     glob_vertices: &[[f64; 3]; 3],
     glob_uinc: &[[C64; 3]],
@@ -228,7 +225,7 @@ pub fn ned2_tri_force(
     let (frame, xs, ys) = tri_local_cs(glob_vertices);
     let (grads, two_a) = bary_grads_2d(&xs, &ys);
     let area = 0.5 * two_a.abs();
-    let fns = build_surface_basis(kind, owners, &xs, &ys);
+    let fns = build_surface_basis(owners, &xs, &ys);
 
     // Incident field rotated into the local frame; only the tangential (x,y)
     // components pair with φ.

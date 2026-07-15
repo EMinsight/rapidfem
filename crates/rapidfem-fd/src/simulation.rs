@@ -14,7 +14,7 @@
 
 use num_complex::Complex64 as C64;
 
-use crate::basis::Nedelec2Basis;
+use crate::basis::NedelecBasis;
 use crate::config::{Config, PortConfig};
 use crate::constants::{EPS0, MU0};
 use crate::eigenmode::Eigenmode;
@@ -60,7 +60,7 @@ struct SParamCtx {
 /// Simulation context: a mesh + parsed config + pre-built BC objects.
 pub struct Simulation {
     pub mesh: Mesh,
-    pub basis: Nedelec2Basis,
+    pub basis: NedelecBasis,
     pub config: Config,
     pub ports: Vec<Box<dyn Port>>,
     pub port_tris: Vec<Vec<usize>>,
@@ -91,7 +91,6 @@ impl Simulation {
             let l0 = mesh.normalize_characteristic_length();
             eprintln!("  Geometry normalized: L0 = {:.6e} m (mean edge length)", l0);
         }
-        let kind = config.element.kind().unwrap_or_else(|e| panic!("{e}"));
         let policy = config.element.policy().unwrap_or_else(|e| panic!("{e}"));
 
         // Materials before ports so `wave_numerical` can consult per-tet ε_r
@@ -131,14 +130,12 @@ impl Simulation {
             }
         };
 
-        let uniform = crate::order::OrderMap::uniform(&mesh, 2);
-        let full_dofs = uniform.n_dofs();
-        let basis = Nedelec2Basis::with_orders(&mesh, kind, orders);
+        let full_dofs = crate::order::OrderMap::uniform(&mesh, 2).n_dofs();
+        let basis = NedelecBasis::with_orders(&mesh, orders);
         eprintln!(
-            "RapidFEM - {} tets, {} DOFs, {:?} basis{}",
+            "RapidFEM - {} tets, {} DOFs{}",
             mesh.n_tets(),
             basis.n_field,
-            kind,
             if basis.n_field < full_dofs {
                 format!(
                     " ({:.0}% fewer than uniform order 2)",

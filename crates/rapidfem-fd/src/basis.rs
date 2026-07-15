@@ -13,11 +13,11 @@
 //! [`crate::dofmap::DofMap`] turns the per-entity DOF counts into global indices, by
 //! a prefix sum, so it assumes nothing about those counts being equal. This module
 //! is the join: [`tet_dof_owners`] and [`tri_dof_owners`] enumerate an element's
-//! local DOFs from its entities' orders, and `Nedelec2Basis` resolves that against
+//! local DOFs from its entities' orders, and `NedelecBasis` resolves that against
 //! the mesh once and caches the local-to-global lists in flat, offset-indexed
 //! arrays.
 //!
-//! **The owner list is the element definition.** `tet_assembly_r2::build_basis`
+//! **The owner list is the element definition.** `tet_assembly::build_basis`
 //! builds one basis function per entry of it and enumerates nothing itself. So
 //! there is no second enumeration that could disagree with the DOF map about how
 //! many DOFs an element has, which they are, or what order they come in. At a
@@ -36,11 +36,10 @@
 use crate::dofmap::{DofMap, DofOwner};
 use crate::mesh::Mesh;
 use crate::order::{self, OrderMap};
-use crate::tet_assembly_r2::BasisKind;
 
 /// The local DOFs of a tetrahedral element, as the entities they belong to.
 ///
-/// **This list IS the element definition.** `tet_assembly_r2::build_basis` builds
+/// **This list IS the element definition.** `tet_assembly::build_basis` builds
 /// one basis function per entry, by asking the entity's generator for its `k`-th
 /// function — it does not enumerate anything itself. So the basis and the DOF map
 /// cannot disagree about how many DOFs there are, which ones they are, or what
@@ -101,9 +100,7 @@ impl Ragged {
     }
 }
 
-pub struct Nedelec2Basis {
-    /// Which basis of the R2 space the elements are built from.
-    pub kind: BasisKind,
+pub struct NedelecBasis {
     /// The order of every cell and, by the minimum rule, of every entity.
     pub orders: OrderMap,
     /// Total number of DOFs in the system.
@@ -138,34 +135,21 @@ fn square_offsets(counts: impl Iterator<Item = usize>) -> Vec<usize> {
     off
 }
 
-impl Nedelec2Basis {
-    /// The default element: the interpolatory R2 basis, uniform order 2.
+impl NedelecBasis {
+    /// A uniform order-2 space. The simple constructor; `with_orders` takes a
+    /// per-cell order map.
     pub fn new(mesh: &Mesh) -> Self {
-        Nedelec2Basis::with_kind(mesh, BasisKind::Interpolatory)
-    }
-
-    /// A uniform order-2 space in the given basis.
-    pub fn with_kind(mesh: &Mesh, kind: BasisKind) -> Self {
-        Nedelec2Basis::with_orders(mesh, kind, OrderMap::uniform(mesh, 2))
+        NedelecBasis::with_orders(mesh, OrderMap::uniform(mesh, 2))
     }
 
     /// A space of arbitrary per-cell order.
     ///
-    /// Anything other than uniform order 2 requires the hierarchical basis: the
-    /// minimum rule works by keeping the functions *up to* an entity's order, which
-    /// is only meaningful when the lower-order space is a coordinate subspace of the
-    /// higher one. It is for `Hierarchical` (mode 0 of an edge is the Whitney
-    /// function); it is not for `Interpolatory`, whose mode-0 block contains no
-    /// Whitney function at all (`derivations/nedelec2/hierarchical.py`, P2).
-    /// Allowing it there would silently discretise a space that is neither order 1
-    /// nor order 2 and is not conforming across an order jump.
-    pub fn with_orders(mesh: &Mesh, kind: BasisKind, orders: OrderMap) -> Self {
-        assert!(
-            orders.is_uniform(2) || kind == BasisKind::Hierarchical,
-            "variable or reduced order requires BasisKind::Hierarchical: the interpolatory \
-             basis does not nest, so 'the functions up to order p' is not a subset of its DOFs"
-        );
-
+    /// There is one basis, the hierarchical one (`tet_assembly::edge_fns`), so any
+    /// order map is admissible: the minimum rule keeps "the functions up to an
+    /// entity's order", and that is a genuine subset here because mode 0 is the
+    /// Whitney space and the hierarchy nests. (The interpolatory basis, which did
+    /// not nest, was removed for exactly this reason.)
+    pub fn with_orders(mesh: &Mesh, orders: OrderMap) -> Self {
         let n_edges = mesh.n_edges();
         let n_tris = mesh.n_tris();
         let n_tets = mesh.n_tets();
@@ -240,8 +224,7 @@ impl Nedelec2Basis {
             }
         }
 
-        Nedelec2Basis {
-            kind,
+        NedelecBasis {
             orders,
             n_field: dofs.n_field,
             n_tets,

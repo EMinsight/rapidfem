@@ -22,9 +22,9 @@
 // is not a refactor.
 
 use num_complex::Complex64 as C64;
-use rapidfem_fd::basis::Nedelec2Basis;
+use rapidfem_fd::basis::NedelecBasis;
 use rapidfem_fd::mesh::Mesh;
-use rapidfem_fd::tet_assembly_r2::assemble_global_matrices;
+use rapidfem_fd::tet_assembly::assemble_global_matrices;
 
 /// A unit cube cut into six tetrahedra (the standard Kuhn triangulation). Small
 /// enough to reason about, big enough that every entity kind is shared: it has
@@ -108,7 +108,7 @@ fn close(got: f64, want: f64, what: &str) {
 #[test]
 fn global_dof_map_is_pinned() {
     let mesh = cube_6tet();
-    let basis = Nedelec2Basis::new(&mesh);
+    let basis = NedelecBasis::new(&mesh);
 
     assert_eq!(mesh.n_tets(), 6, "tets");
     assert_eq!(mesh.n_edges(), 19, "edges");
@@ -137,11 +137,11 @@ fn global_dof_map_is_pinned() {
 /// The previous layout, in closed form:
 ///   edge e, mode m -> e + m·(n_edges + n_tris)
 ///   face f, mode m -> f + n_edges + m·(n_edges + n_tris)
-/// which is exactly what `Nedelec2Basis::new` used to compute.
+/// which is exactly what `NedelecBasis::new` used to compute.
 #[test]
 fn numbering_is_a_relabelling_of_the_mode_major_layout() {
     let mesh = cube_6tet();
-    let basis = Nedelec2Basis::new(&mesh);
+    let basis = NedelecBasis::new(&mesh);
     let (ne, nt) = (mesh.n_edges(), mesh.n_tris());
     let stride = ne + nt;
 
@@ -183,7 +183,7 @@ fn numbering_is_a_relabelling_of_the_mode_major_layout() {
 #[test]
 fn global_assembly_is_pinned_identity_material() {
     let mesh = cube_6tet();
-    let basis = Nedelec2Basis::new(&mesh);
+    let basis = NedelecBasis::new(&mesh);
     let er = vec![identity(); mesh.n_tets()];
     let ur = vec![identity(); mesh.n_tets()];
 
@@ -208,7 +208,7 @@ fn global_assembly_is_pinned_identity_material() {
 #[test]
 fn global_assembly_is_pinned_anisotropic_material() {
     let mesh = cube_6tet();
-    let basis = Nedelec2Basis::new(&mesh);
+    let basis = NedelecBasis::new(&mesh);
     // A different tensor on each tet, so the per-element material path is
     // exercised rather than a single global constant.
     let er: Vec<_> = (0..mesh.n_tets())
@@ -232,24 +232,30 @@ fn global_assembly_is_pinned_anisotropic_material() {
 }
 
 // ---------------------------------------------------------------------------
-// Captured from the interpolatory R2 element, before the modular-basis work.
+// Captured from the hierarchical R2 element (the only element, once the
+// interpolatory basis was removed).
 //
-// The four abs-sum / Frobenius pins are the real oracle: they are invariant under
-// a relabelling of the unknowns, so they hold across stage 1's move from the
-// mode-major to the entity-major layout, and they would still catch a wrong VALUE.
+// The four abs-sum / Frobenius pins are the real oracle: they are invariant under a
+// relabelling of the unknowns, and they catch a wrong VALUE. They DID change when
+// the interpolatory basis was replaced by the hierarchical one, because the element
+// matrices are genuinely different numbers there — a change of discretisation, not
+// a relabelling, so it is correct that the values moved.
 //
-// PATTERN_HASH is not invariant, and did move at stage 1 (from 0xc6a1417eefe03ae5).
-// That is licensed by `numbering_is_a_relabelling_of_the_mode_major_layout`, which
-// proves the new numbering is a permutation of the old. Nothing else may move it.
+// PATTERN_HASH, by contrast, is a property of the DOF INDEX pattern, not of the
+// values, so it is basis-independent: it did NOT move when the basis changed
+// (0x2cb6abad262c36f9, the same as under the interpolatory basis). It moved only
+// once, at stage 1, when the DOF numbering went from mode-major to entity-major
+// (from 0xc6a1417eefe03ae5) — a permutation, licensed by
+// `numbering_is_a_relabelling_of_the_mode_major_layout`. Nothing else may move it.
 // ---------------------------------------------------------------------------
 const PATTERN_HASH: u64 = 0x2cb6_abad_262c_36f9;
 
-const E_ABS_IDENT: f64 = 2.38082947741327047e2;
-const E_FRO_IDENT: f64 = 6.96409442146721247e0;
-const B_ABS_IDENT: f64 = 5.81700637508123641e0;
-const B_FRO_IDENT: f64 = 1.80341098872539324e-1;
+const E_ABS_IDENT: f64 = 3.58422713063467370e2;
+const E_FRO_IDENT: f64 = 1.98545509756439778e1;
+const B_ABS_IDENT: f64 = 3.10596093031259670e1;
+const B_FRO_IDENT: f64 = 1.09328760066954711e0;
 
-const E_ABS_ANISO: f64 = 1.90885714581524127e2;
-const E_FRO_ANISO: f64 = 5.90644022984038841e0;
-const B_ABS_ANISO: f64 = 1.03549859184304172e1;
-const B_FRO_ANISO: f64 = 3.42254138110637207e-1;
+const E_ABS_ANISO: f64 = 2.88239703038341986e2;
+const E_FRO_ANISO: f64 = 1.68450665062772273e1;
+const B_ABS_ANISO: f64 = 5.59367322150814488e1;
+const B_FRO_ANISO: f64 = 2.07187233015066408e0;
