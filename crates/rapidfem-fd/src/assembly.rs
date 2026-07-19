@@ -327,27 +327,62 @@ pub fn frequency_sweep_with_pml(
         eprintln!("  Frequency-dependent materials detected - rebuilding K every frequency");
     }
 
+    // Bulk conductivity also makes εr* frequency-dependent (−j·σ/(ω·ε₀)),
+    // but linearly enough to avoid re-assembly: on the cached path the σ term
+    // is kept OUT of B and carried in a separate mass matrix B_σ, added per
+    // frequency as +j·k₀²/(ω·ε₀)·B_σ — algebraically identical to rebuilding
+    // εr*(ω) every frequency. On the dispersive path the full rebuild already
+    // evaluates σ at each frequency, so no split is needed there.
+    let sigma_split = !materials_dispersive
+        && materials.map(|m| m.iter().any(|x| x.cond != 0.0)).unwrap_or(false);
+
     // Cache E, B for frequency-independent materials
     let n_tets = mesh.n_tets();
-    let (er, ur) = if let Some(pml) = pml_regions {
-        crate::materials::build_material_tensors_with_pml(
+    let identity3: [[C64; 3]; 3] = [
+        [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
+    ];
+    let (er, ur) = match (pml_regions, materials) {
+        (Some(pml), _) if sigma_split => crate::materials::build_material_tensors_with_pml_wo_sigma(
             n_tets, materials.unwrap_or(&[]), pml, mesh, frequencies[0],
-        )
-    } else if let Some(mats) = materials {
-        crate::materials::build_material_tensors(n_tets, mats, frequencies[0])
-    } else {
-        let identity: [[C64; 3]; 3] = [
-            [C64::new(1.0, 0.0), C64::new(0.0, 0.0), C64::new(0.0, 0.0)],
-            [C64::new(0.0, 0.0), C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
-            [C64::new(0.0, 0.0), C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
-        ];
-        (vec![identity; n_tets], vec![identity; n_tets])
+        ),
+        (Some(pml), _) => crate::materials::build_material_tensors_with_pml(
+            n_tets, materials.unwrap_or(&[]), pml, mesh, frequencies[0],
+        ),
+        (None, Some(mats)) if sigma_split => {
+            crate::materials::build_material_tensors_wo_sigma(n_tets, mats, frequencies[0])
+        }
+        (None, Some(mats)) => crate::materials::build_material_tensors(n_tets, mats, frequencies[0]),
+        (None, None) => (vec![identity3; n_tets], vec![identity3; n_tets]),
     };
 
     let t0 = web_time::Instant::now();
     let (rows, cols, mut data_e, mut data_b) = assemble_global_matrices(mesh, basis, &er, &ur);
+
+    // B_σ shares the sparsity of B (same mesh/basis); assembled once with the
+    // σ tensors as "permittivity" and a unit μr (the curl-curl part of that
+    // assembly is discarded).
+    let data_bsigma: Option<Vec<C64>> = if sigma_split {
+        let mut sig = crate::materials::build_sigma_tensors(n_tets, materials.unwrap_or(&[]));
+        if let Some(pml) = pml_regions {
+            // PML tets carry stretched εr only; defend against σ-material overlap.
+            let zero3x3 = [[C64::new(0.0, 0.0); 3]; 3];
+            for region in pml {
+                for &ti in &region.tet_indices { sig[ti] = zero3x3; }
+            }
+        }
+        let ur_id = vec![identity3; n_tets];
+        let (_, _, _, bs) = assemble_global_matrices(mesh, basis, &sig, &ur_id);
+        Some(bs)
+    } else {
+        None
+    };
+
     eprintln!("  Assembled E,B in {:.1}ms{}", t0.elapsed().as_secs_f64()*1e3,
-        if materials_dispersive { "" } else { " (cached for sweep)" });
+        if materials_dispersive { "" }
+        else if sigma_split { " (cached for sweep, σ mass matrix scaled per frequency)" }
+        else { " (cached for sweep)" });
 
     // PEC DOFs (frequency-independent)
     let mut pec_ids: HashSet<usize> = HashSet::new();
@@ -477,10 +512,21 @@ pub fn frequency_sweep_with_pml(
         coo_cols.clear();
         coo_vals.clear();
 
-        for (ti, &orig_i) in k_free_indices.iter().enumerate() {
-            coo_rows.push(k_free_rows[ti]);
-            coo_cols.push(k_free_cols[ti]);
-            coo_vals.push(data_e[orig_i] - k0_sq * data_b[orig_i]);
+        // Per-frequency σ term: −k₀²·(−j·σ/(ω·ε₀)) = +j·k₀²/(ω·ε₀)·B_σ.
+        let sigma_scale = C64::new(0.0, 1.0) * k0_sq
+            / C64::from(2.0 * std::f64::consts::PI * freq * crate::constants::EPS0);
+        if let Some(bs) = &data_bsigma {
+            for (ti, &orig_i) in k_free_indices.iter().enumerate() {
+                coo_rows.push(k_free_rows[ti]);
+                coo_cols.push(k_free_cols[ti]);
+                coo_vals.push(data_e[orig_i] - k0_sq * data_b[orig_i] + sigma_scale * bs[orig_i]);
+            }
+        } else {
+            for (ti, &orig_i) in k_free_indices.iter().enumerate() {
+                coo_rows.push(k_free_rows[ti]);
+                coo_cols.push(k_free_cols[ti]);
+                coo_vals.push(data_e[orig_i] - k0_sq * data_b[orig_i]);
+            }
         }
         // Unconditional emit (zeros included): the pattern must not drift
         // between frequencies, see `robin_free_indices` above.

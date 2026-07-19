@@ -85,6 +85,44 @@ pub fn build_material_tensors(
     materials: &[Material],
     frequency: f64,
 ) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
+    build_material_tensors_impl(n_tets, materials, frequency, true)
+}
+
+/// Like [`build_material_tensors`], but WITHOUT the −j·σ/(ω·ε₀) conductivity
+/// term: εr* = εr·(1 − j·tanδ) only. This is the frequency-independent part of
+/// a non-dispersive material; the σ part varies as 1/ω across a sweep and is
+/// carried separately via [`build_sigma_tensors`] (see the frequency sweep).
+pub fn build_material_tensors_wo_sigma(
+    n_tets: usize,
+    materials: &[Material],
+    frequency: f64,
+) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
+    build_material_tensors_impl(n_tets, materials, frequency, false)
+}
+
+/// Per-tet bulk-conductivity tensors σ (S/m, real values on the diagonal).
+/// Assembled as a mass matrix this yields B_σ; the sweep adds it per
+/// frequency as +j·k₀²/(ω·ε₀)·B_σ — algebraically identical to rebuilding
+/// εr*(ω) = … − j·σ/(ω·ε₀) at every frequency.
+pub fn build_sigma_tensors(n_tets: usize, materials: &[Material]) -> Vec<[[C64; 3]; 3]> {
+    let zero3x3 = [[C64::new(0.0, 0.0); 3]; 3];
+    let mut cond = vec![zero3x3; n_tets];
+    for mat in materials {
+        for &ti in &mat.tet_indices {
+            for k in 0..3 {
+                cond[ti][k][k] += C64::from(mat.cond);
+            }
+        }
+    }
+    cond
+}
+
+fn build_material_tensors_impl(
+    n_tets: usize,
+    materials: &[Material],
+    frequency: f64,
+    include_sigma: bool,
+) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
     let w0 = 2.0 * std::f64::consts::PI * frequency;
 
     let zero3x3 = [[C64::new(0.0, 0.0); 3]; 3];
@@ -121,9 +159,11 @@ pub fn build_material_tensors(
             for j in 0..3 {
                 let er_val = er[ti][i][j];
                 let tand_val = tand[ti][i][j];
-                let cond_val = cond[ti][i][j];
-                er[ti][i][j] = er_val * (C64::new(1.0, 0.0) - C64::new(0.0, 1.0) * tand_val)
-                    - C64::new(0.0, 1.0) * cond_val / C64::from(w0 * EPS0);
+                er[ti][i][j] = er_val * (C64::new(1.0, 0.0) - C64::new(0.0, 1.0) * tand_val);
+                if include_sigma {
+                    let cond_val = cond[ti][i][j];
+                    er[ti][i][j] -= C64::new(0.0, 1.0) * cond_val / C64::from(w0 * EPS0);
+                }
             }
         }
     }
@@ -209,6 +249,31 @@ pub fn build_material_tensors_with_pml(
     frequency: f64,
 ) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
     let (mut er, mut ur) = build_material_tensors(n_tets, materials, frequency);
+    apply_pml_overrides(&mut er, &mut ur, pml_regions, mesh);
+    (er, ur)
+}
+
+/// [`build_material_tensors_with_pml`] on top of the σ-free εr* (see
+/// [`build_material_tensors_wo_sigma`]). PML tets are overwritten with their
+/// stretched tensors either way; σ-bearing materials must not overlap them.
+pub fn build_material_tensors_with_pml_wo_sigma(
+    n_tets: usize,
+    materials: &[Material],
+    pml_regions: &[PmlRegion],
+    mesh: &crate::mesh::Mesh,
+    frequency: f64,
+) -> (Vec<[[C64; 3]; 3]>, Vec<[[C64; 3]; 3]>) {
+    let (mut er, mut ur) = build_material_tensors_wo_sigma(n_tets, materials, frequency);
+    apply_pml_overrides(&mut er, &mut ur, pml_regions, mesh);
+    (er, ur)
+}
+
+fn apply_pml_overrides(
+    er: &mut [[[C64; 3]; 3]],
+    ur: &mut [[[C64; 3]; 3]],
+    pml_regions: &[PmlRegion],
+    mesh: &crate::mesh::Mesh,
+) {
     for region in pml_regions {
         for &ti in &region.tet_indices {
             let tet = &mesh.tets[ti];
@@ -223,5 +288,4 @@ pub fn build_material_tensors_with_pml(
             ur[ti] = ur_t;
         }
     }
-    (er, ur)
 }
