@@ -188,6 +188,10 @@ class Material:
         electric loss tangent :math:`\\tan\\delta`
     conductivity : float
         bulk conductivity :math:`\\sigma` in S/m
+    cond_diag : Sequence[float], optional
+        diagonal anisotropic conductivity ``(σxx, σyy, σzz)`` in S/m,
+        overrides scalar ``conductivity`` when set (e.g. homogenised
+        via arrays: strong vertical, weak lateral conduction)
     er_diag : Sequence[float], optional
         diagonal anisotropic permittivity ``(εxx, εyy, εzz)``,
         overrides scalar ``er`` when set
@@ -225,6 +229,7 @@ class Material:
                  ur: float = 1.0,
                  tand: float = 0.0,
                  conductivity: float = 0.0,
+                 cond_diag: Sequence[float] | None = None,
                  er_diag: Sequence[float] | None = None,
                  ur_diag: Sequence[float] | None = None,
                  debye: Debye | None = None,
@@ -234,6 +239,7 @@ class Material:
         self.ur = float(ur)
         self.tand = float(tand)
         self.conductivity = float(conductivity)
+        self.cond_diag = tuple(float(v) for v in cond_diag) if cond_diag is not None else None
         self.er_diag = tuple(float(v) for v in er_diag) if er_diag is not None else None
         self.ur_diag = tuple(float(v) for v in ur_diag) if ur_diag is not None else None
         self.debye = debye
@@ -253,6 +259,8 @@ class Material:
             f"er = {_f64(self.er)}\nur = {_f64(self.ur)}\n"
             f"tand = {_f64(self.tand)}\nconductivity = {_f64(self.conductivity)}\n"
         )
+        if self.cond_diag is not None:
+            s += f"cond_diag = [{_f64(self.cond_diag[0])}, {_f64(self.cond_diag[1])}, {_f64(self.cond_diag[2])}]\n"
         if self.er_diag is not None:
             s += f"er_diag = [{_f64(self.er_diag[0])}, {_f64(self.er_diag[1])}, {_f64(self.er_diag[2])}]\n"
         if self.ur_diag is not None:
@@ -333,6 +341,9 @@ class Dielectric(Material):
         microwave work)
     conductivity : float
         bulk conductivity in S/m, added on top of ``tand``
+    cond_diag : Sequence[float], optional
+        diagonal anisotropic conductivity ``(σxx, σyy, σzz)`` in S/m,
+        overrides scalar ``conductivity`` (homogenised via arrays)
     maxh : float, optional
         per-material mesh-size refinement floor (m); see :class:`Material`
     """
@@ -341,8 +352,10 @@ class Dielectric(Material):
                  tand: float = 0.0,
                  ur: float = 1.0,
                  conductivity: float = 0.0,
+                 cond_diag: Sequence[float] | None = None,
                  maxh: float | None = None):
-        super().__init__(er=er, ur=ur, tand=tand, conductivity=conductivity, maxh=maxh)
+        super().__init__(er=er, ur=ur, tand=tand, conductivity=conductivity,
+                         cond_diag=cond_diag, maxh=maxh)
 
 
 class Conductor(Material):

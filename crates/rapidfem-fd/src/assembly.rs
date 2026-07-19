@@ -334,7 +334,9 @@ pub fn frequency_sweep_with_pml(
     // εr*(ω) every frequency. On the dispersive path the full rebuild already
     // evaluates σ at each frequency, so no split is needed there.
     let sigma_split = !materials_dispersive
-        && materials.map(|m| m.iter().any(|x| x.cond != 0.0)).unwrap_or(false);
+        && materials.map(|m| m.iter().any(|x| {
+            x.cond != 0.0 || x.cond_diag.map(|d| d != [0.0; 3]).unwrap_or(false)
+        })).unwrap_or(false);
 
     // Cache E, B for frequency-independent materials
     let n_tets = mesh.n_tets();

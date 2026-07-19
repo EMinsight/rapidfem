@@ -65,6 +65,10 @@ pub struct Material {
     pub tand: f64,
     /// Conductivity σ (S/m)
     pub cond: f64,
+    /// Optional diagonal σ tensor [σxx, σyy, σzz] (S/m); if Some, overrides the
+    /// scalar `cond`. Homogenised via arrays (strong vertical, weak lateral
+    /// conduction) are the typical use.
+    pub cond_diag: Option<[f64; 3]>,
     /// Which tets this material applies to (indices into mesh.tets)
     pub tet_indices: Vec<usize>,
     /// Optional diagonal εr tensor [εxx, εyy, εzz]; if Some, overrides the scalar `er`.
@@ -108,9 +112,10 @@ pub fn build_sigma_tensors(n_tets: usize, materials: &[Material]) -> Vec<[[C64; 
     let zero3x3 = [[C64::new(0.0, 0.0); 3]; 3];
     let mut cond = vec![zero3x3; n_tets];
     for mat in materials {
+        let cond_diag = mat.cond_diag.unwrap_or([mat.cond; 3]);
         for &ti in &mat.tet_indices {
             for k in 0..3 {
-                cond[ti][k][k] += C64::from(mat.cond);
+                cond[ti][k][k] += C64::from(cond_diag[k]);
             }
         }
     }
@@ -136,6 +141,7 @@ fn build_material_tensors_impl(
     for mat in materials {
         let er_diag = mat.er_diag.unwrap_or([mat.er; 3]);
         let ur_diag = mat.ur_diag.unwrap_or([mat.ur; 3]);
+        let cond_diag = mat.cond_diag.unwrap_or([mat.cond; 3]);
         let er_eff: [C64; 3] = if mat.dispersion.is_dispersive() {
             // Dispersion currently isotropic: same complex εr on all diagonal elements.
             let e = mat.dispersion.evaluate(mat.er, frequency);
@@ -148,7 +154,7 @@ fn build_material_tensors_impl(
                 er[ti][k][k] += er_eff[k];
                 ur[ti][k][k] += C64::from(ur_diag[k]);
                 tand[ti][k][k] += C64::from(mat.tand);
-                cond[ti][k][k] += C64::from(mat.cond);
+                cond[ti][k][k] += C64::from(cond_diag[k]);
             }
         }
     }

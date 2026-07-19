@@ -20,6 +20,7 @@ fn mat(er: f64, tand: f64, cond: f64, tets: Vec<usize>) -> Material {
         ur: 1.0,
         tand,
         cond,
+        cond_diag: None,
         tet_indices: tets,
         er_diag: None,
         ur_diag: None,
@@ -55,6 +56,47 @@ fn wo_sigma_plus_scaled_sigma_equals_full_tensors() {
                     );
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn anisotropic_cond_diag_lands_on_the_diagonal() {
+    // Homogenised via array: weak lateral, strong vertical conduction.
+    let mut m = mat(1.0, 0.0, 0.0, vec![0]);
+    m.cond_diag = Some([3.143e5, 3.143e5, 3.143e6]);
+    let freq = 1.0e9;
+    let w = 2.0 * std::f64::consts::PI * freq;
+    let sigma = build_sigma_tensors(1, &[m.clone_for_test()]);
+    let (full, _) = build_material_tensors(1, &[m], freq);
+    for (k, s) in [3.143e5, 3.143e5, 3.143e6].iter().enumerate() {
+        assert!((sigma[0][k][k] - C64::from(*s)).norm() < 1e-9);
+        let want_im = -s / (w * EPS0);
+        assert!(
+            (full[0][k][k].im - want_im).abs() / want_im.abs() < 1e-14,
+            "axis {k}: {} vs {}",
+            full[0][k][k].im,
+            want_im
+        );
+    }
+    assert_eq!(sigma[0][0][1], C64::new(0.0, 0.0));
+}
+
+trait CloneForTest {
+    fn clone_for_test(&self) -> Material;
+}
+impl CloneForTest for Material {
+    fn clone_for_test(&self) -> Material {
+        Material {
+            er: self.er,
+            ur: self.ur,
+            tand: self.tand,
+            cond: self.cond,
+            cond_diag: self.cond_diag,
+            tet_indices: self.tet_indices.clone(),
+            er_diag: self.er_diag,
+            ur_diag: self.ur_diag,
+            dispersion: Dispersion::None,
         }
     }
 }

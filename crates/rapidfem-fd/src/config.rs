@@ -380,6 +380,10 @@ pub struct MaterialConfig {
     pub tand: f64,
     #[serde(default)]
     pub conductivity: f64,
+    /// Optional diagonal σ anisotropy [σxx, σyy, σzz] (S/m); overrides scalar
+    /// `conductivity`. For homogenised via arrays and similar structures.
+    #[serde(default)]
+    pub cond_diag: Option<[f64; 3]>,
     /// Optional diagonal εr anisotropy [εxx, εyy, εzz]; overrides scalar `er`.
     #[serde(default)]
     pub er_diag: Option<[f64; 3]>,

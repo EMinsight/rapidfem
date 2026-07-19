@@ -208,6 +208,7 @@ def emit_diel_case(name, er, tand, sigma, freq):
     out += "        ur: 1.0,\n"
     out += f"        tand: {f64(tand)},\n"
     out += f"        cond: {f64(sigma)},\n"
+    out += "        cond_diag: None,\n"
     out += "        tet_indices: vec![0],\n"
     out += "        er_diag: None,\n"
     out += "        ur_diag: None,\n"

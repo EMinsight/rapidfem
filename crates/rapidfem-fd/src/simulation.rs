@@ -991,6 +991,7 @@ fn build_materials(mesh: &Mesh, config: &Config) -> Vec<Material> {
         }
         Material {
             er: mc.er, ur: mc.ur, tand: mc.tand, cond: mc.conductivity,
+            cond_diag: mc.cond_diag,
             tet_indices,
             er_diag: mc.er_diag,
             ur_diag: mc.ur_diag,
