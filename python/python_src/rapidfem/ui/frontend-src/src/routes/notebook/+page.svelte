@@ -18,7 +18,7 @@
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import Resizer from '$lib/components/Resizer.svelte';
 	import Select from '$lib/components/Select.svelte';
-	import { openPrompt } from '$lib/modals';
+	import { openConfirm, openPrompt } from '$lib/modals';
 
 	// Web-build cross-navigation targets (only used when IS_STATIC_MODE).
 	const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
@@ -540,6 +540,83 @@
 		}
 	}
 
+	// ── Load a .py from the local machine (drag-drop or Open File dialog) ────
+	// Opens it as an unsaved buffer (like an example): the source replaces the
+	// editor and renders as cells; the user persists it explicitly via Save As.
+	let file_input_el: HTMLInputElement | undefined = $state();
+	let drag_over = $state(false);
+	let drag_depth = 0;   // dragenter/leave counter so child elements don't flicker the overlay
+
+	async function load_local_content(filename: string, content: string) {
+		// Confirm discarding whatever is currently in the editor.
+		if (code.trim() !== '') {
+			const ok = await openConfirm({
+				title: 'Discard current notebook?',
+				body: `Opening “${filename}” replaces the notebook in the editor. Unsaved changes are lost.`,
+				confirmLabel: 'Discard & open',
+			});
+			if (!ok) return;
+		}
+		code = content;
+		active_path = null;
+		untitled_label = filename;
+		dirty = false;
+		localStorage.removeItem('rapidfem.active_path');
+		clear_stale_results();
+		mesh_data = null;
+		log_lines = [];
+		// Unsaved buffers share the '<unnamed>' kernel; reset it for a clean namespace.
+		try { get_kernel().reset('<unnamed>'); } catch {}
+	}
+
+	function pick_py_file(list: FileList | null | undefined): File | null {
+		const files = Array.from(list ?? []);
+		return files.find((f) => f.name.toLowerCase().endsWith('.py'))
+			?? files.find((f) => f.name.toLowerCase().endsWith('.txt'))
+			?? null;
+	}
+
+	function open_local_file() {
+		file_input_el?.click();
+	}
+
+	async function on_file_input(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';   // let the same file be picked again next time
+		if (file) await load_local_content(file.name, await file.text());
+	}
+
+	function on_editor_dragenter(e: DragEvent) {
+		if (!Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === 'file')) return;
+		e.preventDefault();
+		drag_depth += 1;
+		drag_over = true;
+	}
+
+	function on_editor_dragover(e: DragEvent) {
+		if (Array.from(e.dataTransfer?.items ?? []).some((i) => i.kind === 'file')) e.preventDefault();
+	}
+
+	function on_editor_dragleave() {
+		drag_depth = Math.max(0, drag_depth - 1);
+		if (drag_depth === 0) drag_over = false;
+	}
+
+	async function on_editor_drop(e: DragEvent) {
+		e.preventDefault();
+		drag_depth = 0;
+		drag_over = false;
+		const file = pick_py_file(e.dataTransfer?.files);
+		if (!file) {
+			if (e.dataTransfer?.files?.length) {
+				log_lines = [...log_lines, '[open] only .py files can be dropped here'];
+			}
+			return;
+		}
+		await load_local_content(file.name, await file.text());
+	}
+
 	function on_file_closed(path: string) {
 		if (active_path === path) {
 			active_path = null;
@@ -941,6 +1018,13 @@
 	</header>
 
 	<main bind:this={main_el}>
+		<input
+			type="file"
+			accept=".py,.txt"
+			bind:this={file_input_el}
+			onchange={on_file_input}
+			style="display: none"
+		/>
 		<aside class="pane files-pane" style:flex="0 0 {files_collapsed ? COLLAPSED_W : files_w}px">
 			{#if files_collapsed}
 				<button
@@ -957,6 +1041,7 @@
 						bind:active_path={active_path}
 						onOpen={open_file}
 						onNew={new_file}
+						onOpenLocal={open_local_file}
 						onOpenExample={open_example}
 						onClosed={on_file_closed}
 						onSave={save_now}
@@ -971,7 +1056,20 @@
 
 		<Resizer onStart={on_files_drag_start} onDelta={on_files_resize} />
 
-		<aside class="pane editor-pane" bind:this={editor_pane_el} style:flex={editor_collapsed ? `0 0 ${COLLAPSED_W}px` : (viewer_collapsed ? '1 1 0' : `0 0 ${editor_w}px`)}>
+		<aside class="pane editor-pane" bind:this={editor_pane_el}
+			ondragenter={on_editor_dragenter}
+			ondragover={on_editor_dragover}
+			ondragleave={on_editor_dragleave}
+			ondrop={on_editor_drop}
+			style:flex={editor_collapsed ? `0 0 ${COLLAPSED_W}px` : (viewer_collapsed ? '1 1 0' : `0 0 ${editor_w}px`)}>
+			{#if drag_over}
+				<div class="drop-overlay">
+					<div class="drop-hint">
+						<Icon name="upload" size={26} />
+						<span>Drop a <code>.py</code> file to open it</span>
+					</div>
+				</div>
+			{/if}
 			{#if editor_collapsed}
 				<button
 					class="collapsed-strip"
@@ -1411,7 +1509,29 @@
 	}
 
 	.files-pane { background: var(--bg-surface); }
-	.editor-pane { background: var(--bg); }
+	.editor-pane { background: var(--bg); position: relative; }
+	.drop-overlay {
+		position: absolute;
+		inset: 4px;
+		z-index: 30;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: color-mix(in srgb, var(--bg) 80%, transparent);
+		border: 2px dashed var(--accent);
+		border-radius: 6px;
+		pointer-events: none;   /* let drop/dragleave reach the pane underneath */
+	}
+	.drop-hint {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-sm);
+		color: var(--accent);
+		font-family: var(--font-body);
+		font-size: var(--fs-sm);
+	}
+	.drop-hint code { font-family: var(--font-mono); }
 	.viewer-pane { background: var(--canvas-bg); }
 
 	.toolbar {

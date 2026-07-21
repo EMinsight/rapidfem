@@ -8,6 +8,7 @@
 		active_path = $bindable<string | null>(null),
 		onOpen,
 		onNew,
+		onOpenLocal,
 		onOpenExample,
 		onClosed,
 		onSave,
@@ -19,6 +20,8 @@
 		active_path: string | null;
 		onOpen: (path: string) => void;
 		onNew: () => void;
+		/** Open a .py from the local machine via a file dialog. */
+		onOpenLocal?: () => void;
 		onOpenExample?: (name: string) => void;
 		onClosed?: (path: string) => void;
 		onSave?: () => void;
@@ -250,6 +253,10 @@
 					<path d="M3 8h10" />
 				</svg>
 				<span class="tip left">New .py file</span>
+			</button>
+			<button class="tb has-tip" onclick={() => onOpenLocal?.()} aria-label="Open file">
+				<Icon name="upload" size={14} />
+				<span class="tip left">Open a .py file from disk</span>
 			</button>
 			<button class="tb has-tip" class:dirty onclick={() => onSave?.()} disabled={!can_save} aria-label="Save">
 				<Icon name="save" size={14} />
