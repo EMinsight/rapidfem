@@ -14,13 +14,16 @@ from rapidfem import __version__
 
 
 def _default_workdir() -> Path:
-    """Default workdir: ``~/rapidfem-workspace/``.
+    """Default workdir: the directory ``rapidfem serve`` was launched from.
 
-    Lives outside any source tree so example copies never pollute the
-    rapidfem checkout, and stays stable across shell sessions so users
-    can run ``rapidfem serve`` from anywhere and find their edits.
+    Using the launch cwd means the UI's file browser and the cell-runner
+    both operate on the folder the user is standing in, so relative paths
+    in a script (e.g. ``rf.Geometry.from_gds("data/foo.gds")``) resolve
+    against that same folder. A self-contained project directory just
+    works when you run ``rapidfem serve`` inside it. Pass an explicit
+    workdir argument to override.
     """
-    return Path.home() / "rapidfem-workspace"
+    return Path.cwd()
 
 
 def _populate_examples(workdir: Path) -> int:
@@ -176,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "workdir",
         nargs="?",
         default=None,
-        help="project working directory (default: ~/rapidfem-workspace/)",
+        help="project working directory (default: current directory)",
     )
     s.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
     s.add_argument("--port", type=int, default=5174, help="bind port (default: 5174)")

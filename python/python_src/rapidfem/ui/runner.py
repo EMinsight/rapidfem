@@ -48,6 +48,12 @@ POLL_TIMEOUT_S = 0.1
 # Worker init must complete within this, covers rapidfem import + gmsh init.
 INIT_TIMEOUT_S = 30.0
 
+# The UI workdir every worker runs in, so a cell's relative paths (GDS,
+# meshes, data files) resolve against the folder the file browser shows.
+# Set by ``register()`` from ``app.config["RAPIDFEM_WORKDIR"]``; None means
+# "inherit the server process cwd" (the pre-workdir behaviour).
+_WORKDIR: str | None = None
+
 
 def _worker_script() -> str:
     return str(Path(__file__).parent / "worker.py")
@@ -71,6 +77,7 @@ class Session:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,  # line-buffered
+            cwd=_WORKDIR,  # run user cells in the UI workdir (None = inherit)
         )
 
         self._queue: queue.Queue[dict] = queue.Queue()
@@ -329,6 +336,9 @@ def shutdown_all() -> None:
 
 def register(app: Flask) -> None:
     """Register /api/cell/* + /api/kernel endpoints on ``app``."""
+    global _WORKDIR
+    wd = app.config.get("RAPIDFEM_WORKDIR")
+    _WORKDIR = str(wd) if wd else None
 
     @app.post("/api/cell/run")
     def api_cell_run():
