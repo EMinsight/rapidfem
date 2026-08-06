@@ -308,7 +308,12 @@ impl PySimulation {
         let eta = est.element_errors.clone().into_pyarray_bound(py);
         let volr = est.volume_residuals.clone().into_pyarray_bound(py);
         let fj = est.face_jumps.clone().into_pyarray_bound(py);
-        let h_k = est.h_k.clone().into_pyarray_bound(py);
+        // h_k lives in mesh-internal units (l0-normalised); every other
+        // length crossing this boundary (mesh_nodes, refine_near_points)
+        // is in meters, so convert here.
+        let l0 = self.inner.mesh.l0;
+        let h_k: Vec<f64> = est.h_k.iter().map(|&h| h * l0).collect();
+        let h_k = h_k.into_pyarray_bound(py);
         let marked: Vec<i64> = est.marked_elements.iter().map(|&i| i as i64).collect();
         let marked_arr = marked.into_pyarray_bound(py);
         dict.set_item("eta", eta).ok()?;

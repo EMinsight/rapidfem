@@ -197,6 +197,7 @@ class ProblemFD:
     def sweep(self, frequencies: Iterable[float], *,
               z0: float = 50.0,
               adaptive: Adaptive | None = None,
+              order: "int | str" = 2,
               on_frequency=None):
         """run a driven frequency sweep and return the SweepResult
 
@@ -222,6 +223,15 @@ class ProblemFD:
             reference impedance for S-parameter normalisation in ohms
         adaptive : Adaptive, optional
             adaptive-mesh-refinement settings (``None`` disables it)
+        order : int or "adaptive"
+            Nédélec element order. ``2`` (default) is uniform order 2, the
+            accuracy the solver is validated at; ``1`` is uniform order 1
+            (one DOF per edge, ~5x fewer DOFs on a tet mesh, lower
+            accuracy — quick scans and mesh shakeout); ``"adaptive"``
+            applies the a-priori wavelength policy (order 1 where the mesh
+            is geometry-fine, i.e. ``k*h < theta``). Note the caveat in the
+            solver docs: near singular conductor edges the adaptive policy
+            can cost real accuracy.
         on_frequency : callable, optional
             called after each frequency's solve as
             ``on_frequency(freq_idx, freq_hz, s_matrix)`` where ``s_matrix`` is
@@ -238,7 +248,8 @@ class ProblemFD:
         freqs = [float(f) for f in frequencies]
         if not freqs:
             raise ValueError("sweep needs at least one frequency")
-        toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive)
+        toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive,
+                                   order=order)
         self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
         # The native callback is (freq_idx, freq, s_matrix). Compose an optional
         # user `on_frequency` with the UI's per-frequency streaming callback.
@@ -626,7 +637,8 @@ class ProblemFD:
                        frequencies: list[float],
                        z0: float,
                        adaptive: Adaptive | None = None,
-                       eigenmode: tuple[float, int] | None = None) -> str:
+                       eigenmode: tuple[float, int] | None = None,
+                       order: "int | str" = 2) -> str:
         """build the TOML config string the Rust solver expects
 
         Walks the geometry's material and physics registries; skips
@@ -725,6 +737,17 @@ class ProblemFD:
                 f"[adaptive]\ntheta = {_f64(adaptive.theta)}\n"
                 f"refinement_ratio = {_f64(adaptive.refinement_ratio)}\n"
             )
+
+        # Element order: the native default (no [element] section) is uniform
+        # order 2. order=1 rides the wavelength policy with an unreachable
+        # threshold — every cell has k*h below it, so the whole mesh drops to
+        # order 1, which IS uniform order 1.
+        if order == 1:
+            parts.append('[element]\norder_policy = "adaptive"\ntheta = 1e30\n')
+        elif order == "adaptive":
+            parts.append('[element]\norder_policy = "adaptive"\n')
+        elif order != 2:
+            raise ValueError(f"order must be 1, 2 or 'adaptive', got {order!r}")
 
         output = f"[output]\nz0 = {_f64(z0)}\n"
         if nfft_tag is not None:
