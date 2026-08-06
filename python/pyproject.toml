@@ -65,6 +65,7 @@ python-source = "python_src"
 include = [
     { path = "python_src/rapidfem/ui/frontend/dist/**/*", format = ["sdist", "wheel"] },
     { path = "python_src/rapidfem/examples/*.fem.json", format = ["sdist", "wheel"] },
+    { path = "python_src/rapidfem/rfic/data/*.xml", format = ["sdist", "wheel"] },
 ]
 # The pre-baked demo cases (~150 MB) and the extracted API reference are only
 # consumed by the static GitHub Pages build — the locally-served UI ships

@@ -686,6 +686,36 @@ class GeoObject:
         return self._entity.dim
 
 
+# MESH STATS ============================================================================
+
+@dataclass(frozen=True)
+class MeshStats:
+    """Size and quality report of the last generated mesh.
+
+    Collected by :meth:`Geometry.mesh` while the gmsh model is live and
+    stored on ``geometry.mesh_stats``. The DOF numbers are exact bounds for
+    the FD solver's p-adaptive Nédélec space: ``dofs_min`` is the uniform
+    order-1 count (one DOF per edge), ``dofs_max`` the uniform order-2 count
+    (two per edge plus two per triangular face). The solver's wavelength
+    policy lands in between, so the bounds gate RAM/runtime budgets before
+    any assembly happens.
+    """
+    n_nodes: int
+    n_tets: int
+    n_tris: int           # unique tet faces, interior + boundary
+    n_edges: int          # unique tet edges
+    dofs_min: int         # uniform order 1: n_edges
+    dofs_max: int         # uniform order 2: 2*n_edges + 2*n_tris
+    quality_min: float    # worst tet, gmsh "minSICN" measure (1 ideal, <0 inverted)
+    quality_mean: float
+    groups: dict          # physical-group name -> element count
+
+    def __repr__(self) -> str:
+        return (f"MeshStats({self.n_nodes} nodes, {self.n_tets} tets, "
+                f"{self.n_edges} edges, dofs {self.dofs_min}..{self.dofs_max}, "
+                f"minSICN {self.quality_min:.3f} / mean {self.quality_mean:.3f})")
+
+
 # GEOMETRY ==============================================================================
 
 class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
@@ -796,6 +826,7 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
         self._material_tags: dict[int, int] = {}  # id(Material) -> phys group tag
         self._physics_tags: dict[int, int] = {}   # id(physics_obj) -> phys group tag
         self._last_mesh = None              # (mesh_bytes, name_to_tag) after .mesh()
+        self.mesh_stats: MeshStats | None = None  # filled by .mesh()
         # Refinement requests added via refine_near_points(). Each entry
         # is {points: (N, 3) np.ndarray, h: float, distance: float}.
         # Consumed in mesh() as extra Distance + Threshold background
@@ -1997,6 +2028,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
             pass
         name_to_tag = self._assign_physical_groups()
 
+        self.mesh_stats = self._collect_mesh_stats()
+
         gmsh.option.setNumber("Mesh.SaveAll", 1)
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
             tmp_path = f.name
@@ -2011,6 +2044,70 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
                 pass
         self._last_mesh = (mesh_bytes, name_to_tag)
         return mesh_bytes, name_to_tag
+
+    def _collect_mesh_stats(self) -> MeshStats:
+        """Harvest MeshStats from the live gmsh model, right after meshing.
+
+        Must run while the tessellated model is still loaded; the edge/face
+        tables are created on demand (idempotent in gmsh) and are the same
+        entity counts the FD solver derives its Nédélec DOF layout from.
+        """
+        node_tags, _, _ = gmsh.model.mesh.getNodes()
+
+        etypes, etags, _ = gmsh.model.mesh.getElements(dim=3)
+        tet_tags = np.concatenate(
+            [t for ty, t in zip(etypes, etags) if ty == 4]
+        ) if len(etypes) else np.array([], dtype=np.uint64)
+
+        # Unique edge / triangular-face tables of the volume mesh. gmsh only
+        # materialises them on request; both calls are cheap C-side passes.
+        gmsh.model.mesh.createEdges()
+        gmsh.model.mesh.createFaces()
+        edge_tags, _ = gmsh.model.mesh.getAllEdges()
+        face_tags, _ = gmsh.model.mesh.getAllFaces(3)
+        n_edges = len(edge_tags)
+        n_tris = len(face_tags)
+
+        if len(tet_tags):
+            q = gmsh.model.mesh.getElementQualities(tet_tags, "minSICN")
+            q_min, q_mean = float(np.min(q)), float(np.mean(q))
+        else:
+            q_min = q_mean = float("nan")
+
+        groups: dict[str, int] = {}
+        for dim, ptag in gmsh.model.getPhysicalGroups():
+            name = gmsh.model.getPhysicalName(dim, ptag) or f"group_{dim}_{ptag}"
+            n = 0
+            for ent in gmsh.model.getEntitiesForPhysicalGroup(dim, ptag):
+                _, ets, _ = gmsh.model.mesh.getElements(dim, ent)
+                n += sum(len(t) for t in ets)
+            groups[name] = n
+
+        return MeshStats(
+            n_nodes=len(node_tags), n_tets=len(tet_tags),
+            n_tris=n_tris, n_edges=n_edges,
+            dofs_min=n_edges, dofs_max=2 * n_edges + 2 * n_tris,
+            quality_min=q_min, quality_mean=q_mean, groups=groups,
+        )
+
+    def save_mesh(self, path: str) -> str:
+        """Write the last generated mesh to ``path`` as gmsh ``.msh`` v4.
+
+        The file carries every physical group exactly as the FEM solver sees
+        them (materials, PEC/port/ABC targets), so it round-trips through
+        :meth:`load` and is directly consumable by external gmsh-format
+        solvers such as Palace, same mesh, different solver.
+
+        Requires a prior :meth:`mesh` call; raises otherwise.
+        """
+        if self._last_mesh is None:
+            raise RuntimeError("no mesh generated yet, call g.mesh() first")
+        path = str(path)
+        if not path.endswith(".msh"):
+            raise ValueError(f"save_mesh writes gmsh .msh files, got {path!r}")
+        with open(path, "wb") as f:
+            f.write(self._last_mesh[0])
+        return path
 
     def mesh(
         self,
@@ -2366,6 +2463,8 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
                 gmsh.model.mesh.clear()
                 gmsh.model.mesh.generate(3)
 
+        self.mesh_stats = self._collect_mesh_stats()
+
         # Write to a temp file, read bytes back
         with tempfile.NamedTemporaryFile(suffix=".msh", delete=False) as f:
             tmp_path = f.name
@@ -2383,4 +2482,4 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
         return mesh_bytes, name_to_tag
 
 
-__all__ = ["Geometry", "GeoObject", "FaceCollection"]
+__all__ = ["Geometry", "GeoObject", "FaceCollection", "MeshStats"]
