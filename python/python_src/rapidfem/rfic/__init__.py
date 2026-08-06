@@ -37,10 +37,12 @@ from .primitives import (
     TracePort, GsgPort, DifferentialPort,
 )
 from .interop import from_fem_json, FemLayoutResult, FEM_JSON_SCHEMA_VERSIONS
+from .build import build, BuiltModel, MeshSpec, ViaPort
 
 __all__ = [
     "Stack", "PdkLayer", "DielectricLayer", "StackMaterial",
     "LayerType", "MaterialKind",
+    "build", "BuiltModel", "MeshSpec", "ViaPort",
     "microstrip", "via", "trace_port", "gsg_port", "differential_port",
     "TracePort", "GsgPort", "DifferentialPort",
     "from_fem_json", "FemLayoutResult",

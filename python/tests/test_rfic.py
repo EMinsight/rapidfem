@@ -111,6 +111,82 @@ def test_stack_lookup_errors():
     assert stack.by_gds(9999) is None
 
 
+# ── build(): GDS + stack -> solve-ready model ──────────────────────────────
+
+@pytest.fixture(scope="module")
+def mini_gds(tmp_path_factory):
+    """A minimal SG13G2 structure: SUBGND sheet, TopMetal1 feed strip,
+    TopVia2 patch, TopMetal2 strip, plus one port-marker rectangle."""
+    gdstk = pytest.importorskip("gdstk")
+    um = 1.0   # gds units are um
+    lib = gdstk.Library(unit=1e-6)
+    cell = lib.new_cell("mini")
+    cell.add(gdstk.rectangle((-30 * um, -20 * um), (30 * um, 20 * um),
+                             layer=250))                       # SUBGND
+    cell.add(gdstk.rectangle((-25 * um, -5 * um), (25 * um, 5 * um),
+                             layer=126))                       # TopMetal1
+    cell.add(gdstk.rectangle((-10 * um, -5 * um), (10 * um, 5 * um),
+                             layer=133))                       # TopVia2
+    cell.add(gdstk.rectangle((-10 * um, -5 * um), (10 * um, 5 * um),
+                             layer=134))                       # TopMetal2
+    cell.add(gdstk.rectangle((-24 * um, -1 * um), (-16 * um, 1 * um),
+                             layer=201))                       # port marker
+    path = tmp_path_factory.mktemp("gds") / "mini.gds"
+    lib.write_gds(str(path))
+    return str(path)
+
+
+def test_build_sg13g2(mini_gds):
+    um = 1e-6
+    stack = rfic.Stack.sg13g2()
+    model = rfic.build(
+        mini_gds, stack,
+        ports=[rfic.ViaPort(z=("SUBGND", "TopMetal1"), marker=201)],
+        margin=60 * um, air=40 * um, air_top=80 * um,
+        mesh=rfic.MeshSpec(scale=2.0, conductor=10 * um, port=6 * um,
+                           global_h=80 * um,
+                           graded={"Substrate": [(60 * um, 60 * um),
+                                                 (120 * um, 120 * um)]}),
+    )
+    g = model.geometry
+    try:
+        assert set(model.conductors) == {"SUBGND", "TopMetal1", "TopVia2",
+                                         "TopMetal2"}
+        # background slabs all present; graded substrate split into 2 boxes
+        assert set(model.slabs) == {"Substrate", "EPI", "SiO2", "Passive", "AIR"}
+        assert len(model.slabs["Substrate"]) == 2
+        assert len(model.air_shell) == 6
+        # marker-derived port plate
+        assert len(model.ports) == 1
+        # conductor policy: SUBGND is LOWLOSS -> PEC; TopVia2 -> volume
+        # conductor (anisotropic cond_diag, no surface physics)
+        from rapidfem.physics import PEC, SurfaceImpedance
+        pecs = [p for p in g._physics if isinstance(p, PEC)]
+        sibcs = [p for p in g._physics if isinstance(p, SurfaceImpedance)]
+        assert pecs and len(sibcs) == 2          # TopMetal1 + TopMetal2
+        from rapidfem.rfic.build import VIA_LATERAL_FACTOR
+        via_mat = model.conductors["TopVia2"][0].material
+        assert via_mat.cond_diag[2] == stack.by_name("TopVia2").sigma
+        assert via_mat.cond_diag[0] == pytest.approx(
+            VIA_LATERAL_FACTOR * stack.by_name("TopVia2").sigma)
+        # footprint = conductor bbox + margin
+        x0, y0, x1, y1 = model.footprint
+        assert x0 == pytest.approx(-90 * um, abs=1e-9)
+        assert y1 == pytest.approx(80 * um, abs=1e-9)
+        # meshes end-to-end and reports stats
+        g.mesh()
+        assert g.mesh_stats.n_tets > 0
+        assert any(name.startswith("port_") for name in g.mesh_stats.groups)
+    finally:
+        g.close()
+
+
+def test_build_requires_dielectrics(mini_gds):
+    stack = rfic.Stack.sky130()   # legacy preset, no background dielectrics
+    with pytest.raises(ValueError, match="dielectrics"):
+        rfic.build(mini_gds, stack)
+
+
 # ── FEM-JSON bridge ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("fixture", FIXTURES)
