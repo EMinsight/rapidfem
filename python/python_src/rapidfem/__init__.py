@@ -51,7 +51,7 @@ if sys.platform == "win32":
             pass
 
 from rapidfem._native import SweepResult, Eigenmode, RadiationPattern
-from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollection, EdgeCollection
+from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollection, EdgeCollection, MeshStats
 from rapidfem.materials import (
     Material, Air, Dielectric, Conductor, Anisotropic, Debye, Drude,
 )
@@ -191,7 +191,7 @@ def show(obj, name: str = "default"):
 
 __all__ = [
     "SweepResult", "Eigenmode", "RadiationPattern",
-    "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection",
+    "Geometry", "GeoObject", "EntityCollection", "FaceCollection", "EdgeCollection", "MeshStats",
     "Material", "Air", "Dielectric", "Conductor", "Anisotropic", "Debye", "Drude",
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",
     "UserDefinedPort", "FloquetPort",
