@@ -2054,19 +2054,28 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
         """
         node_tags, _, _ = gmsh.model.mesh.getNodes()
 
-        etypes, etags, _ = gmsh.model.mesh.getElements(dim=3)
+        etypes, etags, enodes = gmsh.model.mesh.getElements(dim=3)
         tet_tags = np.concatenate(
             [t for ty, t in zip(etypes, etags) if ty == 4]
         ) if len(etypes) else np.array([], dtype=np.uint64)
 
-        # Unique edge / triangular-face tables of the volume mesh. gmsh only
-        # materialises them on request; both calls are cheap C-side passes.
-        gmsh.model.mesh.createEdges()
-        gmsh.model.mesh.createFaces()
-        edge_tags, _ = gmsh.model.mesh.getAllEdges()
-        face_tags, _ = gmsh.model.mesh.getAllFaces(3)
-        n_edges = len(edge_tags)
-        n_tris = len(face_tags)
+        # Unique edge / triangular-face counts straight from the tet
+        # connectivity. Deliberately NOT gmsh's createEdges/getAllEdges:
+        # those tables survive both mesh.clear() and re-generation, so on
+        # the second mesh() of the same model (AMR loops) they accumulate
+        # stale entries and double-count.
+        if len(tet_tags):
+            nodes4 = np.concatenate(
+                [n for ty, n in zip(etypes, enodes) if ty == 4]
+            ).reshape(-1, 4).astype(np.int64)
+            edge_ix = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+            edges = np.sort(nodes4[:, edge_ix].reshape(-1, 2), axis=1)
+            n_edges = len(np.unique(edges, axis=0))
+            face_ix = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+            faces = np.sort(nodes4[:, face_ix].reshape(-1, 3), axis=1)
+            n_tris = len(np.unique(faces, axis=0))
+        else:
+            n_edges = n_tris = 0
 
         if len(tet_tags):
             q = gmsh.model.mesh.getElementQualities(tet_tags, "minSICN")
@@ -2426,6 +2435,14 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
                 f"{algorithm!r}"
             )
         gmsh.option.setNumber("Mesh.Algorithm3D", algo_codes[algo_lc])
+
+        # Re-meshing the same model (AMR loops via refine_near_points):
+        # gmsh regenerates the elements but keeps the edge/face tables that
+        # createEdges/createFaces materialised for the PREVIOUS mesh, so the
+        # stats (and any consumer of getAllEdges) would double-count. Clear
+        # the old mesh explicitly before generating.
+        if self._last_mesh is not None:
+            gmsh.model.mesh.clear()
 
         gmsh.model.mesh.generate(3)
 
