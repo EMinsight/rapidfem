@@ -187,6 +187,39 @@ def test_build_requires_dielectrics(mini_gds):
         rfic.build(mini_gds, stack)
 
 
+@pytest.mark.parametrize("passv,boundary", [
+    ("conformal", "abc"), ("none", "abc"), ("planar", "pml")])
+def test_build_passivation_and_boundary_modes(mini_gds, passv, boundary):
+    um = 1e-6
+    stack = rfic.Stack.sg13g2()
+    model = rfic.build(
+        mini_gds, stack,
+        margin=60 * um, air=40 * um, air_top=80 * um,
+        passivation=passv, boundary=boundary,
+        mesh=rfic.MeshSpec(scale=2.0, conductor=10 * um, port=6 * um,
+                           global_h=80 * um,
+                           graded={"Substrate": [(60 * um, 60 * um),
+                                                 (120 * um, 120 * um)]}),
+    )
+    g = model.geometry
+    try:
+        if passv == "conformal":
+            # sheet + sidewall ring + cap over the exposed TopMetal2
+            assert len(model.slabs["Passive"]) >= 3
+            assert len(model.slabs["AIR"]) >= 2      # polygon air prisms
+        elif passv == "none":
+            assert "Passive" not in model.slabs
+        if boundary == "pml":
+            from rapidfem.physics import ABC, PML
+            pmls = [p for p in g._physics if isinstance(p, PML)]
+            abcs = [p for p in g._physics if isinstance(p, ABC)]
+            assert len(pmls) == 6 and not abcs
+        g.mesh()
+        assert g.mesh_stats.n_tets > 0
+    finally:
+        g.close()
+
+
 # ── FEM-JSON bridge ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("fixture", FIXTURES)

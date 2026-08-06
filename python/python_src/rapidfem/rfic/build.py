@@ -128,6 +128,53 @@ def _read_markers(gds_path: str, layer: int) -> list[tuple[float, float, float, 
     return out
 
 
+def _conformal_regions(gds_path: str, gds_layer: int, datatype: int,
+                       t_side: float):
+    """2D region decomposition for the conformal passivation, in meters.
+
+    Returns (expanded, rings) where ``expanded`` are the metal polygons
+    offset outward by ``t_side`` (merged), and ``rings`` maps each expanded
+    polygon to the original metal polygons it contains (its holes). All
+    polygons are (N, 2) float arrays. The decomposition is done entirely in
+    2D so every extruded volume is disjoint by construction, no OCC
+    booleans needed.
+    """
+    import gdstk
+    import numpy as np
+
+    lib = gdstk.read_gds(str(gds_path))
+    unit = lib.unit
+    metal = []
+    for cell in lib.top_level():
+        for poly in cell.flatten().polygons:
+            if poly.layer == gds_layer and poly.datatype == datatype:
+                metal.append(poly)
+    if not metal:
+        raise ValueError(f"no polygons on GDS layer {gds_layer}/{datatype} "
+                         f"for the conformal passivation")
+
+    merged = gdstk.boolean(metal, [], "or")
+    expanded = gdstk.offset(merged, t_side / unit, use_union=True)
+
+    def pts(p):
+        return np.asarray(p.points, dtype=float) * unit
+
+    rings: list[tuple] = []   # (expanded_poly_pts, [contained metal pts])
+    for ep in expanded:
+        ex = [q[0] for q in ep.points]
+        ey = [q[1] for q in ep.points]
+        bx = (min(ex), max(ex), min(ey), max(ey))
+        inside = []
+        for mp in merged:
+            mx = [q[0] for q in mp.points]
+            my = [q[1] for q in mp.points]
+            if (bx[0] <= min(mx) and max(mx) <= bx[1]
+                    and bx[2] <= min(my) and max(my) <= bx[3]):
+                inside.append(pts(mp))
+        rings.append((pts(ep), inside))
+    return rings
+
+
 def build(
     gds: str,
     stack: Stack,
@@ -140,6 +187,11 @@ def build(
     pec_floor: bool = False,
     conductor_model: dict[str, str] | None = None,
     mesh: MeshSpec | None = None,
+    passivation: str = "planar",
+    pass_t_side: float = 0.6e-6,
+    pass_t_top: float | None = None,
+    conformal_over: str | None = None,
+    boundary: str = "abc",
 ) -> BuiltModel:
     """Build a solve-ready FEM model from a GDS and a full process stack.
 
@@ -170,6 +222,24 @@ def build(
         sibc, vias -> volume (anisotropic), LOWLOSS -> pec.
     mesh : MeshSpec, optional
         Mesh sizing policy; defaults to ``MeshSpec()``.
+    passivation : {"planar", "conformal", "none"}
+        "planar" keeps the stackup-XML sheet (the gds2palace / Momentum
+        approximation). "conformal" models the real deposition: the oxide
+        stops at the top metal's bottom, the passivation drapes over the
+        exposed metal (``pass_t_top`` on top and field, ``pass_t_side`` on
+        the sidewalls) with air beyond, built as disjoint prisms from a 2D
+        offset decomposition of the metal polygons. "none" drops the sheet.
+    pass_t_side : float
+        Sidewall passivation thickness for the conformal mode.
+    pass_t_top : float, optional
+        Top/field passivation thickness; defaults to the XML sheet's own
+        thickness.
+    conformal_over : str, optional
+        Layer name the passivation drapes over; defaults to the topmost
+        metal present in the stack.
+    boundary : {"abc", "pml"}
+        Outer termination: first-order absorbing boundary (default), or a
+        PML declared on each of the six air-shell boxes.
 
     Returns
     -------
@@ -178,15 +248,47 @@ def build(
     import numpy as np
     from rapidfem.geometry import Geometry
     from rapidfem.materials import Air, Dielectric
-    from rapidfem.physics import ABC, PEC, LumpedPort, SurfaceImpedance
+    from rapidfem.physics import ABC, PEC, PML, LumpedPort, SurfaceImpedance
 
     if not stack.dielectrics:
         raise ValueError(
             "stack has no background dielectrics; build() needs the full "
             "vertical cross-section (Stack.from_xml or a preset with "
             "dielectrics)")
+    if passivation not in ("planar", "conformal", "none"):
+        raise ValueError(f"passivation must be planar|conformal|none, "
+                         f"got {passivation!r}")
+    if boundary not in ("abc", "pml"):
+        raise ValueError(f"boundary must be abc|pml, got {boundary!r}")
+    if boundary == "pml" and pec_floor:
+        raise ValueError("pec_floor is an ABC-mode option")
     mesh = mesh or MeshSpec()
     conductor_model = conductor_model or {}
+
+    # The passivation sheet of the stack: topmost non-air dielectric slab.
+    def _is_air(d):
+        m = stack.materials.get(d.material, StackMaterial(d.material))
+        return m.kind != "conductor" and m.er == 1.0 and m.sigma == 0.0
+
+    pass_slab = None
+    if passivation != "planar":
+        cands = [d for d in stack.dielectrics
+                 if not _is_air(d)
+                 and stack.materials.get(d.material, StackMaterial(d.material)).kind == "dielectric"]
+        pass_slab = cands[-1] if cands else None
+        if pass_slab is None:
+            raise ValueError("stack has no passivation slab to modify")
+
+    # Conformal mode: which metal the passivation drapes over.
+    conf_layer = None
+    if passivation == "conformal":
+        metals = [l for l in stack.layers if l.type == "metal"]
+        if conformal_over is not None:
+            conf_layer = stack.by_name(conformal_over)
+        else:
+            conf_layer = max(metals, key=lambda l: l.z_top)
+        if pass_t_top is None:
+            pass_t_top = pass_slab.thickness
 
     # ── conductors from the GDS ────────────────────────────────────────────
     g = Geometry.from_gds(str(gds), stack=stack, top_cell=top_cell)
@@ -217,16 +319,32 @@ def build(
         is_air_like = (mat.kind != "conductor" and mat.er == 1.0
                        and mat.sigma == 0.0)
         thickness = d.thickness
+        z_lo = d.z
+        if passivation != "planar" and d is pass_slab:
+            # sheet is replaced (conformal) or dropped (none); the air
+            # region below extends down accordingly
+            continue
+        if passivation == "conformal" and d.z <= conf_layer.z < d.z_top:
+            # oxide stops at the exposed metal's bottom
+            thickness = conf_layer.z - d.z
         if d is stack.dielectrics[-1] and is_air_like:
             # topmost air slab: cap at air_top (the XML often carries a
             # generous 200 um; the ABC does not need more than the cap)
             thickness = air_top if air_top is not None else d.thickness
-            z_top = d.z + thickness
+            if passivation == "conformal":
+                # air is built as polygon prisms below, only the upper
+                # cap above the shell top stays a plain box
+                z_top = d.z + thickness
+                continue
+            if passivation == "none" and pass_slab is not None:
+                z_lo = pass_slab.z          # extend down over the dropped sheet
+                thickness += pass_slab.thickness
+            z_top = z_lo + thickness
         boxes = []
         zones = mesh.graded.get(d.name)
         if zones:
             # split top-down into (thickness, h) zones, last zone padded
-            z_hi = d.z + thickness
+            z_hi = z_lo + thickness
             remaining = thickness
             for i, (t_zone, h_zone) in enumerate(zones):
                 t = min(t_zone, remaining) if i < len(zones) - 1 else remaining
@@ -239,9 +357,53 @@ def build(
                 remaining -= t
         else:
             boxes.append(g.box(
-                wx, wy, thickness, position=(x0, y0, d.z),
+                wx, wy, thickness, position=(x0, y0, z_lo),
                 material=_material_for(mat, mesh.slab_h(d.name))))
         slabs[d.name] = boxes
+
+    # ── conformal passivation shell + polygon air prisms ───────────────────
+    if passivation == "conformal":
+        pass_mat = stack.materials.get(pass_slab.material,
+                                       StackMaterial(pass_slab.material))
+        air_slab = stack.dielectrics[-1]
+        h_pass = mesh.slab_h(pass_slab.name)
+        h_air = mesh.h(mesh.global_h)
+        zm_lo, zm_hi = conf_layer.z, conf_layer.z_top
+        rings = _conformal_regions(str(gds), conf_layer.gds,
+                                   conf_layer.datatype, pass_t_side)
+
+        def _prism(outer, holes, z, height, material, h):
+            face = g.polygon(
+                [(p[0], p[1], z) for p in outer],
+                holes=[[(p[0], p[1], z) for p in hp] for hp in holes] or None)
+            return g.extrude(face, height=height, material=material, maxh=h)
+
+        foot = np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        expanded = [ep for ep, _ in rings]
+        shell = []
+        # field sheet: everywhere except the expanded metal footprint
+        shell.append(_prism(foot, expanded, zm_lo, pass_t_top,
+                            _material_for(pass_mat), h_pass))
+        # sidewall ring(s): expanded minus metal, hugging the sidewalls
+        for ep, metal_holes in rings:
+            shell.append(_prism(ep, metal_holes, zm_lo,
+                                (zm_hi - zm_lo) + pass_t_top,
+                                _material_for(pass_mat), h_pass))
+            # cap directly on the metal top face
+            for mp in metal_holes:
+                shell.append(_prism(mp, [], zm_hi, pass_t_top,
+                                    _material_for(pass_mat), h_pass))
+        # air prisms: over the field sheet and over the draped metal
+        air_boxes_low = [
+            _prism(foot, expanded, zm_lo + pass_t_top,
+                   z_top - (zm_lo + pass_t_top), Air(), h_air),
+        ]
+        for ep, _ in rings:
+            air_boxes_low.append(_prism(ep, [], zm_hi + pass_t_top,
+                                        z_top - (zm_hi + pass_t_top),
+                                        Air(), h_air))
+        slabs[pass_slab.name] = shell
+        slabs[air_slab.name] = air_boxes_low
 
     # ── air shell around the dielectric stack (6 disjoint boxes) ───────────
     stack_h = z_top - z_bot
@@ -337,24 +499,35 @@ def build(
         LumpedPort(plate, direction=(0, 0, 1), z0=z0)
 
     top, bot, cxmin, cxmax, cymin, cymax = air_shell
-    outer = [
-        top.faces.min(axis="x"), top.faces.max(axis="x"),
-        top.faces.min(axis="y"), top.faces.max(axis="y"),
-        top.faces.max(axis="z"),
-        bot.faces.min(axis="x"), bot.faces.max(axis="x"),
-        bot.faces.min(axis="y"), bot.faces.max(axis="y"),
-        cxmin.faces.min(axis="x"),
-        cxmin.faces.min(axis="y"), cxmin.faces.max(axis="y"),
-        cxmax.faces.max(axis="x"),
-        cxmax.faces.min(axis="y"), cxmax.faces.max(axis="y"),
-        cymin.faces.min(axis="y"),
-        cymax.faces.max(axis="y"),
-    ]
-    if pec_floor:
-        PEC(bot.faces.min(axis="z"))
+    if boundary == "pml":
+        # each air-shell box becomes a single-direction PML slab; the six
+        # boxes are disjoint by construction, exactly the "one slab per
+        # outer face, no overlaps" layout the PML BC requires
+        PML(top,   direction=(0, 0, 1),  inner_face=z_top,   thickness=air)
+        PML(bot,   direction=(0, 0, -1), inner_face=z_bot,   thickness=air)
+        PML(cxmin, direction=(-1, 0, 0), inner_face=x0,      thickness=air)
+        PML(cxmax, direction=(1, 0, 0),  inner_face=x1,      thickness=air)
+        PML(cymin, direction=(0, -1, 0), inner_face=y0,      thickness=air)
+        PML(cymax, direction=(0, 1, 0),  inner_face=y1,      thickness=air)
     else:
-        outer.append(bot.faces.min(axis="z"))
-    ABC(*outer)
+        outer = [
+            top.faces.min(axis="x"), top.faces.max(axis="x"),
+            top.faces.min(axis="y"), top.faces.max(axis="y"),
+            top.faces.max(axis="z"),
+            bot.faces.min(axis="x"), bot.faces.max(axis="x"),
+            bot.faces.min(axis="y"), bot.faces.max(axis="y"),
+            cxmin.faces.min(axis="x"),
+            cxmin.faces.min(axis="y"), cxmin.faces.max(axis="y"),
+            cxmax.faces.max(axis="x"),
+            cxmax.faces.min(axis="y"), cxmax.faces.max(axis="y"),
+            cymin.faces.min(axis="y"),
+            cymax.faces.max(axis="y"),
+        ]
+        if pec_floor:
+            PEC(bot.faces.min(axis="z"))
+        else:
+            outer.append(bot.faces.min(axis="z"))
+        ABC(*outer)
 
     if g._maxh is None:
         g._maxh = mesh.h(mesh.global_h)
