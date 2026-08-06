@@ -17,9 +17,12 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# Latest push wins: cancel an in-flight deploy instead of queueing behind
+# it. Back-to-back pushes (merge + release bump + tag) previously starved
+# the older Pages deployments past the 10 min API timeout.
 concurrency:
   group: deploy-site
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -75,3 +78,7 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          # Pages queue can be slow right after a burst of deployments;
+          # the default 10 min timeout produced spurious reds.
+          timeout: 1200000

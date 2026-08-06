@@ -223,6 +223,7 @@ fn a_uniformly_lossy_cavity_has_q_equal_to_one_over_tan_delta() {
             tet_indices: (0..mesh.n_tets()).collect(),
             er_diag: None,
             ur_diag: None,
+            cond_diag: None,
             dispersion: Dispersion::None,
         };
         let basis = NedelecBasis::new(&mesh);
