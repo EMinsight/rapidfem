@@ -68,22 +68,35 @@ jobs:
         with:
           path: python/python_src/rapidfem/ui/frontend/dist
 
+  # The Pages backend intermittently takes >10 min to pick a deployment out
+  # of its queue (observed repeatedly on the ~80 MB site artifact), and
+  # deploy-pages caps its wait at 10 min regardless of the timeout input.
+  # The retry must be a SEPARATE job: Pages deployments are keyed by commit
+  # SHA, and the first attempt's abort handler cancels that SHA's deployment,
+  # which races a same-job retry to death within seconds. A second job runs
+  # after the cancellation settled and gets a clean 10 min window.
   deploy:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.deployment.outcome }}
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # The Pages backend intermittently takes >10 min to pick a deployment
-      # out of its queue (observed on the ~80 MB site artifact), and
-      # deploy-pages caps its wait at 10 min regardless of the timeout
-      # input. One retry gives the deploy a second 10 min window, which
-      # covers every slow-queue failure seen so far.
       - id: deployment
         uses: actions/deploy-pages@v5
         continue-on-error: true
-      - id: deployment-retry
-        if: steps.deployment.outcome == 'failure'
+
+  deploy-retry:
+    name: Deploy retry (slow Pages queue)
+    needs: deploy
+    if: needs.deploy.outputs.outcome == 'failure'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
         uses: actions/deploy-pages@v5
