@@ -74,11 +74,16 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
     steps:
+      # The Pages backend intermittently takes >10 min to pick a deployment
+      # out of its queue (observed on the ~80 MB site artifact), and
+      # deploy-pages caps its wait at 10 min regardless of the timeout
+      # input. One retry gives the deploy a second 10 min window, which
+      # covers every slow-queue failure seen so far.
       - id: deployment
         uses: actions/deploy-pages@v5
-        with:
-          # Pages queue can be slow right after a burst of deployments;
-          # the default 10 min timeout produced spurious reds.
-          timeout: 1200000
+        continue-on-error: true
+      - id: deployment-retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v5
