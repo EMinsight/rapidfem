@@ -29,7 +29,9 @@ Typical workflow::
     g.mesh()
     result = rf.Problem(g).sweep([1e9, 5e9, 10e9])
 """
-from .stack import Stack, PdkLayer, LayerType
+from .stack import (
+    Stack, PdkLayer, DielectricLayer, StackMaterial, LayerType, MaterialKind,
+)
 from .primitives import (
     microstrip, via, trace_port, gsg_port, differential_port,
     TracePort, GsgPort, DifferentialPort,
@@ -37,7 +39,8 @@ from .primitives import (
 from .interop import from_fem_json, FemLayoutResult, FEM_JSON_SCHEMA_VERSIONS
 
 __all__ = [
-    "Stack", "PdkLayer", "LayerType",
+    "Stack", "PdkLayer", "DielectricLayer", "StackMaterial",
+    "LayerType", "MaterialKind",
     "microstrip", "via", "trace_port", "gsg_port", "differential_port",
     "TracePort", "GsgPort", "DifferentialPort",
     "from_fem_json", "FemLayoutResult",

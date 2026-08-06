@@ -1,31 +1,81 @@
-"""Process-stack data model: `PdkLayer` + `Stack`, mirrors rapidpassives.
+"""Process-stack data model: `PdkLayer` + `DielectricLayer` + `Stack`.
 
-The `Stack` data model mirrors the schema used by ``rapidpassives`` so that
-the same JSON describes geometry on both sides:
+The `Stack` describes the complete vertical cross-section of a process:
 
-- Each `PdkLayer` carries (name, gds, datatype, z, thickness, color, type)
-- `Stack.from_pdk("sky130")` returns a fully-populated stack ready for GDS
-  loading and FEM extrusion
-- `stack.to_dict()` round-trips to the rapidpassives `Pdk` JSON shape
+- **patterned layers** (`PdkLayer`): anything drawn in the GDS, metals,
+  vias, patterned dielectric cuts (e.g. backside etch)
+- **background dielectrics** (`DielectricLayer`): the unpatterned slabs the
+  patterned layers are embedded in, substrate, EPI, oxide zones,
+  passivation, air
+- **materials** (`StackMaterial`): a shared name → properties table, so
+  layers reference materials the way process specs do
+
+Ingestion paths:
+
+- ``Stack.from_xml("SG13G2.xml")`` parses the gds2palace / ADS-style
+  stackup XML (the format IHP ships for SG13G2)
+- ``Stack.from_pdk("sky130" | "sg13g2")`` returns built-in presets;
+  sg13g2 is backed by the bundled IHP XML
+- ``Stack.from_dict`` / ``stack.to_dict()`` round-trips the rapidpassives
+  `Pdk` JSON shape (viewer interop)
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from rapidfem.geometry import Geometry, GeoObject
 
 
-LayerType = Literal["metal", "via", "poly", "diffusion", "substrate", "oxide", "other"]
+LayerType = Literal["metal", "via", "poly", "diffusion", "substrate", "oxide",
+                    "dielectric", "other"]
+
+MaterialKind = Literal["conductor", "dielectric", "semiconductor"]
+
+
+@dataclass
+class StackMaterial:
+    """One named material of the process, referenced by layers.
+
+    ``sigma >= _PEC_SIGMA`` (the gds2palace "LOWLOSS" convention, 1e10 S/m)
+    marks an idealised lossless conductor; builders should treat it as PEC.
+    """
+    name: str
+    kind: MaterialKind = "dielectric"
+    er: float = 1.0
+    tand: float = 0.0
+    sigma: float = 0.0       # S/m
+    color: str = "#888"
+
+
+_PEC_SIGMA = 1e10   # at/above this a conductor is "lossless" -> model as PEC
+
+
+@dataclass
+class DielectricLayer:
+    """One unpatterned background slab (substrate, oxide, passivation, air).
+
+    Ordered bottom-to-top in ``Stack.dielectrics``; z is the slab's BOTTOM
+    in meters, the top is at z + thickness.
+    """
+    name: str
+    material: str            # name in Stack.materials
+    z: float                 # bottom z, meters
+    thickness: float         # meters
+
+    @property
+    def z_top(self) -> float:
+        return self.z + self.thickness
 
 
 @dataclass
 class PdkLayer:
-    """One physical layer in a process stack.
+    """One patterned (GDS-drawn) layer in a process stack.
 
-    Mirrors ``rapidpassives.web.lib.stack.pdk.PdkLayer`` 1:1 so the same JSON
-    describes a stack on both rapidfem (FEM-side) and rapidpassives (viewer-side).
+    Mirrors ``rapidpassives.web.lib.stack.pdk.PdkLayer`` so the same JSON
+    describes a stack on both rapidfem (FEM-side) and rapidpassives
+    (viewer-side).
 
     Coordinate convention: z is the BOTTOM of the layer (lower face). The top
     is at z + thickness. All distances in meters (rapidpassives uses microns;
@@ -43,6 +93,7 @@ class PdkLayer:
     ur: float = 1.0
     tand: float = 0.0
     sigma: float = 0.0       # bulk conductivity (S/m); 0 ⇒ treat as PEC for metals
+    material: str | None = None   # optional name in Stack.materials
 
     @property
     def z_top(self) -> float:
@@ -52,16 +103,32 @@ class PdkLayer:
     def gds_key(self) -> tuple[int, int]:
         return (self.gds, self.datatype)
 
+    @property
+    def is_pec(self) -> bool:
+        """Idealised lossless conductor (gds2palace LOWLOSS convention)."""
+        return self.sigma >= _PEC_SIGMA
+
 
 @dataclass
 class Stack:
-    """A complete process stack: ordered physical layers + substrate properties.
+    """A complete process stack: patterned layers, background dielectrics,
+    and a shared materials table.
 
-    Use ``Stack.sky130()`` / ``Stack.sg13g2()`` for built-in presets, or
+    Use ``Stack.from_xml(...)`` for gds2palace/ADS stackup files,
+    ``Stack.sky130()`` / ``Stack.sg13g2()`` for built-in presets, or
     construct manually from a list of `PdkLayer`s.
+
+    The scalar ``substrate_*`` / ``oxide_*`` fields are the legacy
+    single-slab description used by :meth:`create_substrate` and the
+    rapidpassives JSON shape. When ``dielectrics`` is populated (XML path)
+    they are derived from it and kept consistent automatically.
     """
     name: str
     layers: list[PdkLayer]
+    # Background dielectric slabs, bottom-to-top (may be empty for legacy
+    # scalar-only stacks).
+    dielectrics: list[DielectricLayer] = field(default_factory=list)
+    materials: dict[str, StackMaterial] = field(default_factory=dict)
     # Substrate slab below the lowest layer (silicon wafer).
     substrate_thickness: float = 300e-6   # m
     substrate_er: float = 11.9
@@ -75,6 +142,34 @@ class Stack:
     def __post_init__(self):
         # Sort layers bottom-to-top by z for deterministic iteration
         self.layers = sorted(self.layers, key=lambda l: (l.z, l.thickness))
+        self.dielectrics = sorted(self.dielectrics, key=lambda d: d.z)
+        if self.dielectrics:
+            self._derive_legacy_scalars()
+
+    def _derive_legacy_scalars(self) -> None:
+        """Fill the scalar substrate/oxide fields from the dielectric stack.
+
+        Deterministic rules, documented so the derived values are
+        predictable: the substrate is the set of semiconductor slabs (total
+        thickness, er/sigma of the thickest one); the oxide is the thickest
+        non-air dielectric slab.
+        """
+        def mat(d: DielectricLayer) -> StackMaterial:
+            return self.materials.get(d.material, StackMaterial(d.material))
+
+        semis = [d for d in self.dielectrics if mat(d).kind == "semiconductor"]
+        if semis:
+            self.substrate_thickness = sum(d.thickness for d in semis)
+            main = max(semis, key=lambda d: d.thickness)
+            self.substrate_er = mat(main).er
+            self.substrate_sigma = mat(main).sigma
+
+        oxides = [d for d in self.dielectrics
+                  if mat(d).kind == "dielectric" and mat(d).er > 1.0]
+        if oxides:
+            main = max(oxides, key=lambda d: d.thickness)
+            self.oxide_er = mat(main).er
+            self.oxide_tand = mat(main).tand
 
     @staticmethod
     def from_pdk(name: str) -> "Stack":
@@ -85,6 +180,103 @@ class Stack:
         if normalized in ("sg13g2", "ihpsg13g2"):
             return Stack.sg13g2()
         raise ValueError(f"unknown PDK {name!r}; available: sky130, sg13g2")
+
+    @staticmethod
+    def from_xml(source, *, name: str | None = None) -> "Stack":
+        """Parse a gds2palace / ADS-style stackup XML into a full Stack.
+
+        The format (``<Stackup schemaVersion="2.0">``) carries a
+        ``<Materials>`` table, a top-down ``<Dielectrics>`` background
+        stack anchored by ``<Substrate Offset=...>`` (depth of the stack
+        bottom below z=0), and ``<Layers>`` with GDS number, z-range and a
+        material reference. This is the stackup file IHP publishes for
+        SG13G2 and the input gds2palace consumes, so a gds2palace user's
+        XML drops in unchanged.
+
+        Parameters
+        ----------
+        source : str | Path
+            Path to the XML file (or a string containing XML markup,
+            detected by a leading ``<``).
+        name : str, optional
+            Stack name; defaults to the XML file stem or "stack".
+        """
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+
+        if isinstance(source, str) and source.lstrip().startswith("<"):
+            root = ET.fromstring(source)
+            stack_name = name or "stack"
+        else:
+            root = ET.parse(source).getroot()
+            stack_name = name or Path(source).stem
+
+        if root.tag != "Stackup":
+            raise ValueError(f"not a stackup XML: root element is {root.tag!r}")
+
+        # ── materials table ────────────────────────────────────────────────
+        materials: dict[str, StackMaterial] = {}
+        for m in root.iter("Material"):
+            mname = m.get("Name")
+            materials[mname] = StackMaterial(
+                name=mname,
+                kind=m.get("Type", "dielectric").lower(),
+                er=float(m.get("Permittivity", 1.0)),
+                tand=float(m.get("DielectricLossTangent", 0.0)),
+                sigma=float(m.get("Conductivity", 0.0)),
+                color="#" + m.get("Color", "888888").lstrip("#"),
+            )
+
+        elayers = root.find("ELayers")
+        if elayers is None:
+            raise ValueError("stackup XML has no <ELayers> element")
+        unit = {"m": 1.0, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}[
+            elayers.get("LengthUnit", "um").lower()]
+
+        # ── background dielectrics, listed top-down, anchored by Offset ────
+        # <Substrate Offset="d"/> puts the bottom of the lowest slab at
+        # z = -d; slabs then stack upward in reverse file order.
+        layers_el = elayers.find("Layers")
+        offset = 0.0
+        if layers_el is not None:
+            sub_el = layers_el.find("Substrate")
+            if sub_el is not None:
+                offset = float(sub_el.get("Offset", 0.0))
+
+        dielectrics: list[DielectricLayer] = []
+        dielectrics_el = elayers.find("Dielectrics")
+        if dielectrics_el is not None:
+            z = -offset * unit
+            for d in reversed(list(dielectrics_el.iter("Dielectric"))):
+                t = float(d.get("Thickness", 0.0)) * unit
+                dielectrics.append(DielectricLayer(
+                    name=d.get("Name"), material=d.get("Material"),
+                    z=z, thickness=t,
+                ))
+                z += t
+
+        # ── patterned layers ───────────────────────────────────────────────
+        type_map = {"conductor": "metal", "via": "via", "dielectric": "dielectric"}
+        layers: list[PdkLayer] = []
+        if layers_el is not None:
+            for l in layers_el.iter("Layer"):
+                z_min = float(l.get("Zmin")) * unit
+                z_max = float(l.get("Zmax")) * unit
+                mname = l.get("Material")
+                mat = materials.get(mname, StackMaterial(mname or "unknown"))
+                layers.append(PdkLayer(
+                    name=l.get("Name"),
+                    gds=int(l.get("Layer")),
+                    datatype=int(l.get("Datatype", 0)),
+                    z=z_min, thickness=z_max - z_min,
+                    color=mat.color,
+                    type=type_map.get(l.get("Type", "conductor").lower(), "other"),
+                    er=mat.er, tand=mat.tand, sigma=mat.sigma,
+                    material=mname,
+                ))
+
+        return Stack(name=stack_name, layers=layers,
+                     dielectrics=dielectrics, materials=materials)
 
     @staticmethod
     def sky130() -> "Stack":
@@ -119,30 +311,17 @@ class Stack:
 
     @staticmethod
     def sg13g2() -> "Stack":
-        """IHP SG13G2 open-source 130 nm SiGe BiCMOS PDK process stack."""
-        um = 1e-6
-        layers = [
-            PdkLayer("GatPoly", 5,  0, -0.16 * um, 0.16 * um, "#c4725e", "poly",   er=4.2),
-            PdkLayer("Metal1",  8,  0,  0.00 * um, 0.42 * um, "#7b5e8a", "metal",  sigma=4.1e7),
-            PdkLayer("Via1",    19, 0,  0.42 * um, 0.54 * um, "#5a5a62", "via",    sigma=4.1e7),
-            PdkLayer("Metal2",  10, 0,  0.96 * um, 0.49 * um, "#6bbf8a", "metal",  sigma=4.1e7),
-            PdkLayer("Via2",    29, 0,  1.45 * um, 0.54 * um, "#6e6e78", "via",    sigma=4.1e7),
-            PdkLayer("Metal3",  30, 0,  1.99 * um, 0.49 * um, "#4a9ec2", "metal",  sigma=4.1e7),
-            PdkLayer("Via3",    49, 0,  2.48 * um, 0.54 * um, "#6e6e78", "via",    sigma=4.1e7),
-            PdkLayer("Metal4",  50, 0,  3.02 * um, 0.49 * um, "#5aad78", "metal",  sigma=4.1e7),
-            PdkLayer("Via4",    66, 0,  3.51 * um, 0.54 * um, "#7a7a84", "via",    sigma=4.1e7),
-            PdkLayer("Metal5",  67, 0,  4.05 * um, 0.49 * um, "#d9513c", "metal",  sigma=4.1e7),
-            PdkLayer("TopVia1", 125, 0, 4.54 * um, 0.85 * um, "#7a7a84", "via",    sigma=4.1e7),
-            PdkLayer("TopMetal1", 126, 0, 5.39 * um, 2.0 * um, "#e8944a", "metal", sigma=4.1e7),
-            PdkLayer("TopVia2", 133, 0, 7.39 * um, 2.85 * um, "#7a7a84", "via",    sigma=4.1e7),
-            PdkLayer("TopMetal2", 134, 0, 10.24 * um, 3.0 * um, "#e8944a", "metal",sigma=4.1e7),
-        ]
-        return Stack(
-            name="SG13G2", layers=layers,
-            substrate_thickness=200 * um,
-            substrate_er=11.9, substrate_sigma=20.0,   # SG13G2 is moderately resistive
-            oxide_er=4.1, oxide_tand=0.0,
-        )
+        """IHP SG13G2 open-source 130 nm SiGe BiCMOS PDK process stack.
+
+        Backed by the bundled ``ihp_sg13g2_200um.xml`` (the stackup file
+        from the public gds2palace repository), so layer z-positions and
+        per-layer conductivities are the process-spec values, not generic
+        placeholders. 200 µm thinned-substrate variant with backside metal
+        and LBE layers.
+        """
+        from importlib.resources import files
+        xml_path = files("rapidfem.rfic") / "data" / "ihp_sg13g2_200um.xml"
+        return Stack.from_xml(xml_path.read_text(), name="SG13G2")
 
     # ── Lookups ────────────────────────────────────────────────────────────
 
@@ -165,6 +344,26 @@ class Stack:
 
     def vias(self) -> list[PdkLayer]:
         return [l for l in self.layers if l.type == "via"]
+
+    def material_of(self, layer: "PdkLayer | DielectricLayer") -> StackMaterial:
+        """Resolve a layer's material record; synthesises one from the
+        layer's own scalars when the stack has no materials table."""
+        mname = layer.material if layer.material else None
+        if mname and mname in self.materials:
+            return self.materials[mname]
+        if isinstance(layer, PdkLayer):
+            kind = "conductor" if layer.type in ("metal", "via") else "dielectric"
+            return StackMaterial(name=mname or layer.name, kind=kind,
+                                 er=layer.er, tand=layer.tand,
+                                 sigma=layer.sigma, color=layer.color)
+        return StackMaterial(name=mname or layer.name)
+
+    def dielectric_at(self, z: float) -> DielectricLayer | None:
+        """The background slab containing height z (bottom-inclusive)."""
+        for d in self.dielectrics:
+            if d.z <= z < d.z_top:
+                return d
+        return None
 
     @property
     def top_z(self) -> float:
@@ -197,9 +396,26 @@ class Stack:
                     "z_um": l.z / um, "thickness_um": l.thickness / um,
                     "color": l.color, "type": l.type,
                     "er": l.er, "ur": l.ur, "tand": l.tand, "sigma": l.sigma,
+                    **({"material": l.material} if l.material else {}),
                 }
                 for l in self.layers
             ],
+            # Additive keys; rapidpassives ignores them, rapidfem round-trips
+            # the full dielectric background through them.
+            "dielectrics": [
+                {
+                    "name": d.name, "material": d.material,
+                    "z_um": d.z / um, "thickness_um": d.thickness / um,
+                }
+                for d in self.dielectrics
+            ],
+            "materials": {
+                m.name: {
+                    "kind": m.kind, "er": m.er, "tand": m.tand,
+                    "sigma": m.sigma, "color": m.color,
+                }
+                for m in self.materials.values()
+            },
         }
 
     @staticmethod
@@ -214,11 +430,28 @@ class Stack:
                 color=l.get("color", "#888"), type=l.get("type", "metal"),
                 er=l.get("er", 1.0), ur=l.get("ur", 1.0),
                 tand=l.get("tand", 0.0), sigma=l.get("sigma", 0.0),
+                material=l.get("material"),
             )
             for l in d["layers"]
         ]
+        dielectrics = [
+            DielectricLayer(
+                name=dd["name"], material=dd["material"],
+                z=dd["z_um"] * um, thickness=dd["thickness_um"] * um,
+            )
+            for dd in d.get("dielectrics", [])
+        ]
+        materials = {
+            mname: StackMaterial(
+                name=mname, kind=mm.get("kind", "dielectric"),
+                er=mm.get("er", 1.0), tand=mm.get("tand", 0.0),
+                sigma=mm.get("sigma", 0.0), color=mm.get("color", "#888"),
+            )
+            for mname, mm in d.get("materials", {}).items()
+        }
         return Stack(
             name=d["name"], layers=layers,
+            dielectrics=dielectrics, materials=materials,
             substrate_thickness=sub.get("thickness_um", 300) * um,
             substrate_er=sub.get("er", 11.9), substrate_sigma=sub.get("sigma", 10.0),
             oxide_er=ox.get("er", 4.2), oxide_tand=ox.get("tand", 0.0),
@@ -286,4 +519,5 @@ class Stack:
         return {"substrate": sub} | ({"oxide": ox} if ox is not None else {})
 
 
-__all__ = ["Stack", "PdkLayer", "LayerType"]
+__all__ = ["Stack", "PdkLayer", "DielectricLayer", "StackMaterial",
+           "LayerType", "MaterialKind"]

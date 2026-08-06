@@ -55,6 +55,55 @@ def test_stack_json_roundtrip():
     assert b.substrate_sigma == a.substrate_sigma
 
 
+def test_stack_from_xml_sg13g2():
+    """The bundled IHP XML must reproduce the process-spec values that the
+    SG13G2 measurement validation (muehlhaus) pinned down."""
+    um = 1e-6
+    s = rfic.Stack.sg13g2()
+
+    m1 = s.by_name("Metal1")
+    assert m1.z == pytest.approx(1.04 * um)
+    assert m1.z_top == pytest.approx(1.46 * um)
+    assert m1.sigma == 2.164e7
+
+    tm2 = s.by_name("TopMetal2")
+    assert tm2.z == pytest.approx(11.2303 * um)
+    assert tm2.thickness == pytest.approx(3.0 * um)
+    assert tm2.sigma == 3.03e7
+
+    assert s.by_name("TopVia2").sigma == 3.143e6
+    assert s.by_name("SUBGND").is_pec          # LOWLOSS 1e10 convention
+
+    # background dielectric stack, anchored by the Substrate Offset
+    assert [d.name for d in s.dielectrics] == [
+        "Substrate", "EPI", "SiO2", "Passive", "AIR"]
+    assert s.dielectric_at(-1 * um).name == "EPI"
+    sio2 = s.dielectric_at(5 * um)
+    assert sio2.z_top == pytest.approx(15.7303 * um)
+    passive = s.dielectric_at(15.8 * um)
+    assert s.materials[passive.material].er == 6.6
+
+    # legacy scalars derived from the dielectric stack
+    assert s.substrate_er == 11.9
+    assert s.substrate_sigma == 2.0
+    assert s.oxide_er == 4.1
+
+
+def test_stack_from_xml_roundtrips_dielectrics():
+    s = rfic.Stack.sg13g2()
+    s2 = rfic.Stack.from_dict(s.to_dict())
+    assert len(s2.dielectrics) == len(s.dielectrics)
+    assert len(s2.layers) == len(s.layers)
+    assert s2.materials["TopMetal2"].sigma == s.materials["TopMetal2"].sigma
+    assert s2.by_name("Metal1").z == pytest.approx(s.by_name("Metal1").z)
+    assert s2.oxide_er == s.oxide_er
+
+
+def test_stack_from_xml_rejects_non_stackup():
+    with pytest.raises(ValueError, match="root element"):
+        rfic.Stack.from_xml("<NotAStackup/>")
+
+
 def test_stack_lookup_errors():
     stack = rfic.Stack.sky130()
     with pytest.raises(KeyError):
