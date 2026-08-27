@@ -133,7 +133,6 @@ impl SparseSolver for RslabSolver {
                 "amd" => Some(OrderingMethod::Amd),
                 "amf" => Some(OrderingMethod::Amf),
                 "metis" => Some(OrderingMethod::MetisND),
-                "scotch" => Some(OrderingMethod::ScotchND),
                 other => {
                     eprintln!("  rslab: unknown RAPIDFEM_RSLAB_ORDERING={other:?}, ignoring");
                     None

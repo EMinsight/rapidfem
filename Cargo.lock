@@ -1722,17 +1722,15 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rslab"
-version = "0.20.0"
+version = "0.28.0"
 dependencies = [
  "gemm 0.18.2",
  "num-complex 0.4.6",
  "rayon",
  "rslab-amd",
  "rslab-amf",
- "rslab-kahip",
  "rslab-metis",
  "rslab-ordering-core",
- "rslab-scotch",
  "serde",
  "serde_json",
  "sysinfo",
@@ -1740,30 +1738,21 @@ dependencies = [
 
 [[package]]
 name = "rslab-amd"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rslab-ordering-core",
 ]
 
 [[package]]
 name = "rslab-amf"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
- "rslab-ordering-core",
-]
-
-[[package]]
-name = "rslab-kahip"
-version = "0.2.1"
-dependencies = [
- "rslab-amd",
- "rslab-metis",
  "rslab-ordering-core",
 ]
 
 [[package]]
 name = "rslab-metis"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rslab-amd",
  "rslab-ordering-core",
@@ -1771,16 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "rslab-ordering-core"
-version = "0.2.1"
-
-[[package]]
-name = "rslab-scotch"
-version = "0.2.1"
-dependencies = [
- "rslab-amd",
- "rslab-metis",
- "rslab-ordering-core",
-]
+version = "0.2.2"
 
 [[package]]
 name = "rustc-hash"

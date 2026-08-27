@@ -349,6 +349,25 @@ pub fn solve_ldlt<T: Scalar>(factors: &LdltFactors<T>, rhs: &[T]) -> Result<Vec<
     for (i, yi) in y.iter_mut().enumerate() {
         *yi = rhs[factors.perm[i]];
     }
+    solve_ldlt_permuted(factors, &mut y)?;
+    // x = P · v : x[perm[i]] = v[i].
+    let mut x = vec![T::zero(); n];
+    for (i, &vi) in y.iter().enumerate() {
+        x[factors.perm[i]] = vi;
+    }
+    Ok(x)
+}
+
+/// The three sweeps of [`solve_ldlt`] on an already-permuted right-hand side,
+/// in place: forward `L z = y`, block-diagonal `D w = z`, backward `Lᵀ v = w`.
+/// Split out so callers that fold their own gather/scatter around the solve
+/// (e.g. the equilibrated [`crate::LdltSolver`], which fuses the diagonal
+/// scaling into the permutation passes) share one implementation.
+pub(crate) fn solve_ldlt_permuted<T: Scalar>(
+    factors: &LdltFactors<T>,
+    y: &mut [T],
+) -> Result<(), RslabError> {
+    let n = factors.n;
 
     // Forward solve L · z = y (unit lower, CSC column-oriented): once y[j] is
     // final, propagate it down its column. Axpys via `fmadd` (FMA on native
@@ -415,12 +434,7 @@ pub fn solve_ldlt<T: Scalar>(factors: &LdltFactors<T>, rhs: &[T]) -> Result<Vec<
         y[j] = acc;
     }
 
-    // x = P · v : x[perm[i]] = v[i].
-    let mut x = vec![T::zero(); n];
-    for (i, &vi) in y.iter().enumerate() {
-        x[factors.perm[i]] = vi;
-    }
-    Ok(x)
+    Ok(())
 }
 
 /// A memory-compact form of [`LdltFactors`] with the CSC index arrays and the
@@ -566,6 +580,18 @@ pub fn solve_ldlt_many<T: Scalar>(
     b: &[T],
     nrhs: usize,
 ) -> Result<Vec<T>, RslabError> {
+    solve_ldlt_many_scaled(factors, b, nrhs, None)
+}
+
+/// [`solve_ldlt_many`] with an optional symmetric row scaling `D = diag(s)`
+/// fused into the permutation gather/scatter: solves `D A D · X = B` reading
+/// `B` and writing `X` unscaled. `None` is exactly [`solve_ldlt_many`].
+pub(crate) fn solve_ldlt_many_scaled<T: Scalar>(
+    factors: &LdltFactors<T>,
+    b: &[T],
+    nrhs: usize,
+    scale: Option<&[f64]>,
+) -> Result<Vec<T>, RslabError> {
     let n = factors.n;
     if nrhs == 0 || b.len() != n * nrhs {
         return Err(RslabError::DimensionMismatch {
@@ -575,7 +601,7 @@ pub fn solve_ldlt_many<T: Scalar>(
     }
     let nthreads = rayon::current_num_threads().max(1);
     if nrhs < PAR_SOLVE_MIN_RHS || n * nrhs < PAR_SOLVE_MIN_WORK || nthreads < 2 {
-        return solve_ldlt_block(factors, b, nrhs);
+        return solve_ldlt_block(factors, b, nrhs, scale);
     }
     // Split the RHS columns into `nchunks` independent contiguous ranges and solve
     // each on its own worker. Each chunk is gathered into a compact row-major
@@ -596,7 +622,7 @@ pub fn solve_ldlt_many<T: Scalar>(
                 let sb = i * w;
                 sub[sb..sb + w].copy_from_slice(&b[ib + c0..ib + c1]);
             }
-            let xs = solve_ldlt_block(factors, &sub, w)?;
+            let xs = solve_ldlt_block(factors, &sub, w, scale)?;
             Ok((c0, c1, xs))
         })
         .collect();
@@ -619,13 +645,23 @@ fn solve_ldlt_block<T: Scalar>(
     factors: &LdltFactors<T>,
     b: &[T],
     nrhs: usize,
+    scale: Option<&[f64]>,
 ) -> Result<Vec<T>, RslabError> {
     let n = factors.n;
-    // Y = Pᵀ B (gather rows; each row's `nrhs` block moves as a unit).
+    // Y = Pᵀ (D B) (gather rows; each row's `nrhs` block moves as a unit, the
+    // optional equilibration applied on the way in).
     let mut y = vec![T::zero(); n * nrhs];
     for i in 0..n {
-        let src = factors.perm[i] * nrhs;
-        y[i * nrhs..i * nrhs + nrhs].copy_from_slice(&b[src..src + nrhs]);
+        let p = factors.perm[i];
+        let src = p * nrhs;
+        let dst = &mut y[i * nrhs..i * nrhs + nrhs];
+        dst.copy_from_slice(&b[src..src + nrhs]);
+        if let Some(s) = scale {
+            let sp = T::from_real(s[p]);
+            for v in dst.iter_mut() {
+                *v = *v * sp;
+            }
+        }
     }
 
     // Reusable single-row scratch: hoisting the reused row into a **local** buffer
@@ -704,11 +740,18 @@ fn solve_ldlt_block<T: Scalar>(
         y[jb..jb + nrhs].copy_from_slice(&row);
     }
 
-    // X = P V (scatter rows).
+    // X = D (P V) (scatter rows, the optional equilibration on the way out).
     let mut x = vec![T::zero(); n * nrhs];
     for i in 0..n {
-        let dst = factors.perm[i] * nrhs;
-        x[dst..dst + nrhs].copy_from_slice(&y[i * nrhs..i * nrhs + nrhs]);
+        let p = factors.perm[i];
+        let src = &mut y[i * nrhs..i * nrhs + nrhs];
+        if let Some(s) = scale {
+            let sp = T::from_real(s[p]);
+            for v in src.iter_mut() {
+                *v = *v * sp;
+            }
+        }
+        x[p * nrhs..p * nrhs + nrhs].copy_from_slice(src);
     }
     Ok(x)
 }
