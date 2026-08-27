@@ -113,18 +113,18 @@ impl fmt::Display for MemoryEstimate {
 /// elimination/postorder (supernodes are numbered in postorder) to get the live
 /// panel peak and the accumulating compact factor - the same schedule the numeric
 /// path runs, so the estimate matches what it allocates.
-pub(crate) fn estimate_left_looking(
+pub(crate) fn estimate_left_looking<'a>(
     nsuper: usize,
     panel_bytes: &dyn Fn(usize) -> u64,
     compact_bytes: &dyn Fn(usize) -> u64,
-    update_list: &[Vec<usize>],
+    updaters: &dyn Fn(usize) -> &'a [crate::numeric::ll_common::Li],
     value_bytes: usize,
     input_bytes: u64,
 ) -> MemoryEstimate {
     let mut refc = vec![0usize; nsuper];
-    for ul in update_list {
-        for &k in ul {
-            refc[k] += 1;
+    for s in 0..nsuper {
+        for &k in updaters(s) {
+            refc[k as usize] += 1;
         }
     }
     let panels_all: u64 = (0..nsuper).map(panel_bytes).sum();
@@ -135,7 +135,8 @@ pub(crate) fn estimate_left_looking(
     let mut peak: i64 = 0;
     for s in 0..nsuper {
         live_panels += panel_bytes(s) as i64;
-        for &k in &update_list[s] {
+        for &k in updaters(s) {
+            let k = k as usize;
             refc[k] -= 1;
             if refc[k] == 0 {
                 live_panels -= panel_bytes(k) as i64;
@@ -180,7 +181,7 @@ pub(crate) fn estimate_left_looking(
 /// Multifrontal transient-peak model: the **contribution-block stack** under the
 /// rayon work-stealing schedule. Unlike left-looking, multifrontal holds dense
 /// fronts plus the contribution blocks (packed lower triangles,
-/// `cnrow·(cnrow+1)/2` each — the symmetric-LDLᵀ storage the numeric path
+/// `cnrow·(cnrow+1)/2` each, the symmetric-LDLᵀ storage the numeric path
 /// actually uses) of completed subtrees not yet consumed by their parent. The
 /// driver factors a whole assembly-tree level concurrently, so the
 /// conservative peak is, over the levels, the level's total front memory

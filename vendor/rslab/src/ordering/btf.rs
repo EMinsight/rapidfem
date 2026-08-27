@@ -14,7 +14,7 @@
 //!    triangular** form: all entries outside the diagonal blocks lie above
 //!    them, and each diagonal block is irreducible (strongly connected).
 //!
-//! Both passes are iterative (explicit stacks, no recursion — safe on
+//! Both passes are iterative (explicit stacks, no recursion, safe on
 //! arbitrarily deep graphs) and allocation-linear in `n + nnz`.
 
 /// Result of the BTF permutation of an `n×n` pattern.
@@ -31,26 +31,64 @@ pub(crate) struct BtfForm {
     pub block_ptr: Vec<usize>,
 }
 
-/// MC21-style maximum transversal on a CSC pattern.
-///
-/// Returns `row_match` where `row_match[j]` is the row matched to column `j`
-/// (`usize::MAX` if unmatched), together with the number of matched columns
-/// (the structural rank). A cheap greedy pass seeds the matching; remaining
-/// columns run an iterative augmenting-path DFS with per-column lookahead.
-/// Fully deterministic: columns are processed in natural order and adjacency
-/// in stored order.
+/// Maximum transversal on a CSC pattern (default candidate: diagonal-seeded
+/// Hopcroft-Karp). See [`hk_transversal`] and [`matching_candidates`].
+#[cfg(test)]
 pub(crate) fn max_transversal(
     n: usize,
     col_ptr: &[usize],
     row_idx: &[usize],
+) -> (Vec<usize>, usize) {
+    hk_transversal(n, col_ptr, row_idx, true)
+}
+
+/// Hopcroft-Karp maximum transversal on a CSC pattern.
+///
+/// Returns `row_match` where `row_match[j]` is the row matched to column `j`
+/// (`usize::MAX` if unmatched), together with the number of matched columns
+/// (the structural rank). An optional diagonal seed plus a first-free greedy
+/// pass seed the matching; the rest runs Hopcroft-Karp phases: a BFS
+/// layering over alternating paths from all free columns, then one sweep of
+/// vertex-disjoint shortest augmenting DFS, `O(sqrt(n) * nnz)` worst case.
+/// (The classic MC21 one-column-at-a-time DFS degenerates on the
+/// harmonic-balance circuit class — seconds instead of tens of milliseconds
+/// on `twotone` — because late columns re-walk ever longer alternating
+/// paths; phases amortize that.) Fully deterministic: columns are processed
+/// in natural order and adjacency in stored order.
+pub(crate) fn hk_transversal(
+    n: usize,
+    col_ptr: &[usize],
+    row_idx: &[usize],
+    diag_seed: bool,
 ) -> (Vec<usize>, usize) {
     const UNMATCHED: usize = usize::MAX;
     let mut row_match = vec![UNMATCHED; n]; // column -> row
     let mut col_of_row = vec![UNMATCHED; n]; // row -> column
     let mut n_matched = 0usize;
 
-    // Cheap greedy pass: first free row in each column.
+    // Seed pass 1: match every column to its structural diagonal entry when
+    // present. On circuit matrices the diagonal is the physically meaningful
+    // pairing (MNA conductances) — it is what the KLU pivoting prefers later
+    // — and seeding it keeps the final matching (and thus the per-block
+    // symmetrized pattern AMD orders) from drifting on augmenting-path
+    // accidents.
+    if diag_seed {
+        for j in 0..n {
+            for &r in &row_idx[col_ptr[j]..col_ptr[j + 1]] {
+                if r == j {
+                    col_of_row[j] = j;
+                    row_match[j] = j;
+                    n_matched += 1;
+                    break;
+                }
+            }
+        }
+    }
+    // Seed pass 2: first free row in each remaining column.
     for j in 0..n {
+        if row_match[j] != UNMATCHED {
+            continue;
+        }
         for &r in &row_idx[col_ptr[j]..col_ptr[j + 1]] {
             if col_of_row[r] == UNMATCHED {
                 col_of_row[r] = j;
@@ -64,13 +102,167 @@ pub(crate) fn max_transversal(
         return (row_match, n_matched);
     }
 
-    // Augmenting-path DFS for the remaining columns. `visited[c] == stamp`
-    // marks column `c` as on/behind the current search; `cheap[c]` remembers
-    // how far the lookahead has scanned column `c` across all searches (each
-    // entry is looked at as a lookahead candidate at most once globally).
+    // Hopcroft-Karp phases. `level[c]` is the alternating-path BFS distance
+    // of column `c` from the free columns this phase (`UNSET` = unreached,
+    // or consumed by an earlier DFS of the same phase).
+    const UNSET: usize = usize::MAX;
+    let mut level = vec![UNSET; n];
+    let mut queue: Vec<usize> = Vec::with_capacity(n);
+    // Per-phase adjacency cursor: every edge is scanned at most once per
+    // phase across all DFS of that phase.
+    let mut ptr: Vec<usize> = vec![0; n];
+    let mut col_stack = vec![0usize; n];
+    let mut path_row = vec![0usize; n];
+
+    loop {
+        // BFS layering from all free columns, stopping at the level of the
+        // shortest augmenting path (deeper layers cannot host a shortest
+        // path and would only waste work).
+        level.iter_mut().for_each(|v| *v = UNSET);
+        queue.clear();
+        for c in 0..n {
+            if row_match[c] == UNMATCHED {
+                level[c] = 0;
+                queue.push(c);
+            }
+        }
+        let mut shortest = UNSET;
+        let mut head = 0usize;
+        while head < queue.len() {
+            let c = queue[head];
+            head += 1;
+            if level[c] >= shortest {
+                break;
+            }
+            for &r in &row_idx[col_ptr[c]..col_ptr[c + 1]] {
+                let c2 = col_of_row[r];
+                if c2 == UNMATCHED {
+                    if shortest == UNSET {
+                        shortest = level[c];
+                    }
+                } else if level[c2] == UNSET {
+                    level[c2] = level[c] + 1;
+                    queue.push(c2);
+                }
+            }
+        }
+        if shortest == UNSET {
+            break; // no augmenting path left: the matching is maximum
+        }
+
+        // Vertex-disjoint shortest augmenting DFS from every free column,
+        // following strictly increasing levels. Exhausted or used columns
+        // drop out of the phase via `level = UNSET`.
+        ptr[..n].copy_from_slice(&col_ptr[..n]);
+        for jstart in 0..n {
+            if row_match[jstart] != UNMATCHED || level[jstart] != 0 {
+                continue;
+            }
+            let mut depth = 0usize;
+            col_stack[0] = jstart;
+            'dfs: loop {
+                let c = col_stack[depth];
+                let mut descended = false;
+                while ptr[c] < col_ptr[c + 1] {
+                    let r = row_idx[ptr[c]];
+                    ptr[c] += 1;
+                    let c2 = col_of_row[r];
+                    if c2 == UNMATCHED {
+                        // Augment along the stack; the used columns leave
+                        // the phase (vertex-disjointness).
+                        path_row[depth] = r;
+                        for k in (0..=depth).rev() {
+                            let ck = col_stack[k];
+                            let rk = path_row[k];
+                            col_of_row[rk] = ck;
+                            row_match[ck] = rk;
+                            level[ck] = UNSET;
+                        }
+                        n_matched += 1;
+                        break 'dfs;
+                    }
+                    if level[c2] == level[c] + 1 {
+                        path_row[depth] = r;
+                        depth += 1;
+                        col_stack[depth] = c2;
+                        descended = true;
+                        break;
+                    }
+                }
+                if descended {
+                    continue;
+                }
+                // Column exhausted for this phase.
+                level[c] = UNSET;
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+    }
+    (row_match, n_matched)
+}
+
+/// MC21 maximum transversal (first-free greedy seed + one-column-at-a-time
+/// augmenting DFS) with a deterministic work budget in adjacency steps.
+///
+/// MC21 walks different alternating paths than Hopcroft-Karp and therefore
+/// lands on a different (equally maximum) matching — on some circuit
+/// families (`onetone2`) a markedly better one for the downstream per-block
+/// AMD. It is kept as a *candidate* for [`matching_candidates`]; the budget
+/// bounds its known degeneration (`twotone`-class), where it returns `None`
+/// and the candidate is simply dropped.
+pub(crate) fn mc21_transversal(
+    n: usize,
+    col_ptr: &[usize],
+    row_idx: &[usize],
+    budget: usize,
+) -> Option<(Vec<usize>, usize)> {
+    const UNMATCHED: usize = usize::MAX;
+    let mut row_match = vec![UNMATCHED; n];
+    let mut col_of_row = vec![UNMATCHED; n];
+    let mut n_matched = 0usize;
+    for j in 0..n {
+        for &r in &row_idx[col_ptr[j]..col_ptr[j + 1]] {
+            if col_of_row[r] == UNMATCHED {
+                col_of_row[r] = j;
+                row_match[j] = r;
+                n_matched += 1;
+                break;
+            }
+        }
+    }
+    if n_matched < n {
+        n_matched = mc21_augment(
+            n,
+            col_ptr,
+            row_idx,
+            &mut row_match,
+            &mut col_of_row,
+            n_matched,
+            budget,
+        )?;
+    }
+    Some((row_match, n_matched))
+}
+
+/// MC21 augmenting-path DFS (one free column at a time, global cheap
+/// lookahead), bounded by `budget` adjacency steps (`None` on exhaustion).
+#[allow(clippy::too_many_arguments)]
+fn mc21_augment(
+    n: usize,
+    col_ptr: &[usize],
+    row_idx: &[usize],
+    row_match: &mut [usize],
+    col_of_row: &mut [usize],
+    mut n_matched: usize,
+    budget: usize,
+) -> Option<usize> {
+    const UNMATCHED: usize = usize::MAX;
+    let mut work = 0usize;
     let mut visited = vec![UNMATCHED; n];
     let mut cheap: Vec<usize> = col_ptr[..n].to_vec();
-    // DFS state: column stack, per-depth adjacency cursor, per-depth chosen row.
     let mut col_stack = vec![0usize; n];
     let mut cursor = vec![0usize; n];
     let mut path_row = vec![0usize; n];
@@ -88,23 +280,22 @@ pub(crate) fn max_transversal(
 
         'dfs: while augment_depth.is_none() {
             let c = col_stack[depth];
-            // Lookahead: any still-unmatched row in column `c` ends the search.
             while cheap[c] < col_ptr[c + 1] {
                 let r = row_idx[cheap[c]];
                 cheap[c] += 1;
+                work += 1;
                 if col_of_row[r] == UNMATCHED {
                     path_row[depth] = r;
                     augment_depth = Some(depth);
                     continue 'dfs;
                 }
             }
-            // Descend into the columns owning the matched rows of column `c`.
             let mut advanced = false;
             while cursor[depth] < col_ptr[c + 1] {
                 let r = row_idx[cursor[depth]];
                 cursor[depth] += 1;
+                work += 1;
                 let c2 = col_of_row[r];
-                debug_assert_ne!(c2, UNMATCHED, "lookahead already consumed free rows");
                 if visited[c2] == stamp {
                     continue;
                 }
@@ -120,14 +311,15 @@ pub(crate) fn max_transversal(
                 continue;
             }
             if depth == 0 {
-                break; // no augmenting path from `jstart`
+                break;
             }
             depth -= 1;
         }
+        if work > budget {
+            return None;
+        }
 
         if let Some(d) = augment_depth {
-            // Reassign the alternating path: column at depth k takes the row
-            // chosen at depth k (the row previously owned by depth k+1's column).
             for k in (0..=d).rev() {
                 let c = col_stack[k];
                 let r = path_row[k];
@@ -137,7 +329,51 @@ pub(crate) fn max_transversal(
             n_matched += 1;
         }
     }
-    (row_match, n_matched)
+    Some(n_matched)
+}
+
+/// Deterministic matching candidates for the KLU analyze bakeoff, or `None`
+/// when the pattern is structurally singular.
+///
+/// Fast path: a complete structural diagonal yields the single identity
+/// matching (the typical MNA case) at seed-pass cost. Otherwise up to three
+/// distinct maximum matchings: diagonal-seeded HK, free-seeded HK, and
+/// budgeted MC21 (dropped when its budget runs out). Different maximum
+/// matchings hand the downstream per-block AMD different symmetrized
+/// patterns — with several-x fill differences on the harmonic-balance
+/// class — so the caller scores the candidates and keeps the cheapest.
+pub(crate) fn matching_candidates(
+    n: usize,
+    col_ptr: &[usize],
+    row_idx: &[usize],
+) -> Option<Vec<Vec<usize>>> {
+    let (m1, k1) = hk_transversal(n, col_ptr, row_idx, true);
+    if k1 != n {
+        return None;
+    }
+    // Complete structural diagonal: the diagonal-seeded matching IS the
+    // identity, the canonical pairing; alternates would only wander off it.
+    if m1.iter().enumerate().all(|(j, &r)| r == j) {
+        return Some(vec![m1]);
+    }
+    let mut out = vec![m1];
+    let (m2, k2) = hk_transversal(n, col_ptr, row_idx, false);
+    if k2 == n && !out.contains(&m2) {
+        out.push(m2);
+    }
+    // Budget in adjacency steps: sized so the class where MC21's matching
+    // wins (onetone: ~34M steps) completes, while its degenerate class
+    // (twotone: >300M) is cut off after a hard-capped prefix (~150ms)
+    // instead of burning seconds. MC21 is an opportunistic extra candidate;
+    // losing it to the budget only removes one bakeoff entrant.
+    let nnz = col_ptr[n];
+    let budget = (128 * (nnz + n)).min(50_000_000);
+    if let Some((m3, k3)) = mc21_transversal(n, col_ptr, row_idx, budget) {
+        if k3 == n && !out.contains(&m3) {
+            out.push(m3);
+        }
+    }
+    Some(out)
 }
 
 /// Compute the block upper triangular form of a structurally nonsingular CSC
@@ -147,6 +383,7 @@ pub(crate) fn max_transversal(
 /// The row permutation composes the matching with the SCC order; the column
 /// permutation is the SCC order alone, so `row_perm[k]` and `col_perm[k]`
 /// address the same diagonal-block slot `k`.
+#[cfg(test)]
 pub(crate) fn block_triangular_form(
     n: usize,
     col_ptr: &[usize],
@@ -163,57 +400,82 @@ pub(crate) fn block_triangular_form(
     if n_matched != n {
         return None;
     }
+    Some(btf_from_matching(n, col_ptr, row_idx, row_match))
+}
+
+/// Tarjan SCC pass over the matched digraph: turns one maximum matching into
+/// the block-upper-triangular permutation pair (see module docs).
+///
+/// The row permutation composes the matching with the SCC order; the column
+/// permutation is the SCC order alone, so `row_perm[k]` and `col_perm[k]`
+/// address the same diagonal-block slot `k`.
+pub(crate) fn btf_from_matching(
+    n: usize,
+    col_ptr: &[usize],
+    row_idx: &[usize],
+    row_match: Vec<usize>,
+) -> BtfForm {
+    if n == 0 {
+        return BtfForm {
+            row_perm: Vec::new(),
+            col_perm: Vec::new(),
+            block_ptr: vec![0],
+        };
+    }
     // col_of_row[r] = the column matched to row r: node id of row r in the
     // matched digraph (node per column; edge j -> col_of_row[i] for each
-    // stored entry (i, j)).
-    let mut col_of_row = vec![0usize; n];
+    // stored entry (i, j)). 32-bit working arrays throughout: the pass is
+    // bound by the random `col_of_row`/`index`/`lowlink` accesses, and the
+    // KLU caller gates `n` to the 31-bit range before calling in.
+    debug_assert!(n < u32::MAX as usize);
+    let mut col_of_row = vec![0u32; n];
     for (j, &r) in row_match.iter().enumerate() {
-        col_of_row[r] = j;
+        col_of_row[r] = j as u32;
     }
 
     // Iterative Tarjan. Components are emitted in reverse topological order
     // of the edge direction above; placing them in emission order makes every
     // cross-block entry land ABOVE its diagonal block (block upper
-    // triangular) — see the module docs.
-    const UNSET: usize = usize::MAX;
-    let mut index = vec![UNSET; n]; // discovery index
-    let mut lowlink = vec![0usize; n];
+    // triangular), see the module docs.
+    const UNSET32: u32 = u32::MAX;
+    let mut index = vec![UNSET32; n]; // discovery index
+    let mut lowlink = vec![0u32; n];
     let mut on_stack = vec![false; n];
-    let mut scc_stack: Vec<usize> = Vec::with_capacity(n);
+    let mut scc_stack: Vec<u32> = Vec::with_capacity(n);
     // DFS state: (node, adjacency cursor) frames.
-    let mut frame_node = vec![0usize; n];
+    let mut frame_node = vec![0u32; n];
     let mut frame_cursor = vec![0usize; n];
-    let mut next_index = 0usize;
+    let mut next_index = 0u32;
     let mut col_perm: Vec<usize> = Vec::with_capacity(n);
     let mut block_ptr: Vec<usize> = vec![0];
 
     for root in 0..n {
-        if index[root] != UNSET {
+        if index[root] != UNSET32 {
             continue;
         }
         let mut top = 0usize;
-        frame_node[0] = root;
+        frame_node[0] = root as u32;
         frame_cursor[0] = col_ptr[root];
         index[root] = next_index;
         lowlink[root] = next_index;
         next_index += 1;
-        scc_stack.push(root);
+        scc_stack.push(root as u32);
         on_stack[root] = true;
 
         loop {
-            let v = frame_node[top];
+            let v = frame_node[top] as usize;
             let mut descended = false;
             while frame_cursor[top] < col_ptr[v + 1] {
-                let w = col_of_row[row_idx[frame_cursor[top]]];
+                let w = col_of_row[row_idx[frame_cursor[top]]] as usize;
                 frame_cursor[top] += 1;
-                if index[w] == UNSET {
+                if index[w] == UNSET32 {
                     index[w] = next_index;
                     lowlink[w] = next_index;
                     next_index += 1;
-                    scc_stack.push(w);
+                    scc_stack.push(w as u32);
                     on_stack[w] = true;
                     top += 1;
-                    frame_node[top] = w;
+                    frame_node[top] = w as u32;
                     frame_cursor[top] = col_ptr[w];
                     descended = true;
                     break;
@@ -235,6 +497,7 @@ pub(crate) fn block_triangular_form(
                     let Some(w) = scc_stack.pop() else {
                         unreachable!("Tarjan: v is on the stack");
                     };
+                    let w = w as usize;
                     on_stack[w] = false;
                     col_perm.push(w);
                     if w == v {
@@ -251,7 +514,7 @@ pub(crate) fn block_triangular_form(
                 break;
             }
             top -= 1;
-            let parent = frame_node[top];
+            let parent = frame_node[top] as usize;
             if lowlink[v] < lowlink[parent] {
                 lowlink[parent] = lowlink[v];
             }
@@ -260,11 +523,11 @@ pub(crate) fn block_triangular_form(
     debug_assert_eq!(col_perm.len(), n);
 
     let row_perm: Vec<usize> = col_perm.iter().map(|&j| row_match[j]).collect();
-    Some(BtfForm {
+    BtfForm {
         row_perm,
         col_perm,
         block_ptr,
-    })
+    }
 }
 
 #[cfg(test)]
