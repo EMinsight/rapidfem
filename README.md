@@ -131,13 +131,12 @@ frequency and port. `rapidfem.show(g)` sends a geometry to the viewer.
 - Lossy materials: complex permittivity with loss tangent and conductivity, surface impedance for
   metals, Debye dispersion; cached across sweeps.
 - Sparse solvers: pure-Rust [`rslab`](https://github.com/milanofthe/rslab) complex-symmetric LDLᵀ
-  (Bunch-Kaufman) with a-priori memory estimates; optional MKL PARDISO where `mkl_rt` is installed.
+  (Bunch-Kaufman) with a-priori memory estimates, vendored, no native dependencies.
 - Frequency sweep: assembles E/B once, refactors only the frequency-dependent K per point, reuses the
   symbolic factorisation pattern.
 - Eigenmode solver: shift-invert Lanczos in the B inner product, with a per-mode residual check.
-- Adaptive refinement: residual error estimator with Dörfler marking, exports a size field for gmsh
-  re-meshing.
-- Output: Touchstone (.s1p/.s2p/.snp), VTK field export, far-field NFFT.
+- Error estimation: residual error indicator with Dörfler marking (`ProblemFD.element_errors`).
+- Output: Touchstone (.s1p/.s2p/.snp), scikit-rf, far-field NFFT.
 - Parallel assembly: rayon-based element matrix evaluation.
 
 ## Time-domain backend (DGTD)
@@ -165,16 +164,11 @@ A    = ptd.state_space()                        # the verbatim operator
 
 Method notes and the `ProblemTD` API are in [issue #31](https://github.com/milanofthe/rapidfem/issues/31).
 
-## Solver backends
+## Sparse solver
 
-| Solver | Type | Notes |
-|--------|------|-------|
-| rslab | Complex-symmetric LDLᵀ (Bunch-Kaufman) | Pure Rust, no native dependencies, always available. Numeric-only refactorisation across sweeps, a-priori RAM gate. |
-| MKL PARDISO | Complex-symmetric LDLᵀ | Opt-in, needs `mkl_rt` on PATH. |
-
-Select with `RAPIDFEM_SOLVER` (`"auto"`, `"pardiso"`, `"rslab"`), set before `import rapidfem`. The
-default `"auto"` tries PARDISO, then rslab. For MKL: `conda install mkl` or `pip install mkl` (ensure
-`mkl_rt` is on PATH).
+Every factorisation runs on [`rslab`](https://github.com/milanofthe/rslab), vendored in
+`vendor/rslab`: a pure-Rust complex-symmetric LDLᵀ (Bunch-Kaufman) with numeric-only
+refactorisation across sweeps and an a-priori RAM gate.
 
 ## Verification
 

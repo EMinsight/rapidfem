@@ -139,28 +139,6 @@ def _capture_streams(on_line, stage: str = "cell"):
         t_err.join(timeout=1.0)
 
 
-def _td_result_payload(obj) -> dict[str, Any]:
-    """``TdScattering`` → an S-parameter payload in the same nested-list
-    shape the frequency-domain ``result`` event uses, so the UI plots it
-    with the existing S-parameter panel."""
-    import numpy as np
-
-    freqs = np.asarray(obj.frequencies, dtype=float).ravel()
-    s = np.asarray(obj.sparams)
-    n_freq, n_p, _ = s.shape
-    sparams_payload = [
-        [[[float(s[fi, r, c].real), float(s[fi, r, c].imag)]
-          for c in range(n_p)] for r in range(n_p)]
-        for fi in range(n_freq)
-    ]
-    return {
-        "frequencies": freqs.tolist(),
-        "sparams": sparams_payload,
-        "n_port": int(n_p),
-        "n_freq": int(n_freq),
-    }
-
-
 def _td_timeseries_payload(obj) -> dict[str, Any]:
     """``TdResponse`` / ``TdTransfer`` → a line-plot payload.
 
@@ -311,7 +289,7 @@ def _td_trajectory_payload(
 # Capture kinds whose display payload is built from a single item, with no
 # sim+result pairing, so they can be streamed the instant show() runs.
 _STREAMABLE_KINDS = frozenset({
-    "geometry", "td_result", "td_timeseries", "td_transfer", "td_trajectory",
+    "geometry", "td_timeseries", "td_transfer", "td_trajectory",
 })
 
 
@@ -334,11 +312,10 @@ def _serialize_streamable(item) -> dict[str, Any] | None:
         kind = "mesh" if p.get("kind") == "mesh" else "geometry"
         return {"kind": kind, "name": item.name, "payload": p}
 
-    if item.kind in ("td_result", "td_timeseries", "td_transfer", "td_trajectory"):
+    if item.kind in ("td_timeseries", "td_transfer", "td_trajectory"):
         # A transfer function reuses the time-series payload builder (it sets
         # domain="freq" itself).
         _td_builder = {
-            "td_result": _td_result_payload,
             "td_timeseries": _td_timeseries_payload,
             "td_transfer": _td_timeseries_payload,
             "td_trajectory": _td_trajectory_payload,

@@ -14,7 +14,7 @@
 
 import {
 	api_base, type GeometryPayload, type MeshPayload, type PythonError,
-	type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
+	type TdTimeSeriesPayload, type TdTrajectoryPayload,
 } from './api';
 
 export type StreamKind = 'stdout' | 'stderr';
@@ -22,7 +22,7 @@ export type StreamKind = 'stdout' | 'stderr';
 /** Display-event `kind`s the kernel forwards to `onDisplay`. */
 export type DisplayKind =
 	| 'geometry' | 'mesh' | 'result' | 'sweep_point'
-	| 'td_result' | 'td_timeseries' | 'td_transfer' | 'td_trajectory';
+	| 'td_timeseries' | 'td_transfer' | 'td_trajectory';
 
 export type KernelEvent =
 	| { type: 'stream'; stream: StreamKind; value: string }
@@ -30,7 +30,6 @@ export type KernelEvent =
 	| { type: 'display'; kind: 'mesh'; name: string; payload: MeshPayload }
 	| { type: 'display'; kind: 'result'; name: string; payload: SolveResultPayload }
 	| { type: 'display'; kind: 'sweep_point'; name: string; payload: SweepPointPayload }
-	| { type: 'display'; kind: 'td_result'; name: string; payload: TdResultPayload }
 	| { type: 'display'; kind: 'td_timeseries'; name: string; payload: TdTimeSeriesPayload }
 	| { type: 'display'; kind: 'td_transfer'; name: string; payload: TdTimeSeriesPayload }
 	| { type: 'display'; kind: 'td_trajectory'; name: string; payload: TdTrajectoryPayload }

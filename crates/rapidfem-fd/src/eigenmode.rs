@@ -220,7 +220,7 @@ pub fn solve_eigenmode(
     let b_mat = Coo { rows: idx_r.clone(), cols: idx_c.clone(), vals: b_vals, n: n_free };
 
     let t1 = web_time::Instant::now();
-    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    let mut solver = crate::solver::RslabSolver::new();
     solver.factorize(n_free, &idx_r, &idx_c, &shift_vals)?;
     eprintln!(
         "  Eigenmode: {} shift-invert in {:.1}ms",

@@ -11,28 +11,22 @@ edition = "2024"
 doctest = false
 
 [features]
-default = ["pardiso", "parallel", "vtk"]
-pardiso = ["dep:libloading"]
+default = ["parallel"]
 parallel = ["dep:rayon"]
-vtk = ["dep:vtkio"]
 
 [dependencies]
 rapidfem-core = { path = "../rapidfem-core" }
-# Default sparse direct solver (complex-symmetric LDLᵀ), vendored from
+# The sparse direct solver (complex-symmetric LDLᵀ), vendored from
 # https://github.com/milanofthe/rslab (see vendor/rslab/Cargo.toml header).
 # `tuning` provides the hardware probe for the a-priori RAM gate and the
-# batched-solve gate in solver/rslab_ldlt.rs.
+# batched-solve gate in solver.rs.
 rslab = { path = "../../vendor/rslab", features = ["tuning"] }
-# faer is used for the dense eigendecompositions (eigenmode.rs); the sparse
-# solve path is PARDISO/rslab via the SparseSolver trait.
+# faer is used for the dense eigendecompositions (eigenmode.rs); every sparse
+# solve goes through rslab (solver.rs).
 faer = { version = "0.24.0", default-features = false, features = ["std", "sparse-linalg"] }
 hashbrown = "0.16.1"
-libloading = { version = "0.9.0", optional = true }
-mshio = "0.4.2"
 num-complex = "0.4.6"
 rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-sprs = "0.11.4"
 toml = "1.1.2"
-vtkio = { version = "0.6.3", optional = true }
 web-time = "1.1"

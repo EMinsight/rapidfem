@@ -5,13 +5,12 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! `SparseSolver` impl backed by rslab's complex-symmetric LDLᵀ (Bunch-Kaufman).
+//! Sparse direct solve of the complex-symmetric FEM system with the vendored
+//! rslab LDLᵀ (Bunch-Kaufman), the one solver backend.
 //!
-//! rslab factors the complex-symmetric `A` directly (PARDISO mtype-6
-//! analogue), so unlike the Accelerate backend no 2N real-block reformulation
-//! is needed, and unlike faer no general-LU on the full pattern. The trait's
-//! full COO triplets are filtered to the lower triangle (rslab's `CscMatrix`
-//! convention, duplicates summed by `from_triplets`).
+//! Callers hand over full COO triplets (off-diagonal entries in both halves,
+//! as the assembly produces them); they are filtered to the lower triangle
+//! (rslab's `CscMatrix` convention, duplicates summed by `from_triplets`).
 //!
 //! Sweep amortisation: the first `factorize` runs the symbolic analysis (the
 //! ordering race; the worker count comes from the calibration when
@@ -29,7 +28,6 @@
 use num_complex::Complex64 as C64;
 use rslab::{CscMatrix, LdltSolver, LdltSymbolic, SolverSettings};
 use rslab::OrderingMethod;
-use super::SparseSolver;
 
 /// Refuse to factor when the estimated transient peak exceeds this fraction
 /// of TOTAL system RAM. Headroom for the OS, the assembly buffers and the
@@ -108,8 +106,10 @@ impl Default for RslabSolver {
     fn default() -> Self { Self::new() }
 }
 
-impl SparseSolver for RslabSolver {
-    fn factorize(
+impl RslabSolver {
+    /// Symbolic analysis plus numeric factorisation from full COO triplets.
+    /// Resets any previously stored factor.
+    pub fn factorize(
         &mut self,
         n: usize,
         rows: &[usize],
@@ -156,7 +156,7 @@ impl SparseSolver for RslabSolver {
     /// Numeric-only refactor on the cached symbolic and settings. Falls
     /// back to a full `factorize` when no symbolic is cached or the sparsity
     /// pattern changed (rslab rejects a pattern mismatch explicitly).
-    fn refactorize(
+    pub fn refactorize(
         &mut self,
         n: usize,
         rows: &[usize],
@@ -185,7 +185,8 @@ impl SparseSolver for RslabSolver {
         }
     }
 
-    fn solve(&mut self, b: &[C64]) -> Result<Vec<C64>, String> {
+    /// Solve `K · x = b` on the cached factorisation.
+    pub fn solve(&mut self, b: &[C64]) -> Result<Vec<C64>, String> {
         let solver = self.solver.as_ref()
             .ok_or_else(|| "rslab: solve before factorize".to_string())?;
         if b.len() != self.n {
@@ -198,7 +199,7 @@ impl SparseSolver for RslabSolver {
     /// to sequential solves when the staging buffers (~3·n·nrhs
     /// complex values: packed input, equilibrated copy, output) would not
     /// comfortably fit in the currently AVAILABLE RAM.
-    fn solve_many(&mut self, bs: &[Vec<C64>]) -> Result<Vec<Vec<C64>>, String> {
+    pub fn solve_many(&mut self, bs: &[Vec<C64>]) -> Result<Vec<Vec<C64>>, String> {
         let nrhs = bs.len();
         if nrhs <= 1 || self.solver.is_none() {
             return bs.iter().map(|b| self.solve(b)).collect();
@@ -228,15 +229,16 @@ impl SparseSolver for RslabSolver {
         Ok(x.chunks(n).map(<[C64]>::to_vec).collect())
     }
 
-    fn name(&self) -> &'static str { "rslab LDLᵀ" }
+    /// Backend name, for logs.
+    pub fn name(&self) -> &'static str { "rslab LDLᵀ" }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Round-trip on the same tiny complex-symmetric system the Accelerate
-    /// backend test uses, plus a numeric-only refactorize on scaled values.
+    /// Round-trip on a tiny complex-symmetric system, plus a numeric-only
+    /// refactorize on scaled values.
     #[test]
     fn solve_3x3_round_trip_and_refactor() {
         let rows = vec![0, 0, 1, 1, 1, 2, 2];

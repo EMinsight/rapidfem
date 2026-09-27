@@ -22,7 +22,6 @@ The only copyleft obligation on a distributed binary comes from linking Gmsh
 ────────────────────────────────────────────────────────────────────────
 
   gmsh                   GPL-2.0-or-later (with Gmsh additional permission)
-  Intel oneAPI MKL       Intel Simplified Software License (optional, runtime)
   faer (Rust)            MIT
   num-complex (Rust)     MIT / Apache-2.0
   ndarray (Rust)         MIT / Apache-2.0

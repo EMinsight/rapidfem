@@ -45,15 +45,11 @@ MANIFEST_SCHEMA = 2
 
 # Bake subprocesses pin OpenMP to one thread to avoid the gmsh-OCC
 # boolean-kernel deadlock on dense fragmented geometries (RFIC layouts
-# trigger it most often). PARDISO inside the FD solver is routed via
-# MKL's TBB backend instead, so it can still fan out across all cores
-# without ever sharing a thread pool with gmsh. rayon (the time-domain
-# stepper) keeps its own pool too. Net effect: gmsh stays serial,
-# everything else stays parallel.
+# trigger it most often). The Rust solvers use their own rayon pools, so
+# gmsh stays serial and everything else stays parallel.
 _BAKE_ENV = {
     **os.environ,
     "OMP_NUM_THREADS": "1",
-    "MKL_THREADING_LAYER": "TBB",
     "OPENBLAS_NUM_THREADS": "1",
 }
 

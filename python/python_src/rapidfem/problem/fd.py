@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Iterable
 
 import numpy as np
@@ -36,8 +37,7 @@ class ErrorIndicator:
     ----
     The indicator is purely diagnostic, calling
     :meth:`ProblemFD.element_errors` does **not** re-mesh or re-solve.
-    For an end-to-end adaptive sweep that consumes the indicator, pass
-    an :class:`Adaptive` to :meth:`ProblemFD.sweep`.
+    The adaptive sweep that consumes it is tracked in issue #43.
 
 
     Attributes
@@ -89,15 +89,14 @@ class Adaptive:
 
     Drives a Dörfler-marking loop on top of the driven sweep, elements
     carrying the highest residual error get their local mesh size cut
-    by ``refinement_ratio`` and the sweep is repeated. The default
-    parameters mirror the rapidfem CLI's standard adaptive flow.
+    by ``refinement_ratio`` and the sweep is repeated.
 
 
     Note
     ----
-    The adaptive loop runs inside the Rust solver and is reported via
-    the regular ``stderr`` log stream, there's no separate Python
-    progress callback yet.
+    The refinement loop is not wired yet (issue #43): passing an
+    ``Adaptive`` to :meth:`ProblemFD.sweep` warns and runs the sweep on
+    the given mesh. :meth:`ProblemFD.element_errors` gives the indicator.
 
 
     Example
@@ -248,8 +247,10 @@ class ProblemFD:
         freqs = [float(f) for f in frequencies]
         if not freqs:
             raise ValueError("sweep needs at least one frequency")
-        toml = self._assemble_toml(frequencies=freqs, z0=z0, adaptive=adaptive,
-                                   order=order)
+        if adaptive is not None:
+            warnings.warn("adaptive refinement is not wired yet (issue #43), "
+                          "the sweep runs on the given mesh", stacklevel=2)
+        toml = self._assemble_toml(frequencies=freqs, z0=z0, order=order)
         self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
         # The native callback is (freq_idx, freq, s_matrix). Compose an optional
         # user `on_frequency` with the UI's per-frequency streaming callback.
@@ -307,8 +308,8 @@ class ProblemFD:
                   z0: float = 50.0):
         """run a modal solve around ``target_frequency``
 
-        Uses shift-invert Lanczos with the configured direct factoriser
-        (PARDISO when available, faer otherwise) as the inner solver.
+        Uses shift-invert Lanczos with the rslab LDLᵀ factorisation as the
+        inner solver.
         Returns the list of :class:`Eigenmode` instances ordered by
         distance from the shift frequency.
 
@@ -636,7 +637,6 @@ class ProblemFD:
     def _assemble_toml(self, *,
                        frequencies: list[float],
                        z0: float,
-                       adaptive: Adaptive | None = None,
                        eigenmode: tuple[float, int] | None = None,
                        order: "int | str" = 2) -> str:
         """build the TOML config string the Rust solver expects
@@ -651,8 +651,6 @@ class ProblemFD:
             sweep points to embed in the ``[frequency]`` block
         z0 : float
             S-parameter reference impedance for the ``[output]`` block
-        adaptive : Adaptive, optional
-            adaptive-refinement parameters
         eigenmode : tuple[float, int], optional
             ``(target_frequency, n_modes)`` for an ``[eigenmode]`` block
 
@@ -731,12 +729,6 @@ class ProblemFD:
         if eigenmode is not None:
             f0, nm = eigenmode
             parts.append(f"[eigenmode]\ntarget_frequency = {_f64(f0)}\nn_modes = {nm}\n")
-
-        if adaptive is not None:
-            parts.append(
-                f"[adaptive]\ntheta = {_f64(adaptive.theta)}\n"
-                f"refinement_ratio = {_f64(adaptive.refinement_ratio)}\n"
-            )
 
         # Element order: the native default (no [element] section) is uniform
         # order 2. order=1 rides the wavelength policy with an unreachable

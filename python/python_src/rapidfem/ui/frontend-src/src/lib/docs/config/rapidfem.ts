@@ -40,7 +40,7 @@ export const features: Feature[] = [
 	},
 	{
 		title: 'Sparse Solvers',
-		description: 'Pure-Rust faer LU baseline, optional MKL PARDISO, and Apple Accelerate on macOS.'
+		description: 'Pure-Rust rslab complex-symmetric LDLT, vendored, no native dependencies.'
 	},
 	{
 		title: 'Frequency Sweep',

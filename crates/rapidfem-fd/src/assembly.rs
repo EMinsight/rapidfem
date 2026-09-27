@@ -258,15 +258,13 @@ pub fn assemble_and_solve_with_pml(
     let s_eq = equilibration_scaling(n_free, &coo_rows, &coo_cols, &coo_vals);
     apply_equilibration(&coo_rows, &coo_cols, &mut coo_vals, &s_eq);
 
-    // Backend-agnostic factor + solve via the SparseSolver trait. Selection
-    // honours RAPIDFEM_SOLVER (auto|pardiso|rslab).
-    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    let mut solver = crate::solver::RslabSolver::new();
     let t_solve = web_time::Instant::now();
     solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
     eprintln!("  {}: factorized in {:.1}ms", solver.name(), t_solve.elapsed().as_secs_f64()*1e3);
 
     // All driven-port RHS against the one factorisation, batched (one factor
-    // traversal for all RHS where the backend supports it).
+    // traversal for all RHS).
     let b_frees: Vec<Vec<C64>> = port_vectors.iter()
         .map(|bvec| free_dofs.iter().enumerate()
             .map(|(fi, &d)| bvec[d] * C64::from(s_eq[fi])).collect())
@@ -416,8 +414,7 @@ pub fn frequency_sweep_with_pml(
     // is frequency-independent. The COO entries at these indices are then
     // emitted UNCONDITIONALLY per frequency (no skip of exact-zero values),
     // so the sparsity pattern is guaranteed stable across the sweep — which
-    // the backends' numeric-only `refactorize` (PARDISO phase 22, rslab
-    // frozen-pattern factor) silently relies on.
+    // the numeric-only `refactorize` (rslab frozen-pattern factor) relies on.
     let mut robin_free_indices: Vec<usize> = port_tri_indices
         .iter()
         .flat_map(|tri_ids| tri_ids.iter().copied())
@@ -433,9 +430,9 @@ pub fn frequency_sweep_with_pml(
     robin_free_indices.sort_unstable();
     robin_free_indices.dedup();
 
-    // Pick backend once for the whole sweep, symbolic factorisation is
+    // One solver for the whole sweep: the symbolic factorisation is
     // amortised across frequencies via `solver.refactorize`.
-    let mut solver = crate::solver::pick(crate::solver::SolverChoice::from_env());
+    let mut solver = crate::solver::RslabSolver::new();
     let mut first_factor = true;
 
     // COO buffers for the per-frequency system matrix, reused across the
@@ -555,8 +552,7 @@ pub fn frequency_sweep_with_pml(
         }
 
         // Factor (symbolic once via `factorize`, then `refactorize` per freq
-        // reusing the sparsity pattern) and solve via the backend-agnostic
-        // SparseSolver trait.
+        // reusing the sparsity pattern) and solve.
         if first_factor {
             solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
             first_factor = false;
