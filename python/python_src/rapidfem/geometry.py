@@ -1167,6 +1167,46 @@ class Geometry(_GdsMixin, _PrimitivesMixin, _ImportMixin):
         self._apply_out_map([target], out_map[:1] if out_map else [[]])
         self._reresolve_children(top_level={id(target._entity)})
 
+    def _hollow(self, name: str) -> list[tuple["EntityCollection", float]]:
+        """Remove every volume named ``name`` from the model, keeping its walls
+        as boundary faces of the neighbouring volumes (a conductor becomes a
+        hole whose walls carry a surface BC). Faces shared by two removed
+        volumes (junctions of fragmented co-layer polygons) go with them.
+
+        Returns one ``(walls, 2V/S)`` pair per removed volume, with the
+        volume-to-surface thickness in metres: for a long trace of width w and
+        thickness t it is ``w t / (w + t)``, the thickness at which a
+        two-sided surface impedance on every wall reproduces the DC
+        resistance ``1/(sigma w t)``.
+        """
+        ents = [e for e in self._entities if e.dim == 3 and e.name == name]
+        walls: list[list[int]] = []
+        count: dict[int, int] = {}
+        t_eff: list[float] = []
+        for e in ents:
+            faces = [abs(t) for _, t in gmsh.model.getBoundary([(3, e.tag)], oriented=False)]
+            walls.append(faces)
+            for f in faces:
+                count[f] = count.get(f, 0) + 1
+            vol = gmsh.model.occ.getMass(3, e.tag)
+            area = sum(gmsh.model.occ.getMass(2, f) for f in faces)
+            t_eff.append(2.0 * vol / area * self._scale)
+        junctions = [f for f, n in count.items() if n > 1]
+        gmsh.model.occ.remove([(3, e.tag) for e in ents], recursive=False)
+        if junctions:
+            gmsh.model.occ.remove([(2, f) for f in junctions], recursive=True)
+        gmsh.model.occ.synchronize()
+        removed = {id(e) for e in ents}
+        self._entities = [e for e in self._entities if id(e) not in removed]
+        self._objects = [o for o in self._objects if id(o._entity) not in removed]
+        out = []
+        for faces, t in zip(walls, t_eff):
+            kept = [_Entity.from_dimtag(2, f) for f in faces if count[f] == 1]
+            for e in kept:
+                e._geometry = self
+            out.append((EntityCollection(self, kept), t))
+        return out
+
     def _apply_out_map(self, inputs: list[GeoObject], out_map: list) -> None:
         """For each input GeoObject, update its tag/cog/bbox from gmsh's out_map.
         If an input was split into multiple pieces, the first piece keeps the
