@@ -19,6 +19,8 @@ and check ``model.geometry.mesh_stats`` before committing to a sweep.
 """
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -146,6 +148,42 @@ class BuiltModel:
     footprint: tuple[float, float, float, float]  # (x0, y0, x1, y1) incl. margin
 
 
+#: Thickness-to-skin-depth window in which a surface impedance misses the
+#: strip resistance by more than a few percent (measured against a 2D
+#: quasi-static reference, issue #48); "auto" meshes the conductor there.
+SIBC_RATIO_LOW = 1.5
+SIBC_RATIO_HIGH = 10.0
+
+
+def _skin_depth(f: float, sigma: float) -> float:
+    return 1.0 / math.sqrt(math.pi * f * 4e-7 * math.pi * sigma)
+
+
+def _treatment(layer, override: str | None, band) -> str:
+    """Conductor treatment of one stack layer, see :func:`build`."""
+    t = override
+    if t is None:
+        if layer.is_pec:
+            return "pec"
+        if layer.type == "via":
+            return "volume"
+        t = "auto"
+    if t != "auto":
+        return t
+    if band is None:
+        warnings.warn(
+            f"rfic.build: no band given, layer {layer.name!r} uses a surface "
+            f"impedance; pass band=(f_min, f_max) so layers between "
+            f"{SIBC_RATIO_LOW} and {SIBC_RATIO_HIGH} skin depths are meshed as "
+            f"volume conductors", stacklevel=3)
+        return "sibc"
+    lo = layer.thickness / _skin_depth(band[0], layer.sigma)
+    hi = layer.thickness / _skin_depth(band[1], layer.sigma)
+    if hi < SIBC_RATIO_LOW or lo > SIBC_RATIO_HIGH:
+        return "sibc"
+    return "volume_iso"
+
+
 def _material_for(mat: StackMaterial, mesh_h: float | None = None):
     """rapidfem material instance for a stack material record."""
     from rapidfem.materials import Air, Dielectric
@@ -239,6 +277,7 @@ def build(
     air_top: float | None = None,
     pec_floor: bool = False,
     conductor_model: dict[str, str] | None = None,
+    band: tuple[float, float] | None = None,
     mesh: "MeshSpec | str | None" = None,
     passivation: str = "planar",
     pass_t_side: float = 0.6e-6,
@@ -271,8 +310,21 @@ def build(
         instead of an absorbing boundary.
     conductor_model : dict, optional
         Per-layer override of the conductor treatment: layer name ->
-        ``"sibc" | "pec" | "volume" | "volume_iso"``. Defaults: metals ->
-        sibc, vias -> volume (anisotropic), LOWLOSS -> pec.
+        ``"auto" | "sibc" | "pec" | "volume" | "volume_iso"``. Defaults:
+        metals -> auto, vias -> volume (anisotropic), LOWLOSS -> pec.
+        ``"sibc"`` and ``"pec"`` conductors are holes in the mesh whose walls
+        carry the boundary condition; the SIBC thickness per conductor piece is
+        ``2V/S`` (volume over wall area), which reproduces the DC resistance.
+        ``"auto"`` picks per layer from the thickness-to-skin-depth ratio over
+        ``band``: SIBC where ``t/delta < 1.5`` or ``> 10`` across the whole band
+        (the surface model is within a few percent there), otherwise an
+        isotropic volume conductor meshed at the skin depth.
+    band : (f_min, f_max), optional
+        Frequency band the model will be solved over, in Hz. Drives the
+        ``"auto"`` conductor choice and the volume-conductor mesh size. Without
+        it ``"auto"`` falls back to SIBC with a warning: between 1.5 and 10 skin
+        depths a surface impedance underestimates the strip resistance by up to
+        about 20 %.
     mesh : MeshSpec or {"fast", "balanced", "accurate"}, optional
         Mesh sizing policy. A preset name (or the default ``None``, which
         means ``"balanced"``) derives every size from the stack and the
@@ -491,21 +543,17 @@ def build(
     ]
 
     # ── conductor treatment ────────────────────────────────────────────────
-    # Interiors of SIBC/PEC shells are meshed as the surrounding oxide
-    # (decoupled by the shell); volume conductors carry their bulk sigma.
-    def _treatment(name: str) -> str:
-        if name in conductor_model:
-            return conductor_model[name]
-        layer = stack.by_name(name)
-        if layer.is_pec:
-            return "pec"
-        if layer.type == "via":
-            return "volume"
-        return "sibc"
+    # SIBC and PEC conductors become holes after the fragment (their walls
+    # carry the BC, see below); volume conductors carry their bulk sigma.
+    treatment = {name: _treatment(stack.by_name(name), conductor_model.get(name), band)
+                 for name in conductors}
 
     for name, objs in conductors.items():
         layer = stack.by_name(name)
-        t = _treatment(name)
+        t = treatment[name]
+        h = mesh.h(mesh.conductor)
+        if t == "volume_iso" and band is not None:
+            h = min(h, layer.thickness / 3.0, _skin_depth(band[1], layer.sigma))
         for o in objs:
             if t == "volume":
                 s = layer.sigma
@@ -515,7 +563,7 @@ def build(
                 o.material = Dielectric(er=1.0, conductivity=layer.sigma)
             else:
                 o.material = Dielectric(er=stack.oxide_er, tand=stack.oxide_tand)
-            o.maxh = mesh.h(mesh.conductor)
+            o.maxh = h
 
     # ── port plates (before fragmenting, so everything is conformal) ───────
     def _z_of(bound, lower: bool) -> float:
@@ -553,16 +601,23 @@ def build(
                *(pl for pl, _ in plates))
 
     # ── physics: conductor BCs, ports, outer boundary ──────────────────────
-    for name, objs in conductors.items():
+    for name in conductors:
         layer = stack.by_name(name)
-        t = _treatment(name)
+        t = treatment[name]
+        if t not in ("pec", "sibc"):
+            continue                    # volume conductors need no surface BC
+        pieces = g._hollow(name)
         if t == "pec":
-            PEC(*(o.faces for o in objs))
-        elif t == "sibc":
-            SurfaceImpedance(*(o.faces for o in objs),
-                             conductivity=layer.sigma,
-                             thickness=layer.thickness, two_sided=True)
-        # volume conductors need no surface BC
+            PEC(*(walls for walls, _ in pieces))
+            continue
+        # one SIBC per distinct effective thickness (to 1 %), not per polygon
+        by_t: dict[float, list] = {}
+        for walls, t_eff in pieces:
+            key = float(f"{t_eff:.2e}")
+            by_t.setdefault(key, []).append(walls)
+        for t_eff, walls in by_t.items():
+            SurfaceImpedance(*walls, conductivity=layer.sigma,
+                             thickness=t_eff, two_sided=True)
 
     for plate, z0 in plates:
         LumpedPort(plate, direction=(0, 0, 1), z0=z0)
