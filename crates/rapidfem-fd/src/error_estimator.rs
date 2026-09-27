@@ -30,59 +30,6 @@ pub struct ErrorEstimate {
     pub marked_elements: Vec<usize>,
 }
 
-/// Write a gmsh background mesh size field (.pos file).
-///
-/// For each element, computes a target size based on the error indicator:
-/// - Marked elements: current_h * refinement_ratio
-/// - Unmarked elements: keep current size
-///
-/// Usage: `gmsh model.geo -bgm size_field.pos -3 -o refined.msh`
-pub fn write_size_field(
-    path: &str,
-    mesh: &Mesh,
-    estimate: &ErrorEstimate,
-    refinement_ratio: f64,
-) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
-
-    let n_tets = mesh.n_tets();
-    let marked_set: std::collections::HashSet<usize> = estimate.marked_elements.iter().copied().collect();
-
-    // Compute current element size (max edge length) per tet
-    let h_k: Vec<f64> = (0..n_tets).map(|itet| {
-        let edges = &mesh.tet_to_edge[itet];
-        edges.iter().map(|&ei| mesh.edge_lengths[ei]).fold(0.0f64, f64::max)
-    }).collect();
-
-    // Compute target size per node (minimum of adjacent elements)
-    let n_nodes = mesh.n_nodes();
-    let mut node_size = vec![f64::INFINITY; n_nodes];
-
-    for itet in 0..n_tets {
-        let target = if marked_set.contains(&itet) {
-            h_k[itet] * refinement_ratio
-        } else {
-            h_k[itet]
-        };
-        for &ni in &mesh.tets[itet] {
-            node_size[ni] = node_size[ni].min(target);
-        }
-    }
-
-    // Write gmsh .pos format (View "size" with SP = scalar point)
-    writeln!(file, "View \"size\" {{")?;
-    for ni in 0..n_nodes {
-        let p = mesh.nodes[ni];
-        let s = node_size[ni];
-        if s < f64::INFINITY {
-            writeln!(file, "SP({:.10e},{:.10e},{:.10e}){{{:.10e}}};", p[0], p[1], p[2], s)?;
-        }
-    }
-    writeln!(file, "}};")?;
-
-    Ok(())
-}
 
 
 // `eval_curl_in_tet` lives in `crate::interp`, same analytic Nédélec-2

@@ -131,8 +131,8 @@ def initialize() -> None:
         send({"type": "ready"})
         return
 
-    # Replace stdio FIRST so any import-time prints from rapidfem (e.g. MKL
-    # detection logs) also route through the protocol.
+    # Replace stdio FIRST so any import-time prints from rapidfem also route
+    # through the protocol.
     sys.stdout = _ProtocolWriter("stdout")
     sys.stderr = _ProtocolWriter("stderr")
 

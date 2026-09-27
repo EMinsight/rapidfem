@@ -20,10 +20,6 @@ pub struct Config {
     pub materials: Vec<MaterialConfig>,
     pub pec: PecConfig,
     #[serde(default)]
-    pub solver: SolverConfig,
-    #[serde(default)]
-    pub adaptive: Option<AdaptiveConfig>,
-    #[serde(default)]
     pub eigenmode: Option<EigenmodeConfig>,
     #[serde(default)]
     pub pml: Vec<PmlConfig>,
@@ -98,17 +94,6 @@ impl ElementConfig {
         }
     }
 }
-
-#[derive(Deserialize)]
-pub struct AdaptiveConfig {
-    #[serde(default = "default_theta")]
-    pub theta: f64,
-    #[serde(default = "default_refinement_ratio")]
-    pub refinement_ratio: f64,
-}
-
-fn default_theta() -> f64 { 0.5 }
-fn default_refinement_ratio() -> f64 { 0.5 }
 
 #[derive(Deserialize)]
 pub struct EigenmodeConfig {
@@ -425,33 +410,17 @@ pub struct PecConfig {
 }
 
 #[derive(Deserialize, Default)]
-pub struct SolverConfig {
-    #[serde(default = "default_solver_prefer")]
-    pub prefer: String,
-}
-
-#[derive(Deserialize, Default)]
 pub struct OutputConfig {
-    #[serde(default)]
-    pub touchstone: Option<String>,
     #[serde(default = "default_z0")]
     pub z0: f64,
-    #[serde(default)]
-    pub vtk: Option<String>,
-    #[serde(default)]
-    pub farfield: Option<String>,
     /// Physical tag of the NFFT surface (defaults to ABC tag)
     #[serde(default)]
     pub nfft_tag: Option<i32>,
-    /// Optional CSV path for group delay τ_g = -dφ/dω of S-parameters.
-    #[serde(default)]
-    pub group_delay: Option<String>,
 }
 
 fn default_mode() -> [usize; 2] { [1, 0] }
 fn default_one() -> f64 { 1.0 }
 fn default_z0() -> f64 { 50.0 }
-fn default_solver_prefer() -> String { "auto".to_string() }
 fn default_z_dir() -> [f64; 3] { [0.0, 0.0, 1.0] }
 fn default_floquet_mode() -> u32 { 1 }
 fn default_wave_kind() -> String { "auto".to_string() }

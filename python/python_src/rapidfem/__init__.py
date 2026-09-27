@@ -1,55 +1,17 @@
-"""rapidfem, frequency-domain electromagnetic FEM solver in Rust.
+"""rapidfem, frequency- and time-domain electromagnetic FEM solver in Rust.
 
 Quick start::
 
-    import rapidfem
-    sim = rapidfem.Simulation.from_files("mesh.msh", "config.toml")
-    result = sim.run_sweep()
+    import rapidfem as rf
+    g = rf.Geometry(maxh=rf.lambda_maxh(f_max=12e9))
+    ...                                   # build geometry, assign physics
+    g.mesh()
+    result = rf.Problem(g).sweep(freqs)
     print(result.frequencies.shape, result.sparams.shape)
 
-Solver backend
---------------
-The PyPI wheel defaults to the pure-Rust ``rslab`` complex-symmetric LDLᵀ
-solver (no native dependencies). To opt in to MKL PARDISO, set the env var
-**before** importing rapidfem::
-
-    import os
-    os.environ["RAPIDFEM_SOLVER"] = "pardiso"   # or "auto"
-    import rapidfem
-
-PARDISO additionally requires ``mkl_rt`` on the system PATH, see the
-README for install options.
+Every sparse solve runs on the vendored pure-Rust rslab complex-symmetric
+LDLᵀ solver; there are no native dependencies.
 """
-import os
-import sys
-
-# Make MKL loadable for PARDISO. Rust's libloading uses LoadLibraryA which
-# doesn't honour os.add_dll_directory, but if mkl_rt is already in the
-# process's loaded-module table, LoadLibraryA returns that handle by name.
-# So we pre-load via ctypes after extending the DLL search to common
-# conda/anaconda locations.
-if sys.platform == "win32":
-    _added: list[str] = []
-    _conda = os.environ.get("CONDA_PREFIX")
-    _cands = [
-        os.path.join(_conda, "Library", "bin") if _conda else None,
-        os.path.join(sys.prefix, "Library", "bin"),
-        os.path.join(sys.base_prefix, "Library", "bin"),
-    ]
-    for _p in _cands:
-        if _p and os.path.isdir(_p) and os.path.exists(os.path.join(_p, "mkl_rt.2.dll")):
-            try:
-                os.add_dll_directory(_p)  # type: ignore[attr-defined]
-                _added.append(_p)
-            except (AttributeError, OSError):
-                pass
-    if _added:
-        try:
-            import ctypes
-            ctypes.CDLL("mkl_rt.2.dll")  # pre-load so libloading picks up the handle
-        except OSError:
-            pass
-
 from rapidfem._native import SweepResult, Eigenmode, RadiationPattern
 from rapidfem.geometry import Geometry, GeoObject, EntityCollection, FaceCollection, EdgeCollection, MeshStats
 from rapidfem.materials import (

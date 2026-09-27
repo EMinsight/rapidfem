@@ -236,7 +236,7 @@ class Session:
         after the call returns, so it isn't interrupted mid-solve there
         either). On Windows there is no reliable signal path to a non-console
         child, so we hard-stop the worker. Either way a long native solve
-        (PARDISO / gmsh) can only be stopped by terminating the process, so the
+        (rslab / gmsh) can only be stopped by terminating the process, so the
         Windows path is also the robust "stop a runaway solve" path: the worker
         dies, the running cell ends (`worker-exit`), and `_get_or_create`
         spawns a fresh kernel on the next run (state is reset, like Restart).

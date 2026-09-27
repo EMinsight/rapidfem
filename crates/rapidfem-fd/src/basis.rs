@@ -282,20 +282,6 @@ impl NedelecBasis {
         self.tri_nnz[i]
     }
 
-    /// Convert the flat surface (tri) data array to a CSR matrix, dropping zeros.
-    pub fn generate_csr(
-        &self,
-        data: &[num_complex::Complex64],
-    ) -> sprs::CsMat<num_complex::Complex64> {
-        use sprs::TriMat;
-        let mut tri_mat = TriMat::new((self.n_field, self.n_field));
-        for (idx, &val) in data.iter().enumerate() {
-            if val.re != 0.0 || val.im != 0.0 {
-                tri_mat.add_triplet(self.tri_rows[idx], self.tri_cols[idx], val);
-            }
-        }
-        tri_mat.to_csr()
-    }
 }
 
 /// Convert global node indices in edge/tri arrays to local tet indices (0-3).
