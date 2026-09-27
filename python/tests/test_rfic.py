@@ -359,3 +359,39 @@ def test_build_conductor_model_follows_band(mini_gds, band, expected):
         assert g.mesh_stats.n_tets > 0
     finally:
         g.close()
+
+
+def test_hollow_drops_junction_faces_of_fragmented_polygons(tmp_path):
+    """Two overlapping TopMetal2 rectangles are fragmented, not fused; the
+    face between the pieces must vanish with the hole instead of carrying a
+    surface impedance inside the trace (issue #49)."""
+    gdstk = pytest.importorskip("gdstk")
+    from rapidfem.physics import SurfaceImpedance
+
+    lib = gdstk.Library(unit=1e-6)
+    cell = lib.new_cell("two")
+    cell.add(gdstk.rectangle((-30, -5), (5, 5), layer=134))
+    cell.add(gdstk.rectangle((-5, -5), (30, 5), layer=134))
+    cell.add(gdstk.rectangle((-40, -20), (40, 20), layer=250))
+    path = tmp_path / "two.gds"
+    lib.write_gds(str(path))
+
+    um = 1e-6
+    stack = rfic.Stack.sg13g2()
+    model = rfic.build(str(path), stack, band=(0.1e9, 1e9),
+                       margin=40 * um, air=30 * um, air_top=60 * um, mesh="fast")
+    g = model.geometry
+    try:
+        walls = [e for p in g._physics if isinstance(p, SurfaceImpedance)
+                 for e in p._entities]
+        # the pieces meet at x = -5 um and x = +5 um: no x-normal wall may
+        # remain there (the real end walls sit at x = -30 um and +30 um)
+        sc = g._scale
+        inner = [e for e in walls
+                 if (e.bbox[3] - e.bbox[0]) * sc < 0.5 * um
+                 and -29 * um < e.cog[0] * sc < 29 * um]
+        assert not inner, f"{len(inner)} junction faces kept inside the trace"
+        g.mesh()
+        assert g.mesh_stats.n_tets > 0
+    finally:
+        g.close()
