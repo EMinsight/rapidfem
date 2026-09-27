@@ -3,9 +3,9 @@
 # Copyright (C) 2024-2026 Milan Rother and rapidfem contributors
 """Unit tests for the SurfaceImpedance face topologies (no solve).
 
-Pins the finite-thickness config boundary: boundary faces emit no flag
-(coth(γt)), conductor walls emit ``two_sided`` (coth(γt/2)), embedded sheets
-emit ``sheet`` (coth(γt/2)/2). Also pins the warning for a BC on the complete
+Pins what reaches the native model: boundary faces carry neither flag
+(coth(γt)), conductor walls carry ``two_sided`` (coth(γt/2)), embedded sheets
+carry ``sheet`` (coth(γt/2)/2). Also pins the warning for a BC on the complete
 shell of a solid that is still meshed (issue #46).
 """
 import warnings
@@ -13,6 +13,7 @@ import warnings
 import pytest
 
 import rapidfem as rf
+from rapidfem._native import Model
 
 
 def _sibc(**kwargs):
@@ -21,29 +22,36 @@ def _sibc(**kwargs):
     return rf.SurfaceImpedance(plate, **kwargs)
 
 
+def _native(sibc, tag=42) -> str:
+    """The model entry of `sibc` under `tag`, as the native repr."""
+    model = Model()
+    sibc._add_to(model, tag)
+    return repr(model)
+
+
 def test_default_is_one_sided():
-    toml = _sibc(conductivity=5.8e7, thickness=3e-6)._to_toml(tag=42)
-    assert 'type = "surface_impedance"' in toml
-    assert "thickness = " in toml
-    assert "two_sided" not in toml
+    entry = _native(_sibc(conductivity=5.8e7, thickness=3e-6), tag=42)
+    assert "SurfaceImpedance" in entry
+    assert "thickness: Some(" in entry
+    assert "two_sided: false" in entry and "sheet: false" in entry
 
 
 def test_two_sided_emits_flag():
-    toml = _sibc(conductivity=5.8e7, thickness=3e-6, two_sided=True)._to_toml(tag=42)
-    assert "thickness = " in toml
-    assert "two_sided = true" in toml
+    entry = _native(_sibc(conductivity=5.8e7, thickness=3e-6, two_sided=True), tag=42)
+    assert "thickness: Some(" in entry
+    assert "two_sided: true" in entry
 
 
 def test_semi_infinite_has_no_thickness_terms():
-    toml = _sibc(conductivity=5.8e7)._to_toml(tag=7)
-    assert "thickness" not in toml
-    assert "two_sided" not in toml
+    entry = _native(_sibc(conductivity=5.8e7), tag=7)
+    assert "thickness: None" in entry
+    assert "two_sided: false" in entry
 
 
 def test_sheet_emits_flag():
-    toml = _sibc(conductivity=3e7, thickness=1e-6, sheet=True)._to_toml(tag=42)
-    assert "sheet = true" in toml
-    assert "two_sided" not in toml
+    entry = _native(_sibc(conductivity=3e7, thickness=1e-6, sheet=True), tag=42)
+    assert "sheet: true" in entry
+    assert "two_sided: false" in entry
 
 
 def test_sheet_and_two_sided_exclude_each_other():

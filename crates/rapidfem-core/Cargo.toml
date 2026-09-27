@@ -19,4 +19,3 @@ faer = { version = "0.24", default-features = false, features = ["std"] }
 hashbrown = "0.16.1"
 mshio = "0.4.2"
 num-complex = "0.4.6"
-serde = { version = "1.0.228", features = ["derive"] }

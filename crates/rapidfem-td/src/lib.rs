@@ -12,6 +12,7 @@
 //! issue #27 for the work-package breakdown.
 
 pub mod absorber;
+pub mod build;
 pub mod constants;
 pub mod dg_basis;
 pub mod dispersive;

@@ -11,6 +11,7 @@
 
 pub mod constants;
 pub mod linalg;
+pub mod model;
 pub mod quadrature;
 pub mod mesh;
 pub mod quality;

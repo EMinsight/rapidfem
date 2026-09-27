@@ -22,6 +22,7 @@ import time
 import numpy as np
 
 from .._native import TdOperator
+from ._model import build_model
 from ..excitation import GaussianPulse
 
 _FLUX = {"upwind": 1.0, "central": 0.0}
@@ -32,18 +33,6 @@ _COMP = {"x": 0, "y": 1, "z": 2}
 # measured in metres); `c` maps operator results to physical SI units,
 # `t_op = c·t_seconds`, `f_Hz = c·ω_op/(2π)`.
 C_LIGHT = 299_792_458.0
-
-# Matched-absorber loss budget. An rf.PML region wires through to the TD
-# backend as a graded impedance-matched absorbing layer. The loss rate `nu`
-# ramps quadratically (`nu_max·frac²`) by depth into the layer; round-trip
-# attenuation through a quadratically graded slab of thickness `t` is roughly
-# `exp(-2·nu_max·t/3)`. Setting `nu_max = _ABSORBER_LOSS_BUDGET / thickness`
-# fixes `nu_max·t` regardless of slab depth, so the layer absorbs equally well
-# at any thickness. `_ABSORBER_LOSS_BUDGET = 24` gives a round-trip reflection
-# of `exp(-2·24/3) ≈ 1e-7`, far below 1 %. (`rf.PML.delta_max` is the
-# frequency-domain coordinate-stretch magnitude, a different quantity, and is
-# deliberately NOT used as the TD loss rate.)
-_ABSORBER_LOSS_BUDGET = 24.0
 
 # Explicit-integrator (LSERK4) CFL calibration. The exponential propagator
 # is unconditionally stable; the explicit stepper is not, so `cfl_dt`
@@ -105,311 +94,6 @@ def _arr(y):
     """A contiguous 1-D float64 array, the zero-copy form the native
     operator reads directly from its buffer (no Python-list round-trip)."""
     return np.ascontiguousarray(y, dtype=np.float64).ravel()
-
-
-def _volume_materials(geometry):
-    """Yield ``(material, tag)`` for each unique volume :class:`Material`
-    carrying a physical-group tag. The single walk + ``id``-dedup that
-    :func:`_collect_materials` and :func:`_collect_dispersive` share.
-    """
-    from ..materials import Material
-
-    seen = set()
-    for ent in getattr(geometry, "_entities", []):
-        mat = getattr(ent, "material", None)
-        if not isinstance(mat, Material) or getattr(ent, "dim", None) != 3:
-            continue
-        if id(mat) in seen:
-            continue
-        seen.add(id(mat))
-        tag = geometry._material_tags.get(id(mat))
-        if tag is None:
-            continue
-        yield mat, int(tag)
-
-
-def _collect_materials(geometry):
-    """Walk the geometry's volume materials.
-
-    Returns ``[(tag, eps_diag, mu_diag, sigma)]`` for the native TD operator.
-    A material's *non-dispersive* permittivity is reported here; a Debye
-    material's non-dispersive permittivity is its ``er_inf`` (the
-    high-frequency limit), since the dispersion above ``er_inf`` is supplied
-    by the ADE polarisation machinery (see :func:`_collect_dispersive`), not
-    as a constant permittivity. A loss tangent is a frequency-domain effect
-    and is not turned into a constant conductivity here.
-    """
-    out = []
-    for mat, tag in _volume_materials(geometry):
-        eps = mat.er_diag if mat.er_diag is not None else (mat.er,) * 3
-        # A Debye material's non-dispersive permittivity is its er_inf; the
-        # dispersive operator forces eps = er_inf on these tets anyway, but
-        # reporting it here keeps the material assignment self-consistent.
-        if getattr(mat, "debye", None) is not None:
-            eps = (mat.debye.er_inf,) * 3
-        mu = mat.ur_diag if mat.ur_diag is not None else (mat.ur,) * 3
-        out.append((
-            tag,
-            tuple(float(v) for v in eps),
-            tuple(float(v) for v in mu),
-            float(mat.conductivity),
-        ))
-    return out
-
-
-def _collect_dispersive(geometry):
-    """Walk the geometry's volume materials for Debye dispersive components.
-
-    Returns ``[(tag, er_inf, er_static, tau_s)]`` for the native TD
-    operator's ``dispersive`` argument. Each volume :class:`Material`
-    carrying a :class:`rapidfem.Debye` component runs the time-domain
-    auxiliary-differential-equation (ADE) update, the operator appends a
-    per-element polarisation field and integrates ``dP/dt = a*P + g*E``.
-
-    The Drude model is intentionally not collected here: the time-domain
-    backend's ``dispersive.rs`` carries only the first-order Debye ADE.
-    Drude (a second-order auxiliary equation) is a future extension.
-    """
-    out = []
-    for mat, tag in _volume_materials(geometry):
-        debye = getattr(mat, "debye", None)
-        if debye is None:
-            continue
-        out.append((
-            tag,
-            float(debye.er_inf),
-            float(debye.er_static),
-            float(debye.tau_s),
-        ))
-    return out
-
-
-def _collect_ports(geometry):
-    """Walk the geometry's port physics, :class:`RectWaveguidePort`,
-    :class:`CoaxPort` and :class:`FloquetPort`.
-
-    Returns ``(rect_ports, coax_ports, floquet_ports, wave_ports)``:
-
-    - ``rect_ports`` is ``[(face_tag, mode_m, mode_n, direction, z0)]`` for
-      the native TD operator's rectangular ``TE_mn`` ports
-    - ``coax_ports`` is ``[(face_tag, center)]`` for its coaxial TEM ports
-    - ``floquet_ports`` is ``[(face_tag, pol_mode, scan_theta, scan_phi)]``
-      for its Floquet plane-wave ports, ``pol_mode`` is ``1`` (TE) or
-      ``2`` (TM), matching the FD ``mode_nr`` convention; scan angles
-      are radians.
-    - ``wave_ports`` is ``[(face_tag, te, mode_index)]`` for numerically
-      solved cross-section modes (:class:`WavePort`), ``te`` selects
-      TE vs TM, ``mode_index`` picks the mode by ascending cutoff.
-
-    Operator port indices follow the geometry declaration order, with
-    rectangular ports first, coax ports next, Floquet ports after, and
-    wave ports last, matching the native ``TdOperator.from_mesh_bytes``
-    layout.
-
-    A waveguide port has ``direction`` ``None``, its frame is auto-fit
-    from the face. A coax port carries the analytic TEM ``E_ρ ∝ ρ̂/ρ``
-    annular mode and forwards its optional axis ``origin`` to the native
-    ``center`` override. A Floquet port carries a uniform plane wave with
-    the TE / TM polarisation and the scan angles (``scan_theta_deg``,
-    ``scan_phi_deg``) converted to radians; at oblique scan the
-    transverse phase factor is dropped (documented approximation, see
-    :class:`FloquetPort`).
-
-    :class:`LumpedPort` is rejected, the time-domain backend has no
-    lumped port (a uniform delta-gap profile only works on a genuine
-    parallel-plate gap, not on concentrated quasi-TEM lines). Use a
-    modal or wave port instead.
-    """
-    import math
-    from ..physics import (
-        CoaxPort, FloquetPort, LumpedPort, RectWaveguidePort, WavePort,
-    )
-
-    rect_out = []
-    coax_out = []
-    floquet_out = []
-    wave_out = []
-    for phys in getattr(geometry, "_physics", []):
-        tag = geometry._physics_tags.get(id(phys))
-        if tag is None:
-            continue
-        if isinstance(phys, RectWaveguidePort):
-            mode = (int(phys.mode[0]), int(phys.mode[1]))
-            rect_out.append((int(tag), mode[0], mode[1], None, 1.0))
-        elif isinstance(phys, WavePort):
-            # Numerically-solved cross-section mode:
-            # (tag, te?, mode_index, k0). k0 = 2π f0 / c in 1/m (the mesh
-            # is in metres); k0 <= 0 (f0 None) selects the scalar TE/TM
-            # solve, k0 > 0 the inhomogeneous vector solve.
-            k0 = (
-                2.0 * math.pi * phys.f0 / 299_792_458.0
-                if phys.f0 is not None
-                else -1.0
-            )
-            wave_out.append(
-                (int(tag), bool(phys.te), int(phys.mode_index), float(k0))
-            )
-        elif isinstance(phys, LumpedPort):
-            # The time-domain backend has no lumped port. A lumped
-            # (delta-gap, uniform-profile) source only carries a clean
-            # mode on a genuine parallel-plate gap; on a concentrated
-            # quasi-TEM line (microstrip, CPW, patch feed, spiral) the
-            # uniform profile excites spurious evanescent modes and the
-            # transmitted power is undercounted (see the abandoned
-            # Thevenin experiments on feature/td-lumped-thevenin-v2).
-            # The correct TD path for such lines is a wave port whose
-            # mode profile is computed by a 2D cross-section eigensolve.
-            raise NotImplementedError(
-                "LumpedPort is not supported by the time-domain backend. "
-                "Use a modal port (RectWaveguidePort, CoaxPort) for "
-                "waveguide / TEM geometries, or a WavePort (2D "
-                "cross-section eigensolve) for microstrip-class lines. "
-                "The frequency-domain backend (ProblemFD) still supports "
-                "LumpedPort via its Robin boundary condition."
-            )
-        elif isinstance(phys, CoaxPort):
-            center = (
-                None
-                if phys.origin is None
-                else (float(phys.origin[0]), float(phys.origin[1]), float(phys.origin[2]))
-            )
-            coax_out.append((int(tag), center))
-        elif isinstance(phys, FloquetPort):
-            # mode_nr 1 -> TE, mode_nr 2 -> TM, matching the FD backend's
-            # FloquetPort.mode_nr field; default phys.mode_nr is 1.
-            pol_mode = int(phys.mode_nr)
-            theta = math.radians(float(phys.scan_theta_deg))
-            phi = math.radians(float(phys.scan_phi_deg))
-            floquet_out.append((int(tag), pol_mode, theta, phi))
-    return rect_out, coax_out, floquet_out, wave_out
-
-
-def _collect_pec(geometry):
-    """Walk the geometry's :class:`PEC` physics objects and return the
-    face tags of *internal* PEC plates (thin sheets inside the
-    domain, e.g. a microstrip trace).
-
-    Domain-boundary PEC faces are handled automatically by the TD
-    operator (a boundary face without any port assignment is PEC by
-    default); they are silently filtered out here. Only the internal
-    plates - where the face has neighbour tets on both sides - need
-    the explicit `pec_faces` wiring that retags both sides to behave
-    as PEC walls.
-
-    The returned tags include every face tag listed under `rf.PEC`;
-    the Rust side accepts the union and only retags faces whose
-    triangle list actually sits between two tets, so passing
-    boundary tags through is a no-op.
-    """
-    from ..physics import PEC
-
-    tags = []
-    for phys in getattr(geometry, "_physics", []):
-        if not isinstance(phys, PEC):
-            continue
-        tag = geometry._physics_tags.get(id(phys))
-        if tag is None:
-            continue
-        if isinstance(tag, tuple):
-            for t in tag:
-                tags.append(int(t))
-        else:
-            tags.append(int(tag))
-    return tags
-
-
-def _collect_abc(geometry):
-    """Walk the geometry's :class:`ABC` physics objects.
-
-    Returns ``[face_tag]`` for the native TD operator's ``abc_faces``
-    argument. Each face is registered with the operator as a
-    pure-absorbing boundary (a :class:`PortSpec` with ``mode = None``),
-    which the DG flux treats as a Silver-Mueller first-order ABC:
-    near-normally-incident outgoing waves leave with negligible
-    reflection, oblique incidence reflects more.
-
-    The TD characteristic absorber is a first-order condition, the same
-    order as the FD ``rf.ABC``. The user keeps a single ``rf.ABC(*faces)``
-    declaration that both backends respect; only its boundary
-    treatment differs.
-    """
-    from ..physics import ABC
-
-    tags = []
-    for phys in getattr(geometry, "_physics", []):
-        if not isinstance(phys, ABC):
-            continue
-        tag = geometry._physics_tags.get(id(phys))
-        if tag is None:
-            continue
-        if isinstance(tag, tuple):
-            for t in tag:
-                tags.append(int(t))
-        else:
-            tags.append(int(tag))
-    return tags
-
-
-def _collect_periodic(geometry):
-    """Walk the geometry's :class:`PeriodicBoundary` physics objects.
-
-    Returns ``[(face_tag_a, face_tag_b)]`` for the native TD operator's
-    ``periodic_pairs`` argument. Each :class:`PeriodicBoundary` registers
-    as two physical-group tags in the gmsh export (one per side), stored
-    by the geometry as a ``(tag_a, tag_b)`` tuple under ``_physics_tags``;
-    this walker pulls each tuple out in declaration order, so the native
-    operator's periodic matcher sees the pairs in the order they were
-    declared in Python.
-    """
-    from ..physics import PeriodicBoundary
-
-    out = []
-    for phys in getattr(geometry, "_physics", []):
-        if not isinstance(phys, PeriodicBoundary):
-            continue
-        pair = geometry._physics_tags.get(id(phys))
-        if pair is None or not isinstance(pair, tuple):
-            continue
-        out.append((int(pair[0]), int(pair[1])))
-    return out
-
-
-def _collect_absorbers(geometry):
-    """Walk the geometry's :class:`PML` physics regions.
-
-    Each :class:`rapidfem.PML` terminates the domain with a volumetric
-    absorbing slab. In time domain it wires through to the native operator
-    as a graded impedance-matched absorbing layer, there is no separate
-    coordinate-stretch PML in the TD backend; the matched absorber is the
-    TD equivalent.
-
-    Returns ``[(volume_tag, axis, inner_face, thickness, nu_max, is_low)]``
-    for the native TD operator's ``absorbers`` argument. ``axis`` is the
-    index (0/1/2) of the dominant component of the PML's outward
-    ``direction``; ``is_low`` is true when that component points toward
-    decreasing coordinate (the layer extends to the low-coordinate end).
-    ``nu_max`` is derived from the slab thickness so the round-trip
-    reflection stays well below 1 %, see :data:`_ABSORBER_LOSS_BUDGET`.
-    """
-    from ..physics import PML
-
-    out = []
-    for phys in getattr(geometry, "_physics", []):
-        if not isinstance(phys, PML):
-            continue
-        tag = geometry._physics_tags.get(id(phys))
-        if tag is None:
-            continue
-        d = phys.direction
-        axis = int(np.argmax(np.abs(np.asarray(d, dtype=float))))
-        is_low = bool(d[axis] < 0.0)
-        thickness = float(phys.thickness)
-        nu_max = _ABSORBER_LOSS_BUDGET / thickness if thickness > 0.0 else 0.0
-        out.append((
-            int(tag), axis, float(phys.inner_face), thickness,
-            float(nu_max), is_low,
-        ))
-    return out
 
 
 class TdODE:
@@ -721,17 +405,10 @@ class ProblemTD:
                 "constructing a ProblemTD"
             )
         self.c = float(c)
-        mesh_bytes = geometry._last_mesh[0]
-        tag_materials = _collect_materials(geometry)
-        tag_ports, coax_ports, floquet_ports, wave_ports = \
-            _collect_ports(geometry)
-        tag_absorbers = _collect_absorbers(geometry)
-        tag_periodic = _collect_periodic(geometry)
-        tag_abc = _collect_abc(geometry)
-        tag_pec = _collect_pec(geometry)
+        model = build_model(geometry)
         # Near-field-to-far-field is a frequency-domain post-process; the TD
-        # operator has no NFFT path, so a FarFieldSurface here is silently
-        # meshed/tagged but never consumed. Warn rather than mislead.
+        # operator has no NFFT path, so a FarFieldSurface here is meshed and
+        # tagged but never consumed. Warn rather than mislead.
         from ..physics import FarFieldSurface
         if any(isinstance(p, FarFieldSurface)
                for p in getattr(geometry, "_physics", [])):
@@ -742,41 +419,12 @@ class ProblemTD:
                 "no effect on a ProblemTD analysis.",
                 stacklevel=2,
             )
-        # The TD operator runs in normalised units (c = 1, time measured in
-        # the mesh's length units), so a Debye relaxation time given in
-        # seconds is scaled to operator units: tau_op = c * tau_s. eps_inf /
-        # eps_static are dimensionless and pass through unchanged.
-        tag_dispersive = [
-            (tag, er_inf, er_static, self.c * tau_s)
-            for (tag, er_inf, er_static, tau_s) in _collect_dispersive(geometry)
-        ]
-        self._op = TdOperator.from_mesh_bytes(
-            bytes(mesh_bytes), order, _FLUX[flux],
-            tag_materials or None, tag_ports or None,
-            tag_absorbers or None, tag_dispersive or None,
-            coax_ports or None,
-            tag_periodic or None,
-            floquet_ports or None,
-            tag_abc or None,
-            tag_pec or None,
-            wave_ports or None,
-        )
+        self._op = TdOperator.from_model(
+            bytes(geometry._last_mesh[0]), model, order, _FLUX[flux], self.c)
         self._geometry = geometry
         self.order = order
         self.flux = flux
-        _log(
-            f"operator built - {self.n_dof} DOFs, order {order}, "
-            f"flux={flux}, {len(tag_materials)} tagged materials, "
-            f"{len(tag_ports) + len(coax_ports) + len(floquet_ports) + len(wave_ports)} ports "
-            f"({len(tag_ports)} rect, {len(coax_ports)} coax, "
-            f"{len(floquet_ports)} floquet, {len(wave_ports)} wave), "
-            f"{len(tag_absorbers)} matched-absorber (PML) regions, "
-            f"{len(tag_dispersive)} Debye dispersive regions, "
-            f"{len(tag_periodic)} periodic boundary pair(s), "
-            f"{len(tag_abc)} ABC face(s), "
-            f"{len(tag_pec)} PEC face tag(s) (internal plates only "
-            f"are retagged; boundary PEC is the default)"
-        )
+        _log(f"operator built - {self.n_dof} DOFs, order {order}, flux={flux}")
 
     @classmethod
     def box(cls, *, size, cells, order=2, flux="upwind", c=1.0):
@@ -1375,7 +1023,7 @@ class ProblemTD:
     def _modal_ports(self):
         """The geometry's modal port physics objects in the operator's
         declaration order: rect, coax, floquet, wave. Matches
-        :func:`_collect_ports` and the native operator port layout, so the
+        :func:`rapidfem_td::build::operator_from_model` port layout, so the
         k-th entry here is the k-th port for which
         ``port_has_mode`` is true."""
         from ..physics import (

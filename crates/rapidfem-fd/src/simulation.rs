@@ -5,9 +5,9 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! High-level Simulation API, owns a mesh + parsed config and exposes callable
-//! methods for sweep, eigenmode, and far-field. The single entry point used by
-//! both the CLI (main.rs), the Python bindings (PyO3), and the WASM wrapper.
+//! High-level Simulation API: owns a mesh, the model placed on it and the
+//! analysis settings, and exposes sweep, eigenmode and far-field. The entry
+//! point of the Python bindings.
 //!
 //! Construction is split from execution so that callers can inspect/modify the
 //! pre-built ports and materials before solving.
@@ -15,7 +15,8 @@
 use num_complex::Complex64 as C64;
 
 use crate::basis::NedelecBasis;
-use crate::config::{Config, PortConfig};
+use rapidfem_core::model::{FaceSpec, Model, WaveKind};
+use crate::order::OrderPolicy;
 use crate::constants::{EPS0, MU0};
 use crate::eigenmode::Eigenmode;
 use crate::farfield::RadiationPattern;
@@ -57,11 +58,24 @@ struct SParamCtx {
     driven_indices: Vec<usize>,
 }
 
-/// Simulation context: a mesh + parsed config + pre-built BC objects.
+/// Analysis settings of a frequency-domain run.
+#[derive(Clone, Debug)]
+pub struct FdSettings {
+    /// Sweep points in Hz, in evaluation order.
+    pub frequencies: Vec<f64>,
+    /// How the per-cell element orders are chosen.
+    pub order: OrderPolicy,
+    /// `(target frequency in Hz, number of modes)` of an eigenmode analysis.
+    pub eigenmode: Option<(f64, usize)>,
+}
+
+/// Simulation context: a mesh, the model placed on it, the settings, and the
+/// pre-built BC objects.
 pub struct Simulation {
     pub mesh: Mesh,
     pub basis: NedelecBasis,
-    pub config: Config,
+    pub model: Model,
+    pub settings: FdSettings,
     pub ports: Vec<Box<dyn Port>>,
     pub port_tris: Vec<Vec<usize>>,
     pub pec_tris: Vec<usize>,
@@ -70,17 +84,16 @@ pub struct Simulation {
 }
 
 impl Simulation {
-    /// Build a `Simulation` from in-memory mesh bytes and a TOML config string.
-    /// Boundary-friendly entry point (no std::fs use), suitable for Python / WASM bindings.
-    pub fn from_bytes(mesh_bytes: &[u8], config_toml: &str) -> Result<Self, String> {
+    /// Build a `Simulation` from in-memory gmsh mesh bytes (no std::fs use).
+    pub fn from_mesh_bytes(mesh_bytes: &[u8], model: Model, settings: FdSettings) -> Result<Self, String> {
         let mesh = crate::mesh_io::parse_mesh_bytes(mesh_bytes)?;
-        let config = crate::config::parse_config(config_toml)?;
-        Ok(Self::new(mesh, config))
+        Self::new(mesh, model, settings)
     }
 
-    /// Build a `Simulation` from an owned mesh and a parsed config. All BC objects
-    /// (ports, PEC, materials, PML, lumped integration lines) are constructed up-front.
-    pub fn new(mesh: Mesh, config: Config) -> Self {
+    /// Build a `Simulation` from an owned mesh, its model and the settings.
+    /// All BC objects (ports, PEC, materials, PML, lumped integration lines)
+    /// are constructed up-front.
+    pub fn new(mesh: Mesh, model: Model, settings: FdSettings) -> Result<Self, String> {
         let mut mesh = mesh;
         // Lever ④: non-dimensionalize the geometry to O(1) coordinates so the
         // assembly and its absolute tolerances are unit-/scale-invariant. The
@@ -91,37 +104,31 @@ impl Simulation {
             let l0 = mesh.normalize_characteristic_length();
             eprintln!("  Geometry normalized: L0 = {:.6e} m (mean edge length)", l0);
         }
-        let policy = config.element.policy().unwrap_or_else(|e| panic!("{e}"));
-
         // Materials before ports so `wave_numerical` can consult per-tet ε_r
         // when running the vector-hybrid mode solve on the port face — and before
         // the basis, because the order policy reads them.
-        let materials = build_materials(&mesh, &config);
+        let materials = build_materials(&mesh, &model);
 
-        let orders = match policy {
-            crate::config::OrderPolicy::Uniform => crate::order::OrderMap::uniform(&mesh, 2),
-            crate::config::OrderPolicy::Adaptive => {
+        let orders = match settings.order {
+            OrderPolicy::Uniform(p) => crate::order::OrderMap::uniform(&mesh, p),
+            OrderPolicy::Adaptive { theta } => {
                 // Choose the orders at the HIGHEST frequency of the sweep. The
                 // wavelength is shortest there, so k·h is largest and the policy
                 // reduces the fewest cells: the order map that is adequate at the
                 // top of the band is adequate across it. (One map for the whole
                 // sweep is also what lets the symbolic factorisation be reused.)
-                let f_max = config
-                    .frequency
-                    .frequencies()
-                    .into_iter()
-                    .fold(0.0_f64, f64::max);
+                let f_max = settings.frequencies.iter().copied().fold(0.0_f64, f64::max);
                 let (er, ur) = crate::materials::build_material_tensors(
                     mesh.n_tets(),
                     &materials,
                     f_max,
                 );
                 let k = crate::order::cell_wavenumbers(&mesh, &er, &ur, f_max);
-                let om = crate::order::wavelength_policy(&mesh, &k, config.element.theta);
+                let om = crate::order::wavelength_policy(&mesh, &k, theta);
                 let n1 = om.cell.iter().filter(|&&p| p == 1).count();
                 eprintln!(
                     "  Order policy (θ = {}, f = {:.4e} Hz): {} of {} cells at order 1",
-                    config.element.theta,
+                    theta,
                     f_max,
                     n1,
                     mesh.n_tets()
@@ -145,20 +152,21 @@ impl Simulation {
                 String::new()
             }
         );
-        let (ports, port_tris) = build_ports(&mesh, &config, &materials);
-        let pec_tris = build_pec_tris(&mesh, &config);
-        let pml_regions = build_pml_regions(&mesh, &config);
+        let (ports, port_tris) = build_ports(&mesh, &model, &materials)?;
+        let pec_tris = build_pec_tris(&mesh, &model);
+        let pml_regions = build_pml_regions(&mesh, &model);
 
-        Simulation {
+        Ok(Simulation {
             mesh,
             basis,
-            config,
+            model,
+            settings,
             ports,
             port_tris,
             pec_tris,
             materials,
             pml_regions,
-        }
+        })
     }
 
     fn ports_dyn(&self) -> Vec<&dyn Port> {
@@ -170,7 +178,7 @@ impl Simulation {
     }
 
     fn frequencies(&self) -> Vec<f64> {
-        self.config.frequency.frequencies()
+        self.settings.frequencies.clone()
     }
 
     fn materials_opt(&self) -> Option<&[Material]> {
@@ -424,17 +432,16 @@ impl Simulation {
         freq_s
     }
 
-    /// Run an eigenmode analysis (requires `config.eigenmode` to be set).
+    /// Run an eigenmode analysis (requires `settings.eigenmode`).
     pub fn run_eigenmode(&self) -> Result<Vec<Eigenmode>, String> {
-        let eig = self.config.eigenmode.as_ref()
-            .ok_or("config.eigenmode not set")?;
+        let (target, n_modes) = self.settings.eigenmode.ok_or("no eigenmode target set")?;
         crate::eigenmode::solve_eigenmode(
             &self.mesh,
             &self.basis,
             &self.pec_tris,
             self.materials_opt(),
-            eig.target_frequency,
-            eig.n_modes,
+            target,
+            n_modes,
         )
     }
 
@@ -650,8 +657,8 @@ impl Simulation {
         Some(out)
     }
 
-    /// Compute the far-field at a given (freq_idx, exc_port_idx). NFFT surface = config.output.nfft_tag
-    /// (auto-detected ABC tag if not specified). PEC surfaces from config.pec.tags are included to close
+    /// Compute the far-field at a given (freq_idx, exc_port_idx). NFFT surface = `model.far_field_tag`
+    /// (the first ABC tag if not specified). PEC surfaces from `model.pec_tags` are included to close
     /// the integration boundary.
     pub fn compute_farfield(
         &self,
@@ -662,18 +669,15 @@ impl Simulation {
         n_phi: usize,
     ) -> Option<RadiationPattern> {
         let solution = result.solutions.get(freq_idx).and_then(|s| s.get(exc_port_idx))?;
-        let nfft_tag = self.config.output.nfft_tag.unwrap_or_else(|| {
-            for pc in &self.config.ports {
-                if let PortConfig::Abc { tag, .. } = pc {
-                    return *tag;
-                }
-            }
-            2
-        });
+        let nfft_tag = self.model.far_field_tag.or_else(|| {
+            self.model.faces.iter().find_map(|f| match f {
+                FaceSpec::Abc { tag } => Some(*tag),
+                _ => None,
+            })
+        })?;
         let pec_nfft: Vec<usize> = self
-            .config
-            .pec
-            .tags
+            .model
+            .pec_tags
             .iter()
             .flat_map(|&t| self.mesh.tris_for_tag(t).to_vec())
             .collect();
@@ -716,15 +720,15 @@ impl Simulation {
 
 fn build_ports(
     mesh: &Mesh,
-    config: &Config,
+    model: &Model,
     materials: &[Material],
-) -> (Vec<Box<dyn Port>>, Vec<Vec<usize>>) {
+) -> Result<(Vec<Box<dyn Port>>, Vec<Vec<usize>>), String> {
     let mut ports: Vec<Box<dyn Port>> = Vec::new();
     let mut port_tris: Vec<Vec<usize>> = Vec::new();
 
-    for pc in &config.ports {
+    for pc in &model.faces {
         match pc {
-            PortConfig::Rectangular { tag, width, height, mode, er, power } => {
+            FaceSpec::Rectangular { tag, width, height, mode, er, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping port", tag);
@@ -750,7 +754,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::Coax { tag, ri, ro, origin, z_axis, er, power } => {
+            FaceSpec::Coax { tag, ri, ro, origin, z_axis, er, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping CoaxPort", tag);
@@ -774,7 +778,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::Lumped { tag, z0, l, c, direction, width, height, power } => {
+            FaceSpec::Lumped { tag, z0, l, c, direction, width, height, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping port", tag);
@@ -799,7 +803,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::UserDefined { tag, e_field, power } => {
+            FaceSpec::UserDefined { tag, e_field, power } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping UserDefined", tag);
@@ -812,7 +816,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::Floquet { tag, scan_theta_deg, scan_phi_deg, mode_nr, er, power } => {
+            FaceSpec::Floquet { tag, scan_theta_deg, scan_phi_deg, mode_nr, er, power } => {
                 // Only normal incidence is supported in the FD solver: oblique
                 // scan needs periodic side-wall BCs and a complex mode field
                 // (issue #14). Reject θ≠0 rather than silently returning wrong
@@ -848,11 +852,11 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(port));
             }
-            PortConfig::Pmc { tag } => {
+            FaceSpec::Pmc { tag } => {
                 let tri_ids = mesh.tris_for_tag(*tag);
                 eprintln!("  PMC: tag={}, {} triangles (natural BC)", tag, tri_ids.len());
             }
-            PortConfig::LumpedElement { tag, r, l, c, width, height, direction } => {
+            FaceSpec::LumpedElement { tag, r, l, c, width, height, direction } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping LumpedElement", tag);
@@ -869,7 +873,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(bc));
             }
-            PortConfig::SurfaceImpedance { tag, conductivity, mur, er, thickness, two_sided, sheet, zs } => {
+            FaceSpec::SurfaceImpedance { tag, conductivity, mur, er, thickness, two_sided, sheet, zs } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping SurfaceImpedance", tag);
@@ -889,7 +893,7 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(bc));
             }
-            PortConfig::Abc { tag } => {
+            FaceSpec::Abc { tag } => {
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping ABC", tag);
@@ -900,7 +904,10 @@ fn build_ports(
                 port_tris.push(tri_ids);
                 ports.push(Box::new(abc));
             }
-            PortConfig::WaveNumerical { tag, f0, mode_index, mode_kind, pec_tags, power } => {
+            FaceSpec::WaveNumerical { tag, f0, mode_index, kind, pec_tags, power } => {
+                let f0 = f0.ok_or_else(|| format!(
+                    "WavePort on tag {tag}: the frequency-domain backend needs f0 \
+                     (the operating frequency of the 2D mode eigensolve)"))?;
                 let tri_ids = mesh.tris_for_tag(*tag).to_vec();
                 if tri_ids.is_empty() {
                     eprintln!("  WARNING: tag {} has no triangles, skipping WaveNumerical", tag);
@@ -908,14 +915,14 @@ fn build_ports(
                 }
                 let port_num = ports.len() + 1;
                 let pn = build_wave_numerical(
-                    mesh, materials, &tri_ids, *f0, *mode_index, mode_kind,
+                    mesh, materials, &tri_ids, f0, *mode_index, *kind,
                     pec_tags, *power, port_num,
                 );
                 match pn {
                     Some(port) => {
                         eprintln!(
-                            "  Port {}: wave_numerical, tag={}, f0={:.3}GHz, kind={}, mode_idx={}, n_eff={:.3}",
-                            port_num, tag, f0 * 1e-9, mode_kind, mode_index, port.n_eff,
+                            "  Port {}: wave_numerical, tag={}, f0={:.3}GHz, kind={:?}, mode_idx={}, n_eff={:.3}",
+                            port_num, tag, f0 * 1e-9, kind, mode_index, port.n_eff,
                         );
                         port_tris.push(tri_ids);
                         ports.push(Box::new(port));
@@ -928,13 +935,13 @@ fn build_ports(
         }
     }
 
-    (ports, port_tris)
+    Ok((ports, port_tris))
 }
 
-fn build_pec_tris(mesh: &Mesh, config: &Config) -> Vec<usize> {
+fn build_pec_tris(mesh: &Mesh, model: &Model) -> Vec<usize> {
     use std::collections::HashSet;
     let mut pec: HashSet<usize> = HashSet::new();
-    for &tag in &config.pec.tags {
+    for &tag in &model.pec_tags {
         pec.extend(mesh.tris_for_tag(tag).iter().copied());
     }
 
@@ -945,9 +952,9 @@ fn build_pec_tris(mesh: &Mesh, config: &Config) -> Vec<usize> {
     // removes the footgun where an untagged outer wall silently leaks (acts as
     // a magnetic wall). Interior faces (two adjacent tets) are never touched.
     let mut assigned: HashSet<usize> = pec.clone();
-    for pc in &config.ports {
+    for pc in &model.faces {
         assigned.extend(mesh.tris_for_tag(pc.tag()).iter().copied());
-        if let PortConfig::WaveNumerical { pec_tags, .. } = pc {
+        if let FaceSpec::WaveNumerical { pec_tags, .. } = pc {
             for &t in pec_tags {
                 assigned.extend(mesh.tris_for_tag(t).iter().copied());
             }
@@ -962,8 +969,8 @@ fn build_pec_tris(mesh: &Mesh, config: &Config) -> Vec<usize> {
     pec.into_iter().collect()
 }
 
-fn build_materials(mesh: &Mesh, config: &Config) -> Vec<Material> {
-    config.materials.iter().map(|mc| {
+fn build_materials(mesh: &Mesh, model: &Model) -> Vec<Material> {
+    model.materials.iter().map(|mc| {
         let tet_indices = mesh
             .vtag_to_tet
             .get(&mc.volume_tag)
@@ -1000,8 +1007,8 @@ fn build_materials(mesh: &Mesh, config: &Config) -> Vec<Material> {
     }).collect()
 }
 
-fn build_pml_regions(mesh: &Mesh, config: &Config) -> Vec<PmlRegion> {
-    config.pml.iter().map(|pc| {
+fn build_pml_regions(mesh: &Mesh, model: &Model) -> Vec<PmlRegion> {
+    model.pml.iter().map(|pc| {
         let tet_indices = mesh
             .vtag_to_tet
             .get(&pc.volume_tag)
@@ -1109,7 +1116,7 @@ fn build_wave_numerical(
     tri_ids: &[usize],
     f0: f64,
     mode_index: usize,
-    mode_kind: &str,
+    kind: WaveKind,
     pec_tags: &[i32],
     power: f64,
     port_num: usize,
@@ -1142,9 +1149,8 @@ fn build_wave_numerical(
         })
         .collect();
 
-    let kind_lc = mode_kind.to_lowercase();
-    let (nm, n_eff, is_vector): (NumericalMode, f64, bool) = match kind_lc.as_str() {
-        "te" => {
+    let (nm, n_eff, is_vector): (NumericalMode, f64, bool) = match kind {
+        WaveKind::Te => {
             let modes = solve_modes(&pm, ModeKind::Te, mode_index + 1);
             let mode = modes.get(mode_index)?;
             let kc = mode.k_c;
@@ -1152,7 +1158,7 @@ fn build_wave_numerical(
             let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
             (NumericalMode::from_scalar(pm, mode, ModeKind::Te), n_eff, false)
         }
-        "tm" => {
+        WaveKind::Tm => {
             let modes = solve_modes(&pm, ModeKind::Tm, mode_index + 1);
             let mode = modes.get(mode_index)?;
             let kc = mode.k_c;
@@ -1160,7 +1166,7 @@ fn build_wave_numerical(
             let n_eff = if k0 > 0.0 { beta / k0 } else { 0.0 };
             (NumericalMode::from_scalar(pm, mode, ModeKind::Tm), n_eff, false)
         }
-        "auto" | "vector" | "hybrid" => {
+        WaveKind::Vector => {
             let n_pec_nodes = pm.on_pec.iter().filter(|&&b| b).count();
             let n_boundary_nodes = pm.on_boundary.iter().filter(|&&b| b).count();
             eprintln!(
@@ -1184,14 +1190,6 @@ fn build_wave_numerical(
             let mode = modes.get(mode_index)?;
             let n_eff = mode.n_eff;
             (NumericalMode::from_vector(pm, mode), n_eff, true)
-        }
-        other => {
-            eprintln!(
-                "  WARNING: wave_numerical: unknown mode_kind {:?}, expected one of \
-                 'auto'/'vector'/'hybrid'/'te'/'tm'",
-                other,
-            );
-            return None;
         }
     };
 
