@@ -6,9 +6,11 @@
 // the Gmsh additional permission. See LICENSE for the full terms.
 
 //! rapidfem-core, solver-agnostic substrate shared by the frequency-domain
-//! and time-domain backends: mesh, quadrature, and the material data model.
+//! and time-domain backends: mesh, quadrature, the material data model and
+//! the sparse symmetric solver.
 
 pub mod constants;
+pub mod linalg;
 pub mod quadrature;
 pub mod mesh;
 pub mod quality;

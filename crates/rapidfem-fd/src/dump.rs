@@ -4,8 +4,8 @@
 //! With `RAPIDFEM_DUMP_DIR=<dir>` set, every frequency of a sweep writes
 //! `<dir>/<tag>_f<NN>.sparta`, where `<tag>` is `RAPIDFEM_DUMP_TAG` (default
 //! `rapidfem`) and `NN` the frequency index. The files are SPARTA benchmark
-//! containers (`SPARTA02`): the lower triangle of the equilibrated
-//! complex-symmetric system exactly as the solver receives it, the port
+//! containers (`SPARTA02`): the lower triangle of the complex-symmetric
+//! system exactly as the solver receives it (rslab equilibrates internally), the port
 //! right-hand sides, and `k0`. All files of one sweep share their pattern.
 //!
 //! `RAPIDFEM_DUMP_LIMIT=<k>` ends the process after the first `k` systems are

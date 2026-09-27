@@ -16,14 +16,9 @@ parallel = ["dep:rayon"]
 
 [dependencies]
 rapidfem-core = { path = "../rapidfem-core" }
-# The sparse direct solver (complex-symmetric LDLᵀ), vendored from
-# https://github.com/milanofthe/rslab (see vendor/rslab/Cargo.toml header).
-# `tuning` provides the hardware probe for the a-priori RAM gate and the
-# batched-solve gate in solver.rs.
-rslab = { path = "../../vendor/rslab", features = ["tuning"] }
-# faer is used for the dense eigendecompositions (eigenmode.rs); every sparse
-# solve goes through rslab (solver.rs).
-faer = { version = "0.24.0", default-features = false, features = ["std", "sparse-linalg"] }
+# Small dense eigenproblem of the eigenmode Lanczos tridiagonal; every sparse
+# solve goes through rslab (rapidfem_core::linalg).
+faer = { version = "0.24.0", default-features = false, features = ["std"] }
 hashbrown = "0.16.1"
 num-complex = "0.4.6"
 rayon = { version = "1.11.0", optional = true }
