@@ -5,29 +5,32 @@
 // This file is part of rapidfem, distributed under GPL-3.0-or-later with
 // the Gmsh additional permission. See LICENSE for the full terms.
 
-//! Sparse direct solve of the complex-symmetric FEM system with the vendored
-//! rslab LDLᵀ (Bunch-Kaufman), the one solver backend.
+//! Sparse symmetric direct solve on the vendored rslab LDLᵀ (Bunch-Kaufman),
+//! the one factorisation path of rapidfem: the driven sweep, the eigenmode
+//! shift-invert and the port-mode shift-invert all run through
+//! [`SymmetricSolver`], real (`f64`) or complex symmetric (`Complex64`).
 //!
 //! Callers hand over full COO triplets (off-diagonal entries in both halves,
-//! as the assembly produces them); they are filtered to the lower triangle
+//! as an assembly produces them); they are filtered to the lower triangle
 //! (rslab's `CscMatrix` convention, duplicates summed by `from_triplets`).
+//! rslab equilibrates the matrix itself (`ScalingStrategy::OnePassInfNorm`),
+//! so callers pass the raw system.
 //!
-//! Sweep amortisation: the first `factorize` runs the symbolic analysis (the
+//! Pattern reuse: the first `factorize` runs the symbolic analysis (the
 //! ordering race; the worker count comes from the calibration when
 //! `install_diagnose` has run) and caches it with the settings; `refactorize`
-//! reuses both and only redoes the numeric phase. rslab validates that the pattern (n,
-//! nnz) is unchanged and errors otherwise — `refactorize` then falls back to a
-//! fresh `factorize` instead of solving on a stale symbolic.
+//! reuses both and only redoes the numeric phase, which is what a frequency
+//! sweep or a series of eigen shifts on one pattern needs. rslab validates
+//! that the pattern (n, nnz) is unchanged and errors otherwise; `refactorize`
+//! then falls back to a fresh `factorize` instead of solving on a stale
+//! symbolic.
 //!
-//! Solver-in-the-loop: rslab's a-priori `MemoryEstimate` (deterministic, from
-//! the symbolic structure alone) is checked against the machine's RAM BEFORE
-//! any numeric work — a too-big factorisation fails fast with a clear message
-//! instead of driving the machine into swap/OOM mid-sweep. The estimate and
-//! the post-factor diagnostics (factor nnz, perturbed pivots) go to the log.
+//! Before any numeric work, rslab's a-priori `MemoryEstimate` (from the
+//! symbolic structure alone) is checked against the machine's RAM, so a
+//! factorisation too big for the machine fails fast with a clear message
+//! instead of driving it into swap mid-sweep.
 
-use num_complex::Complex64 as C64;
-use rslab::{CscMatrix, LdltSolver, LdltSymbolic, SolverSettings};
-use rslab::OrderingMethod;
+use rslab::{CscMatrix, Inertia, LdltSolver, LdltSymbolic, OrderingMethod, Scalar, SolverSettings};
 
 /// Refuse to factor when the estimated transient peak exceeds this fraction
 /// of TOTAL system RAM. Headroom for the OS, the assembly buffers and the
@@ -37,8 +40,8 @@ const MEM_BUDGET_FRACTION: f64 = 0.8;
 /// A-priori memory gate: estimate the factorisation's transient peak and
 /// error out (before any numeric work) if it exceeds the budget. Returns the
 /// log line describing the estimate.
-fn check_memory(sym: &LdltSymbolic) -> Result<String, String> {
-    let est = sym.estimate_memory::<C64>();
+fn check_memory<T: Scalar>(sym: &LdltSymbolic) -> Result<String, String> {
+    let est = sym.estimate_memory::<T>();
     let peak = est.transient_peak_bytes;
     let hw = rslab::tuning::HardwareInfo::probe();
     let budget = (hw.total_ram_bytes as f64 * MEM_BUDGET_FRACTION) as u64;
@@ -62,17 +65,18 @@ fn check_memory(sym: &LdltSymbolic) -> Result<String, String> {
     Ok(line)
 }
 
-pub struct RslabSolver {
+/// Factor-once, solve-many sparse symmetric solver (see the module docs).
+pub struct SymmetricSolver<T: Scalar> {
     n: usize,
     symbolic: Option<(LdltSymbolic, SolverSettings)>,
-    solver: Option<LdltSolver<C64>>,
+    solver: Option<LdltSolver<T>>,
     // Lower-triangle triplet buffers, reused across refactorizations.
     lo_rows: Vec<usize>,
     lo_cols: Vec<usize>,
-    lo_vals: Vec<C64>,
+    lo_vals: Vec<T>,
 }
 
-impl RslabSolver {
+impl<T: Scalar> SymmetricSolver<T> {
     pub fn new() -> Self {
         Self { n: 0, symbolic: None, solver: None,
                lo_rows: Vec::new(), lo_cols: Vec::new(), lo_vals: Vec::new() }
@@ -85,8 +89,8 @@ impl RslabSolver {
         n: usize,
         rows: &[usize],
         cols: &[usize],
-        vals: &[C64],
-    ) -> Result<CscMatrix<C64>, String> {
+        vals: &[T],
+    ) -> Result<CscMatrix<T>, String> {
         self.lo_rows.clear();
         self.lo_cols.clear();
         self.lo_vals.clear();
@@ -102,11 +106,11 @@ impl RslabSolver {
     }
 }
 
-impl Default for RslabSolver {
+impl<T: Scalar> Default for SymmetricSolver<T> {
     fn default() -> Self { Self::new() }
 }
 
-impl RslabSolver {
+impl<T: Scalar> SymmetricSolver<T> {
     /// Symbolic analysis plus numeric factorisation from full COO triplets.
     /// Resets any previously stored factor.
     pub fn factorize(
@@ -114,10 +118,9 @@ impl RslabSolver {
         n: usize,
         rows: &[usize],
         cols: &[usize],
-        vals: &[C64],
+        vals: &[T],
     ) -> Result<(), String> {
         let a = self.build_matrix(n, rows, cols, vals)?;
-        dump_matrix(&a);
         // The default is the ordering race; RAPIDFEM_RSLAB_ORDERING=
         // amd|amf|metis|rcm pins one, for experiments, not correctness.
         let mut settings = SolverSettings::default();
@@ -132,11 +135,11 @@ impl RslabSolver {
         }
         let sym = LdltSymbolic::analyze(&a, &settings)
             .map_err(|e| format!("rslab analyze: {e:?}"))?;
-        let mem_line = check_memory(&sym)?;
+        let mem_line = check_memory::<T>(&sym)?;
         eprintln!(
             "  rslab: {:?}, {mem_line}, est. {:.2e} flops",
             settings.ordering.method,
-            sym.estimate_memory::<C64>().factor_flops as f64,
+            sym.estimate_memory::<T>().factor_flops as f64,
         );
         let solver = sym.factor(&a, &settings)
             .map_err(|e| format!("rslab factor: {e:?}"))?;
@@ -161,7 +164,7 @@ impl RslabSolver {
         n: usize,
         rows: &[usize],
         cols: &[usize],
-        vals: &[C64],
+        vals: &[T],
     ) -> Result<(), String> {
         if self.symbolic.is_none() || self.n != n {
             return self.factorize(n, rows, cols, vals);
@@ -186,7 +189,7 @@ impl RslabSolver {
     }
 
     /// Solve `K · x = b` on the cached factorisation.
-    pub fn solve(&mut self, b: &[C64]) -> Result<Vec<C64>, String> {
+    pub fn solve(&self, b: &[T]) -> Result<Vec<T>, String> {
         let solver = self.solver.as_ref()
             .ok_or_else(|| "rslab: solve before factorize".to_string())?;
         if b.len() != self.n {
@@ -199,7 +202,7 @@ impl RslabSolver {
     /// to sequential solves when the staging buffers (~3·n·nrhs
     /// complex values: packed input, equilibrated copy, output) would not
     /// comfortably fit in the currently AVAILABLE RAM.
-    pub fn solve_many(&mut self, bs: &[Vec<C64>]) -> Result<Vec<Vec<C64>>, String> {
+    pub fn solve_many(&self, bs: &[Vec<T>]) -> Result<Vec<Vec<T>>, String> {
         let nrhs = bs.len();
         if nrhs <= 1 || self.solver.is_none() {
             return bs.iter().map(|b| self.solve(b)).collect();
@@ -210,7 +213,7 @@ impl RslabSolver {
                 return Err(format!("rslab: RHS length {} ≠ n = {}", b.len(), n));
             }
         }
-        let staging = 3 * n * nrhs * std::mem::size_of::<C64>();
+        let staging = 3 * n * nrhs * std::mem::size_of::<T>();
         let hw = rslab::tuning::HardwareInfo::probe();
         if staging as u64 > hw.available_ram_bytes / 2 {
             eprintln!(
@@ -226,7 +229,51 @@ impl RslabSolver {
         // rslab takes the block column-major: the right-hand sides back to back.
         let x = solver.solve_many(&bs.concat(), nrhs)
             .map_err(|e| format!("rslab solve_many: {e:?}"))?;
-        Ok(x.chunks(n).map(<[C64]>::to_vec).collect())
+        Ok(x.chunks(n).map(<[T]>::to_vec).collect())
+    }
+
+    /// Solve a nearby system `A' X = B` by COCG, preconditioned with the
+    /// current factorisation of `A` (a neighbouring frequency of a sweep: the
+    /// same pattern, slightly different values). Returns `None` when there is
+    /// no factorisation yet or any right-hand side misses the relative
+    /// residual `tol` within `max_iter` iterations; the caller then refactors.
+    /// Also returns the largest iteration count.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_nearby(
+        &mut self,
+        n: usize,
+        rows: &[usize],
+        cols: &[usize],
+        vals: &[T],
+        bs: &[Vec<T>],
+        tol: f64,
+        max_iter: usize,
+    ) -> Option<(Vec<Vec<T>>, usize)> {
+        if self.solver.is_none() || self.n != n {
+            return None;
+        }
+        let a = self.build_matrix(n, rows, cols, vals).ok()?;
+        let precond = self.solver.as_ref()?;
+        let settings = rslab::KrylovSettings { tol, max_iter, ..Default::default() };
+        let mut xs = Vec::with_capacity(bs.len());
+        let mut iters = 0;
+        for b in bs {
+            let r = rslab::cocg(&a, b, precond, &settings).ok()?;
+            if !r.converged {
+                return None;
+            }
+            iters = iters.max(r.iters);
+            xs.push(r.x);
+        }
+        Some((xs, iters))
+    }
+
+    /// Inertia (positive, negative, zero pivots) of the last factorisation.
+    /// For a real symmetric matrix `A - sigma B` with `B` positive definite
+    /// this counts the eigenvalues below `sigma` (Sylvester's law); it has no
+    /// such meaning for a complex-symmetric matrix.
+    pub fn inertia(&self) -> Option<Inertia> {
+        self.solver.as_ref().map(|s| s.inertia().clone())
     }
 
     /// Backend name, for logs.
@@ -236,6 +283,7 @@ impl RslabSolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_complex::Complex64 as C64;
 
     /// Round-trip on a tiny complex-symmetric system, plus a numeric-only
     /// refactorize on scaled values.
@@ -248,10 +296,10 @@ mod tests {
             C64::new(1.0, 0.5),  C64::new(4.0, -1.0), C64::new(0.0, 0.3),
             C64::new(0.0, 0.3),  C64::new(3.0, 0.2),
         ];
-        let mut solver = RslabSolver::new();
+        let mut solver = SymmetricSolver::<C64>::new();
         solver.factorize(3, &rows, &cols, &vals).unwrap();
 
-        let check = |solver: &mut RslabSolver, vals: &[C64]| {
+        let check = |solver: &mut SymmetricSolver<C64>, vals: &[C64]| {
             let x = [C64::new(1.0, 0.0), C64::new(0.5, -0.7), C64::new(-0.3, 0.1)];
             let mut b = [C64::new(0.0, 0.0); 3];
             for k in 0..rows.len() {
@@ -280,7 +328,7 @@ mod tests {
             C64::new(1.0, 0.5),  C64::new(4.0, -1.0), C64::new(0.0, 0.3),
             C64::new(0.0, 0.3),  C64::new(3.0, 0.2),
         ];
-        let mut solver = RslabSolver::new();
+        let mut solver = SymmetricSolver::<C64>::new();
         solver.factorize(3, &rows, &cols, &vals).unwrap();
 
         let bs: Vec<Vec<C64>> = (0..3)
@@ -296,32 +344,46 @@ mod tests {
             assert!(diff < 1e-12, "batched ≠ sequential, diff {diff}");
         }
     }
-}
 
-/// `RAPIDFEM_DUMP_MATRIX=<dir>`: write the first assembled system matrix of
-/// the process as Matrix Market (`<dir>/rapidfem_<n>.mtx`, complex symmetric
-/// coordinate, lower triangle) for solver benchmarks on real FEM matrices.
-fn dump_matrix(a: &CscMatrix<C64>) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static DONE: AtomicBool = AtomicBool::new(false);
-    let Ok(dir) = std::env::var("RAPIDFEM_DUMP_MATRIX") else {
-        return;
-    };
-    if DONE.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    let path = std::path::Path::new(&dir).join(format!("rapidfem_{}.mtx", a.n));
-    let mut out = String::new();
-    out.push_str("%%MatrixMarket matrix coordinate complex symmetric\n");
-    out.push_str(&format!("{} {} {}\n", a.n, a.n, a.row_idx.len()));
-    for j in 0..a.n {
-        for k in a.col_ptr[j]..a.col_ptr[j + 1] {
-            let v = a.values[k];
-            out.push_str(&format!("{} {} {:e} {:e}\n", a.row_idx[k] + 1, j + 1, v.re, v.im));
+    /// A nearby system (values perturbed by a few percent, same pattern)
+    /// solved by COCG on the old factorisation matches its direct solve.
+    #[test]
+    fn solve_nearby_matches_the_direct_solve() {
+        // 1D Helmholtz-like tridiagonal, complex symmetric.
+        let n = 200;
+        let (mut rows, mut cols, mut vals) = (Vec::new(), Vec::new(), Vec::new());
+        let system = |k2: f64| -> Vec<C64> {
+            let mut v = Vec::new();
+            for i in 0..n {
+                v.push(C64::new(2.0 - k2, 0.01));
+                if i + 1 < n {
+                    v.push(C64::new(-1.0, 0.0));
+                    v.push(C64::new(-1.0, 0.0));
+                }
+            }
+            v
+        };
+        for i in 0..n {
+            rows.push(i); cols.push(i);
+            if i + 1 < n {
+                rows.push(i); cols.push(i + 1);
+                rows.push(i + 1); cols.push(i);
+            }
         }
-    }
-    match std::fs::write(&path, out) {
-        Ok(()) => eprintln!("RAPIDFEM_DUMP_MATRIX: wrote {}", path.display()),
-        Err(e) => eprintln!("RAPIDFEM_DUMP_MATRIX: cannot write {}: {e}", path.display()),
+        vals.extend(system(0.30));
+        let mut solver = SymmetricSolver::<C64>::new();
+        solver.factorize(n, &rows, &cols, &vals).unwrap();
+
+        let near = system(0.31);
+        let b: Vec<C64> = (0..n).map(|i| C64::new(1.0 + i as f64 * 0.01, 0.0)).collect();
+        let (xs, iters) = solver
+            .solve_nearby(n, &rows, &cols, &near, &[b.clone()], 1e-12, 200)
+            .expect("COCG must converge on a nearby system");
+        let mut direct = SymmetricSolver::<C64>::new();
+        direct.factorize(n, &rows, &cols, &near).unwrap();
+        let want = direct.solve(&b).unwrap();
+        let err: f64 = xs[0].iter().zip(&want).map(|(a, b)| (a - b).norm_sqr()).sum::<f64>().sqrt();
+        let scale: f64 = want.iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt();
+        assert!(err / scale < 1e-9, "rel err {} after {iters} iterations", err / scale);
     }
 }

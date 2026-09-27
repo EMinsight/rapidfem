@@ -8,9 +8,14 @@ edition = "2024"
 # (rapidfem-td) backends.
 
 [dependencies]
-# Dense eigensolver — the backend-agnostic 2D wave-port cross-section
-# mode solver (port_eigen) uses it; shared by the TD and FD backends.
-faer = "0.24"
+# The sparse direct solver (real and complex-symmetric LDLᵀ), vendored from
+# https://github.com/milanofthe/rslab (see vendor/rslab/Cargo.toml header).
+# `tuning` provides the hardware probe for the a-priori RAM gate and the
+# batched-solve gate in linalg.rs.
+rslab = { path = "../../vendor/rslab", features = ["tuning"] }
+# Small dense eigenproblems only (the Krylov-projected matrices of the
+# eigenmode and port-mode solvers); every sparse solve goes through rslab.
+faer = { version = "0.24", default-features = false, features = ["std"] }
 hashbrown = "0.16.1"
 mshio = "0.4.2"
 num-complex = "0.4.6"

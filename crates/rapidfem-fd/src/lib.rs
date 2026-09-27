@@ -11,7 +11,7 @@
 //! `rapidfem-core` and is re-exported here, so existing `crate::mesh`-style
 //! paths inside this crate keep resolving unchanged.
 
-pub use rapidfem_core::{constants, materials, mesh, mesh_io, quadrature};
+pub use rapidfem_core::{constants, linalg, materials, mesh, mesh_io, quadrature};
 
 mod dump;
 pub mod excitation;
@@ -25,7 +25,6 @@ pub mod waveguide;
 pub mod sparam;
 pub mod interp;
 pub mod port;
-pub mod solver;
 pub mod error_estimator;
 pub mod eigenmode;
 pub mod config;

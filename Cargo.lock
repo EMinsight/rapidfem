@@ -1348,6 +1348,7 @@ dependencies = [
  "hashbrown",
  "mshio",
  "num-complex 0.4.6",
+ "rslab",
  "serde",
 ]
 
@@ -1360,7 +1361,6 @@ dependencies = [
  "num-complex 0.4.6",
  "rapidfem-core",
  "rayon",
- "rslab",
  "serde",
  "toml",
  "web-time",

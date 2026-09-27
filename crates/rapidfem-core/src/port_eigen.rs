@@ -202,14 +202,14 @@ impl PortMesh2D {
         (area, [g0, g1, g2])
     }
 
-    /// Assemble the dense stiffness `S` and lumped (diagonal) mass `m`
-    /// for the P1 scalar problem. `S` is `n×n` row-major; `m` is the
-    /// length-`n` diagonal (row-sum-lumped consistent mass), which makes
-    /// the generalized eigenproblem `S ψ = k_c² diag(m) ψ` reducible to
-    /// a symmetric standard problem without a Cholesky factorisation.
-    pub fn assemble(&self) -> (Vec<f64>, Vec<f64>) {
+    /// Assemble the stiffness `S` as COO triplets (duplicates to be summed)
+    /// and the lumped (diagonal) mass `m` for the P1 scalar problem. `m` is
+    /// the row-sum-lumped consistent mass, which makes the generalized
+    /// eigenproblem `S ψ = k_c² diag(m) ψ` reducible to a symmetric standard
+    /// problem without a Cholesky factorisation.
+    pub fn assemble(&self) -> (Vec<(usize, usize, f64)>, Vec<f64>) {
         let n = self.n_nodes();
-        let mut s = vec![0.0; n * n];
+        let mut s = Vec::with_capacity(9 * self.tris.len());
         let mut m = vec![0.0; n];
         for &t in &self.tris {
             let (area, g) = self.tri_geom(t);
@@ -217,7 +217,7 @@ impl PortMesh2D {
             for a in 0..3 {
                 for b in 0..3 {
                     let val = area * (g[a][0] * g[b][0] + g[a][1] * g[b][1]);
-                    s[t[a] * n + t[b]] += val;
+                    s.push((t[a], t[b], val));
                 }
             }
             // Lumped mass: each node gets area/3 (row-sum of the
@@ -256,16 +256,18 @@ pub enum ModeKind {
 ///
 /// `TM` modes pin the boundary nodes to zero (Dirichlet); `TE` modes
 /// leave them free. The generalized problem is reduced to the symmetric
-/// standard problem `B φ = k_c² φ` with `B = D^{-1/2} S D^{-1/2}` and
-/// `D = diag(m)`, then `ψ = D^{-1/2} φ`. Dense, intended for the modest
-/// node counts of a single port face.
+/// standard problem `K φ = k_c² φ` with `K = D^{-1/2} S D^{-1/2}` and
+/// `D = diag(m)`, then `ψ = D^{-1/2} φ`. `K` stays sparse: a shift-invert
+/// block Krylov iteration on `(K − σI)⁻¹` with a small negative shift `σ` (the rslab LDLᵀ
+/// factorises `K − σI` once) resolves the lowest modes, the `TE` constant
+/// mode at `k_c² = 0` included and then dropped.
 pub fn solve_modes(
     mesh: &PortMesh2D,
     kind: ModeKind,
     n_modes: usize,
 ) -> Vec<PortEigenmode> {
     let n_full = mesh.n_nodes();
-    let (s_full, m_full) = mesh.assemble();
+    let (s_trip, m_full) = mesh.assemble();
 
     // PEC nodes (outer wall + any internal conductor) carry Dirichlet for
     // TM (E_z = 0) and Neumann for TE; an internal conductor still pins
@@ -281,50 +283,175 @@ pub fn solve_modes(
             .collect(),
     };
     let n = keep.len();
-    if n == 0 {
+    if n == 0 || n_modes == 0 {
+        return Vec::new();
+    }
+    let mut reduced = vec![usize::MAX; n_full];
+    for (li, &i) in keep.iter().enumerate() {
+        reduced[i] = li;
+    }
+
+    // K = D^{-1/2} S D^{-1/2} on the kept nodes, as triplets.
+    let d_inv_sqrt: Vec<f64> = keep.iter().map(|&i| 1.0 / m_full[i].sqrt()).collect();
+    let mut rows = Vec::with_capacity(s_trip.len());
+    let mut cols = Vec::with_capacity(s_trip.len());
+    let mut vals = Vec::with_capacity(s_trip.len());
+    let mut diag_max = 0.0f64;
+    for &(i, j, v) in &s_trip {
+        let (ri, rj) = (reduced[i], reduced[j]);
+        if ri == usize::MAX || rj == usize::MAX {
+            continue;
+        }
+        let k = v * d_inv_sqrt[ri] * d_inv_sqrt[rj];
+        if ri == rj {
+            diag_max = diag_max.max(k.abs());
+        }
+        rows.push(ri);
+        cols.push(rj);
+        vals.push(k);
+    }
+    // σ well below the lowest cutoffs of interest (those sit near (h/a)²
+    // of the largest diagonal) but large enough to keep K − σI definite
+    // with a moderate condition number when TE carries its zero mode.
+    let sigma = -1e-6 * diag_max;
+    for d in 0..n {
+        rows.push(d);
+        cols.push(d);
+        vals.push(-sigma);
+    }
+    let mut solver = crate::linalg::SymmetricSolver::<f64>::new();
+    if solver.factorize(n, &rows, &cols, &vals).is_err() {
         return Vec::new();
     }
 
-    // Symmetric reduced problem B = D^{-1/2} S D^{-1/2}.
-    let d_inv_sqrt: Vec<f64> =
-        keep.iter().map(|&i| 1.0 / m_full[i].sqrt()).collect();
-    let b = faer::Mat::<f64>::from_fn(n, n, |i, j| {
-        s_full[keep[i] * n_full + keep[j]] * d_inv_sqrt[i] * d_inv_sqrt[j]
-    });
+    // Block Krylov on the symmetric positive definite (K − σI)⁻¹. Its largest
+    // Ritz values μ are the eigenvalues λ = σ + 1/μ nearest σ, the lowest
+    // cutoffs. The subspace grows until the wanted modes (plus a possible TE
+    // zero mode) have converged.
+    let wanted = n_modes + 1;
+    let mut m_kry = n.min(4 * wanted + 40);
+    loop {
+        let (ritz, converged) = krylov_lowest(&solver, n, m_kry, wanted);
+        if converged || m_kry == n {
+            let floor = 1e-9 * diag_max;
+            let mut out: Vec<(f64, Vec<f64>)> = ritz
+                .into_iter()
+                .map(|(mu, phi)| (sigma + 1.0 / mu, phi))
+                // Drop the (near-)zero TE constant mode and any numerical
+                // negatives; a propagating mode has k_c² > 0.
+                .filter(|(lam, _)| *lam > floor)
+                .collect();
+            out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            return out
+                .into_iter()
+                .take(n_modes)
+                .map(|(lam, phi)| {
+                    // ψ = D^{-1/2} φ, scattered back to full node indexing.
+                    let mut psi = vec![0.0; n_full];
+                    for li in 0..n {
+                        psi[keep[li]] = phi[li] * d_inv_sqrt[li];
+                    }
+                    PortEigenmode { k_c: lam.sqrt(), psi }
+                })
+                .collect();
+        }
+        m_kry = n.min(2 * m_kry);
+    }
+}
 
-    let eig = match b.eigen() {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+/// Block size of the Krylov subspace in [`krylov_lowest`]: it resolves
+/// eigenvalues of multiplicity up to this (the degenerate TE10 / TE01 pair of
+/// a square guide), which a single-vector Lanczos would find only once.
+const KRYLOV_BLOCK: usize = 4;
+
+/// Rayleigh-Ritz on a block Krylov subspace of the operator `x ↦ A⁻¹x` of a
+/// factorised symmetric positive definite `A`, grown to `m` vectors with full
+/// reorthogonalisation. Returns the `wanted` largest Ritz pairs `(μ, unit
+/// Ritz vector)` and whether all of them have converged (residual
+/// `‖A⁻¹x − μx‖ ≤ 1e-10 μ`).
+fn krylov_lowest(
+    solver: &crate::linalg::SymmetricSolver<f64>,
+    n: usize,
+    m: usize,
+    wanted: usize,
+) -> (Vec<(f64, Vec<f64>)>, bool) {
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    // Orthonormalise `w` against `basis` (twice is enough); None if it is
+    // already (numerically) in the span.
+    let orthonormalise = |basis: &[Vec<f64>], mut w: Vec<f64>| -> Option<Vec<f64>> {
+        let n0 = dot(&w, &w).sqrt();
+        for _ in 0..2 {
+            for q in basis {
+                let c = dot(q, &w);
+                w.iter_mut().zip(q).for_each(|(x, y)| *x -= c * y);
+            }
+        }
+        let nw = dot(&w, &w).sqrt();
+        if nw <= 1e-10 * n0 || nw == 0.0 {
+            return None;
+        }
+        w.iter_mut().for_each(|x| *x /= nw);
+        Some(w)
     };
-    let evals = eig.S().column_vector();
-    let evecs = eig.U();
 
-    // Collect (k_c², column) for positive eigenvalues, then sort.
-    let mut idx: Vec<(f64, usize)> = (0..n)
-        .filter_map(|k| {
-            let lam = evals[k].re;
-            // Drop the (near-)zero TE constant mode and any numerical
-            // negatives; a propagating mode has k_c² > 0.
-            if lam > 1e-9 {
-                Some((lam, k))
-            } else {
-                None
+    // Deterministic start block (no RNG: keeps CI reproducible).
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+    for s in 0..KRYLOV_BLOCK.min(n) {
+        let v: Vec<f64> = (0..n)
+            .map(|i| ((((i + 1) * (7 + 6 * s) + 13 * s + 5) % 97) as f64 / 97.0) - 0.5)
+            .collect();
+        if let Some(v) = orthonormalise(&basis, v) {
+            basis.push(v);
+        }
+    }
+    // images[i] = A⁻¹ basis[i]
+    let mut images: Vec<Vec<f64>> = Vec::new();
+    while images.len() < basis.len() {
+        let start = images.len();
+        let end = basis.len();
+        for i in start..end {
+            let Ok(w) = solver.solve(&basis[i]) else { return (Vec::new(), false) };
+            images.push(w);
+        }
+        if basis.len() >= m {
+            break;
+        }
+        for i in start..end {
+            if basis.len() >= m {
+                break;
             }
-        })
-        .collect();
-    idx.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            if let Some(v) = orthonormalise(&basis, images[i].clone()) {
+                basis.push(v);
+            }
+        }
+    }
 
-    idx.into_iter()
-        .take(n_modes)
-        .map(|(lam, k)| {
-            // ψ = D^{-1/2} φ, scattered back to full node indexing.
-            let mut psi = vec![0.0; n_full];
-            for li in 0..n {
-                psi[keep[li]] = evecs[(li, k)].re * d_inv_sqrt[li];
-            }
-            PortEigenmode { k_c: lam.sqrt(), psi }
-        })
-        .collect()
+    let k = images.len();
+    let h = faer::Mat::<f64>::from_fn(k, k, |i, j| {
+        0.5 * (dot(&basis[i], &images[j]) + dot(&basis[j], &images[i]))
+    });
+    let Ok(eig) = h.self_adjoint_eigen(faer::Side::Lower) else { return (Vec::new(), false) };
+    let s = eig.S().column_vector();
+    let u = eig.U();
+    let mut out = Vec::new();
+    let mut converged = true;
+    // Eigenvalues ascend; the largest μ are the lowest λ.
+    for c in (0..k).rev().take(wanted.min(k)) {
+        let mu = s[c];
+        let mut x = vec![0.0; n];
+        let mut ax = vec![0.0; n];
+        for jj in 0..k {
+            let y = u[(jj, c)];
+            x.iter_mut().zip(&basis[jj]).for_each(|(xi, qi)| *xi += y * qi);
+            ax.iter_mut().zip(&images[jj]).for_each(|(xi, qi)| *xi += y * qi);
+        }
+        let resid = ax.iter().zip(&x).map(|(a, b)| (a - mu * b).powi(2)).sum::<f64>().sqrt();
+        if resid > 1e-10 * mu.abs() {
+            converged = false;
+        }
+        out.push((mu, x));
+    }
+    (out, converged)
 }
 
 /// A solved numerical port mode, ready to be sampled as a transverse
@@ -1104,7 +1231,7 @@ fn solve_vector_modes_core(
     // [11..14]=P2 edge-midpoint. The reduced global DOF index for each local
     // DOF is resolved inline per element in the assembly loop below.
 
-    // Sparse assembly: accumulate COO triplets (faer sums duplicate (i,j)).
+    // Sparse assembly: accumulate COO triplets (rslab sums duplicate (i,j)).
     // The port face can carry tens of thousands of DOFs at production
     // refinement, where a dense ndof×ndof factorisation is intractable.
     let mut a_trip: Vec<(usize, usize, f64)> = Vec::new();
@@ -1291,8 +1418,8 @@ fn solve_vector_modes_core(
     let allow_curl_free = tem_supported && homogeneous;
     let debug = std::env::var("PORT_EIGEN_DEBUG").is_ok();
 
-    // Sparse matvec y = B·v straight from the COO triplets (faer would also
-    // do this, but iterating the triplets avoids materialising B separately).
+    // Sparse matvec y = B·v straight from the COO triplets, without
+    // materialising B separately.
     let b_matvec = |v: &[f64]| -> Vec<f64> {
         let mut y = vec![0.0f64; ndof];
         for &(i, j, val) in &b_trip {
@@ -1349,38 +1476,29 @@ fn solve_vector_modes_core(
     // Sparse shift-invert Arnoldi at shift σ: build a Krylov subspace of
     // M = (A − σB)⁻¹B (full Gram-Schmidt → upper-Hessenberg H = Vᵀ M V),
     // eigendecompose the small H, and return the real Ritz pairs as
-    // (λ = σ + 1/μ, reduced eigenvector). Resolves the modes nearest σ. The
-    // shift-invert linear solves go through faer's pure-Rust sparse LU, so the
-    // cost scales with the (sparse) factorisation, not ndof³.
+    // (λ = σ + 1/μ, reduced eigenvector). Resolves the modes nearest σ.
+    // A − σB is symmetric indefinite and keeps one sparsity pattern for every
+    // shift (the union of A and B), so the rslab LDLᵀ analyses it once and
+    // only refactors the numeric values per σ.
     let m_kry = ndof.min(80);
-    let arnoldi = |sigma: f64| -> Vec<(f64, Vec<f64>)> {
-        use faer::sparse::{SparseColMat, Triplet};
-        use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
-        use faer::linalg::solvers::SolveCore;
-        // C = A − σB as sparse triplets (union pattern of A and B).
-        let trips: Vec<Triplet<usize, usize, f64>> = a_trip
-            .iter()
-            .map(|&(r, c, v)| Triplet { row: r, col: c, val: v })
-            .chain(b_trip.iter().map(|&(r, c, v)| Triplet { row: r, col: c, val: -sigma * v }))
+    let c_rows: Vec<usize> = a_trip.iter().chain(b_trip.iter()).map(|t| t.0).collect();
+    let c_cols: Vec<usize> = a_trip.iter().chain(b_trip.iter()).map(|t| t.1).collect();
+    let mut solver = crate::linalg::SymmetricSolver::<f64>::new();
+    let mut analysed = false;
+    let mut arnoldi = |sigma: f64| -> Vec<(f64, Vec<f64>)> {
+        let c_vals: Vec<f64> = a_trip.iter().map(|t| t.2)
+            .chain(b_trip.iter().map(|t| -sigma * t.2))
             .collect();
-        let cmat = match SparseColMat::<usize, f64>::try_new_from_triplets(ndof, ndof, &trips) {
-            Ok(m) => m,
-            Err(_) => return Vec::new(),
+        let factored = if analysed {
+            solver.refactorize(ndof, &c_rows, &c_cols, &c_vals)
+        } else {
+            solver.factorize(ndof, &c_rows, &c_cols, &c_vals)
         };
-        let sym = match SymbolicLu::try_new(cmat.as_ref().symbolic()) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let lu = match Lu::try_new_with_symbolic(sym, cmat.as_ref()) {
-            Ok(l) => l,
-            Err(_) => return Vec::new(),
-        };
-        // x ← C⁻¹ x (in place) for a length-ndof RHS.
-        let solve = |bv: &[f64]| -> Vec<f64> {
-            let mut x = Mat::<f64>::from_fn(ndof, 1, |i, _| bv[i]);
-            lu.solve_in_place_with_conj(faer::Conj::No, x.as_mut());
-            (0..ndof).map(|i| x[(i, 0)]).collect()
-        };
+        if factored.is_err() {
+            return Vec::new();
+        }
+        analysed = true;
+        let solve = |bv: &[f64]| -> Option<Vec<f64>> { solver.solve(bv).ok() };
         // Deterministic start vector (no RNG: keeps resume/CI reproducible).
         let mut v0: Vec<f64> =
             (0..ndof).map(|i| (((i * 7 + 13) % 97) as f64 / 97.0) - 0.5).collect();
@@ -1392,7 +1510,7 @@ fn solve_vector_modes_core(
         let mut m_act = m_kry;
         for j in 0..m_kry {
             let bv = b_matvec(&vs[j]);
-            let mut w: Vec<f64> = solve(&bv);
+            let Some(mut w) = solve(&bv) else { return Vec::new() };
             // Full reorthogonalisation against all previous Arnoldi vectors.
             for i in 0..=j {
                 let hij: f64 =
@@ -2008,5 +2126,19 @@ mod tests {
         let want = PI / 2.0;
         let rel = (kc - want).abs() / want;
         assert!(rel < 0.04, "TE₁₀ k_c = {kc:.4}, want {want:.4} (rel {rel:.3})");
+    }
+
+    #[test]
+    fn degenerate_te_pair_of_a_square_guide_is_found_twice() {
+        // TE₁₀ and TE₀₁ of a 1×1 guide share k_c = π; the next mode, TE₁₁,
+        // sits at π√2. A single-vector Krylov iteration would return π, π√2.
+        let (nodes, tris) = rect_mesh(1.0, 1.0, 16, 16);
+        let pm = PortMesh2D::from_face(&nodes, &tris, [0.0, 0.0, 1.0], None);
+        let modes = solve_modes(&pm, ModeKind::Te, 3);
+        assert_eq!(modes.len(), 3);
+        for (m, want) in modes.iter().zip([PI, PI, PI * 2f64.sqrt()]) {
+            let rel = (m.k_c - want).abs() / want;
+            assert!(rel < 0.04, "k_c = {:.4}, want {want:.4}", m.k_c);
+        }
     }
 }
