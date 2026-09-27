@@ -8,7 +8,7 @@ The interpolatory basis in `element.py` gives every edge two degree-2 functions,
 Whitney function `W_ab` itself: the lowest-order (Nedelec-0) space is NOT a
 coordinate subspace of that basis. So there is no way to run a cell at order 1 by
 dropping DOFs, and no way to read a p-decay indicator off the coefficients. Both
-are prerequisites for variable order (docs/fd-basis-plan.md, stages 4-5).
+are prerequisites for variable order (issue #32, stages 4-5).
 
 The hierarchical basis fixes that by construction:
 

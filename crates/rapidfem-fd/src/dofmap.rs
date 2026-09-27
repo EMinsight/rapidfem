@@ -14,7 +14,7 @@
 //!
 //! The count per entity is **data, not a constant**. That is the whole point:
 //! a mixed-order space gives different entities different orders, so the map is a
-//! prefix-sum table rather than a fixed stride (see `docs/fd-basis-plan.md`).
+//! prefix-sum table rather than a fixed stride (see issue #32).
 //! The layout is entity-major,
 //!
 //!   [ edge 0 DOFs | edge 1 DOFs | ... | face 0 DOFs | ... | cell 0 DOFs | ... ]

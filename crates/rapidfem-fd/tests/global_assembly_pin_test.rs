@@ -12,7 +12,7 @@
 // what the assembly does WITH them: the DOF map, the scatter into the COO
 // triplets, and the global ordering. This test does.
 //
-// It exists to make the element-basis refactor (docs/fd-basis-plan.md) safe:
+// It exists to make the element-basis refactor (issue #32) safe:
 // stages 0-2 of that plan restructure the term representation, the DOF map and
 // the surface element with ZERO behaviour change, and this is the oracle that
 // says so. The numbers below were captured from the interpolatory R2 element
