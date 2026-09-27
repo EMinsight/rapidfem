@@ -15,9 +15,8 @@ from typing import Iterable
 import numpy as np
 
 from .._native import Simulation as _NativeSimulation
-from .._fmt import _f64
+from ._model import build_model
 from ..geometry import Geometry
-from ..physics import PEC, PML, FarFieldSurface
 
 
 # HELPERS ===============================================================================
@@ -219,7 +218,9 @@ class ProblemFD:
         frequencies : iterable of float
             sweep points in Hz, in evaluation order
         z0 : float
-            reference impedance for S-parameter normalisation in ohms
+            label only: every port reports S-parameters against its own
+            reference (lumped ports their ``z0``, modal ports their mode
+            impedance); :meth:`renormalize` re-references to a fixed value
         adaptive : Adaptive, optional
             adaptive-mesh-refinement settings (``None`` disables it)
         order : int or "adaptive"
@@ -250,8 +251,9 @@ class ProblemFD:
         if adaptive is not None:
             warnings.warn("adaptive refinement is not wired yet (issue #43), "
                           "the sweep runs on the given mesh", stacklevel=2)
-        toml = self._assemble_toml(frequencies=freqs, z0=z0, order=order)
-        self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
+        self._native = _NativeSimulation(
+            self._mesh_bytes, build_model(self._geometry), freqs,
+            **_order_kwargs(order))
         # The native callback is (freq_idx, freq, s_matrix). Compose an optional
         # user `on_frequency` with the UI's per-frequency streaming callback.
         from rapidfem import _show_capture
@@ -333,8 +335,8 @@ class ProblemFD:
         n_modes : int
             number of eigenpairs requested
         z0 : float
-            reference impedance (only affects the output block in TOML;
-            eigenmodes themselves don't depend on it)
+            accepted for signature symmetry with :meth:`sweep`; eigenmodes
+            do not depend on it
 
         Returns
         -------
@@ -342,12 +344,9 @@ class ProblemFD:
             n_modes solver results, sorted by proximity to
             ``target_frequency``
         """
-        toml = self._assemble_toml(
-            frequencies=[float(target_frequency)],
-            z0=z0,
-            eigenmode=(float(target_frequency), int(n_modes)),
-        )
-        self._native = _NativeSimulation.from_bytes(self._mesh_bytes, toml)
+        self._native = _NativeSimulation(
+            self._mesh_bytes, build_model(self._geometry), [float(target_frequency)],
+            eigenmode=(float(target_frequency), int(n_modes)))
         return self._native.run_eigenmode()
 
     def farfield(self, result, *,
@@ -632,120 +631,14 @@ class ProblemFD:
             raise RuntimeError("run an analysis first to assemble the mesh")
         return np.asarray(self._native.mesh_tets)
 
-    # ── TOML assembly ─────────────────────────────────────────────────────
 
-    def _assemble_toml(self, *,
-                       frequencies: list[float],
-                       z0: float,
-                       eigenmode: tuple[float, int] | None = None,
-                       order: "int | str" = 2) -> str:
-        """build the TOML config string the Rust solver expects
-
-        Walks the geometry's material and physics registries; skips
-        materials on PML-targeted volumes (their permittivity comes
-        from the PML's stretch profile instead).
-
-        Parameters
-        ----------
-        frequencies : list[float]
-            sweep points to embed in the ``[frequency]`` block
-        z0 : float
-            S-parameter reference impedance for the ``[output]`` block
-        eigenmode : tuple[float, int], optional
-            ``(target_frequency, n_modes)`` for an ``[eigenmode]`` block
-
-        Returns
-        -------
-        str
-            TOML config text
-        """
-        g = self._geometry
-        parts: list[str] = ['[mesh]\nfile = "(in-memory)"\n']
-
-        freqs_str = ", ".join(_f64(f) for f in frequencies)
-        parts.append(f"[frequency]\nvalues = [{freqs_str}]\n")
-
-        # Collect volume entities targeted by PML, they get a [[pml]] block
-        # and must NOT also generate a [[materials]] entry (the PML carries
-        # its own er_base/ur_base, and double-tagging volumes confuses the
-        # Rust solver). Mirrors the old builder workflow where a PML volume
-        # had no .material at all.
-        pml_volume_ids: set[int] = set()
-        for phys in g._physics:
-            if isinstance(phys, PML):
-                for ent in phys._entities:
-                    pml_volume_ids.add(id(ent))
-
-        # Materials, group volumes by Material instance; tag came from mesh().
-        # Skip Material instances whose every-volume is a PML target.
-        seen_materials: set[int] = set()
-        for ent in g._entities:
-            mat = ent.material
-            if mat is None or isinstance(mat, str) or ent.dim != 3:
-                continue
-            if id(ent) in pml_volume_ids:
-                continue
-            mat_id = id(mat)
-            if mat_id in seen_materials:
-                continue
-            seen_materials.add(mat_id)
-            tag = g._material_tags.get(mat_id)
-            if tag is None:
-                raise RuntimeError(
-                    f"material {mat!r} has no tag, re-run g.mesh() after attaching it")
-            parts.append(mat._to_toml(tag))
-
-        # Physics, ports, BCs, PML. PEC tags get aggregated separately;
-        # a FarFieldSurface tag is consumed by the [output] block.
-        pec_tags: list[int] = []
-        nfft_tag: int | None = None
-        for phys in g._physics:
-            tag = g._physics_tags.get(id(phys))
-            if tag is None:
-                raise RuntimeError(
-                    f"physics object {phys!r} has no tag, re-run g.mesh() "
-                    f"after constructing it")
-            if isinstance(phys, PEC):
-                pec_tags.append(tag)
-            elif isinstance(phys, FarFieldSurface):
-                if nfft_tag is not None:
-                    raise RuntimeError(
-                        "multiple FarFieldSurface objects, but only one "
-                        "near-field-to-far-field surface is supported. Pass "
-                        "every face to a single FarFieldSurface(...) call "
-                        "(e.g. rf.FarFieldSurface(*air.faces.hull)).")
-                nfft_tag = tag
-            else:
-                block = phys._to_toml(tag)
-                if block:
-                    parts.append(block)
-
-        if pec_tags:
-            tags_str = ", ".join(str(t) for t in pec_tags)
-            parts.append(f"[pec]\ntags = [{tags_str}]\n")
-        else:
-            parts.append("[pec]\ntags = []\n")
-
-        if eigenmode is not None:
-            f0, nm = eigenmode
-            parts.append(f"[eigenmode]\ntarget_frequency = {_f64(f0)}\nn_modes = {nm}\n")
-
-        # Element order: the native default (no [element] section) is uniform
-        # order 2. order=1 rides the wavelength policy with an unreachable
-        # threshold — every cell has k*h below it, so the whole mesh drops to
-        # order 1, which IS uniform order 1.
-        if order == 1:
-            parts.append('[element]\norder_policy = "adaptive"\ntheta = 1e30\n')
-        elif order == "adaptive":
-            parts.append('[element]\norder_policy = "adaptive"\n')
-        elif order != 2:
-            raise ValueError(f"order must be 1, 2 or 'adaptive', got {order!r}")
-
-        output = f"[output]\nz0 = {_f64(z0)}\n"
-        if nfft_tag is not None:
-            output += f"nfft_tag = {nfft_tag}\n"
-        parts.append(output)
-        return "\n".join(parts)
+def _order_kwargs(order) -> dict:
+    """``order`` of :meth:`ProblemFD.sweep` as native keyword arguments."""
+    if order == "adaptive":
+        return {"adaptive": True}
+    if order in (1, 2):
+        return {"order": int(order)}
+    raise ValueError(f"order must be 1, 2 or 'adaptive', got {order!r}")
 
 
 __all__ = ["ProblemFD", "Adaptive", "ErrorIndicator"]

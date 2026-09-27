@@ -14,7 +14,6 @@ import warnings
 from typing import Sequence
 
 from .geometry import EntityCollection, GeoObject, _Entity
-from ._fmt import _f64
 
 
 # HELPERS ===============================================================================
@@ -91,13 +90,9 @@ def _normalize(targets, *, expected_dim: int, cls_name: str):
 class _Physics:
     """Common base for every driven port and boundary condition.
 
-    Subclasses set two class attributes that drive the serialisation
-    pipeline:
-
-    - ``_expected_dim``: 2 for face physics, 3 for volume physics
-    - ``_section``: ``"ports"``, ``"pec"``, or ``"pml"``, tells the
-      :class:`rapidfem.Problem` TOML assembler which block this object
-      belongs to
+    Subclasses set ``_expected_dim`` (2 for face physics, 3 for volume
+    physics) and implement :meth:`_add_to`, which places the object on the
+    native :class:`rapidfem._native.Model` under its mesh tag.
 
 
     Note
@@ -110,10 +105,9 @@ class _Physics:
     The physics object is purely declarative, it holds no state about
     the mesh. The geometry's :meth:`Geometry.mesh` step turns it into a
     gmsh physical group, and :class:`rapidfem.Problem` reads that group
-    tag back when assembling the TOML config.
+    tag back when it builds the model.
     """
     _expected_dim: int = 2
-    _section: str = "ports"
 
     def __init__(self, *targets):
         ents, geom = _normalize(targets,
@@ -123,21 +117,17 @@ class _Physics:
         self._geometry = geom
         geom._physics.append(self)
 
-    def _to_toml(self, tag: int) -> str:
-        """render this physics object as a TOML block
+    def _add_to(self, model, tag) -> None:
+        """place this object on the native model under its mesh tag
 
         Parameters
         ----------
+        model : rapidfem._native.Model
+            the model being built
         tag : int
             physical-group tag assigned by ``Geometry.mesh()``
-
-        Returns
-        -------
-        str
-            TOML fragment; an empty string for :class:`PEC`, whose
-            tags are aggregated by :class:`Problem`
         """
-        return ""
+        raise NotImplementedError
 
 
 # DRIVEN PORTS ==========================================================================
@@ -202,15 +192,9 @@ class RectWaveguidePort(_Physics):
         self.width = float(width)
         self.height = float(height)
 
-    def _to_toml(self, tag: int) -> str:
-        return (
-            f'[[ports]]\ntype = "rectangular"\ntag = {tag}\n'
-            f'mode = [{self.mode[0]}, {self.mode[1]}]\n'
-            f'er = {_f64(self.er)}\npower = {_f64(self.power)}\n'
-            f'width = {_f64(self.width)}\nheight = {_f64(self.height)}\n'
-        )
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_rect_port(tag, width=self.width, height=self.height,
+                            mode=list(self.mode), er=self.er, power=self.power)
 class LumpedPort(_Physics):
     """Lumped voltage-source driven port between two PEC conductors.
 
@@ -286,18 +270,10 @@ class LumpedPort(_Physics):
         self.width = float(width)
         self.height = float(height)
 
-    def _to_toml(self, tag: int) -> str:
-        d = self.direction
-        c_line = f'c = {_f64(self.c)}\n' if self.c is not None else ''
-        return (
-            f'[[ports]]\ntype = "lumped"\ntag = {tag}\n'
-            f'z0 = {_f64(self.z0)}\nl = {_f64(self.l)}\n{c_line}'
-            f'power = {_f64(self.power)}\n'
-            f'direction = [{_f64(d[0])}, {_f64(d[1])}, {_f64(d[2])}]\n'
-            f'width = {_f64(self.width)}\nheight = {_f64(self.height)}\n'
-        )
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_lumped_port(tag, z0=self.z0, l=self.l, c=self.c,
+                              direction=list(self.direction), width=self.width,
+                              height=self.height, power=self.power)
 class CoaxPort(_Physics):
     """TEM-mode driven port on a coaxial annular face.
 
@@ -361,21 +337,11 @@ class CoaxPort(_Physics):
         self.er = float(er)
         self.power = float(power)
 
-    def _to_toml(self, tag: int) -> str:
-        s = (
-            f'[[ports]]\ntype = "coax"\ntag = {tag}\n'
-            f'ri = {_f64(self.ri)}\nro = {_f64(self.ro)}\n'
-            f'er = {_f64(self.er)}\npower = {_f64(self.power)}\n'
-        )
-        if self.origin is not None:
-            o = self.origin
-            s += f'origin = [{_f64(o[0])}, {_f64(o[1])}, {_f64(o[2])}]\n'
-        if self.z_axis is not None:
-            z = self.z_axis
-            s += f'z_axis = [{_f64(z[0])}, {_f64(z[1])}, {_f64(z[2])}]\n'
-        return s
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_coax_port(
+            tag, ri=self.ri, ro=self.ro, er=self.er, power=self.power,
+            origin=None if self.origin is None else list(self.origin),
+            z_axis=None if self.z_axis is None else list(self.z_axis))
 class WavePort(_Physics):
     """Numerically-solved wave port, 2-D mode eigensolve on the port face.
 
@@ -477,33 +443,23 @@ class WavePort(_Physics):
             self.mode_kind = "auto"
         self.pec = list(pec) if pec is not None else []
 
-    def _to_toml(self, tag: int) -> str:
-        if self.f0 is None:
-            raise ValueError(
-                "WavePort requires f0= for the FD frequency-domain backend "
-                "(the operating frequency of the 2-D mode eigensolve)."
-            )
-        # Resolve attached PEC objects to their physical-group tags so the
-        # cross-section eigensolve can mark the corresponding nodes as
-        # internal conductors. Geometry.mesh() populates `_physics_tags`,
-        # so this only resolves once meshing has happened.
-        pec_tags: list[int] = []
+    def _add_to(self, model, tag) -> None:
+        # The cross-section solve: an explicit te / tm, otherwise the vector
+        # solve at f0, or without f0 the scalar solve picked by ``te``.
+        if self.mode_kind in ("te", "tm"):
+            kind = self.mode_kind
+        elif self.f0 is None:
+            kind = "te" if self.te else "tm"
+        else:
+            kind = "vector"
+        # Attached PEC objects resolve to their physical-group tags so the
+        # cross-section eigensolve can mark those nodes as internal
+        # conductors; Geometry.mesh() populates `_physics_tags`.
         geom = self._geometry
-        for phys in self.pec:
-            phys_tag = geom._physics_tags.get(id(phys))
-            if isinstance(phys_tag, int):
-                pec_tags.append(phys_tag)
-        pec_list = "[" + ", ".join(str(t) for t in pec_tags) + "]"
-        return (
-            f'[[ports]]\ntype = "wave_numerical"\ntag = {tag}\n'
-            f'f0 = {_f64(self.f0)}\n'
-            f'mode_index = {self.mode_index}\n'
-            f'mode_kind = "{self.mode_kind}"\n'
-            f'pec_tags = {pec_list}\n'
-            f'power = {_f64(self.power)}\n'
-        )
-
-
+        pec_tags = [geom._physics_tags[id(p)] for p in self.pec
+                    if isinstance(geom._physics_tags.get(id(p)), int)]
+        model.add_wave_port(tag, kind=kind, mode_index=self.mode_index,
+                            power=self.power, f0=self.f0, pec_tags=pec_tags)
 class UserDefinedPort(_Physics):
     """Driven port with a user-supplied uniform E-field on the face.
 
@@ -540,15 +496,8 @@ class UserDefinedPort(_Physics):
         self.e_field = tuple(float(v) for v in e_field)
         self.power = float(power)
 
-    def _to_toml(self, tag: int) -> str:
-        e = self.e_field
-        return (
-            f'[[ports]]\ntype = "user_defined"\ntag = {tag}\n'
-            f'e_field = [{_f64(e[0])}, {_f64(e[1])}, {_f64(e[2])}]\n'
-            f'power = {_f64(self.power)}\n'
-        )
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_user_port(tag, e_field=list(self.e_field), power=self.power)
 class FloquetPort(_Physics):
     """Floquet plane-wave port for periodic unit cells.
 
@@ -607,14 +556,10 @@ class FloquetPort(_Physics):
         self.er = float(er)
         self.power = float(power)
 
-    def _to_toml(self, tag: int) -> str:
-        return (
-            f'[[ports]]\ntype = "floquet"\ntag = {tag}\n'
-            f'scan_theta_deg = {_f64(self.scan_theta_deg)}\n'
-            f'scan_phi_deg = {_f64(self.scan_phi_deg)}\n'
-            f'mode_nr = {self.mode_nr}\n'
-            f'er = {_f64(self.er)}\npower = {_f64(self.power)}\n'
-        )
+    def _add_to(self, model, tag) -> None:
+        model.add_floquet_port(tag, scan_theta_deg=self.scan_theta_deg,
+                               scan_phi_deg=self.scan_phi_deg,
+                               mode_nr=self.mode_nr, er=self.er, power=self.power)
 
 
 # BOUNDARY CONDITIONS ===================================================================
@@ -655,13 +600,9 @@ class PEC(_Physics):
     targets : GeoObject or EntityCollection
         face(s) to mark as PEC, variadic
     """
-    _section = "pec"
 
-    def _to_toml(self, tag: int) -> str:
-        # PEC tags are aggregated by Problem into [pec] tags=[...]; emit nothing.
-        return ""
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_pec(tag)
 class PMC(_Physics):
     """Perfect magnetic conductor, symmetry boundary.
 
@@ -689,10 +630,8 @@ class PMC(_Physics):
         face(s) to mark as PMC, variadic
     """
 
-    def _to_toml(self, tag: int) -> str:
-        return f'[[ports]]\ntype = "pmc"\ntag = {tag}\n'
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_pmc(tag)
 class ABC(_Physics):
     """First-order absorbing boundary condition.
 
@@ -739,10 +678,8 @@ class ABC(_Physics):
     def __init__(self, *targets):
         super().__init__(*targets)
 
-    def _to_toml(self, tag: int) -> str:
-        return f'[[ports]]\ntype = "abc"\ntag = {tag}\n'
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_abc(tag)
 class FarFieldSurface(_Physics):
     """Near-field-to-far-field (Huygens) integration surface.
 
@@ -792,12 +729,8 @@ class FarFieldSurface(_Physics):
     def __init__(self, *targets):
         super().__init__(*targets)
 
-    def _to_toml(self, tag: int) -> str:
-        # No [[ports]] block; the tag is consumed by Problem into
-        # [output] nfft_tag instead.
-        return ""
-
-
+    def _add_to(self, model, tag) -> None:
+        model.set_far_field(tag)
 class SurfaceImpedance(_Physics):
     """Surface impedance boundary for thin lossy conductors.
 
@@ -944,23 +877,11 @@ class SurfaceImpedance(_Physics):
             return False
         return False
 
-    def _to_toml(self, tag: int) -> str:
-        s = (
-            f'[[ports]]\ntype = "surface_impedance"\ntag = {tag}\n'
-            f'conductivity = {_f64(self.conductivity)}\n'
-            f'mur = {_f64(self.mur)}\ner = {_f64(self.er)}\n'
-        )
-        if self.thickness is not None:
-            s += f'thickness = {_f64(self.thickness)}\n'
-        if self.two_sided:
-            s += 'two_sided = true\n'
-        if self.sheet:
-            s += 'sheet = true\n'
-        if self.zs is not None:
-            s += f'zs = [{_f64(self.zs[0])}, {_f64(self.zs[1])}]\n'
-        return s
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_surface_impedance(
+            tag, conductivity=self.conductivity, mur=self.mur, er=self.er,
+            thickness=self.thickness, two_sided=self.two_sided,
+            sheet=self.sheet, zs=None if self.zs is None else list(self.zs))
 class LumpedElement(_Physics):
     """Series chip R-L-C element on a 2-D footprint.
 
@@ -1018,21 +939,10 @@ class LumpedElement(_Physics):
         self.width = float(width)
         self.height = float(height)
 
-    def _to_toml(self, tag: int) -> str:
-        s = (
-            f'[[ports]]\ntype = "lumped_element"\ntag = {tag}\n'
-            f'r = {_f64(self.r)}\nl = {_f64(self.l)}\n'
-        )
-        if self.c is not None:
-            s += f'c = {_f64(self.c)}\n'
-        d = self.direction
-        s += (
-            f'direction = [{_f64(d[0])}, {_f64(d[1])}, {_f64(d[2])}]\n'
-            f'width = {_f64(self.width)}\nheight = {_f64(self.height)}\n'
-        )
-        return s
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_lumped_element(tag, r=self.r, l=self.l, c=self.c,
+                                 direction=list(self.direction),
+                                 width=self.width, height=self.height)
 class PML(_Physics):
     """Coordinate-stretched anisotropic Perfectly Matched Layer.
 
@@ -1103,7 +1013,6 @@ class PML(_Physics):
         face (typical 5-12)
     """
     _expected_dim = 3
-    _section = "pml"
 
     def __init__(self, *targets,
                  direction: Sequence[float],
@@ -1122,20 +1031,11 @@ class PML(_Physics):
         self.exponent = float(exponent)
         self.delta_max = float(delta_max)
 
-    def _to_toml(self, tag: int) -> str:
-        d = self.direction
-        return (
-            f'[[pml]]\nvolume_tag = {tag}\n'
-            f'direction = [{_f64(d[0])}, {_f64(d[1])}, {_f64(d[2])}]\n'
-            f'inner_face = {_f64(self.inner_face)}\n'
-            f'thickness = {_f64(self.thickness)}\n'
-            f'er_base = {_f64(self.er_base)}\n'
-            f'ur_base = {_f64(self.ur_base)}\n'
-            f'exponent = {_f64(self.exponent)}\n'
-            f'delta_max = {_f64(self.delta_max)}\n'
-        )
-
-
+    def _add_to(self, model, tag) -> None:
+        model.add_pml(tag, direction=list(self.direction),
+                      inner_face=self.inner_face, thickness=self.thickness,
+                      er_base=self.er_base, ur_base=self.ur_base,
+                      exponent=self.exponent, delta_max=self.delta_max)
 class PeriodicBoundary(_Physics):
     """Normal-incidence periodic boundary pair (time-domain backend).
 
@@ -1191,19 +1091,23 @@ class PeriodicBoundary(_Physics):
                 f"{type(self).__name__}: face_a and face_b must belong "
                 f"to the same Geometry"
             )
-        # The base class _to_toml / tagging machinery assumes one tag per
+        # The base class tagging machinery assumes one tag per
         # _Physics, but we need two (one per face) for a periodic pair.
         # Store the two entity lists separately and overload the geometry
         # registration: a single PeriodicBoundary registers as two
         # physical-group tags, one per face.
         self._entities_a = ents_a
         self._entities_b = ents_b
-        # _entities is kept (the union) so the parent _to_toml signature
-        # and downstream tag walkers still see something sensible.
+        # _entities is kept (the union) so downstream tag walkers still see
+        # something sensible.
         self._entities = list(ents_a) + list(ents_b)
         self._geometry = geom_a
         geom_a._physics.append(self)
 
+
+    def _add_to(self, model, tag) -> None:
+        tag_a, tag_b = tag
+        model.add_periodic(tag_a, tag_b)
 
 __all__ = [
     "RectWaveguidePort", "LumpedPort", "CoaxPort", "WavePort",

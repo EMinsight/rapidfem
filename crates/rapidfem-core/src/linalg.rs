@@ -70,6 +70,8 @@ pub struct SymmetricSolver<T: Scalar> {
     n: usize,
     symbolic: Option<(LdltSymbolic, SolverSettings)>,
     solver: Option<LdltSolver<T>>,
+    /// rslab's a-priori estimate of the factorisation: (flops, factor nnz).
+    estimate: Option<(u64, u64)>,
     // Lower-triangle triplet buffers, reused across refactorizations.
     lo_rows: Vec<usize>,
     lo_cols: Vec<usize>,
@@ -78,7 +80,7 @@ pub struct SymmetricSolver<T: Scalar> {
 
 impl<T: Scalar> SymmetricSolver<T> {
     pub fn new() -> Self {
-        Self { n: 0, symbolic: None, solver: None,
+        Self { n: 0, symbolic: None, solver: None, estimate: None,
                lo_rows: Vec::new(), lo_cols: Vec::new(), lo_vals: Vec::new() }
     }
 
@@ -136,6 +138,8 @@ impl<T: Scalar> SymmetricSolver<T> {
         let sym = LdltSymbolic::analyze(&a, &settings)
             .map_err(|e| format!("rslab analyze: {e:?}"))?;
         let mem_line = check_memory::<T>(&sym)?;
+        let est = sym.estimate_memory::<T>();
+        self.estimate = Some((est.factor_flops, est.factor_nnz));
         eprintln!(
             "  rslab: {:?}, {mem_line}, est. {:.2e} flops",
             settings.ordering.method,
@@ -266,6 +270,12 @@ impl<T: Scalar> SymmetricSolver<T> {
             xs.push(r.x);
         }
         Some((xs, iters))
+    }
+
+    /// rslab's a-priori estimate of the factorisation, `(flops, factor nnz)`,
+    /// from the symbolic analysis: deterministic, unlike a measured time.
+    pub fn factor_estimate(&self) -> Option<(u64, u64)> {
+        self.estimate
     }
 
     /// Inertia (positive, negative, zero pivots) of the last factorisation.

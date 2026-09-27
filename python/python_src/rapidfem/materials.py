@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from ._fmt import _f64
 
 
 # HELPERS ===============================================================================
@@ -65,14 +64,6 @@ class Debye:
         self.er_static = float(er_static)
         self.tau_s = float(tau_s)
 
-    def _to_toml(self) -> str:
-        return (
-            f"[materials.debye]\n"
-            f"er_inf = {_f64(self.er_inf)}\n"
-            f"er_static = {_f64(self.er_static)}\n"
-            f"tau_s = {_f64(self.tau_s)}\n"
-        )
-
 
 class Drude:
     """Drude dispersion model for metals and free-electron media.
@@ -120,13 +111,6 @@ class Drude:
         self.damping_freq_hz = float(damping_freq_hz)
         self.er_inf = float(er_inf)
 
-    def _to_toml(self) -> str:
-        return (
-            f"[materials.drude]\n"
-            f"er_inf = {_f64(self.er_inf)}\n"
-            f"plasma_freq_hz = {_f64(self.plasma_freq_hz)}\n"
-            f"damping_freq_hz = {_f64(self.damping_freq_hz)}\n"
-        )
 
 
 # BULK MATERIAL =========================================================================
@@ -246,30 +230,30 @@ class Material:
         self.drude = drude
         self.maxh = float(maxh) if maxh is not None else None
 
-    def _to_toml(self, volume_tag: int) -> str:
-        """render this material as a ``[[materials]]`` block
+    def _add_to(self, model, volume_tag: int) -> None:
+        """place this material on the native model under a volume tag
 
         Parameters
         ----------
+        model : rapidfem._native.Model
+            the model being built
         volume_tag : int
             physical-group tag of the volume this material is attached to
         """
-        s = (
-            f"[[materials]]\nvolume_tag = {volume_tag}\n"
-            f"er = {_f64(self.er)}\nur = {_f64(self.ur)}\n"
-            f"tand = {_f64(self.tand)}\nconductivity = {_f64(self.conductivity)}\n"
-        )
-        if self.cond_diag is not None:
-            s += f"cond_diag = [{_f64(self.cond_diag[0])}, {_f64(self.cond_diag[1])}, {_f64(self.cond_diag[2])}]\n"
-        if self.er_diag is not None:
-            s += f"er_diag = [{_f64(self.er_diag[0])}, {_f64(self.er_diag[1])}, {_f64(self.er_diag[2])}]\n"
-        if self.ur_diag is not None:
-            s += f"ur_diag = [{_f64(self.ur_diag[0])}, {_f64(self.ur_diag[1])}, {_f64(self.ur_diag[2])}]\n"
+        debye = drude = None
         if self.debye is not None:
-            s += self.debye._to_toml()
+            d = self.debye
+            debye = (d.er_inf, d.er_static, d.tau_s)
         if self.drude is not None:
-            s += self.drude._to_toml()
-        return s
+            d = self.drude
+            drude = (d.er_inf, d.plasma_freq_hz, d.damping_freq_hz)
+        vec = lambda v: None if v is None else [float(x) for x in v]
+        model.add_material(
+            volume_tag, er=self.er, ur=self.ur, tand=self.tand,
+            conductivity=self.conductivity, cond_diag=vec(self.cond_diag),
+            er_diag=vec(self.er_diag), ur_diag=vec(self.ur_diag),
+            debye=debye, drude=drude)
+
 
 
 # NAMED PRESETS =========================================================================

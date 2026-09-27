@@ -142,6 +142,28 @@ impl OrderMap {
 /// The default `θ` of the order policy. See [`wavelength_policy`].
 pub const DEFAULT_THETA: f64 = 0.35;
 
+/// How the per-cell element orders are chosen.
+///
+/// Uniform order 2 is the default: predictable, and the accuracy the element was
+/// validated at. The adaptive policy assumes a geometry-fine cell (`k·h < θ`)
+/// carries a smooth field, so order 1 there is free. That holds near a smooth
+/// wall but not at a re-entrant conductor edge, where the mesh is fine because
+/// the field is singular; on-chip and PCB meshes refine exactly there, so the
+/// adaptive policy stays opt-in until it spares cells next to conductors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OrderPolicy {
+    /// Every cell at this order (1 or 2).
+    Uniform(u8),
+    /// [`wavelength_policy`]: order 1 where `k·h < theta`, order 2 elsewhere.
+    Adaptive { theta: f64 },
+}
+
+impl Default for OrderPolicy {
+    fn default() -> Self {
+        OrderPolicy::Uniform(2)
+    }
+}
+
 /// The diameter of a tetrahedron: its longest edge.
 ///
 /// The right length scale, and not the same as a mean or a cube root of the
