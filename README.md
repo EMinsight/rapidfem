@@ -163,7 +163,7 @@ rom  = ptd.reduce(y0, dim=60)                   # model-order reduction
 A    = ptd.state_space()                        # the verbatim operator
 ```
 
-Method notes and the `ProblemTD` API are in [`docs/td-backend.md`](docs/td-backend.md).
+Method notes and the `ProblemTD` API are in [issue #31](https://github.com/milanofthe/rapidfem/issues/31).
 
 ## Solver backends
 

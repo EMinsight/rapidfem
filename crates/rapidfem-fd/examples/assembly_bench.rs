@@ -10,7 +10,7 @@
 //! Times ONLY `assemble_global_matrices`: the per-element basis construction and
 //! the O(n²) stiffness/mass integration, scattered into the COO triplets. The
 //! linear solve is `solver_bench`'s job; this one exists to guard the element
-//! hot path across the basis refactor (docs/fd-basis-plan.md), which replaces a
+//! hot path across the basis refactor (issue #32), which replaces a
 //! fixed two-term / degree-2-monomial representation with a general exponent
 //! multi-index and a variable term count.
 //!

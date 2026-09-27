@@ -3,7 +3,7 @@ name = "rapidfem-td"
 version = "0.1.0"
 edition = "2024"
 
-# Time-domain DGTD solver. See docs/td-backend-plan.md.
+# Time-domain DGTD solver. See issue #27.
 
 [lib]
 # Doc comments carry explanatory math, not runnable examples.

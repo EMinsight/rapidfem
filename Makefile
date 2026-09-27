@@ -1,5 +1,5 @@
 # rapidfem developer tasks. `make help` lists targets.
-# The test suite has two pillars (see python/tests/README.md):
+# The test suite has two pillars (see issue #36):
 #   1. sympy kernel goldens   — Rust tests pinned to symbolic ground truth
 #   2. phenomenon geometries  — Python tests vs analytical / conservation laws
 
