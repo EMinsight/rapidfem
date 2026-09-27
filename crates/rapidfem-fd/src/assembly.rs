@@ -39,14 +39,26 @@ pub struct SolveResult {
     pub n_field: usize,
 }
 
-/// A sweep point tries the preconditioned iteration only when the last
-/// factorisation took at least this long; below it refactoring is cheap.
-const SWEEP_ITERATE_MIN_FACTOR_SECS: f64 = 0.25;
 /// Relative residual of the preconditioned iteration (S-parameters then
 /// agree with the direct solve to about 1e-10).
 const SWEEP_ITERATE_TOL: f64 = 1e-10;
-/// Iterations before a sweep point gives up and refactors.
-const SWEEP_ITERATE_MAX_ITER: usize = 40;
+/// Cost of one preconditioned iteration per right-hand side, in factorisation
+/// flops per factor nonzero. The triangular solves are memory bound where the
+/// factorisation runs BLAS-3, so a solve costs far more per flop; measured on
+/// WR-90 filters from 50k to 680k DOF (issue #42).
+const SWEEP_ITERATION_FLOPS_PER_NNZ: f64 = 35.0;
+/// Fewer affordable iterations than this and a sweep point refactors directly.
+const SWEEP_ITERATE_MIN_BUDGET: usize = 4;
+
+/// Iteration budget of a sweep point: half an estimated refactorisation,
+/// spent on preconditioned iterations. From rslab's a-priori estimate, so the
+/// choice between iterating and refactoring (and with it every result) does not
+/// depend on the machine or its load.
+fn sweep_iteration_budget(solver: &rapidfem_core::linalg::SymmetricSolver<C64>, n_rhs: usize) -> usize {
+    let Some((flops, nnz)) = solver.factor_estimate() else { return 0 };
+    let per_iteration = SWEEP_ITERATION_FLOPS_PER_NNZ * nnz as f64 * n_rhs.max(1) as f64;
+    (0.5 * flops as f64 / per_iteration) as usize
+}
 
 /// Assemble the driven system and solve for each driven port. Accepts any
 /// Port type via trait objects.
@@ -411,10 +423,7 @@ pub fn frequency_sweep_with_pml(
     // amortised across frequencies via `solver.refactorize`.
     let mut solver = rapidfem_core::linalg::SymmetricSolver::<C64>::new();
     let mut first_factor = true;
-    // Time of the last numeric factorisation, and whether the next frequency
-    // should refactor instead of trying the preconditioned iteration.
-    let mut factor_secs = 0.0f64;
-    let mut refactor_next = true;
+    let mut have_factor = false;
 
     // COO buffers for the per-frequency system matrix, reused across the
     // sweep. Capacity covers the K block plus the Robin upper bound.
@@ -530,18 +539,16 @@ pub fn frequency_sweep_with_pml(
         // of an earlier frequency (same pattern, nearby values) instead of a
         // refactorisation, when a factorisation is expensive enough to be
         // worth avoiding. A 681k-DOF iris filter swept over 21 points ran
-        // 2.6x faster this way, S-parameters equal to 5e-11.
-        let t_solve = web_time::Instant::now();
-        let nearby = if refactor_next || factor_secs < SWEEP_ITERATE_MIN_FACTOR_SECS {
-            None
-        } else {
+        // 2.6x faster this way, S-parameters equal to 5e-11. A point that does
+        // not converge within its budget refactors and becomes the reference.
+        let budget = sweep_iteration_budget(&solver, b_frees.len());
+        let nearby = if have_factor && budget >= SWEEP_ITERATE_MIN_BUDGET {
             solver.solve_nearby(n_free, &coo_rows, &coo_cols, &coo_vals, &b_frees,
-                                SWEEP_ITERATE_TOL, SWEEP_ITERATE_MAX_ITER)
+                                SWEEP_ITERATE_TOL, budget)
+        } else {
+            None
         };
         let (x_frees, how) = if let Some((xs, it)) = nearby {
-            // Iterations grow with the distance to the reference frequency;
-            // once they cost half a factorisation, the next point refactors.
-            refactor_next = t_solve.elapsed().as_secs_f64() > 0.5 * factor_secs;
             (xs, format!("cocg {it} it on the last factor"))
         } else {
             // Factor (symbolic once via `factorize`, then `refactorize` per
@@ -552,8 +559,7 @@ pub fn frequency_sweep_with_pml(
             } else {
                 solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
             }
-            factor_secs = t_solve.elapsed().as_secs_f64();
-            refactor_next = false;
+            have_factor = true;
             (solver.solve_many(&b_frees)?, solver.name().to_string())
         };
         let mut solutions = Vec::new();
