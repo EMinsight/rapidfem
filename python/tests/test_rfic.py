@@ -323,3 +323,75 @@ def test_from_fem_json_meshes():
         assert any(name.startswith("port_") for name in s.groups)
     finally:
         g.close()
+
+
+@pytest.mark.parametrize("band, expected", [
+    ((0.1e9, 1e9), "sibc"),          # TopMetal2 below 1.5 skin depths
+    ((5e9, 20e9), "volume_iso"),     # 2.3 to 4.6 skin depths: meshed
+])
+def test_build_conductor_model_follows_band(mini_gds, band, expected):
+    """``auto`` picks the conductor model from t/delta over the band; SIBC
+    metals become holes whose walls carry the 2V/S thickness (issue #46)."""
+    from rapidfem.physics import SurfaceImpedance
+
+    um = 1e-6
+    stack = rfic.Stack.sg13g2()
+    tm2 = stack.by_name("TopMetal2")
+    model = rfic.build(
+        mini_gds, stack, band=band,
+        margin=60 * um, air=40 * um, air_top=80 * um, mesh="fast",
+    )
+    g = model.geometry
+    try:
+        tm2_volumes = [e for e in g._entities if e.dim == 3 and e.name == "TopMetal2"]
+        sibcs = [p for p in g._physics if isinstance(p, SurfaceImpedance)]
+        if expected == "sibc":
+            assert not tm2_volumes, "SIBC metal must be a hole, not a meshed volume"
+            # 20 um x 10 um patch of thickness t: 2V/S = 2 A t / (2 A + P t)
+            area, perim = 20 * um * 10 * um, 2 * (20 * um + 10 * um)
+            t_eff = 2 * area * tm2.thickness / (2 * area + perim * tm2.thickness)
+            assert any(abs(p.thickness - t_eff) < 0.02 * t_eff for p in sibcs)
+            assert all(p.thickness < tm2.thickness for p in sibcs)
+        else:
+            assert tm2_volumes
+            assert all(e.material.conductivity == tm2.sigma for e in tm2_volumes)
+        g.mesh()
+        assert g.mesh_stats.n_tets > 0
+    finally:
+        g.close()
+
+
+def test_hollow_drops_junction_faces_of_fragmented_polygons(tmp_path):
+    """Two overlapping TopMetal2 rectangles are fragmented, not fused; the
+    face between the pieces must vanish with the hole instead of carrying a
+    surface impedance inside the trace (issue #49)."""
+    gdstk = pytest.importorskip("gdstk")
+    from rapidfem.physics import SurfaceImpedance
+
+    lib = gdstk.Library(unit=1e-6)
+    cell = lib.new_cell("two")
+    cell.add(gdstk.rectangle((-30, -5), (5, 5), layer=134))
+    cell.add(gdstk.rectangle((-5, -5), (30, 5), layer=134))
+    cell.add(gdstk.rectangle((-40, -20), (40, 20), layer=250))
+    path = tmp_path / "two.gds"
+    lib.write_gds(str(path))
+
+    um = 1e-6
+    stack = rfic.Stack.sg13g2()
+    model = rfic.build(str(path), stack, band=(0.1e9, 1e9),
+                       margin=40 * um, air=30 * um, air_top=60 * um, mesh="fast")
+    g = model.geometry
+    try:
+        walls = [e for p in g._physics if isinstance(p, SurfaceImpedance)
+                 for e in p._entities]
+        # the pieces meet at x = -5 um and x = +5 um: no x-normal wall may
+        # remain there (the real end walls sit at x = -30 um and +30 um)
+        sc = g._scale
+        inner = [e for e in walls
+                 if (e.bbox[3] - e.bbox[0]) * sc < 0.5 * um
+                 and -29 * um < e.cog[0] * sc < 29 * um]
+        assert not inner, f"{len(inner)} junction faces kept inside the trace"
+        g.mesh()
+        assert g.mesh_stats.n_tets > 0
+    finally:
+        g.close()

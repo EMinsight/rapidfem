@@ -304,6 +304,10 @@ pub enum PortConfig {
         /// thickness in the finite-thickness coth term.
         #[serde(default)]
         two_sided: bool,
+        /// Zero-thickness sheet with fields on both sides (see
+        /// `waveguide::SurfaceImpedance::sheet`).
+        #[serde(default)]
+        sheet: bool,
         /// Explicit surface impedance [re, im] in Ω/sq (overrides conductivity if present).
         #[serde(default)]
         zs: Option<[f64; 2]>,

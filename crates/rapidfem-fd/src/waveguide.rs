@@ -398,6 +398,12 @@ pub fn cs_from_origin_zaxis(origin: [f64; 3], z_axis: [f64; 3]) -> CoordinateSys
 ///   algebraically identical to Palace's (sinh ν ± sin ν)/(cosh ν − cos ν)
 ///   thin-sheet correction with ν = t/δ.
 ///
+/// * `sheet = true` — a zero-thickness sheet embedded in the volume with
+///   fields on both sides, standing in for a strip of thickness t. The two
+///   faces of the strip carry the current in parallel:
+///   Z = Zs,∞·coth(γₘ·t/2)/2 (the even mode of the slab two-port), 1/(σt) at
+///   DC and Zs,∞/2 in the skin-effect limit.
+///
 /// With `two_sided = false` on a closed shell, the opposing faces each claim
 /// the full cross-section and the low-frequency resistance comes out a factor
 /// 2 low (and Im Zs stays high through the t ≲ 2δ transition band).
@@ -413,17 +419,20 @@ pub struct SurfaceImpedance {
     /// Sheet carries SIBC on opposing faces of the same metal volume
     /// (shell): each face owns half the thickness in the coth term.
     pub two_sided: bool,
+    /// Zero-thickness sheet with fields on both sides: the two faces of the
+    /// strip it stands for in parallel.
+    pub sheet: bool,
     /// Optional explicit surface impedance Zs (Ω/sq); overrides σ-based calc when Some
     pub zs: Option<C64>,
 }
 
 impl SurfaceImpedance {
     pub fn from_conductivity(sigma: f64) -> Self {
-        SurfaceImpedance { sigma, mur: 1.0, er: 1.0, thickness: None, two_sided: false, zs: None }
+        SurfaceImpedance { sigma, mur: 1.0, er: 1.0, thickness: None, two_sided: false, sheet: false, zs: None }
     }
 
     pub fn from_zs(zs: C64) -> Self {
-        SurfaceImpedance { sigma: 0.0, mur: 1.0, er: 1.0, thickness: None, two_sided: false, zs: Some(zs) }
+        SurfaceImpedance { sigma: 0.0, mur: 1.0, er: 1.0, thickness: None, two_sided: false, sheet: false, zs: Some(zs) }
     }
 
     /// Robin γ-coefficient from the surface impedance Zs: γ = j·k₀·Z₀/Zs.
@@ -449,12 +458,15 @@ impl SurfaceImpedance {
         let mut r = C64::new(1.0, 1.0) * C64::from(rho / d_skin);
         if let Some(t) = self.thickness {
             // Finite thickness scaler: R / tanh(γ_m * t_eff), γ_m = j ω √(με_c).
-            // Two-sided sheets (shell faces) own half the metal each.
-            let t_eff = if self.two_sided { 0.5 * t } else { t };
+            // Two-sided walls and embedded sheets: each face owns half the metal.
+            let t_eff = if self.two_sided || self.sheet { 0.5 * t } else { t };
             let eps_c = C64::new(eps, -self.sigma / w0);
             let mu_c = C64::new(mu, 0.0);
             let gamma_m = C64::new(0.0, w0) * (mu_c * eps_c).sqrt();
             r = r / (gamma_m * C64::from(t_eff)).tanh();
+        }
+        if self.sheet {
+            r *= 0.5;
         }
         r
     }
@@ -941,6 +953,28 @@ mod sibc_tests {
         let r_dc = 1.0 / (SIGMA * T);
         assert!((one.re - r_dc).abs() / r_dc < 1e-3, "one-sided {one} vs {r_dc}");
         assert!((two.re - 2.0 * r_dc).abs() / (2.0 * r_dc) < 1e-3, "two-sided {two} vs {}", 2.0 * r_dc);
+    }
+
+    /// An embedded sheet is the even mode of the slab two-port: with
+    /// Z11 = Zs,∞·coth(γt) and Z12 = Zs,∞·csch(γt) (both faces driven with the
+    /// same tangential E), Z = (Z11 + Z12)/2. 1/(σt) at DC, Zs,∞/2 when thick.
+    #[test]
+    fn sheet_is_the_slab_even_mode() {
+        for freq in [1.0e3, 1.0e9, 1.0e10, 1.0e11] {
+            let e = exc(freq);
+            let mut s = sibc(Some(T), false);
+            s.sheet = true;
+            let z = s.surface_impedance(&e);
+            let zs = sibc(None, false).surface_impedance(&e);
+            let eps_c = C64::new(crate::constants::EPS0, -SIGMA / e.omega);
+            let gt = C64::new(0.0, e.omega) * (C64::from(MU0) * eps_c).sqrt() * T;
+            let z_even = zs * (C64::from(1.0) / gt.tanh() + C64::from(1.0) / gt.sinh()) * 0.5;
+            assert!((z - z_even).norm() / z_even.norm() < 1e-9, "f={freq:.1e}: {z} vs {z_even}");
+        }
+        let mut s = sibc(Some(T), false);
+        s.sheet = true;
+        let dc = s.surface_impedance(&exc(1.0e3));
+        assert!((dc.re * SIGMA * T - 1.0).abs() < 1e-3, "sheet DC {dc}");
     }
 
     /// Deep in the skin-effect regime (t >> δ) the finite-thickness variants

@@ -821,40 +821,40 @@ class SurfaceImpedance(_Physics):
     the solver compute :math:`Z_s` analytically, or override with
     an explicit ``zs = (re, im)`` in :math:`\\Omega/\\square`.
 
-    The finite-thickness correction
-    :math:`Z_s = Z_{s,\\infty} \\coth(\\gamma_m t_\\mathrm{eff})` has two
-    regimes, selected by ``two_sided``:
+    The finite-thickness correction depends on where the face sits:
 
-    * ``two_sided=False`` (default) — the sheet sees fields on **one side
-      only** (e.g. a ground plane on the domain boundary). The face owns the
-      full metal cross-section, :math:`t_\\mathrm{eff} = t`, and
-      :math:`Z_s \\to 1/(\\sigma t)` at DC.
-    * ``two_sided=True`` — the face is one side of a conductor that carries
-      the BC on **opposing faces** (the shell of an extruded trace). Each
-      face owns half the metal, :math:`t_\\mathrm{eff} = t/2`; the opposing
-      faces in parallel then recover the physical :math:`1/(\\sigma t)` DC
-      resistance. Algebraically identical to Palace's thin-sheet correction.
-
-    Leaving ``two_sided=False`` on a closed shell halves the low-frequency
-    resistance (both faces claim the full cross-section) and keeps
-    :math:`\\mathrm{Im}\\,Z_s` high through the :math:`t \\lesssim 2\\delta`
-    transition band — inductor R and Q come out visibly wrong below the
-    skin-effect regime. For :math:`t \\gg \\delta` the flag has no effect.
+    * ``two_sided=False`` (default) — a **boundary** face with fields on one
+      side only (a ground plane on the domain boundary). The face owns the
+      full metal, :math:`Z = Z_{s,\\infty} \\coth(\\gamma_m t)`,
+      :math:`1/(\\sigma t)` at DC.
+    * ``two_sided=True`` — a **wall** of a conductor that carries the BC on
+      opposing faces (the walls of a conductor cut out of the mesh). Each
+      face owns half the metal, :math:`Z = Z_{s,\\infty}
+      \\coth(\\gamma_m t/2)`; opposing faces in parallel recover
+      :math:`1/(\\sigma t)`. For a trace of width :math:`w` pass the
+      volume-to-surface thickness :math:`t_\\mathrm{eff} = w t/(w + t)`
+      (``2V/S``), not the layer thickness, or the sidewalls add conductance
+      and the DC resistance comes out a factor :math:`w/(w+t)` low.
+    * ``sheet=True`` — a zero-thickness **sheet** embedded in the volume
+      with fields on both sides, standing in for a strip of thickness
+      :math:`t`: :math:`Z = Z_{s,\\infty} \\coth(\\gamma_m t/2)/2`, the
+      even mode of the slab (the two faces in parallel), :math:`1/(\\sigma t)`
+      at DC and :math:`Z_{s,\\infty}/2` in the skin-effect limit. Exact for
+      films thinner than the skin depth; for a thick strip whose current
+      runs on one face (a microstrip over ground) the default one-sided
+      value is the better approximation.
 
 
     Note
     ----
-    Apply this to the **outer face of the actual conductor geometry**, not to a
-    zero-thickness sheet collapsed into the dielectric. Modelling a thick trace
-    (e.g. a 3 µm microstrip line) as a single embedded plate over-estimates the
-    conductor loss — the sharp edges of a zero-thickness strip carry a singular
-    surface-current density, so :math:`\\int |J_s|^2` (hence the loss) and the
-    extracted Z0 both run high (~1.6× the loss, ~10 % on Z0 in a microstrip
-    cross-check). Extrude the conductor to its real thickness and put the
-    surface impedance on its faces with ``two_sided=True``; the gap-facing
-    face then carries the current one-sidedly, as the physical conductor does.
-    The boundary condition itself is exact for a sheet of the given
-    :math:`Z_s` — this is purely a geometry fidelity point.
+    A surface impedance on the walls of a finite-thickness strip is accurate
+    where the metal is thinner than about 1.5 or thicker than about 10 skin
+    depths. In between it underestimates the strip resistance by up to about
+    20 % (measured against a 2D quasi-static reference, issue #48); mesh the
+    conductor as a volume there. :func:`rapidfem.rfic.build` makes this
+    choice per layer from its ``band``. Never apply the BC to the faces of a
+    conductor whose interior is still meshed: on internal faces it acts as a
+    transition sheet and lets the field into the core.
 
 
     Example
@@ -865,13 +865,13 @@ class SurfaceImpedance(_Physics):
 
         rf.SurfaceImpedance(ground_face, conductivity=5.8e7)
 
-    A finite-thickness trace, surface impedance on every outer face:
+    A 1 um thin-film strip as an embedded zero-thickness sheet:
 
     .. code-block:: python
 
-        trace = g.box(w, length, 3e-6, position=(...))
-        rf.SurfaceImpedance(trace.faces, conductivity=3e7, thickness=3e-6,
-                            two_sided=True)
+        strip = g.xy_plate(w, length, position=(...))
+        rf.SurfaceImpedance(strip, conductivity=3e7, thickness=1e-6,
+                            sheet=True)
 
 
     Parameters
@@ -893,6 +893,9 @@ class SurfaceImpedance(_Physics):
         Defaults to ``False``; if left unspecified while ``thickness`` is set
         and the targets cover the complete shell of a solid, a
         :class:`UserWarning` suggests the physically correct choice.
+    sheet : bool, optional
+        the target is a zero-thickness sheet with fields on both sides that
+        stands in for a strip of ``thickness`` (see above)
     zs : tuple[float, float], optional
         explicit ``(Re, Im)`` surface impedance in :math:`\\Omega/\\square`,
         overrides the analytic value
@@ -904,6 +907,7 @@ class SurfaceImpedance(_Physics):
                  er: float = 1.0,
                  thickness: float | None = None,
                  two_sided: bool | None = None,
+                 sheet: bool = False,
                  zs: tuple[float, float] | None = None):
         super().__init__(*targets)
         self.conductivity = float(conductivity)
@@ -911,20 +915,23 @@ class SurfaceImpedance(_Physics):
         self.er = float(er)
         self.thickness = float(thickness) if thickness is not None else None
         self.two_sided = bool(two_sided) if two_sided is not None else False
+        self.sheet = bool(sheet)
+        if self.sheet and self.two_sided:
+            raise ValueError("SurfaceImpedance: sheet and two_sided exclude each other")
         self.zs = (float(zs[0]), float(zs[1])) if zs is not None else None
-        if two_sided is None and self.thickness is not None and self._covers_solid_shell():
+        if self._covers_solid_shell():
             warnings.warn(
-                "SurfaceImpedance: thickness is set and the targets cover the "
-                "complete shell of an extruded conductor, but two_sided was "
-                "not specified. Opposing shell faces each own half the metal "
-                "— pass two_sided=True for the physical low-frequency "
-                "resistance, or two_sided=False explicitly for a one-sided "
-                "sheet (silences this warning).",
+                "SurfaceImpedance: the targets cover the complete shell of a "
+                "solid that is still meshed. On internal faces the BC is a "
+                "transition sheet and the field enters the conductor core, so "
+                "the loss comes out wrong. Cut the conductor out of the mesh "
+                "and put the BC on the walls (two_sided=True with "
+                "thickness=2V/S), or mesh it as a volume conductor.",
                 UserWarning, stacklevel=2)
 
     def _covers_solid_shell(self) -> bool:
         """True if the target faces include the complete shell of at least
-        one 3-D object of the geometry (the two-sided SIBC situation)."""
+        one 3-D object of the geometry that is still part of the mesh."""
         ids = {id(e) for e in self._entities}
         try:
             for obj in getattr(self._geometry, "_objects", []):
@@ -947,6 +954,8 @@ class SurfaceImpedance(_Physics):
             s += f'thickness = {_f64(self.thickness)}\n'
         if self.two_sided:
             s += 'two_sided = true\n'
+        if self.sheet:
+            s += 'sheet = true\n'
         if self.zs is not None:
             s += f'zs = [{_f64(self.zs[0])}, {_f64(self.zs[1])}]\n'
         return s
