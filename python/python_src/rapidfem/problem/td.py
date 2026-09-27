@@ -478,39 +478,6 @@ def _point_label(spec):
     return f"{f}_{c} @ ({coords})"
 
 
-class TdScattering:
-    """Modal-port scattering matrix container for the UI display path.
-
-    Iterates as ``(frequencies, sparams)`` so tuple unpacking,
-    ``freqs, S = result``, works; the named attributes additionally let
-    :func:`rapidfem.show` route it to the S-parameter panel (the
-    ``td_result`` display kind).
-
-    Attributes
-    ----------
-    frequencies : ndarray
-        frequency axis, shape ``[n_freq]``
-    sparams : ndarray of complex
-        scattering matrix, shape ``[n_freq, n_port, n_port]``
-    """
-
-    def __init__(self, frequencies, sparams):
-        self.frequencies = np.asarray(frequencies)
-        self.sparams = np.asarray(sparams)
-
-    @property
-    def n_ports(self):
-        """Number of ports, the side length of the S-matrix."""
-        return self.sparams.shape[1] if self.sparams.ndim == 3 else 0
-
-    def __iter__(self):
-        return iter((self.frequencies, self.sparams))
-
-    def __repr__(self):
-        return (f"TdScattering(n_ports={self.n_ports}, "
-                f"n_freq={self.frequencies.size})")
-
-
 class TdResponse:
     """Probe time series from :meth:`ProblemTD.driven_transient`.
 
@@ -910,8 +877,15 @@ class ProblemTD:
         return self.state_space()
 
     def state_space(self):
-        """The verbatim operator ``A`` as a :class:`scipy.sparse.csr_matrix`."""
-        from scipy.sparse import csr_matrix
+        """The verbatim operator ``A`` as a :class:`scipy.sparse.csr_matrix`.
+
+        Requires scipy (``pip install 'rapidfem[td]'``).
+        """
+        try:
+            from scipy.sparse import csr_matrix
+        except ImportError as e:
+            raise ImportError("scipy is required for state_space() and "
+                              "jacobian(). Install with: pip install 'rapidfem[td]'") from e
 
         n, row_ptr, col_idx, values = self._op.state_space()
         return csr_matrix((values, col_idx, row_ptr), shape=(n, n))

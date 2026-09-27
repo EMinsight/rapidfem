@@ -4,7 +4,7 @@
 		readFile, writeFile, readExample, fetchFieldBuffer, renameKernel,
 		meshPayloadToMeshData, sparamsToSMatrices, health,
 		type MeshPayload, type GeometryPayload, type SMatrix,
-		type TdResultPayload, type TdTimeSeriesPayload, type TdTrajectoryPayload,
+		type TdTimeSeriesPayload, type TdTrajectoryPayload,
 	} from '$lib/api';
 	import { get_kernel, type SolveResultPayload } from '$lib/kernel';
 	import { IS_STATIC_MODE } from '$lib/static_mode';
@@ -207,7 +207,7 @@
 	// Time-domain display state. A `td_trajectory` drives the 3D field
 	// animation (frame index + play loop owned here, the channel switch
 	// lives in the viewer toolbar); a `td_timeseries` drives the TimeSeries
-	// panel. `td_result` reuses the S-parameter path (freqs / smats).
+	// panel.
 	let td_trajectory_payload = $state<TdTrajectoryPayload | null>(null);
 	let td_timeseries_payload = $state<TdTimeSeriesPayload | null>(null);
 	let td_transfer_payload = $state<TdTimeSeriesPayload | null>(null);
@@ -818,15 +818,6 @@
 						n_dofs: res.n_dofs,
 						solve_time_s: res.solve_time_s,
 					};
-				} else if (kind === 'td_result') {
-					// Time-domain S-parameters reuse the S-parameter panel.
-					const res = payload as TdResultPayload;
-					freqs = res.frequencies;
-					smats = sparamsToSMatrices(res.sparams);
-					eigenmode_mode = false;
-					fields_raw = null;
-					fields_j_raw = null;
-					fields_h_raw = null;
 				} else if (kind === 'td_timeseries') {
 					td_timeseries_payload = payload as TdTimeSeriesPayload;
 				} else if (kind === 'td_transfer') {

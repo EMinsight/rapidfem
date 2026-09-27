@@ -36,7 +36,17 @@ dependencies = [
 [project.optional-dependencies]
 ui = [
     "flask>=3.0",
-    "flask-sock>=0.7",
+]
+gds = [
+    "gdstk>=0.9",
+]
+io = [
+    "scikit-rf>=0.30",
+    "pyvista>=0.43",
+    "h5py>=3.10",
+]
+td = [
+    "scipy>=1.11",
 ]
 test = [
     "pytest>=8.0",

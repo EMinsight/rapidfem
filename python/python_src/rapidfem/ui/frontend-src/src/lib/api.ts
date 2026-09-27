@@ -220,16 +220,6 @@ export interface TdTimeSeriesPayload {
 	source_label: string;
 }
 
-/** `td_result` payload — a time-domain modal-port scattering matrix. Carries
- *  the same nested-list shape as the frequency-domain result, so it feeds the
- *  existing S-parameter panel unchanged. */
-export interface TdResultPayload {
-	frequencies: number[];
-	sparams: number[][][][];
-	n_port: number;
-	n_freq: number;
-}
-
 /** `td_trajectory` payload — a self-contained DG-corner mesh plus a
  *  per-node field magnitude per snapshot. The frontend samples a point
  *  cloud from `nodes` / `tets` at runtime (energy-weighted, like the FD
