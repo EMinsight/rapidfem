@@ -232,6 +232,42 @@ impl<T: Scalar> SymmetricSolver<T> {
         Ok(x.chunks(n).map(<[T]>::to_vec).collect())
     }
 
+    /// Solve a nearby system `A' X = B` by COCG, preconditioned with the
+    /// current factorisation of `A` (a neighbouring frequency of a sweep: the
+    /// same pattern, slightly different values). Returns `None` when there is
+    /// no factorisation yet or any right-hand side misses the relative
+    /// residual `tol` within `max_iter` iterations; the caller then refactors.
+    /// Also returns the largest iteration count.
+    #[allow(clippy::too_many_arguments)]
+    pub fn solve_nearby(
+        &mut self,
+        n: usize,
+        rows: &[usize],
+        cols: &[usize],
+        vals: &[T],
+        bs: &[Vec<T>],
+        tol: f64,
+        max_iter: usize,
+    ) -> Option<(Vec<Vec<T>>, usize)> {
+        if self.solver.is_none() || self.n != n {
+            return None;
+        }
+        let a = self.build_matrix(n, rows, cols, vals).ok()?;
+        let precond = self.solver.as_ref()?;
+        let settings = rslab::KrylovSettings { tol, max_iter, ..Default::default() };
+        let mut xs = Vec::with_capacity(bs.len());
+        let mut iters = 0;
+        for b in bs {
+            let r = rslab::cocg(&a, b, precond, &settings).ok()?;
+            if !r.converged {
+                return None;
+            }
+            iters = iters.max(r.iters);
+            xs.push(r.x);
+        }
+        Some((xs, iters))
+    }
+
     /// Inertia (positive, negative, zero pivots) of the last factorisation.
     /// For a real symmetric matrix `A - sigma B` with `B` positive definite
     /// this counts the eigenvalues below `sigma` (Sylvester's law); it has no
@@ -307,5 +343,47 @@ mod tests {
                 .map(|(a, c)| (a - c).norm_sqr()).sum::<f64>().sqrt();
             assert!(diff < 1e-12, "batched ≠ sequential, diff {diff}");
         }
+    }
+
+    /// A nearby system (values perturbed by a few percent, same pattern)
+    /// solved by COCG on the old factorisation matches its direct solve.
+    #[test]
+    fn solve_nearby_matches_the_direct_solve() {
+        // 1D Helmholtz-like tridiagonal, complex symmetric.
+        let n = 200;
+        let (mut rows, mut cols, mut vals) = (Vec::new(), Vec::new(), Vec::new());
+        let system = |k2: f64| -> Vec<C64> {
+            let mut v = Vec::new();
+            for i in 0..n {
+                v.push(C64::new(2.0 - k2, 0.01));
+                if i + 1 < n {
+                    v.push(C64::new(-1.0, 0.0));
+                    v.push(C64::new(-1.0, 0.0));
+                }
+            }
+            v
+        };
+        for i in 0..n {
+            rows.push(i); cols.push(i);
+            if i + 1 < n {
+                rows.push(i); cols.push(i + 1);
+                rows.push(i + 1); cols.push(i);
+            }
+        }
+        vals.extend(system(0.30));
+        let mut solver = SymmetricSolver::<C64>::new();
+        solver.factorize(n, &rows, &cols, &vals).unwrap();
+
+        let near = system(0.31);
+        let b: Vec<C64> = (0..n).map(|i| C64::new(1.0 + i as f64 * 0.01, 0.0)).collect();
+        let (xs, iters) = solver
+            .solve_nearby(n, &rows, &cols, &near, &[b.clone()], 1e-12, 200)
+            .expect("COCG must converge on a nearby system");
+        let mut direct = SymmetricSolver::<C64>::new();
+        direct.factorize(n, &rows, &cols, &near).unwrap();
+        let want = direct.solve(&b).unwrap();
+        let err: f64 = xs[0].iter().zip(&want).map(|(a, b)| (a - b).norm_sqr()).sum::<f64>().sqrt();
+        let scale: f64 = want.iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt();
+        assert!(err / scale < 1e-9, "rel err {} after {iters} iterations", err / scale);
     }
 }

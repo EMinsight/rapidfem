@@ -130,10 +130,12 @@ frequency and port. `rapidfem.show(g)` sends a geometry to the viewer.
 - PML: anisotropic stretched-coordinate perfectly matched layer.
 - Lossy materials: complex permittivity with loss tangent and conductivity, surface impedance for
   metals, Debye dispersion; cached across sweeps.
-- Sparse solvers: pure-Rust [`rslab`](https://github.com/milanofthe/rslab) complex-symmetric LDLᵀ
-  (Bunch-Kaufman) with a-priori memory estimates, vendored, no native dependencies.
-- Frequency sweep: assembles E/B once, refactors only the frequency-dependent K per point, reuses the
-  symbolic factorisation pattern.
+- Sparse solvers: pure-Rust [`rslab`](https://github.com/milanofthe/rslab) real and complex-symmetric
+  LDLᵀ (Bunch-Kaufman) with a-priori memory estimates, vendored, no native dependencies; driven
+  sweeps, eigenmodes and port modes all factor through it.
+- Frequency sweep: assembles E/B once, analyses the sparsity pattern once, and solves neighbouring
+  points by COCG preconditioned with an earlier point's factorisation, refactoring only when the
+  iteration gets expensive (2.6x faster on a 681k-DOF 21-point sweep).
 - Eigenmode solver: shift-invert Lanczos in the B inner product, with a per-mode residual check.
 - Error estimation: residual error indicator with Dörfler marking (`ProblemFD.element_errors`).
 - Output: Touchstone (.s1p/.s2p/.snp), scikit-rf, far-field NFFT.

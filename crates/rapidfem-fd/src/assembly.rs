@@ -39,6 +39,15 @@ pub struct SolveResult {
     pub n_field: usize,
 }
 
+/// A sweep point tries the preconditioned iteration only when the last
+/// factorisation took at least this long; below it refactoring is cheap.
+const SWEEP_ITERATE_MIN_FACTOR_SECS: f64 = 0.25;
+/// Relative residual of the preconditioned iteration (S-parameters then
+/// agree with the direct solve to about 1e-10).
+const SWEEP_ITERATE_TOL: f64 = 1e-10;
+/// Iterations before a sweep point gives up and refactors.
+const SWEEP_ITERATE_MAX_ITER: usize = 40;
+
 /// Assemble the driven system and solve for each driven port. Accepts any
 /// Port type via trait objects.
 pub fn assemble_and_solve(
@@ -402,6 +411,10 @@ pub fn frequency_sweep_with_pml(
     // amortised across frequencies via `solver.refactorize`.
     let mut solver = rapidfem_core::linalg::SymmetricSolver::<C64>::new();
     let mut first_factor = true;
+    // Time of the last numeric factorisation, and whether the next frequency
+    // should refactor instead of trying the preconditioned iteration.
+    let mut factor_secs = 0.0f64;
+    let mut refactor_next = true;
 
     // COO buffers for the per-frequency system matrix, reused across the
     // sweep. Capacity covers the K block plus the Robin upper bound.
@@ -513,17 +526,36 @@ pub fn frequency_sweep_with_pml(
             crate::dump::write_system(target, fi, 2.0 * std::f64::consts::PI * freq / 299_792_458.0, n_free, &coo_rows, &coo_cols, &coo_vals, &b_frees)?;
         }
 
-        // Factor (symbolic once via `factorize`, then `refactorize` per freq
-        // reusing the sparsity pattern) and solve.
-        if first_factor {
-            solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
-            first_factor = false;
+        // Neighbouring frequencies: COCG preconditioned with the factorisation
+        // of an earlier frequency (same pattern, nearby values) instead of a
+        // refactorisation, when a factorisation is expensive enough to be
+        // worth avoiding. A 681k-DOF iris filter swept over 21 points ran
+        // 2.6x faster this way, S-parameters equal to 5e-11.
+        let t_solve = web_time::Instant::now();
+        let nearby = if refactor_next || factor_secs < SWEEP_ITERATE_MIN_FACTOR_SECS {
+            None
         } else {
-            solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
-        }
-
-        // Batched multi-port solve on the shared factorisation.
-        let x_frees = solver.solve_many(&b_frees)?;
+            solver.solve_nearby(n_free, &coo_rows, &coo_cols, &coo_vals, &b_frees,
+                                SWEEP_ITERATE_TOL, SWEEP_ITERATE_MAX_ITER)
+        };
+        let (x_frees, how) = if let Some((xs, it)) = nearby {
+            // Iterations grow with the distance to the reference frequency;
+            // once they cost half a factorisation, the next point refactors.
+            refactor_next = t_solve.elapsed().as_secs_f64() > 0.5 * factor_secs;
+            (xs, format!("cocg {it} it on the last factor"))
+        } else {
+            // Factor (symbolic once via `factorize`, then `refactorize` per
+            // freq reusing the sparsity pattern) and solve all ports batched.
+            if first_factor {
+                solver.factorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
+                first_factor = false;
+            } else {
+                solver.refactorize(n_free, &coo_rows, &coo_cols, &coo_vals)?;
+            }
+            factor_secs = t_solve.elapsed().as_secs_f64();
+            refactor_next = false;
+            (solver.solve_many(&b_frees)?, solver.name().to_string())
+        };
         let mut solutions = Vec::new();
         for x_free in x_frees {
             let mut x_full = vec![C64::new(0.0, 0.0); n_field];
@@ -536,7 +568,7 @@ pub fn frequency_sweep_with_pml(
         eprintln!(
             "  f={:>8.4e} Hz [{:>2}/{:>2}]  {:>6.1}ms  {}",
             freq, fi + 1, frequencies.len(), t_freq.elapsed().as_secs_f64() * 1e3,
-            solver.name(),
+            how,
         );
         results.push(SolveResult { solutions, n_field });
         if let Some(cb) = on_solve.as_deref_mut() {

@@ -44,7 +44,7 @@ export const features: Feature[] = [
 	},
 	{
 		title: 'Frequency Sweep',
-		description: 'Assembles E/B once, refactors only the frequency-dependent K, reuses the symbolic pattern.'
+		description: 'Assembles E/B once, analyses the pattern once, solves neighbouring points by COCG on an earlier factorisation.'
 	},
 	{
 		title: 'Eigenmode Solver',
